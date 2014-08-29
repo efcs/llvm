@@ -591,15 +591,20 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     char SymbolAddrStr[18] = "";
     char SymbolSizeStr[18] = "";
 
-    if (OutputFormat == sysv || I->Address == UnknownAddressOrSize)
+    if ((OutputFormat == sysv || I->Address == UnknownAddressOrSize)
+        && ! OutputFormat == posix)
       strcpy(SymbolAddrStr, printBlanks);
     if (OutputFormat == sysv)
       strcpy(SymbolSizeStr, printBlanks);
 
-    if (I->Address != UnknownAddressOrSize)
+    // If OutputFormat == posix then we don't want to print addresses/sizes
+    // for undefined symbols.
+    if (I->Address != UnknownAddressOrSize 
+        && (OutputFormat != posix || I->TypeChar != 'U'))
       format(printFormat, I->Address)
           .print(SymbolAddrStr, sizeof(SymbolAddrStr));
-    if (I->Size != UnknownAddressOrSize)
+    if (I->Size != UnknownAddressOrSize
+        && (OutputFormat != posix || I->TypeChar != 'U'))
       format(printFormat, I->Size).print(SymbolSizeStr, sizeof(SymbolSizeStr));
 
     // If OutputFormat is darwin or we are printing Mach-O symbols in hex and
@@ -612,7 +617,7 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
       darwinPrintSymbol(MachO, I, SymbolAddrStr, printBlanks);
     } else if (OutputFormat == posix) {
       outs() << I->Name << " " << I->TypeChar << " " << SymbolAddrStr
-             << SymbolSizeStr << "\n";
+             << " " << SymbolSizeStr << "\n";
     } else if (OutputFormat == bsd || (OutputFormat == darwin && !MachO)) {
       if (PrintAddress)
         outs() << SymbolAddrStr << ' ';
@@ -1259,7 +1264,7 @@ int main(int argc, char **argv) {
   // print out both the size and address.
   if (SizeSort && !PrintSize)
     PrintAddress = false;
-  if (OutputFormat == sysv || SizeSort)
+  if (OutputFormat == sysv || OutputFormat == posix || SizeSort)
     PrintSize = true;
 
   switch (InputFilenames.size()) {
