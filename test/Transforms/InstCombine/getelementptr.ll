@@ -858,6 +858,34 @@ define %struct.C* @test44(%struct.C* %c1, %struct.C* %c2) {
 ; CHECK-NEXT:  ret %struct.C* [[INTTOPTR]]
 }
 
+define %struct.C* @test45(%struct.C* %c1, %struct.C** %c2) {
+  %ptrtoint1 = ptrtoint %struct.C* %c1 to i64
+  %ptrtoint2 = ptrtoint %struct.C** %c2 to i64
+  %sub = sub i64 %ptrtoint2, %ptrtoint1 ; C2 - C1
+  %shr = sdiv i64 %sub, 7
+  %gep = getelementptr inbounds %struct.C* %c1, i64 %shr ; C1 + (C2 - C1)
+  ret %struct.C* %gep
+
+; CHECK-LABEL: @test45(
+; CHECK-NEXT:  [[BITCAST:%.*]] = bitcast %struct.C** %c2 to %struct.C*
+; CHECK-NEXT:  ret %struct.C* [[BITCAST]]
+}
+
+define %struct.C* @test46(%struct.C* %c1, %struct.C* %c2, i64 %N) {
+  %ptrtoint = ptrtoint %struct.C* %c1 to i64
+  %sub = sub i64 0, %ptrtoint
+  %sdiv = sdiv i64 %sub, %N
+  %gep = getelementptr inbounds %struct.C* %c2, i64 %sdiv
+  ret %struct.C* %gep
+
+; CHECK-LABEL: @test46(
+; CHECK-NEXT:  [[PTRTOINT:%.*]] = ptrtoint %struct.C* %c1 to i64
+; CHECK-NEXT:  [[SUB:%.*]] = sub i64 0, [[PTRTOINT]]
+; CHECK-NEXT:  [[SDIV:%.*]] = sdiv i64 [[SUB]], %N
+; CHECK-NEXT:  [[GEP:%.*]] = getelementptr inbounds %struct.C* %c2, i64 %sdiv
+; CHECK-NEXT:  ret %struct.C* [[GEP]]
+}
+
 define i32 addrspace(1)* @ascast_0_gep(i32* %p) nounwind {
 ; CHECK-LABEL: @ascast_0_gep(
 ; CHECK-NOT: getelementptr
