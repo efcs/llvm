@@ -55,7 +55,9 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AliasSetTracker.h"
+#include "llvm/Analysis/AssumptionTracker.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopIterator.h"
 #include "llvm/Analysis/LoopPass.h"
@@ -108,8 +110,8 @@ VectorizationFactor("force-vector-width", cl::init(0), cl::Hidden,
                     cl::desc("Sets the SIMD width. Zero is autoselect."));
 
 static cl::opt<unsigned>
-VectorizationUnroll("force-vector-unroll", cl::init(0), cl::Hidden,
-                    cl::desc("Sets the vectorization unroll count. "
+VectorizationInterleave("force-vector-interleave", cl::init(0), cl::Hidden,
+                    cl::desc("Sets the vectorization interleave count. "
                              "Zero is autoselect."));
 
 static cl::opt<bool>
@@ -157,17 +159,17 @@ static cl::opt<unsigned> ForceTargetNumVectorRegs(
     "force-target-num-vector-regs", cl::init(0), cl::Hidden,
     cl::desc("A flag that overrides the target's number of vector registers."));
 
-/// Maximum vectorization unroll count.
-static const unsigned MaxUnrollFactor = 16;
+/// Maximum vectorization interleave count.
+static const unsigned MaxInterleaveFactor = 16;
 
-static cl::opt<unsigned> ForceTargetMaxScalarUnrollFactor(
-    "force-target-max-scalar-unroll", cl::init(0), cl::Hidden,
-    cl::desc("A flag that overrides the target's max unroll factor for scalar "
-             "loops."));
+static cl::opt<unsigned> ForceTargetMaxScalarInterleaveFactor(
+    "force-target-max-scalar-interleave", cl::init(0), cl::Hidden,
+    cl::desc("A flag that overrides the target's max interleave factor for "
+             "scalar loops."));
 
-static cl::opt<unsigned> ForceTargetMaxVectorUnrollFactor(
-    "force-target-max-vector-unroll", cl::init(0), cl::Hidden,
-    cl::desc("A flag that overrides the target's max unroll factor for "
+static cl::opt<unsigned> ForceTargetMaxVectorInterleaveFactor(
+    "force-target-max-vector-interleave", cl::init(0), cl::Hidden,
+    cl::desc("A flag that overrides the target's max interleave factor for "
              "vectorized loops."));
 
 static cl::opt<unsigned> ForceTargetInstructionCost(
@@ -884,8 +886,12 @@ public:
                              LoopVectorizationLegality *Legal,
                              const TargetTransformInfo &TTI,
                              const DataLayout *DL, const TargetLibraryInfo *TLI,
-                             const Function *F, const LoopVectorizeHints *Hints)
-      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL), TLI(TLI), TheFunction(F), Hints(Hints) {}
+                             AssumptionTracker *AT, const Function *F,
+                             const LoopVectorizeHints *Hints)
+      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL), TLI(TLI),
+        TheFunction(F), Hints(Hints) {
+    CodeMetrics::collectEphemeralValues(L, AT, EphValues);
+  }
 
   /// Information about vectorization costs
   struct VectorizationFactor {
@@ -954,6 +960,9 @@ private:
                                    *TheFunction, DL, Message.str());
   }
 
+  /// Values used only by @llvm.assume calls.
+  SmallPtrSet<const Value *, 32> EphValues;
+
   /// The loop that we evaluate.
   Loop *TheLoop;
   /// Scev analysis.
@@ -1003,7 +1012,7 @@ class LoopVectorizeHints {
       case HK_WIDTH:
         return isPowerOf2_32(Val) && Val <= MaxVectorWidth;
       case HK_UNROLL:
-        return isPowerOf2_32(Val) && Val <= MaxUnrollFactor;
+        return isPowerOf2_32(Val) && Val <= MaxInterleaveFactor;
       case HK_FORCE:
         return (Val <= 1);
       }
@@ -1013,8 +1022,8 @@ class LoopVectorizeHints {
 
   /// Vectorization width.
   Hint Width;
-  /// Vectorization unroll factor.
-  Hint Unroll;
+  /// Vectorization interleave factor.
+  Hint Interleave;
   /// Vectorization forced
   Hint Force;
   /// Array to help iterating through all hints.
@@ -1030,36 +1039,36 @@ public:
     FK_Enabled = 1,    ///< Forcing enabled.
   };
 
-  LoopVectorizeHints(const Loop *L, bool DisableUnrolling)
+  LoopVectorizeHints(const Loop *L, bool DisableInterleaving)
       : Width("vectorize.width", VectorizationFactor, HK_WIDTH),
-        Unroll("interleave.count", DisableUnrolling, HK_UNROLL),
+        Interleave("interleave.count", DisableInterleaving, HK_UNROLL),
         Force("vectorize.enable", FK_Undefined, HK_FORCE),
         TheLoop(L) {
     // FIXME: Move this up initialisation when MSVC requirement is 2013+
     Hints[0] = &Width;
-    Hints[1] = &Unroll;
+    Hints[1] = &Interleave;
     Hints[2] = &Force;
 
     // Populate values with existing loop metadata.
     getHintsFromMetadata();
 
-    // force-vector-unroll overrides DisableUnrolling.
-    if (VectorizationUnroll.getNumOccurrences() > 0)
-      Unroll.Value = VectorizationUnroll;
+    // force-vector-interleave overrides DisableInterleaving.
+    if (VectorizationInterleave.getNumOccurrences() > 0)
+      Interleave.Value = VectorizationInterleave;
 
-    DEBUG(if (DisableUnrolling && Unroll.Value == 1) dbgs()
-          << "LV: Unrolling disabled by the pass manager\n");
+    DEBUG(if (DisableInterleaving && Interleave.Value == 1) dbgs()
+          << "LV: Interleaving disabled by the pass manager\n");
   }
 
   /// Mark the loop L as already vectorized by setting the width to 1.
   void setAlreadyVectorized() {
-    Width.Value = Unroll.Value = 1;
+    Width.Value = Interleave.Value = 1;
     // FIXME: Change all lines below for this when we can use MSVC 2013+
     //writeHintsToMetadata({ Width, Unroll });
     std::vector<Hint> hints;
     hints.reserve(2);
     hints.emplace_back(Width);
-    hints.emplace_back(Unroll);
+    hints.emplace_back(Interleave);
     writeHintsToMetadata(std::move(hints));
   }
 
@@ -1074,8 +1083,8 @@ public:
         R << " (Force=true";
         if (Width.Value != 0)
           R << ", Vector Width=" << Width.Value;
-        if (Unroll.Value != 0)
-          R << ", Interleave Count=" << Unroll.Value;
+        if (Interleave.Value != 0)
+          R << ", Interleave Count=" << Interleave.Value;
         R << ")";
       }
     }
@@ -1084,7 +1093,7 @@ public:
   }
 
   unsigned getWidth() const { return Width.Value; }
-  unsigned getUnroll() const { return Unroll.Value; }
+  unsigned getInterleave() const { return Interleave.Value; }
   enum ForceKind getForce() const { return (ForceKind)Force.Value; }
 
 private:
@@ -1216,7 +1225,7 @@ static void emitMissedWarning(Function *F, Loop *L,
       emitLoopVectorizeWarning(
           F->getContext(), *F, L->getStartLoc(),
           "failed explicitly specified loop vectorization");
-    else if (LH.getUnroll() != 1)
+    else if (LH.getInterleave() != 1)
       emitLoopInterleaveWarning(
           F->getContext(), *F, L->getStartLoc(),
           "failed explicitly specified loop interleaving");
@@ -1251,6 +1260,7 @@ struct LoopVectorize : public FunctionPass {
   BlockFrequencyInfo *BFI;
   TargetLibraryInfo *TLI;
   AliasAnalysis *AA;
+  AssumptionTracker *AT;
   bool DisableUnrolling;
   bool AlwaysVectorize;
 
@@ -1266,6 +1276,7 @@ struct LoopVectorize : public FunctionPass {
     BFI = &getAnalysis<BlockFrequencyInfo>();
     TLI = getAnalysisIfAvailable<TargetLibraryInfo>();
     AA = &getAnalysis<AliasAnalysis>();
+    AT = &getAnalysis<AssumptionTracker>();
 
     // Compute some weights outside of the loop over the loops. Compute this
     // using a BranchProbability to re-use its scaling math.
@@ -1322,7 +1333,7 @@ struct LoopVectorize : public FunctionPass {
                          : (Hints.getForce() == LoopVectorizeHints::FK_Enabled
                                 ? "enabled"
                                 : "?")) << " width=" << Hints.getWidth()
-                 << " unroll=" << Hints.getUnroll() << "\n");
+                 << " unroll=" << Hints.getInterleave() << "\n");
 
     // Function containing loop
     Function *F = L->getHeader()->getParent();
@@ -1349,7 +1360,7 @@ struct LoopVectorize : public FunctionPass {
       return false;
     }
 
-    if (Hints.getWidth() == 1 && Hints.getUnroll() == 1) {
+    if (Hints.getWidth() == 1 && Hints.getInterleave() == 1) {
       DEBUG(dbgs() << "LV: Not vectorizing: Disabled/already vectorized.\n");
       emitOptimizationRemarkAnalysis(
           F->getContext(), DEBUG_TYPE, *F, L->getStartLoc(),
@@ -1360,8 +1371,7 @@ struct LoopVectorize : public FunctionPass {
 
     // Check the loop for a trip count threshold:
     // do not vectorize loops with a tiny trip count.
-    BasicBlock *Latch = L->getLoopLatch();
-    const unsigned TC = SE->getSmallConstantTripCount(L, Latch);
+    const unsigned TC = SE->getSmallConstantTripCount(L);
     if (TC > 0u && TC < TinyTripCountVectorThreshold) {
       DEBUG(dbgs() << "LV: Found a loop with a very small trip count. "
                    << "This loop is not worth vectorizing.");
@@ -1385,7 +1395,8 @@ struct LoopVectorize : public FunctionPass {
     }
 
     // Use the cost model.
-    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL, TLI, F, &Hints);
+    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL, TLI, AT, F,
+                                  &Hints);
 
     // Check the function attributes to find out if this function should be
     // optimized for size.
@@ -1472,6 +1483,7 @@ struct LoopVectorize : public FunctionPass {
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<AssumptionTracker>();
     AU.addRequiredID(LoopSimplifyID);
     AU.addRequiredID(LCSSAID);
     AU.addRequired<BlockFrequencyInfo>();
@@ -3249,7 +3261,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
         Value *V = Builder.CreateBinOp(BinOp->getOpcode(), A[Part], B[Part]);
 
         if (BinaryOperator *VecOp = dyn_cast<BinaryOperator>(V))
-          VecOp->copyFlags(BinOp);
+          VecOp->copyIRFlags(BinOp);
         
         Entry[Part] = V;
       }
@@ -3362,6 +3374,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
       Intrinsic::ID ID = getIntrinsicIDForCall(CI, TLI);
       assert(ID && "Not an intrinsic call!");
       switch (ID) {
+      case Intrinsic::assume:
       case Intrinsic::lifetime_end:
       case Intrinsic::lifetime_start:
         scalarizeInstruction(it);
@@ -4628,7 +4641,7 @@ bool MemoryDepChecker::isDependent(const MemAccessInfo &A, unsigned AIdx,
 
   // Bail out early if passed-in parameters make vectorization not feasible.
   unsigned ForcedFactor = VectorizationFactor ? VectorizationFactor : 1;
-  unsigned ForcedUnroll = VectorizationUnroll ? VectorizationUnroll : 1;
+  unsigned ForcedUnroll = VectorizationInterleave ? VectorizationInterleave : 1;
 
   // The distance must be bigger than the size needed for a vectorized version
   // of the operation and the size of the vectorized operation must not be
@@ -5352,7 +5365,7 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
   }
 
   // Find the trip count.
-  unsigned TC = SE->getSmallConstantTripCount(TheLoop, TheLoop->getLoopLatch());
+  unsigned TC = SE->getSmallConstantTripCount(TheLoop);
   DEBUG(dbgs() << "LV: Found trip count: " << TC << '\n');
 
   unsigned WidestType = getWidestType();
@@ -5458,6 +5471,10 @@ unsigned LoopVectorizationCostModel::getWidestType() {
     for (BasicBlock::iterator it = BB->begin(), e = BB->end(); it != e; ++it) {
       Type *T = it->getType();
 
+      // Ignore ephemeral values.
+      if (EphValues.count(it))
+        continue;
+
       // Only examine Loads, Stores and PHINodes.
       if (!isa<LoadInst>(it) && !isa<StoreInst>(it) && !isa<PHINode>(it))
         continue;
@@ -5505,7 +5522,7 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
   // to the increased register pressure.
 
   // Use the user preference, unless 'auto' is selected.
-  int UserUF = Hints->getUnroll();
+  int UserUF = Hints->getInterleave();
   if (UserUF != 0)
     return UserUF;
 
@@ -5518,8 +5535,7 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
     return 1;
 
   // Do not unroll loops with a relatively small trip count.
-  unsigned TC = SE->getSmallConstantTripCount(TheLoop,
-                                              TheLoop->getLoopLatch());
+  unsigned TC = SE->getSmallConstantTripCount(TheLoop);
   if (TC > 1 && TC < TinyTripCountUnrollThreshold)
     return 1;
 
@@ -5558,15 +5574,15 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
                        std::max(1U, (R.MaxLocalUsers - 1)));
 
   // Clamp the unroll factor ranges to reasonable factors.
-  unsigned MaxUnrollSize = TTI.getMaximumUnrollFactor();
+  unsigned MaxInterleaveSize = TTI.getMaxInterleaveFactor();
 
   // Check if the user has overridden the unroll max.
   if (VF == 1) {
-    if (ForceTargetMaxScalarUnrollFactor.getNumOccurrences() > 0)
-      MaxUnrollSize = ForceTargetMaxScalarUnrollFactor;
+    if (ForceTargetMaxScalarInterleaveFactor.getNumOccurrences() > 0)
+      MaxInterleaveSize = ForceTargetMaxScalarInterleaveFactor;
   } else {
-    if (ForceTargetMaxVectorUnrollFactor.getNumOccurrences() > 0)
-      MaxUnrollSize = ForceTargetMaxVectorUnrollFactor;
+    if (ForceTargetMaxVectorInterleaveFactor.getNumOccurrences() > 0)
+      MaxInterleaveSize = ForceTargetMaxVectorInterleaveFactor;
   }
 
   // If we did not calculate the cost for VF (because the user selected the VF)
@@ -5576,8 +5592,8 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
 
   // Clamp the calculated UF to be between the 1 and the max unroll factor
   // that the target allows.
-  if (UF > MaxUnrollSize)
-    UF = MaxUnrollSize;
+  if (UF > MaxInterleaveSize)
+    UF = MaxInterleaveSize;
   else if (UF < 1)
     UF = 1;
 
@@ -5721,6 +5737,10 @@ LoopVectorizationCostModel::calculateRegisterUsage() {
     // Ignore instructions that are never used within the loop.
     if (!Ends.count(I)) continue;
 
+    // Ignore ephemeral values.
+    if (EphValues.count(I))
+      continue;
+
     // Remove all of the instructions that end at this location.
     InstrList &List = TransposeEnds[i];
     for (unsigned int j=0, e = List.size(); j < e; ++j)
@@ -5759,6 +5779,10 @@ unsigned LoopVectorizationCostModel::expectedCost(unsigned VF) {
     for (BasicBlock::iterator it = BB->begin(), e = BB->end(); it != e; ++it) {
       // Skip dbg intrinsics.
       if (isa<DbgInfoIntrinsic>(it))
+        continue;
+
+      // Ignore ephemeral values.
+      if (EphValues.count(it))
         continue;
 
       unsigned C = getInstructionCost(it, VF);
@@ -6061,6 +6085,7 @@ static const char lv_name[] = "Loop Vectorization";
 INITIALIZE_PASS_BEGIN(LoopVectorize, LV_NAME, lv_name, false, false)
 INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
+INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfo)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)

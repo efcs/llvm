@@ -777,6 +777,21 @@ bool AArch64DAGToDAGISel::SelectAddrModeWRO(SDValue N, unsigned Size,
   return false;
 }
 
+// Check if the given immediate is preferred by ADD. If an immediate can be
+// encoded in an ADD, or it can be encoded in an "ADD LSL #12" and can not be
+// encoded by one MOVZ, return true.
+static bool isPreferredADD(int64_t ImmOff) {
+  // Constant in [0x0, 0xfff] can be encoded in ADD.
+  if ((ImmOff & 0xfffffffffffff000LL) == 0x0LL)
+    return true;
+  // Check if it can be encoded in an "ADD LSL #12".
+  if ((ImmOff & 0xffffffffff000fffLL) == 0x0LL)
+    // As a single MOVZ is faster than a "ADD of LSL #12", ignore such constant.
+    return (ImmOff & 0xffffffffff00ffffLL) != 0x0LL &&
+           (ImmOff & 0xffffffffffff0fffLL) != 0x0LL;
+  return false;
+}
+
 bool AArch64DAGToDAGISel::SelectAddrModeXRO(SDValue N, unsigned Size,
                                             SDValue &Base, SDValue &Offset,
                                             SDValue &SignExtend,
@@ -786,11 +801,6 @@ bool AArch64DAGToDAGISel::SelectAddrModeXRO(SDValue N, unsigned Size,
   SDValue LHS = N.getOperand(0);
   SDValue RHS = N.getOperand(1);
 
-  // We don't want to match immediate adds here, because they are better lowered
-  // to the register-immediate addressing modes.
-  if (isa<ConstantSDNode>(LHS) || isa<ConstantSDNode>(RHS))
-    return false;
-
   // Check if this particular node is reused in any non-memory related
   // operation.  If yes, do not try to fold this node into the address
   // computation, since the computation will be kept.
@@ -798,6 +808,36 @@ bool AArch64DAGToDAGISel::SelectAddrModeXRO(SDValue N, unsigned Size,
   for (SDNode *UI : Node->uses()) {
     if (!isa<MemSDNode>(*UI))
       return false;
+  }
+
+  // Watch out if RHS is a wide immediate, it can not be selected into
+  // [BaseReg+Imm] addressing mode. Also it may not be able to be encoded into
+  // ADD/SUB. Instead it will use [BaseReg + 0] address mode and generate
+  // instructions like:
+  //     MOV  X0, WideImmediate
+  //     ADD  X1, BaseReg, X0
+  //     LDR  X2, [X1, 0]
+  // For such situation, using [BaseReg, XReg] addressing mode can save one
+  // ADD/SUB:
+  //     MOV  X0, WideImmediate
+  //     LDR  X2, [BaseReg, X0]
+  if (isa<ConstantSDNode>(RHS)) {
+    int64_t ImmOff = (int64_t)dyn_cast<ConstantSDNode>(RHS)->getZExtValue();
+    unsigned Scale = Log2_32(Size);
+    // Skip the immediate can be seleced by load/store addressing mode.
+    // Also skip the immediate can be encoded by a single ADD (SUB is also
+    // checked by using -ImmOff).
+    if ((ImmOff % Size == 0 && ImmOff >= 0 && ImmOff < (0x1000 << Scale)) ||
+        isPreferredADD(ImmOff) || isPreferredADD(-ImmOff))
+      return false;
+
+    SDLoc DL(N.getNode());
+    SDValue Ops[] = { RHS };
+    SDNode *MOVI =
+        CurDAG->getMachineNode(AArch64::MOVi64imm, DL, MVT::i64, Ops);
+    SDValue MOVIV = SDValue(MOVI, 0);
+    // This ADD of two X register will be selected into [Reg+Reg] mode.
+    N = CurDAG->getNode(ISD::ADD, DL, MVT::i64, LHS, MOVIV);
   }
 
   // Remember if it is worth folding N when it produces extended register.
@@ -1381,20 +1421,21 @@ static bool isBitfieldExtractOpFromAnd(SelectionDAG *CurDAG, SDNode *N,
   return true;
 }
 
-static bool isOneBitExtractOpFromShr(SDNode *N, unsigned &Opc, SDValue &Opd0,
-                                     unsigned &LSB, unsigned &MSB) {
-  // We are looking for the following pattern which basically extracts a single
-  // bit from the source value and places it in the LSB of the destination
-  // value, all other bits of the destination value or set to zero:
+static bool isSeveralBitsExtractOpFromShr(SDNode *N, unsigned &Opc,
+                                          SDValue &Opd0, unsigned &LSB,
+                                          unsigned &MSB) {
+  // We are looking for the following pattern which basically extracts several
+  // continuous bits from the source value and places it from the LSB of the
+  // destination value, all other bits of the destination value or set to zero:
   //
   // Value2 = AND Value, MaskImm
   // SRL Value2, ShiftImm
   //
-  // with MaskImm >> ShiftImm == 1.
+  // with MaskImm >> ShiftImm to search for the bit width.
   //
   // This gets selected into a single UBFM:
   //
-  // UBFM Value, ShiftImm, ShiftImm
+  // UBFM Value, ShiftImm, BitWide + Srl_imm -1
   //
 
   if (N->getOpcode() != ISD::SRL)
@@ -1410,15 +1451,16 @@ static bool isOneBitExtractOpFromShr(SDNode *N, unsigned &Opc, SDValue &Opd0,
   if (!isIntImmediate(N->getOperand(1), Srl_imm))
     return false;
 
-  // Check whether we really have a one bit extract here.
-  if (And_mask >> Srl_imm == 0x1) {
+  // Check whether we really have several bits extract here.
+  unsigned BitWide = 64 - CountLeadingOnes_64(~(And_mask >> Srl_imm));
+  if (BitWide && isMask_64(And_mask >> Srl_imm)) {
     if (N->getValueType(0) == MVT::i32)
       Opc = AArch64::UBFMWri;
     else
       Opc = AArch64::UBFMXri;
 
-    LSB = MSB = Srl_imm;
-
+    LSB = Srl_imm;
+    MSB = BitWide + Srl_imm - 1;
     return true;
   }
 
@@ -1439,8 +1481,8 @@ static bool isBitfieldExtractOpFromShr(SDNode *N, unsigned &Opc, SDValue &Opd0,
   assert((VT == MVT::i32 || VT == MVT::i64) &&
          "Type checking must have been done before calling this function");
 
-  // Check for AND + SRL doing a one bit extract.
-  if (isOneBitExtractOpFromShr(N, Opc, Opd0, LSB, MSB))
+  // Check for AND + SRL doing several bits extract.
+  if (isSeveralBitsExtractOpFromShr(N, Opc, Opd0, LSB, MSB))
     return true;
 
   // we're looking for a shift of a shift

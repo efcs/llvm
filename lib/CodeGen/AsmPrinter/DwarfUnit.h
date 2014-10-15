@@ -216,15 +216,14 @@ public:
   /// hasContent - Return true if this compile unit has something to write out.
   bool hasContent() const { return !UnitDie.getChildren().empty(); }
 
-  /// addRange - Add an address range to the list of ranges for this unit.
-  void addRange(RangeSpan Range);
-
   /// getRanges - Get the list of ranges for this unit.
   const SmallVectorImpl<RangeSpan> &getRanges() const { return CURanges; }
   SmallVectorImpl<RangeSpan> &getRanges() { return CURanges; }
 
   /// addRangeList - Add an address range list to the list of range lists.
-  void addRangeList(RangeSpanList Ranges) { CURangeLists.push_back(Ranges); }
+  void addRangeList(RangeSpanList Ranges) {
+    CURangeLists.push_back(std::move(Ranges));
+  }
 
   /// getRangeLists - Get the vector of range lists.
   const SmallVectorImpl<RangeSpanList> &getRangeLists() const {
@@ -293,11 +292,6 @@ public:
   /// addLocationList - Add a Dwarf loclistptr attribute data and value.
   void addLocationList(DIE &Die, dwarf::Attribute Attribute, unsigned Index);
 
-  /// addSectionLabel - Add a Dwarf section label attribute data and value.
-  ///
-  void addSectionLabel(DIE &Die, dwarf::Attribute Attribute,
-                       const MCSymbol *Label);
-
   /// addSectionOffset - Add an offset into a section attribute data and value.
   ///
   void addSectionOffset(DIE &Die, dwarf::Attribute Attribute, uint64_t Integer);
@@ -305,10 +299,6 @@ public:
   /// addOpAddress - Add a dwarf op address data and value using the
   /// form given and an op of either DW_FORM_addr or DW_FORM_GNU_addr_index.
   void addOpAddress(DIELoc &Die, const MCSymbol *Label);
-
-  /// addSectionDelta - Add a label delta attribute data and value.
-  void addSectionDelta(DIE &Die, dwarf::Attribute Attribute, const MCSymbol *Hi,
-                       const MCSymbol *Lo);
 
   /// addLabelDelta - Add a label delta attribute data and value.
   void addLabelDelta(DIE &Die, dwarf::Attribute Attribute, const MCSymbol *Hi,
@@ -418,12 +408,12 @@ public:
   /// vtables.
   void constructContainingTypeDIEs();
 
-  /// constructVariableDIE - Construct a DIE for the given DbgVariable.
-  std::unique_ptr<DIE> constructVariableDIE(DbgVariable &DV,
-                                            bool Abstract = false);
-
   /// constructSubprogramArguments - Construct function argument DIEs.
   void constructSubprogramArguments(DIE &Buffer, DITypeArray Args);
+
+  /// \brief Construct import_module DIE.
+  std::unique_ptr<DIE>
+  constructImportedEntityDIE(const DIImportedEntity &Module);
 
   /// Create a DIE with the given Tag, add the DIE to its parent, and
   /// call insertDIE if MD is not null.
@@ -454,12 +444,13 @@ protected:
   /// none currently exists, create a new ID and insert it in the line table.
   virtual unsigned getOrCreateSourceID(StringRef File, StringRef Directory) = 0;
 
-private:
-  /// \brief Construct a DIE for the given DbgVariable without initializing the
-  /// DbgVariable's DIE reference.
-  std::unique_ptr<DIE> constructVariableDIEImpl(const DbgVariable &DV,
-                                                bool Abstract);
+  /// resolve - Look in the DwarfDebug map for the MDNode that
+  /// corresponds to the reference.
+  template <typename T> T resolve(DIRef<T> Ref) const {
+    return DD->resolve(Ref);
+  }
 
+private:
   /// constructTypeDIE - Construct basic type die from DIBasicType.
   void constructTypeDIE(DIE &Buffer, DIBasicType BTy);
 
@@ -514,47 +505,9 @@ private:
   /// information entry.
   DIEEntry *createDIEEntry(DIE &Entry);
 
-  /// resolve - Look in the DwarfDebug map for the MDNode that
-  /// corresponds to the reference.
-  template <typename T> T resolve(DIRef<T> Ref) const {
-    return DD->resolve(Ref);
-  }
-
   /// If this is a named finished type then include it in the list of types for
   /// the accelerator tables.
   void updateAcceleratorTables(DIScope Context, DIType Ty, const DIE &TyDIE);
-};
-
-class DwarfCompileUnit : public DwarfUnit {
-  /// The attribute index of DW_AT_stmt_list in the compile unit DIE, avoiding
-  /// the need to search for it in applyStmtList.
-  unsigned stmtListIndex;
-
-public:
-  DwarfCompileUnit(unsigned UID, DICompileUnit Node, AsmPrinter *A,
-                   DwarfDebug *DW, DwarfFile *DWU);
-
-  void initStmtList(MCSymbol *DwarfLineSectionSym);
-
-  /// Apply the DW_AT_stmt_list from this compile unit to the specified DIE.
-  void applyStmtList(DIE &D);
-
-  /// createGlobalVariableDIE - create global variable DIE.
-  void createGlobalVariableDIE(DIGlobalVariable GV);
-
-  /// addLabelAddress - Add a dwarf label attribute data and value using
-  /// either DW_FORM_addr or DW_FORM_GNU_addr_index.
-  void addLabelAddress(DIE &Die, dwarf::Attribute Attribute,
-                       const MCSymbol *Label);
-
-  /// addLocalLabelAddress - Add a dwarf label attribute data and value using
-  /// DW_FORM_addr only.
-  void addLocalLabelAddress(DIE &Die, dwarf::Attribute Attribute,
-                            const MCSymbol *Label);
-
-  DwarfCompileUnit &getCU() override { return *this; }
-
-  unsigned getOrCreateSourceID(StringRef FileName, StringRef DirName) override;
 };
 
 class DwarfTypeUnit : public DwarfUnit {
