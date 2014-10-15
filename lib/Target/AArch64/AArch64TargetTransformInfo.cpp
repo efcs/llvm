@@ -104,7 +104,7 @@ public:
     return 64;
   }
 
-  unsigned getMaximumUnrollFactor() const override;
+  unsigned getMaxInterleaveFactor() const override;
 
   unsigned getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) const
       override;
@@ -127,6 +127,10 @@ public:
                            unsigned AddressSpace) const override;
 
   unsigned getCostOfKeepingLiveOverCall(ArrayRef<Type*> Tys) const override;
+
+  void getUnrollingPreferences(const Function *F, Loop *L,
+                               UnrollingPreferences &UP) const override;
+
 
   /// @}
 };
@@ -413,6 +417,29 @@ unsigned AArch64TTI::getArithmeticInstrCost(
 
   int ISD = TLI->InstructionOpcodeToISD(Opcode);
 
+  if (ISD == ISD::SDIV &&
+      Opd2Info == TargetTransformInfo::OK_UniformConstantValue &&
+      Opd2PropInfo == TargetTransformInfo::OP_PowerOf2) {
+    // On AArch64, scalar signed division by constants power-of-two are
+    // normally expanded to the sequence ADD + CMP + SELECT + SRA.
+    // The OperandValue properties many not be same as that of previous
+    // operation; conservatively assume OP_None.
+    unsigned Cost =
+      getArithmeticInstrCost(Instruction::Add, Ty, Opd1Info, Opd2Info,
+                             TargetTransformInfo::OP_None,
+                             TargetTransformInfo::OP_None);
+    Cost += getArithmeticInstrCost(Instruction::Sub, Ty, Opd1Info, Opd2Info,
+                                   TargetTransformInfo::OP_None,
+                                   TargetTransformInfo::OP_None);
+    Cost += getArithmeticInstrCost(Instruction::Select, Ty, Opd1Info, Opd2Info,
+                                   TargetTransformInfo::OP_None,
+                                   TargetTransformInfo::OP_None);
+    Cost += getArithmeticInstrCost(Instruction::AShr, Ty, Opd1Info, Opd2Info,
+                                   TargetTransformInfo::OP_None,
+                                   TargetTransformInfo::OP_None);
+    return Cost;
+  }
+
   switch (ISD) {
   default:
     return TargetTransformInfo::getArithmeticInstrCost(
@@ -516,8 +543,14 @@ unsigned AArch64TTI::getCostOfKeepingLiveOverCall(ArrayRef<Type*> Tys) const {
   return Cost;
 }
 
-unsigned AArch64TTI::getMaximumUnrollFactor() const {
-  if (ST->isCortexA57() || ST->isCyclone())
+unsigned AArch64TTI::getMaxInterleaveFactor() const {
+  if (ST->isCortexA57())
     return 4;
   return 2;
+}
+
+void AArch64TTI::getUnrollingPreferences(const Function *F, Loop *L,
+                                         UnrollingPreferences &UP) const {
+  // Disable partial & runtime unrolling on -Os.
+  UP.PartialOptSizeThreshold = 0;
 }

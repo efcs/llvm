@@ -365,7 +365,8 @@ bool CallInst::paramHasAttr(unsigned i, Attribute::AttrKind A) const {
 /// IsConstantOne - Return true only if val is constant int 1
 static bool IsConstantOne(Value *val) {
   assert(val && "IsConstantOne does not work with NULL val");
-  return isa<ConstantInt>(val) && cast<ConstantInt>(val)->isOne();
+  const ConstantInt *CVal = dyn_cast<ConstantInt>(val);
+  return CVal && CVal->isOne();
 }
 
 static Instruction *createMalloc(Instruction *InsertBefore,
@@ -2030,7 +2031,7 @@ bool BinaryOperator::isExact() const {
   return cast<PossiblyExactOperator>(this)->isExact();
 }
 
-void BinaryOperator::copyFlags(const Value *V) {
+void BinaryOperator::copyIRFlags(const Value *V) {
   // Copy the wrapping flags.
   if (auto *OB = dyn_cast<OverflowingBinaryOperator>(V)) {
     setHasNoSignedWrap(OB->hasNoSignedWrap());
@@ -2043,8 +2044,25 @@ void BinaryOperator::copyFlags(const Value *V) {
   
   // Copy the fast-math flags.
   if (auto *FP = dyn_cast<FPMathOperator>(V))
-    setFastMathFlags(FP->getFastMathFlags());
+    copyFastMathFlags(FP->getFastMathFlags());
 }
+
+void BinaryOperator::andIRFlags(const Value *V) {
+  if (auto *OB = dyn_cast<OverflowingBinaryOperator>(V)) {
+    setHasNoSignedWrap(hasNoSignedWrap() & OB->hasNoSignedWrap());
+    setHasNoUnsignedWrap(hasNoUnsignedWrap() & OB->hasNoUnsignedWrap());
+  }
+  
+  if (auto *PE = dyn_cast<PossiblyExactOperator>(V))
+    setIsExact(isExact() & PE->isExact());
+  
+  if (auto *FP = dyn_cast<FPMathOperator>(V)) {
+    FastMathFlags FM = getFastMathFlags();
+    FM &= FP->getFastMathFlags();
+    copyFastMathFlags(FM);
+  }
+}
+
 
 //===----------------------------------------------------------------------===//
 //                             FPMathOperator Class

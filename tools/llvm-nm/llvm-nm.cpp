@@ -149,6 +149,9 @@ cl::list<std::string> SegSect("s", cl::Positional, cl::ZeroOrMore,
 cl::opt<bool> FormatMachOasHex("x", cl::desc("Print symbol entry in hex, "
                                              "Mach-O only"));
 
+cl::opt<bool> NoLLVMBitcode("no-llvm-bc",
+                            cl::desc("Disable LLVM bitcode reader"));
+
 bool PrintAddress = true;
 
 bool MultipleFiles = false;
@@ -691,7 +694,7 @@ static char getSymbolNMTypeChar(ELFObjectFile<ELFT> &Obj,
 }
 
 static char getSymbolNMTypeChar(COFFObjectFile &Obj, symbol_iterator I) {
-  const coff_symbol *Symb = Obj.getCOFFSymbol(*I);
+  COFFSymbolRef Symb = Obj.getCOFFSymbol(*I);
   // OK, this is COFF.
   symbol_iterator SymI(I);
 
@@ -708,7 +711,7 @@ static char getSymbolNMTypeChar(COFFObjectFile &Obj, symbol_iterator I) {
     return Ret;
 
   uint32_t Characteristics = 0;
-  if (!COFF::isReservedSectionNumber(Symb->SectionNumber)) {
+  if (!COFF::isReservedSectionNumber(Symb.getSectionNumber())) {
     section_iterator SecI = Obj.section_end();
     if (error(SymI->getSection(SecI)))
       return '?';
@@ -716,7 +719,7 @@ static char getSymbolNMTypeChar(COFFObjectFile &Obj, symbol_iterator I) {
     Characteristics = Section->Characteristics;
   }
 
-  switch (Symb->SectionNumber) {
+  switch (Symb.getSectionNumber()) {
   case COFF::IMAGE_SYM_DEBUG:
     return 'n';
   default:
@@ -734,7 +737,7 @@ static char getSymbolNMTypeChar(COFFObjectFile &Obj, symbol_iterator I) {
       return 'i';
 
     // Check for section symbol.
-    else if (Symb->isSectionDefinition())
+    else if (Symb.isSectionDefinition())
       return 's';
   }
 
@@ -1014,8 +1017,8 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     return;
 
   LLVMContext &Context = getGlobalContext();
-  ErrorOr<std::unique_ptr<Binary>> BinaryOrErr =
-      createBinary(BufferOrErr.get()->getMemBufferRef(), &Context);
+  ErrorOr<std::unique_ptr<Binary>> BinaryOrErr = createBinary(
+      BufferOrErr.get()->getMemBufferRef(), NoLLVMBitcode ? nullptr : &Context);
   if (error(BinaryOrErr.getError(), Filename))
     return;
   Binary &Bin = *BinaryOrErr.get();

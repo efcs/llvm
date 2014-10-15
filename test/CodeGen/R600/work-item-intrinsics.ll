@@ -2,7 +2,7 @@
 ; RUN: llc -march=r600 -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 
 
-; FUNC-LABEL: @ngroups_x
+; FUNC-LABEL: {{^}}ngroups_x:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[0].X
 
@@ -16,7 +16,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @ngroups_y
+; FUNC-LABEL: {{^}}ngroups_y:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[0].Y
 
@@ -30,7 +30,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @ngroups_z
+; FUNC-LABEL: {{^}}ngroups_z:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[0].Z
 
@@ -44,7 +44,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @global_size_x
+; FUNC-LABEL: {{^}}global_size_x:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[0].W
 
@@ -58,7 +58,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @global_size_y
+; FUNC-LABEL: {{^}}global_size_y:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[1].X
 
@@ -72,7 +72,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @global_size_z
+; FUNC-LABEL: {{^}}global_size_z:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[1].Y
 
@@ -86,7 +86,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @local_size_x
+; FUNC-LABEL: {{^}}local_size_x:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[1].Z
 
@@ -100,7 +100,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @local_size_y
+; FUNC-LABEL: {{^}}local_size_y:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[1].W
 
@@ -114,7 +114,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @local_size_z
+; FUNC-LABEL: {{^}}local_size_z:
 ; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
 ; EG: MOV [[VAL]], KC0[2].X
 
@@ -128,11 +128,25 @@ entry:
   ret void
 }
 
+; FUNC-LABEL: {{^}}get_work_dim:
+; EG: MEM_RAT_CACHELESS STORE_RAW [[VAL:T[0-9]+\.X]]
+; EG: MOV [[VAL]], KC0[2].Z
+
+; SI: S_LOAD_DWORD [[VAL:s[0-9]+]], s[0:1], 0xb
+; SI: V_MOV_B32_e32 [[VVAL:v[0-9]+]], [[VAL]]
+; SI: BUFFER_STORE_DWORD [[VVAL]]
+define void @get_work_dim (i32 addrspace(1)* %out) {
+entry:
+  %0 = call i32 @llvm.AMDGPU.read.workdim() #0
+  store i32 %0, i32 addrspace(1)* %out
+  ret void
+}
+
 ; The tgid values are stored in sgprs offset by the number of user sgprs.
 ; Currently we always use exactly 2 user sgprs for the pointer to the
 ; kernel arguments, but this may change in the future.
 
-; FUNC-LABEL: @tgid_x
+; FUNC-LABEL: {{^}}tgid_x:
 ; SI: V_MOV_B32_e32 [[VVAL:v[0-9]+]], s4
 ; SI: BUFFER_STORE_DWORD [[VVAL]]
 define void @tgid_x (i32 addrspace(1)* %out) {
@@ -142,7 +156,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @tgid_y
+; FUNC-LABEL: {{^}}tgid_y:
 ; SI: V_MOV_B32_e32 [[VVAL:v[0-9]+]], s5
 ; SI: BUFFER_STORE_DWORD [[VVAL]]
 define void @tgid_y (i32 addrspace(1)* %out) {
@@ -152,7 +166,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @tgid_z
+; FUNC-LABEL: {{^}}tgid_z:
 ; SI: V_MOV_B32_e32 [[VVAL:v[0-9]+]], s6
 ; SI: BUFFER_STORE_DWORD [[VVAL]]
 define void @tgid_z (i32 addrspace(1)* %out) {
@@ -162,7 +176,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @tidig_x
+; FUNC-LABEL: {{^}}tidig_x:
 ; SI: BUFFER_STORE_DWORD v0
 define void @tidig_x (i32 addrspace(1)* %out) {
 entry:
@@ -171,7 +185,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @tidig_y
+; FUNC-LABEL: {{^}}tidig_y:
 ; SI: BUFFER_STORE_DWORD v1
 define void @tidig_y (i32 addrspace(1)* %out) {
 entry:
@@ -180,7 +194,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @tidig_z
+; FUNC-LABEL: {{^}}tidig_z:
 ; SI: BUFFER_STORE_DWORD v2
 define void @tidig_z (i32 addrspace(1)* %out) {
 entry:
@@ -208,5 +222,7 @@ declare i32 @llvm.r600.read.tgid.z() #0
 declare i32 @llvm.r600.read.tidig.x() #0
 declare i32 @llvm.r600.read.tidig.y() #0
 declare i32 @llvm.r600.read.tidig.z() #0
+
+declare i32 @llvm.AMDGPU.read.workdim() #0
 
 attributes #0 = { readnone }

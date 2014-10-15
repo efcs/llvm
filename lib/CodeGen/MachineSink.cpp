@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachinePostDominators.h"
@@ -29,7 +30,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 using namespace llvm;
@@ -40,6 +40,12 @@ static cl::opt<bool>
 SplitEdges("machine-sink-split",
            cl::desc("Split critical edges during machine sinking"),
            cl::init(true), cl::Hidden);
+
+static cl::opt<bool>
+UseBlockFreqInfo("machine-sink-bfi",
+           cl::desc("Use block frequency info to find successors to sink"),
+           cl::init(true), cl::Hidden);
+
 
 STATISTIC(NumSunk,      "Number of machine instructions sunk");
 STATISTIC(NumSplit,     "Number of critical edges split");
@@ -53,6 +59,7 @@ namespace {
     MachineDominatorTree *DT;      // Machine dominator tree
     MachinePostDominatorTree *PDT; // Machine post dominator tree
     MachineLoopInfo *LI;
+    const MachineBlockFrequencyInfo *MBFI;
     AliasAnalysis *AA;
 
     // Remember which edges have been considered for breaking.
@@ -81,6 +88,8 @@ namespace {
       AU.addPreserved<MachineDominatorTree>();
       AU.addPreserved<MachinePostDominatorTree>();
       AU.addPreserved<MachineLoopInfo>();
+      if (UseBlockFreqInfo)
+        AU.addRequired<MachineBlockFrequencyInfo>();
     }
 
     void releaseMemory() override {
@@ -157,6 +166,11 @@ bool MachineSinking::PerformTrivialForwardCoalescing(MachineInstr *MI,
   DEBUG(dbgs() << "*** to: " << *MI);
   MRI->replaceRegWith(DstReg, SrcReg);
   MI->eraseFromParent();
+
+  // Conservatively, clear any kill flags, since it's possible that they are no
+  // longer correct.
+  MRI->clearKillFlags(SrcReg);
+
   ++NumCoalesces;
   return true;
 }
@@ -235,13 +249,13 @@ bool MachineSinking::runOnMachineFunction(MachineFunction &MF) {
 
   DEBUG(dbgs() << "******** Machine Sinking ********\n");
 
-  const TargetMachine &TM = MF.getTarget();
-  TII = TM.getSubtargetImpl()->getInstrInfo();
-  TRI = TM.getSubtargetImpl()->getRegisterInfo();
+  TII = MF.getSubtarget().getInstrInfo();
+  TRI = MF.getSubtarget().getRegisterInfo();
   MRI = &MF.getRegInfo();
   DT = &getAnalysis<MachineDominatorTree>();
   PDT = &getAnalysis<MachinePostDominatorTree>();
   LI = &getAnalysis<MachineLoopInfo>();
+  MBFI = UseBlockFreqInfo ? &getAnalysis<MachineBlockFrequencyInfo>() : nullptr;
   AA = &getAnalysis<AliasAnalysis>();
 
   bool EverMadeChange = false;
@@ -472,6 +486,11 @@ bool MachineSinking::isProfitableToSinkTo(unsigned Reg, MachineInstr *MI,
   if (!PDT->dominates(SuccToSinkTo, MBB))
     return true;
 
+  // It is profitable to sink an instruction from a deeper loop to a shallower
+  // loop, even if the latter post-dominates the former (PR21115).
+  if (LI->getLoopDepth(MBB) > LI->getLoopDepth(SuccToSinkTo))
+    return true;
+
   // Check if only use in post dominated block is PHI instruction.
   bool NonPHIUse = false;
   for (MachineInstr &UseInst : MRI->use_nodbg_instructions(Reg)) {
@@ -561,14 +580,20 @@ MachineBasicBlock *MachineSinking::FindSuccToSinkTo(MachineInstr *MI,
       }
 
       // Otherwise, we should look at all the successors and decide which one
-      // we should sink to.
-      // We give successors with smaller loop depth higher priority.
-      SmallVector<MachineBasicBlock*, 4> Succs(MBB->succ_begin(), MBB->succ_end());
-      // Sort Successors according to their loop depth.
+      // we should sink to. If we have reliable block frequency information
+      // (frequency != 0) available, give successors with smaller frequencies
+      // higher priority, otherwise prioritize smaller loop depths.
+      SmallVector<MachineBasicBlock*, 4> Succs(MBB->succ_begin(),
+                                               MBB->succ_end());
+      // Sort Successors according to their loop depth or block frequency info.
       std::stable_sort(
           Succs.begin(), Succs.end(),
-          [this](const MachineBasicBlock *LHS, const MachineBasicBlock *RHS) {
-            return LI->getLoopDepth(LHS) < LI->getLoopDepth(RHS);
+          [this](const MachineBasicBlock *L, const MachineBasicBlock *R) {
+            uint64_t LHSFreq = MBFI ? MBFI->getBlockFreq(L).getFrequency() : 0;
+            uint64_t RHSFreq = MBFI ? MBFI->getBlockFreq(R).getFrequency() : 0;
+            bool HasBlockFreq = LHSFreq != 0 && RHSFreq != 0;
+            return HasBlockFreq ? LHSFreq < RHSFreq
+                                : LI->getLoopDepth(L) < LI->getLoopDepth(R);
           });
       for (SmallVectorImpl<MachineBasicBlock *>::iterator SI = Succs.begin(),
              E = Succs.end(); SI != E; ++SI) {
@@ -724,19 +749,9 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
                          ++MachineBasicBlock::iterator(DbgMI));
   }
 
-  // When sinking the instruction the live time of its operands can be extended
-  // bejond their original last use (marked with a kill flag). Conservatively
-  // clear the kill flag in all instructions that use the same operand
-  // registers.
-  for (auto &MO : MI->uses())
-    if (MO.isReg() && MO.isUse()) {
-      // Preserve the kill flag for this instruction.
-      bool IsKill = MO.isKill();
-      // Clear the kill flag in all instruction that use this operand.
-      MRI->clearKillFlags(MO.getReg());
-      // Restore the kill flag for only this instruction.
-      MO.setIsKill(IsKill);
-    }
+  // Conservatively, clear any kill flags, since it's possible that they are no
+  // longer correct.
+  MI->clearKillInfo();
 
   return true;
 }

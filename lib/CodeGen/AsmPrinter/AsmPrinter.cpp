@@ -173,7 +173,7 @@ bool AsmPrinter::doInitialization(Module &M) {
   const_cast<TargetLoweringObjectFile&>(getObjFileLowering())
     .Initialize(OutContext, TM);
 
-  OutStreamer.InitSections();
+  OutStreamer.InitSections(false);
 
   Mang = new Mangler(TM.getSubtargetImpl()->getDataLayout());
 
@@ -614,24 +614,26 @@ static void emitKill(const MachineInstr *MI, AsmPrinter &AP) {
 /// of DBG_VALUE, returning true if it was able to do so.  A false return
 /// means the target will need to handle MI in EmitInstruction.
 static bool emitDebugValueComment(const MachineInstr *MI, AsmPrinter &AP) {
-  // This code handles only the 3-operand target-independent form.
-  if (MI->getNumOperands() != 3)
+  // This code handles only the 4-operand target-independent form.
+  if (MI->getNumOperands() != 4)
     return false;
 
   SmallString<128> Str;
   raw_svector_ostream OS(Str);
   OS << "DEBUG_VALUE: ";
 
-  DIVariable V(MI->getOperand(2).getMetadata());
+  DIVariable V = MI->getDebugVariable();
   if (V.getContext().isSubprogram()) {
     StringRef Name = DISubprogram(V.getContext()).getDisplayName();
     if (!Name.empty())
       OS << Name << ":";
   }
   OS << V.getName();
-  if (V.isVariablePiece())
-    OS << " [piece offset=" << V.getPieceOffset()
-       << " size="<<V.getPieceSize()<<"]";
+
+  DIExpression Expr = MI->getDebugExpression();
+  if (Expr.isVariablePiece())
+    OS << " [piece offset=" << Expr.getPieceOffset()
+       << " size=" << Expr.getPieceSize() << "]";
   OS << " <- ";
 
   // The second operand is only an offset if it's an immediate.
@@ -731,12 +733,10 @@ void AsmPrinter::EmitFunctionBody() {
 
   // Print out code for the function.
   bool HasAnyRealCode = false;
-  const MachineInstr *LastMI = nullptr;
   for (auto &MBB : *MF) {
     // Print a label for the basic block.
     EmitBasicBlockStart(MBB);
     for (auto &MI : MBB) {
-      LastMI = &MI;
 
       // Print the assembly for the instruction.
       if (!MI.isPosition() && !MI.isImplicitDef() && !MI.isKill() &&
@@ -797,24 +797,18 @@ void AsmPrinter::EmitFunctionBody() {
     EmitBasicBlockEnd(MBB);
   }
 
-  // If the last instruction was a prolog label, then we have a situation where
-  // we emitted a prolog but no function body. This results in the ending prolog
-  // label equaling the end of function label and an invalid "row" in the
-  // FDE. We need to emit a noop in this situation so that the FDE's rows are
-  // valid.
-  bool RequiresNoop = LastMI && LastMI->isCFIInstruction();
-
   // If the function is empty and the object file uses .subsections_via_symbols,
   // then we need to emit *something* to the function body to prevent the
   // labels from collapsing together.  Just emit a noop.
-  if ((MAI->hasSubsectionsViaSymbols() && !HasAnyRealCode) || RequiresNoop) {
+  if ((MAI->hasSubsectionsViaSymbols() && !HasAnyRealCode)) {
     MCInst Noop;
     TM.getSubtargetImpl()->getInstrInfo()->getNoopForMachoTarget(Noop);
-    if (Noop.getOpcode()) {
-      OutStreamer.AddComment("avoids zero-length function");
+    OutStreamer.AddComment("avoids zero-length function");
+
+    // Targets can opt-out of emitting the noop here by leaving the opcode
+    // unspecified.
+    if (Noop.getOpcode())
       OutStreamer.EmitInstruction(Noop, getSubtargetInfo());
-    } else  // Target not mc-ized yet.
-      OutStreamer.EmitRawText(StringRef("\tnop\n"));
   }
 
   const Function *F = MF->getFunction();
