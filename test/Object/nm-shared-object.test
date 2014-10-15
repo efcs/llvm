@@ -10,6 +10,18 @@ ELF-32: 000012c4 D defined_sym
 ELF-32: 000001f0 T global_func
 ELF-32: 00000000 D tls_sym
 
+RUN: llvm-nm -P -D %p/Inputs/shared-object-test.elf-i386 \
+RUN:        | FileCheck %s -check-prefix ELF-32-POSIX
+
+ELF-32-POSIX: _edata A 000012c8
+ELF-32-POSIX-NOT: 00000000
+ELF-32-POSIX: _end A 000012cc
+ELF-32-POSIX: common_sym B 000012c8 00000004
+ELF-32-POSIX: defined_sym D 000012c4 00000004
+ELF-32-POSIX: global_func T 000001f0 00000003
+ELF-32-POSIX: tls_sym D 00000000 00000004
+
+
 RUN: llvm-nm -D %p/Inputs/shared-object-test.elf-x86-64 \
 RUN:         | FileCheck %s -check-prefix ELF-64
 
@@ -21,6 +33,19 @@ ELF-64: 0000000000200454 B common_sym
 ELF-64: 0000000000200450 D defined_sym
 ELF-64: 00000000000002f0 T global_func
 ELF-64: 0000000000000000 D tls_sym
+
+RUN: llvm-nm -P -D %p/Inputs/shared-object-test.elf-x86-64 \
+RUN:         | FileCheck %s -check-prefix ELF-64-POSIX
+
+ELF-64-POSIX: __bss_start A 0000000000200454
+ELF-64-POSIX-NOT: 0000000000000000
+ELF-64-POSIX: _edata A 0000000000200454
+ELF-64-POSIX: _end A 0000000000200458
+ELF-64-POSIX: common_sym B 0000000000200454 0000000000000004
+ELF-64-POSIX: defined_sym D 0000000000200450 0000000000000004
+ELF-64-POSIX: global_func T 00000000000002f0 0000000000000003
+ELF-64-POSIX: tls_sym D 0000000000000000 0000000000000004
+
 
 RUN: not llvm-nm -D %p/Inputs/weak-global-symbol.macho-i386 2>&1 \
 RUN:         | FileCheck %s -check-prefix ERROR

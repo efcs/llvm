@@ -594,20 +594,20 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     char SymbolAddrStr[18] = "";
     char SymbolSizeStr[18] = "";
 
-    if ((OutputFormat == sysv || I->Address == UnknownAddressOrSize)
-        && ! OutputFormat == posix)
+    if (OutputFormat != posix
+        && (OutputFormat == sysv || I->Address == UnknownAddressOrSize))
       strcpy(SymbolAddrStr, printBlanks);
     if (OutputFormat == sysv)
       strcpy(SymbolSizeStr, printBlanks);
 
-    // If OutputFormat == posix then we don't want to print addresses/sizes
-    // for undefined symbols.
-    if (I->Address != UnknownAddressOrSize 
-        && (OutputFormat != posix || I->TypeChar != 'U'))
+    if (I->Address != UnknownAddressOrSize)
       format(printFormat, I->Address)
           .print(SymbolAddrStr, sizeof(SymbolAddrStr));
+    // If OutputFormat == posix then we don't want to print addresses/sizes
+    // for undefined symbols.
     if (I->Size != UnknownAddressOrSize
-        && (OutputFormat != posix || I->TypeChar != 'U'))
+        && (OutputFormat != posix
+          || (I->TypeChar != 'U' && I->TypeChar != 'a' && I->TypeChar != 'A')))
       format(printFormat, I->Size).print(SymbolSizeStr, sizeof(SymbolSizeStr));
 
     // If OutputFormat is darwin or we are printing Mach-O symbols in hex and

@@ -4,6 +4,8 @@ RUN: yaml2obj %p/Inputs/COFF/x86-64.yaml | llvm-nm - \
 RUN:         | FileCheck %s -check-prefix COFF
 RUN: llvm-nm %p/Inputs/trivial-object-test.elf-i386 \
 RUN:         | FileCheck %s -check-prefix ELF
+RUN: llvm-nm -P %p/Inputs/trivial-object-test.elf-i386 \
+RUN:         | FileCheck %s -check-prefix ELF-POSIX
 RUN: llvm-nm -o %p/Inputs/trivial-object-test.elf-i386 \
 RUN:         | FileCheck %s -check-prefix ELF-o
 RUN: llvm-nm -u %p/Inputs/trivial-object-test.elf-i386 \
@@ -69,6 +71,12 @@ ELF-NOT:      U
 ELF:          U SomeOtherFunction
 ELF: 00000000 T main
 ELF:          U puts
+
+ELF-POSIX: SomeOtherFunction U
+ELF-POSIX-NOT: 00000000
+ELF-POSIX: main T 00000000 00000024
+ELF-POSIX: puts U
+ELF-POSIX-NOT: 00000000
 
 ELF-o: {{.*}}/trivial-object-test.elf-i386:          U SomeOtherFunction
 ELF-o: {{.*}}/trivial-object-test.elf-i386: 00000000 T main
