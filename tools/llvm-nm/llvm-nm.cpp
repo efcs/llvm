@@ -605,9 +605,11 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
           .print(SymbolAddrStr, sizeof(SymbolAddrStr));
     // If OutputFormat == posix then we don't want to print addresses/sizes
     // for undefined symbols.
+    char LowerTypeChar = std::tolower(I->TypeChar);
     if (I->Size != UnknownAddressOrSize
         && (OutputFormat != posix
-          || (I->TypeChar != 'U' && I->TypeChar != 'a' && I->TypeChar != 'A')))
+          || (I->TypeChar != 'U' && LowerTypeChar != 'a' && LowerTypeChar != 'w' 
+             && LowerTypeChar != 'v')))
       format(printFormat, I->Size).print(SymbolSizeStr, sizeof(SymbolSizeStr));
 
     // If OutputFormat is darwin or we are printing Mach-O symbols in hex and

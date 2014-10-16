@@ -12,10 +12,16 @@ RUN: llvm-nm -u %p/Inputs/trivial-object-test.elf-i386 \
 RUN:         | FileCheck %s -check-prefix ELF-u
 RUN: llvm-nm %p/Inputs/trivial-object-test.elf-x86-64 \
 RUN:         | FileCheck %s -check-prefix ELF64
+RUN: llvm-nm -P %p/Inputs/trivial-object-test.elf-x86-64 \
+RUN:         | FileCheck %s -check-prefix ELF64-POSIX
 RUN: llvm-nm %p/Inputs/weak.elf-x86-64 \
 RUN:         | FileCheck %s -check-prefix WEAK-ELF64
+RUN: llvm-nm -P %p/Inputs/weak.elf-x86-64 \
+RUN:         | FileCheck %s -check-prefix WEAK-ELF64-POSIX
 RUN: llvm-nm %p/Inputs/absolute.elf-x86-64 \
 RUN:         | FileCheck %s -check-prefix ABSOLUTE-ELF64
+RUN: llvm-nm -P %p/Inputs/absolute.elf-x86-64 \
+RUN:         | FileCheck %s -check-prefix ABSOLUTE-ELF64-POSIX
 RUN: llvm-nm %p/Inputs/trivial-object-test.macho-i386 \
 RUN:         | FileCheck %s -check-prefix macho
 RUN: llvm-nm -U %p/Inputs/trivial-object-test.macho-i386 \
@@ -73,10 +79,10 @@ ELF: 00000000 T main
 ELF:          U puts
 
 ELF-POSIX: SomeOtherFunction U
-ELF-POSIX-NOT: 00000000
-ELF-POSIX: main T 00000000 00000024
-ELF-POSIX: puts U
-ELF-POSIX-NOT: 00000000
+ELF-POSIX-NOT: {{[0-9]+}}
+ELF-POSIX-NEXT: main T 00000000 00000024
+ELF-POSIX-NEXT: puts U
+ELF-POSIX-NOT: {{[0-9]+}}
 
 ELF-o: {{.*}}/trivial-object-test.elf-i386:          U SomeOtherFunction
 ELF-o: {{.*}}/trivial-object-test.elf-i386: 00000000 T main
@@ -89,13 +95,33 @@ ELF64:                  U SomeOtherFunction
 ELF64: 0000000000000000 T main
 ELF64:                  U puts
 
+ELF64-POSIX: SomeOtherFunction U
+ELF64-POSIX-NOT: {{[0-9]+}}
+ELF64-POSIX-NEXT: main T 0000000000000000 0000000000000026
+ELF64-POSIX-NEXT: puts U
+ELF64-POSIX-NOT: {{[0-9]+}}
+
 WEAK-ELF64:                  w f1
 WEAK-ELF64: 0000000000000000 W f2
 WEAK-ELF64:                  v x1
 WEAK-ELF64: 0000000000000000 V x2
 
+WEAK-ELF64-POSIX: f1 w
+WEAK-ELF64-POSIX-NOT: {{[0]+}}
+WEAK-ELF64-POSIX-NEXT: f2 W 0000000000000000
+WEAK-ELF64-POSIX-NOT: {{[0]+}}
+WEAK-ELF64-POSIX-NEXT: x1 v
+WEAK-ELF64-POSIX-NOT: {{[0]+}}
+WEAK-ELF64-POSIX-NEXT: x2 V 0000000000000000
+WEAK-ELF64-POSIX-NOT: {{[0]+}}
+
 ABSOLUTE-ELF64: 0000000000000123 a a1
 ABSOLUTE-ELF64: 0000000000000123 A a2
+
+ABSOLUTE-ELF64-POSIX: a1 a 0000000000000123
+ABSOLUTE-ELF64-POSIX-NOT: {{[0-9]+}}
+ABSOLUTE-ELF64-POSIX-NEXT: a2 A 0000000000000123
+ABSOLUTE-ELF64-POSIX-NOT: {{[0-9]+}}
 
 macho:          U _SomeOtherFunction
 macho: 00000000 T _main
