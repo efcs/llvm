@@ -82,6 +82,7 @@ const char *llvm::dwarf::TagString(unsigned Tag) {
   case DW_TAG_hi_user:                   return "DW_TAG_hi_user";
   case DW_TAG_auto_variable:             return "DW_TAG_auto_variable";
   case DW_TAG_arg_variable:              return "DW_TAG_arg_variable";
+  case DW_TAG_expression:                return "DW_TAG_expression";
   case DW_TAG_rvalue_reference_type:     return "DW_TAG_rvalue_reference_type";
   case DW_TAG_template_alias:            return "DW_TAG_template_alias";
   case DW_TAG_coarray_type:              return "DW_TAG_coarray_type";
@@ -745,6 +746,39 @@ const char *llvm::dwarf::CallFrameString(unsigned Encoding) {
   case DW_CFA_GNU_args_size:             return "DW_CFA_GNU_args_size";
   case DW_CFA_lo_user:                   return "DW_CFA_lo_user";
   case DW_CFA_hi_user:                   return "DW_CFA_hi_user";
+  }
+  return nullptr;
+}
+
+/// ApplePropertyString - Return the string for the specified Apple
+/// property bit. This function is meant to return the symbolic name
+/// for 1 bit of the DW_AT_APPLE_property attribute, not for the whole attribute.
+const char *llvm::dwarf::ApplePropertyString(unsigned Prop) {
+  switch (Prop) {
+  case DW_APPLE_PROPERTY_readonly:
+    return "DW_APPLE_PROPERTY_readonly";
+  case DW_APPLE_PROPERTY_getter:
+    return "DW_APPLE_PROPERTY_getter";
+  case DW_APPLE_PROPERTY_assign:
+    return "DW_APPLE_PROPERTY_assign";
+  case DW_APPLE_PROPERTY_readwrite:
+    return "DW_APPLE_PROPERTY_readwrite";
+  case DW_APPLE_PROPERTY_retain:
+    return "DW_APPLE_PROPERTY_retain";
+  case DW_APPLE_PROPERTY_copy:
+    return "DW_APPLE_PROPERTY_copy";
+  case DW_APPLE_PROPERTY_nonatomic:
+    return "DW_APPLE_PROPERTY_nonatomic";
+  case DW_APPLE_PROPERTY_setter:
+    return "DW_APPLE_PROPERTY_setter";
+  case DW_APPLE_PROPERTY_atomic:
+    return "DW_APPLE_PROPERTY_atomic";
+  case DW_APPLE_PROPERTY_weak:
+    return "DW_APPLE_PROPERTY_weak";
+  case DW_APPLE_PROPERTY_strong:
+    return "DW_APPLE_PROPERTY_strong";
+  case DW_APPLE_PROPERTY_unsafe_unretained:
+    return "DW_APPLE_PROPERTY_unsafe_unretained";
   }
   return nullptr;
 }

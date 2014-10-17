@@ -560,6 +560,10 @@ LLVMModuleRef LLVMModuleCreateWithName(const char *ModuleID);
  */
 LLVMModuleRef LLVMModuleCreateWithNameInContext(const char *ModuleID,
                                                 LLVMContextRef C);
+/**
+ * Return an exact copy of the specified module.
+ */
+LLVMModuleRef LLVMCloneModule(LLVMModuleRef M);
 
 /**
  * Destroy a module instance.
@@ -2403,6 +2407,16 @@ LLVMOpcode   LLVMGetInstructionOpcode(LLVMValueRef Inst);
  * @see llvm::ICmpInst::getPredicate()
  */
 LLVMIntPredicate LLVMGetICmpPredicate(LLVMValueRef Inst);
+
+/**
+ * Create a copy of 'this' instruction that is identical in all ways
+ * except the following:
+ *   * The instruction has no parent
+ *   * The instruction has no name
+ *
+ * @see llvm::Instruction::clone()
+ */
+LLVMValueRef LLVMInstructionClone(LLVMValueRef Inst);
 
 /**
  * @defgroup LLVMCCoreValueInstructionCall Call Sites and Invocations

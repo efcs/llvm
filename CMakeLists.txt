@@ -208,6 +208,7 @@ else()
   option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 endif()
 
+option(LLVM_ENABLE_MODULES "Compile with C++ modules enabled." OFF)
 option(LLVM_ENABLE_CXX1Y "Compile with C++1y enabled." OFF)
 option(LLVM_ENABLE_LIBCXX "Use libc++ if available." OFF)
 option(LLVM_ENABLE_LIBCXX_LIBCXXABI "Use libc++ with libc++abi if available" OFF)

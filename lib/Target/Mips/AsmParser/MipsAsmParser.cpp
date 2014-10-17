@@ -27,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/SourceMgr.h"
 #include <memory>
 
 using namespace llvm;
@@ -100,6 +101,10 @@ class MipsAsmParser : public MCTargetAsmParser {
                        // nullptr, which indicates that no function is currently
                        // selected. This usually happens after an '.end func'
                        // directive.
+
+  // Print a warning along with its fix-it message at the given range.
+  void printWarningWithFixIt(const Twine &Msg, const Twine &FixMsg,
+                             SMRange Range, bool ShowColors = true);
 
 #define GET_ASSEMBLER_HEADER
 #include "MipsGenAsmMatcher.inc"
@@ -180,7 +185,7 @@ class MipsAsmParser : public MCTargetAsmParser {
   bool parseSetMips0Directive();
   bool parseSetArchDirective();
   bool parseSetFeature(uint64_t Feature);
-  bool parseDirectiveCPLoad(SMLoc Loc);
+  bool parseDirectiveCpLoad(SMLoc Loc);
   bool parseDirectiveCPSetup();
   bool parseDirectiveNaN();
   bool parseDirectiveSet();
@@ -986,6 +991,7 @@ static bool hasShortDelaySlot(unsigned Opcode) {
   switch (Opcode) {
     case Mips::JALS_MM:
     case Mips::JALRS_MM:
+    case Mips::JALRS16_MM:
     case Mips::BGEZALS_MM:
     case Mips::BLTZALS_MM:
       return true;
@@ -1110,6 +1116,34 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
       }
     } // for
   }   // if load/store
+
+  // TODO: Handle this with the AsmOperandClass.PredicateMethod.
+  if (inMicroMipsMode()) {
+    MCOperand Opnd;
+    int Imm;
+
+    switch (Inst.getOpcode()) {
+      default:
+        break;
+      case Mips::ADDIUS5_MM:
+        Opnd = Inst.getOperand(2);
+        if (!Opnd.isImm())
+          return Error(IDLoc, "expected immediate operand kind");
+        Imm = Opnd.getImm();
+        if (Imm < -8 || Imm > 7)
+          return Error(IDLoc, "immediate operand value out of range");
+        break;
+      case Mips::ADDIUSP_MM:
+        Opnd = Inst.getOperand(0);
+        if (!Opnd.isImm())
+          return Error(IDLoc, "expected immediate operand kind");
+        Imm = Opnd.getImm();
+        if (Imm < -1032 || Imm > 1028 || (Imm < 8 && Imm > -12) ||
+            Imm % 4 != 0)
+          return Error(IDLoc, "immediate operand value out of range");
+        break;
+    }
+  }
 
   if (needsExpansion(Inst))
     return expandInstruction(Inst, IDLoc, Instructions);
@@ -1619,6 +1653,14 @@ void MipsAsmParser::warnIfAssemblerTemporary(int RegIndex, SMLoc Loc) {
   }
 }
 
+void
+MipsAsmParser::printWarningWithFixIt(const Twine &Msg, const Twine &FixMsg,
+                                     SMRange Range, bool ShowColors) {
+  getSourceManager().PrintMessage(Range.Start, SourceMgr::DK_Warning, Msg,
+                                  Range, SMFixIt(Range, FixMsg),
+                                  ShowColors);
+}
+
 int MipsAsmParser::matchCPURegisterName(StringRef Name) {
   int CC;
 
@@ -1660,6 +1702,23 @@ int MipsAsmParser::matchCPURegisterName(StringRef Name) {
 
   if (!(isABI_N32() || isABI_N64()))
     return CC;
+
+  if (12 <= CC && CC <= 15) {
+    // Name is one of t4-t7
+    AsmToken RegTok = getLexer().peekTok();
+    SMRange RegRange = RegTok.getLocRange();
+
+    StringRef FixedName = StringSwitch<StringRef>(Name)
+                              .Case("t4", "t0")
+                              .Case("t5", "t1")
+                              .Case("t6", "t2")
+                              .Case("t7", "t3")
+                              .Default("");
+    assert(FixedName != "" &&  "Register name is not one of t4-t7.");
+
+    printWarningWithFixIt("register names $t4-$t7 are only available in O32.",
+                          "Did you mean $" + FixedName + "?", RegRange);
+  }
 
   // Although SGI documentation just cuts out t0-t3 for n32/n64,
   // GNU pushes the values of t0-t3 to override the o32/o64 values for t4-t7
@@ -2888,7 +2947,7 @@ bool MipsAsmParser::eatComma(StringRef ErrorStr) {
   return true;
 }
 
-bool MipsAsmParser::parseDirectiveCPLoad(SMLoc Loc) {
+bool MipsAsmParser::parseDirectiveCpLoad(SMLoc Loc) {
   if (AssemblerOptions.back()->isReorder())
     Warning(Loc, ".cpload in reorder section");
 
@@ -2907,7 +2966,7 @@ bool MipsAsmParser::parseDirectiveCPLoad(SMLoc Loc) {
     return false;
   }
 
-  getTargetStreamer().emitDirectiveCpload(RegOpnd.getGPR32Reg());
+  getTargetStreamer().emitDirectiveCpLoad(RegOpnd.getGPR32Reg());
   return false;
 }
 
@@ -3298,7 +3357,7 @@ bool MipsAsmParser::ParseDirective(AsmToken DirectiveID) {
   StringRef IDVal = DirectiveID.getString();
 
   if (IDVal == ".cpload")
-    return parseDirectiveCPLoad(DirectiveID.getLoc());
+    return parseDirectiveCpLoad(DirectiveID.getLoc());
   if (IDVal == ".dword") {
     parseDataDirective(8, DirectiveID.getLoc());
     return false;

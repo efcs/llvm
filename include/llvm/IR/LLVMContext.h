@@ -18,6 +18,7 @@
 #include "llvm-c/Core.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Options.h"
 
 namespace llvm {
 
@@ -99,12 +100,14 @@ public:
   /// setDiagnosticHandler - This method sets a handler that is invoked
   /// when the backend needs to report anything to the user.  The first
   /// argument is a function pointer and the second is a context pointer that
-  /// gets passed into the DiagHandler.
+  /// gets passed into the DiagHandler.  The third argument should be set to
+  /// true if the handler only expects enabled diagnostics.
   ///
   /// LLVMContext doesn't take ownership or interpret either of these
   /// pointers.
   void setDiagnosticHandler(DiagnosticHandlerTy DiagHandler,
-                            void *DiagContext = nullptr);
+                            void *DiagContext = nullptr,
+                            bool RespectFilters = false);
 
   /// getDiagnosticHandler - Return the diagnostic handler set by
   /// setDiagnosticHandler.
@@ -160,6 +163,14 @@ public:
   void emitError(unsigned LocCookie, const Twine &ErrorStr);
   void emitError(const Instruction *I, const Twine &ErrorStr);
   void emitError(const Twine &ErrorStr);
+
+  /// \brief Query for a debug option's value.
+  ///
+  /// This function returns typed data populated from command line parsing.
+  template <typename ValT, typename Base, ValT(Base::*Mem)>
+  ValT getOption() const {
+    return OptionRegistry::instance().template get<ValT, Base, Mem>();
+  }
 
 private:
   LLVMContext(LLVMContext&) LLVM_DELETED_FUNCTION;

@@ -285,6 +285,9 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
   setOperationAction(ISD::UDIV, MVT::i32, Expand);
   setOperationAction(ISD::UREM, MVT::i32, Expand);
   setOperationAction(ISD::UINT_TO_FP, MVT::i64, Custom);
+  setOperationAction(ISD::SINT_TO_FP, MVT::i64, Custom);
+  setOperationAction(ISD::FP_TO_SINT, MVT::i64, Custom);
+  setOperationAction(ISD::FP_TO_UINT, MVT::i64, Custom);
   setOperationAction(ISD::SELECT_CC, MVT::i64, Expand);
 
   if (!Subtarget->hasFFBH())
@@ -391,9 +394,6 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
   // large sequence of instructions.
   setIntDivIsCheap(false);
   setPow2SDivIsCheap(false);
-
-  // TODO: Investigate this when 64-bit divides are implemented.
-  addBypassSlowDiv(64, 32);
 
   // FIXME: Need to really handle these.
   MaxStoresPerMemcpy  = 4096;
@@ -558,7 +558,10 @@ SDValue AMDGPUTargetLowering::LowerOperation(SDValue Op,
   case ISD::FRINT: return LowerFRINT(Op, DAG);
   case ISD::FNEARBYINT: return LowerFNEARBYINT(Op, DAG);
   case ISD::FFLOOR: return LowerFFLOOR(Op, DAG);
+  case ISD::SINT_TO_FP: return LowerSINT_TO_FP(Op, DAG);
   case ISD::UINT_TO_FP: return LowerUINT_TO_FP(Op, DAG);
+  case ISD::FP_TO_SINT: return LowerFP_TO_SINT(Op, DAG);
+  case ISD::FP_TO_UINT: return LowerFP_TO_UINT(Op, DAG);
   }
   return Op;
 }
@@ -828,6 +831,12 @@ SDValue AMDGPUTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       // first parameter must be the same as the first instruction.
       SDValue Numerator = Op.getOperand(1);
       SDValue Denominator = Op.getOperand(2);
+
+      // Note this order is opposite of the machine instruction's operations,
+      // which is s0.f = Quotient, s1.f = Denominator, s2.f = Numerator. The
+      // intrinsic has the numerator as the first operand to match a normal
+      // division operation.
+
       SDValue Src0 = Param->isAllOnesValue() ? Numerator : Denominator;
 
       return DAG.getNode(AMDGPUISD::DIV_SCALE, DL, Op->getVTList(), Src0,
@@ -1515,8 +1524,8 @@ SDValue AMDGPUTargetLowering::LowerUDIVREM(SDValue Op,
   // e is rounding error.
   SDValue RCP = DAG.getNode(AMDGPUISD::URECIP, DL, VT, Den);
 
-  // RCP_LO = umulo(RCP, Den) */
-  SDValue RCP_LO = DAG.getNode(ISD::UMULO, DL, VT, RCP, Den);
+  // RCP_LO = mul(RCP, Den) */
+  SDValue RCP_LO = DAG.getNode(ISD::MUL, DL, VT, RCP, Den);
 
   // RCP_HI = mulhu (RCP, Den) */
   SDValue RCP_HI = DAG.getNode(ISD::MULHU, DL, VT, RCP, Den);
@@ -1547,7 +1556,7 @@ SDValue AMDGPUTargetLowering::LowerUDIVREM(SDValue Op,
   SDValue Quotient = DAG.getNode(ISD::MULHU, DL, VT, Tmp0, Num);
 
   // Num_S_Remainder = Quotient * Den
-  SDValue Num_S_Remainder = DAG.getNode(ISD::UMULO, DL, VT, Quotient, Den);
+  SDValue Num_S_Remainder = DAG.getNode(ISD::MUL, DL, VT, Quotient, Den);
 
   // Remainder = Num - Num_S_Remainder
   SDValue Remainder = DAG.getNode(ISD::SUB, DL, VT, Num, Num_S_Remainder);
@@ -1711,7 +1720,7 @@ SDValue AMDGPUTargetLowering::LowerFTRUNC(SDValue Op, SelectionDAG &DAG) const {
   const unsigned ExpBits = 11;
 
   // Extract the exponent.
-  SDValue ExpPart = DAG.getNode(AMDGPUISD::BFE_I32, SL, MVT::i32,
+  SDValue ExpPart = DAG.getNode(AMDGPUISD::BFE_U32, SL, MVT::i32,
                                 Hi,
                                 DAG.getConstant(FractBits - 32, MVT::i32),
                                 DAG.getConstant(ExpBits, MVT::i32));
@@ -1802,12 +1811,42 @@ SDValue AMDGPUTargetLowering::LowerFFLOOR(SDValue Op, SelectionDAG &DAG) const {
   return DAG.getNode(ISD::FADD, SL, MVT::f64, Trunc, Add);
 }
 
+SDValue AMDGPUTargetLowering::LowerINT_TO_FP64(SDValue Op, SelectionDAG &DAG,
+                                               bool Signed) const {
+  SDLoc SL(Op);
+  SDValue Src = Op.getOperand(0);
+
+  SDValue BC = DAG.getNode(ISD::BITCAST, SL, MVT::v2i32, Src);
+
+  SDValue Lo = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, SL, MVT::i32, BC,
+                           DAG.getConstant(0, MVT::i32));
+  SDValue Hi = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, SL, MVT::i32, BC,
+                           DAG.getConstant(1, MVT::i32));
+
+  SDValue CvtHi = DAG.getNode(Signed ? ISD::SINT_TO_FP : ISD::UINT_TO_FP,
+                              SL, MVT::f64, Hi);
+
+  SDValue CvtLo = DAG.getNode(ISD::UINT_TO_FP, SL, MVT::f64, Lo);
+
+  SDValue LdExp = DAG.getNode(AMDGPUISD::LDEXP, SL, MVT::f64, CvtHi,
+                              DAG.getConstant(32, MVT::i32));
+
+  return DAG.getNode(ISD::FADD, SL, MVT::f64, LdExp, CvtLo);
+}
+
 SDValue AMDGPUTargetLowering::LowerUINT_TO_FP(SDValue Op,
                                                SelectionDAG &DAG) const {
   SDValue S0 = Op.getOperand(0);
-  SDLoc DL(Op);
-  if (Op.getValueType() != MVT::f32 || S0.getValueType() != MVT::i64)
+  if (S0.getValueType() != MVT::i64)
     return SDValue();
+
+  EVT DestVT = Op.getValueType();
+  if (DestVT == MVT::f64)
+    return LowerINT_TO_FP64(Op, DAG, false);
+
+  assert(DestVT == MVT::f32);
+
+  SDLoc DL(Op);
 
   // f32 uint_to_fp i64
   SDValue Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, S0,
@@ -1821,16 +1860,62 @@ SDValue AMDGPUTargetLowering::LowerUINT_TO_FP(SDValue Op,
   return DAG.getNode(ISD::FADD, DL, MVT::f32, FloatLo, FloatHi);
 }
 
-SDValue AMDGPUTargetLowering::ExpandSIGN_EXTEND_INREG(SDValue Op,
-                                                      unsigned BitsDiff,
-                                                      SelectionDAG &DAG) const {
-  MVT VT = Op.getSimpleValueType();
-  SDLoc DL(Op);
-  SDValue Shift = DAG.getConstant(BitsDiff, VT);
-  // Shift left by 'Shift' bits.
-  SDValue Shl = DAG.getNode(ISD::SHL, DL, VT, Op.getOperand(0), Shift);
-  // Signed shift Right by 'Shift' bits.
-  return DAG.getNode(ISD::SRA, DL, VT, Shl, Shift);
+SDValue AMDGPUTargetLowering::LowerSINT_TO_FP(SDValue Op,
+                                              SelectionDAG &DAG) const {
+  SDValue Src = Op.getOperand(0);
+  if (Src.getValueType() == MVT::i64 && Op.getValueType() == MVT::f64)
+    return LowerINT_TO_FP64(Op, DAG, true);
+
+  return SDValue();
+}
+
+SDValue AMDGPUTargetLowering::LowerFP64_TO_INT(SDValue Op, SelectionDAG &DAG,
+                                               bool Signed) const {
+  SDLoc SL(Op);
+
+  SDValue Src = Op.getOperand(0);
+
+  SDValue Trunc = DAG.getNode(ISD::FTRUNC, SL, MVT::f64, Src);
+
+  SDValue K0
+    = DAG.getConstantFP(BitsToDouble(UINT64_C(0x3df0000000000000)), MVT::f64);
+  SDValue K1
+    = DAG.getConstantFP(BitsToDouble(UINT64_C(0xc1f0000000000000)), MVT::f64);
+
+  SDValue Mul = DAG.getNode(ISD::FMUL, SL, MVT::f64, Trunc, K0);
+
+  SDValue FloorMul = DAG.getNode(ISD::FFLOOR, SL, MVT::f64, Mul);
+
+
+  SDValue Fma = DAG.getNode(ISD::FMA, SL, MVT::f64, FloorMul, K1, Trunc);
+
+  SDValue Hi = DAG.getNode(Signed ? ISD::FP_TO_SINT : ISD::FP_TO_UINT, SL,
+                           MVT::i32, FloorMul);
+  SDValue Lo = DAG.getNode(ISD::FP_TO_UINT, SL, MVT::i32, Fma);
+
+  SDValue Result = DAG.getNode(ISD::BUILD_VECTOR, SL, MVT::v2i32, Lo, Hi);
+
+  return DAG.getNode(ISD::BITCAST, SL, MVT::i64, Result);
+}
+
+SDValue AMDGPUTargetLowering::LowerFP_TO_SINT(SDValue Op,
+                                              SelectionDAG &DAG) const {
+  SDValue Src = Op.getOperand(0);
+
+  if (Op.getValueType() == MVT::i64 && Src.getValueType() == MVT::f64)
+    return LowerFP64_TO_INT(Op, DAG, true);
+
+  return SDValue();
+}
+
+SDValue AMDGPUTargetLowering::LowerFP_TO_UINT(SDValue Op,
+                                              SelectionDAG &DAG) const {
+  SDValue Src = Op.getOperand(0);
+
+  if (Op.getValueType() == MVT::i64 && Src.getValueType() == MVT::f64)
+    return LowerFP64_TO_INT(Op, DAG, false);
+
+  return SDValue();
 }
 
 SDValue AMDGPUTargetLowering::LowerSIGN_EXTEND_INREG(SDValue Op,
@@ -2049,11 +2134,8 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
       return DAG.getZeroExtendInReg(BitsFrom, DL, SmallVT);
     }
 
-    if (ConstantSDNode *CVal = dyn_cast<ConstantSDNode>(N->getOperand(0))) {
+    if (ConstantSDNode *CVal = dyn_cast<ConstantSDNode>(BitsFrom)) {
       if (Signed) {
-        // Avoid undefined left shift of a negative in the constant fold.
-        // TODO: I'm not sure what the behavior of the hardware is, this should
-        // probably follow that instead.
         return constantFoldBFE<int32_t>(DAG,
                                         CVal->getSExtValue(),
                                         OffsetVal,
@@ -2066,23 +2148,26 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
                                        WidthVal);
     }
 
-    APInt Demanded = APInt::getBitsSet(32,
-                                       OffsetVal,
-                                       OffsetVal + WidthVal);
-
     if ((OffsetVal + WidthVal) >= 32) {
       SDValue ShiftVal = DAG.getConstant(OffsetVal, MVT::i32);
       return DAG.getNode(Signed ? ISD::SRA : ISD::SRL, DL, MVT::i32,
                          BitsFrom, ShiftVal);
     }
 
-    APInt KnownZero, KnownOne;
-    TargetLowering::TargetLoweringOpt TLO(DAG, !DCI.isBeforeLegalize(),
-                                          !DCI.isBeforeLegalizeOps());
-    const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-    if (TLO.ShrinkDemandedConstant(BitsFrom, Demanded) ||
-        TLI.SimplifyDemandedBits(BitsFrom, Demanded, KnownZero, KnownOne, TLO)) {
-      DCI.CommitTargetLoweringOpt(TLO);
+    if (BitsFrom.hasOneUse()) {
+      APInt Demanded = APInt::getBitsSet(32,
+                                         OffsetVal,
+                                         OffsetVal + WidthVal);
+
+      APInt KnownZero, KnownOne;
+      TargetLowering::TargetLoweringOpt TLO(DAG, !DCI.isBeforeLegalize(),
+                                            !DCI.isBeforeLegalizeOps());
+      const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+      if (TLO.ShrinkDemandedConstant(BitsFrom, Demanded) ||
+          TLI.SimplifyDemandedBits(BitsFrom, Demanded,
+                                   KnownZero, KnownOne, TLO)) {
+        DCI.CommitTargetLoweringOpt(TLO);
+      }
     }
 
     break;
@@ -2291,17 +2376,8 @@ void AMDGPUTargetLowering::computeKnownBitsForTargetNode(
 
     unsigned BitWidth = 32;
     uint32_t Width = CWidth->getZExtValue() & 0x1f;
-    if (Width == 0) {
-      KnownZero = APInt::getAllOnesValue(BitWidth);
-      KnownOne = APInt::getNullValue(BitWidth);
-      return;
-    }
 
-    // FIXME: This could do a lot more. If offset is 0, should be the same as
-    // sign_extend_inreg implementation, but that involves duplicating it.
-    if (Opc == AMDGPUISD::BFE_I32)
-      KnownOne = APInt::getHighBitsSet(BitWidth, BitWidth - Width);
-    else
+    if (Opc == AMDGPUISD::BFE_U32)
       KnownZero = APInt::getHighBitsSet(BitWidth, BitWidth - Width);
 
     break;
