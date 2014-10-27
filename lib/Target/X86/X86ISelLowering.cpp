@@ -811,6 +811,8 @@ void X86TargetLowering::resetOperationActions() {
   setOperationAction(ISD::FLOG10, MVT::f80, Expand);
   setOperationAction(ISD::FEXP, MVT::f80, Expand);
   setOperationAction(ISD::FEXP2, MVT::f80, Expand);
+  setOperationAction(ISD::FMINNUM, MVT::f80, Expand);
+  setOperationAction(ISD::FMAXNUM, MVT::f80, Expand);
 
   // First set operation action for all vector types to either promote
   // (for widening) or expand (for scalarization). Then we will selectively
@@ -1595,9 +1597,6 @@ void X86TargetLowering::resetOperationActions() {
     setOperationAction(ISD::UMULO, VT, Custom);
   }
 
-  // There are no 8-bit 3-address imul/mul instructions
-  setOperationAction(ISD::SMULO, MVT::i8, Expand);
-  setOperationAction(ISD::UMULO, MVT::i8, Expand);
 
   if (!Subtarget->is64Bit()) {
     // These libcalls are not available in 32-bit.
@@ -14368,6 +14367,37 @@ SDValue X86TargetLowering::ConvertCmpIfNecessary(SDValue Cmp,
   return DAG.getNode(X86ISD::SAHF, dl, MVT::i32, TruncSrl);
 }
 
+/// The minimum architected relative accuracy is 2^-12. We need one
+/// Newton-Raphson step to have a good float result (24 bits of precision).
+SDValue X86TargetLowering::getRsqrtEstimate(SDValue Op,
+                                            DAGCombinerInfo &DCI,
+                                            unsigned &RefinementSteps,
+                                            bool &UseOneConstNR) const {
+  // FIXME: We should use instruction latency models to calculate the cost of
+  // each potential sequence, but this is very hard to do reliably because
+  // at least Intel's Core* chips have variable timing based on the number of
+  // significant digits in the divisor and/or sqrt operand.
+  if (!Subtarget->useSqrtEst())
+    return SDValue();
+
+  EVT VT = Op.getValueType();
+  
+  // SSE1 has rsqrtss and rsqrtps.
+  // TODO: Add support for AVX512 (v16f32).
+  // It is likely not profitable to do this for f64 because a double-precision
+  // rsqrt estimate with refinement on x86 prior to FMA requires at least 16
+  // instructions: convert to single, rsqrtss, convert back to double, refine
+  // (3 steps = at least 13 insts). If an 'rsqrtsd' variant was added to the ISA
+  // along with FMA, this could be a throughput win.
+  if ((Subtarget->hasSSE1() && (VT == MVT::f32 || VT == MVT::v4f32)) ||
+      (Subtarget->hasAVX() && VT == MVT::v8f32)) {
+    RefinementSteps = 1;
+    UseOneConstNR = false;
+    return DCI.DAG.getNode(X86ISD::FRSQRT, SDLoc(Op), VT, Op);
+  }
+  return SDValue();
+}
+
 static bool isAllOnes(SDValue V) {
   ConstantSDNode *C = dyn_cast<ConstantSDNode>(V);
   return C && C->isAllOnesValue();
@@ -18188,10 +18218,15 @@ static SDValue LowerXALUO(SDValue Op, SelectionDAG &DAG) {
     Cond = X86::COND_B;
     break;
   case ISD::SMULO:
-    BaseOp = X86ISD::SMUL;
+    BaseOp = N->getValueType(0) == MVT::i8 ? X86ISD::SMUL8 : X86ISD::SMUL;
     Cond = X86::COND_O;
     break;
   case ISD::UMULO: { // i64, i8 = umulo lhs, rhs --> i64, i64, i32 umul lhs,rhs
+    if (N->getValueType(0) == MVT::i8) {
+      BaseOp = X86ISD::UMUL8;
+      Cond = X86::COND_O;
+      break;
+    }
     SDVTList VTs = DAG.getVTList(N->getValueType(0), N->getValueType(0),
                                  MVT::i32);
     SDValue Sum = DAG.getNode(X86ISD::UMUL, DL, VTs, LHS, RHS);
@@ -21741,7 +21776,7 @@ static SDValue PerformTruncateCombine(SDNode *N, SelectionDAG &DAG,
 /// XFormVExtractWithShuffleIntoLoad - Check if a vector extract from a target
 /// specific shuffle of a load can be folded into a single element load.
 /// Similar handling for VECTOR_SHUFFLE is performed by DAGCombiner, but
-/// shuffles have been customed lowered so we need to handle those here.
+/// shuffles have been custom lowered so we need to handle those here.
 static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
                                          TargetLowering::DAGCombinerInfo &DCI) {
   if (DCI.isBeforeLegalizeOps())
@@ -21753,17 +21788,19 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
   if (!isa<ConstantSDNode>(EltNo))
     return SDValue();
 
-  EVT VT = InVec.getValueType();
+  EVT OriginalVT = InVec.getValueType();
 
   if (InVec.getOpcode() == ISD::BITCAST) {
     // Don't duplicate a load with other uses.
     if (!InVec.hasOneUse())
       return SDValue();
     EVT BCVT = InVec.getOperand(0).getValueType();
-    if (BCVT.getVectorNumElements() != VT.getVectorNumElements())
+    if (BCVT.getVectorNumElements() != OriginalVT.getVectorNumElements())
       return SDValue();
     InVec = InVec.getOperand(0);
   }
+
+  EVT CurrentVT = InVec.getValueType();
 
   if (!isTargetShuffle(InVec.getOpcode()))
     return SDValue();
@@ -21774,12 +21811,12 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
 
   SmallVector<int, 16> ShuffleMask;
   bool UnaryShuffle;
-  if (!getTargetShuffleMask(InVec.getNode(), VT.getSimpleVT(), ShuffleMask,
-                            UnaryShuffle))
+  if (!getTargetShuffleMask(InVec.getNode(), CurrentVT.getSimpleVT(),
+                            ShuffleMask, UnaryShuffle))
     return SDValue();
 
   // Select the input vector, guarding against out of range extract vector.
-  unsigned NumElems = VT.getVectorNumElements();
+  unsigned NumElems = CurrentVT.getVectorNumElements();
   int Elt = cast<ConstantSDNode>(EltNo)->getZExtValue();
   int Idx = (Elt > (int)NumElems) ? -1 : ShuffleMask[Elt];
   SDValue LdNode = (Idx < (int)NumElems) ? InVec.getOperand(0)
@@ -21821,11 +21858,12 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
   SDLoc dl(N);
 
   // Create shuffle node taking into account the case that its a unary shuffle
-  SDValue Shuffle = (UnaryShuffle) ? DAG.getUNDEF(VT) : InVec.getOperand(1);
-  Shuffle = DAG.getVectorShuffle(InVec.getValueType(), dl,
+  SDValue Shuffle = (UnaryShuffle) ? DAG.getUNDEF(CurrentVT)
+                                   : InVec.getOperand(1);
+  Shuffle = DAG.getVectorShuffle(CurrentVT, dl,
                                  InVec.getOperand(0), Shuffle,
                                  &ShuffleMask[0]);
-  Shuffle = DAG.getNode(ISD::BITCAST, dl, VT, Shuffle);
+  Shuffle = DAG.getNode(ISD::BITCAST, dl, OriginalVT, Shuffle);
   return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, N->getValueType(0), Shuffle,
                      EltNo);
 }
@@ -22598,7 +22636,12 @@ static SDValue PerformSELECTCombine(SDNode *N, SelectionDAG &DAG,
     TargetLowering::TargetLoweringOpt TLO(DAG, DCI.isBeforeLegalize(),
                                           DCI.isBeforeLegalizeOps());
     if (TLO.ShrinkDemandedConstant(Cond, DemandedMask) ||
-        TLI.SimplifyDemandedBits(Cond, DemandedMask, KnownZero, KnownOne, TLO))
+        (TLI.SimplifyDemandedBits(Cond, DemandedMask, KnownZero, KnownOne,
+                                  TLO) &&
+         // Don't optimize vector of constants. Those are handled by
+         // the generic code and all the bits must be properly set for
+         // the generic optimizer.
+         !ISD::isBuildVectorOfConstantSDNodes(TLO.New.getNode())))
       DCI.CommitTargetLoweringOpt(TLO);
   }
 

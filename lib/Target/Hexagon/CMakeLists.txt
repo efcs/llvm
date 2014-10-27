@@ -1,5 +1,6 @@
 set(LLVM_TARGET_DEFINITIONS Hexagon.td)
 
+tablegen(LLVM HexagonGenDisassemblerTables.inc -gen-disassembler)
 tablegen(LLVM HexagonGenRegisterInfo.inc -gen-register-info)
 tablegen(LLVM HexagonGenInstrInfo.inc -gen-instr-info)
 tablegen(LLVM HexagonGenMCCodeEmitter.inc -gen-emitter)
@@ -39,6 +40,5 @@ add_llvm_target(HexagonCodeGen
 )
 
 add_subdirectory(TargetInfo)
-add_subdirectory(InstPrinter)
 add_subdirectory(MCTargetDesc)
-
+add_subdirectory(Disassembler)

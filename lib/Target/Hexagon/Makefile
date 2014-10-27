@@ -14,11 +14,13 @@ TARGET = Hexagon
 BUILT_SOURCES = HexagonGenRegisterInfo.inc \
                 HexagonGenInstrInfo.inc  \
                 HexagonGenAsmWriter.inc \
-                HexagonGenDAGISel.inc HexagonGenSubtargetInfo.inc \
+                HexagonGenDAGISel.inc \
+                HexagonGenSubtargetInfo.inc \
                 HexagonGenCallingConv.inc \
                 HexagonGenDFAPacketizer.inc \
-                HexagonGenMCCodeEmitter.inc
+                HexagonGenMCCodeEmitter.inc \
+                HexagonGenDisassemblerTables.inc
 
-DIRS = InstPrinter TargetInfo MCTargetDesc
+DIRS = TargetInfo MCTargetDesc Disassembler
 
 include $(LEVEL)/Makefile.common

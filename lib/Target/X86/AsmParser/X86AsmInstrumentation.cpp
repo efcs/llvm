@@ -27,6 +27,72 @@
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/CommandLine.h"
 #include <algorithm>
+#include <cassert>
+#include <vector>
+
+// Following comment describes how assembly instrumentation works.
+// Currently we have only AddressSanitizer instrumentation, but we're
+// planning to implement MemorySanitizer for inline assembly too. If
+// you're not familiar with AddressSanitizer algorithm, please, read
+// https://code.google.com/p/address-sanitizer/wiki/AddressSanitizerAlgorithm.
+//
+// When inline assembly is parsed by an instance of X86AsmParser, all
+// instructions are emitted via EmitInstruction method. That's the
+// place where X86AsmInstrumentation analyzes an instruction and
+// decides, whether the instruction should be emitted as is or
+// instrumentation is required. The latter case happens when an
+// instruction reads from or writes to memory. Now instruction opcode
+// is explicitly checked, and if an instruction has a memory operand
+// (for instance, movq (%rsi, %rcx, 8), %rax) - it should be
+// instrumented.  There're also exist instructions that modify
+// memory but don't have an explicit memory operands, for instance,
+// movs.
+//
+// Let's consider at first 8-byte memory accesses when an instruction
+// has an explicit memory operand. In this case we need two registers -
+// AddressReg to compute address of a memory cells which are accessed
+// and ShadowReg to compute corresponding shadow address. So, we need
+// to spill both registers before instrumentation code and restore them
+// after instrumentation. Thus, in general, instrumentation code will
+// look like this:
+// PUSHF  # Store flags, otherwise they will be overwritten
+// PUSH AddressReg  # spill AddressReg
+// PUSH ShadowReg   # spill ShadowReg
+// LEA MemOp, AddressReg  # compute address of the memory operand
+// MOV AddressReg, ShadowReg
+// SHR ShadowReg, 3
+// # ShadowOffset(AddressReg >> 3) contains address of a shadow
+// # corresponding to MemOp.
+// CMP ShadowOffset(ShadowReg), 0  # test shadow value
+// JZ .Done  # when shadow equals to zero, everything is fine
+// MOV AddressReg, RDI
+// # Call __asan_report function with AddressReg as an argument
+// CALL __asan_report
+// .Done:
+// POP ShadowReg  # Restore ShadowReg
+// POP AddressReg  # Restore AddressReg
+// POPF  # Restore flags
+//
+// Memory accesses with different size (1-, 2-, 4- and 16-byte) are
+// handled in a similar manner, but small memory accesses (less than 8
+// byte) require an additional ScratchReg, which is used for shadow value.
+//
+// If, suppose, we're instrumenting an instruction like movs, only
+// contents of RDI, RDI + AccessSize * RCX, RSI, RSI + AccessSize *
+// RCX are checked.  In this case there're no need to spill and restore
+// AddressReg , ShadowReg or flags four times, they're saved on stack
+// just once, before instrumentation of these four addresses, and restored
+// at the end of the instrumentation.
+//
+// There exist several things which complicate this simple algorithm.
+// * Instrumented memory operand can have RSP as a base or an index
+//   register.  So we need to add a constant offset before computation
+//   of memory address, since flags, AddressReg, ShadowReg, etc. were
+//   already stored on stack and RSP was modified.
+// * Debug info (usually, DWARF) should be adjusted, because sometimes
+//   RSP is used as a frame register. So, we need to select some
+//   register as a frame register and temprorary override current CFA
+//   register.
 
 namespace llvm {
 namespace {
@@ -61,26 +127,60 @@ std::string FuncName(unsigned AccessSize, bool IsWrite) {
 class X86AddressSanitizer : public X86AsmInstrumentation {
 public:
   struct RegisterContext {
+  private:
+    enum RegOffset {
+      REG_OFFSET_ADDRESS = 0,
+      REG_OFFSET_SHADOW,
+      REG_OFFSET_SCRATCH
+    };
+
+  public:
     RegisterContext(unsigned AddressReg, unsigned ShadowReg,
-                    unsigned ScratchReg)
-        : AddressReg(AddressReg), ShadowReg(ShadowReg), ScratchReg(ScratchReg) {
+                    unsigned ScratchReg) {
+      BusyRegs.push_back(convReg(AddressReg, MVT::i64));
+      BusyRegs.push_back(convReg(ShadowReg, MVT::i64));
+      BusyRegs.push_back(convReg(ScratchReg, MVT::i64));
     }
 
-    unsigned addressReg(MVT::SimpleValueType VT) const {
-      return getX86SubSuperRegister(AddressReg, VT);
+    unsigned AddressReg(MVT::SimpleValueType VT) const {
+      return convReg(BusyRegs[REG_OFFSET_ADDRESS], VT);
     }
 
-    unsigned shadowReg(MVT::SimpleValueType VT) const {
-      return getX86SubSuperRegister(ShadowReg, VT);
+    unsigned ShadowReg(MVT::SimpleValueType VT) const {
+      return convReg(BusyRegs[REG_OFFSET_SHADOW], VT);
     }
 
-    unsigned scratchReg(MVT::SimpleValueType VT) const {
-      return getX86SubSuperRegister(ScratchReg, VT);
+    unsigned ScratchReg(MVT::SimpleValueType VT) const {
+      return convReg(BusyRegs[REG_OFFSET_SCRATCH], VT);
     }
 
-    const unsigned AddressReg;
-    const unsigned ShadowReg;
-    const unsigned ScratchReg;
+    void AddBusyReg(unsigned Reg) {
+      if (Reg != X86::NoRegister)
+        BusyRegs.push_back(convReg(Reg, MVT::i64));
+    }
+
+    void AddBusyRegs(const X86Operand &Op) {
+      AddBusyReg(Op.getMemBaseReg());
+      AddBusyReg(Op.getMemIndexReg());
+    }
+
+    unsigned ChooseFrameReg(MVT::SimpleValueType VT) const {
+      static const unsigned Candidates[] = { X86::RBP, X86::RAX, X86::RBX,
+                                             X86::RCX, X86::RDX, X86::RDI,
+                                             X86::RSI };
+      for (unsigned Reg : Candidates) {
+        if (!std::count(BusyRegs.begin(), BusyRegs.end(), Reg))
+          return convReg(Reg, VT);
+      }
+      return X86::NoRegister;
+    }
+
+  private:
+    unsigned convReg(unsigned Reg, MVT::SimpleValueType VT) const {
+      return Reg == X86::NoRegister ? Reg : getX86SubSuperRegister(Reg, VT);
+    }
+
+    std::vector<unsigned> BusyRegs;
   };
 
   X86AddressSanitizer(const MCSubtargetInfo &STI)
@@ -191,6 +291,9 @@ void X86AddressSanitizer::InstrumentMOVSBase(unsigned DstReg, unsigned SrcReg,
                          IsSmallMemAccess(AccessSize)
                              ? X86::RBX
                              : X86::NoRegister /* ScratchReg */);
+  RegCtx.AddBusyReg(DstReg);
+  RegCtx.AddBusyReg(SrcReg);
+  RegCtx.AddBusyReg(CntReg);
 
   InstrumentMemOperandPrologue(RegCtx, Ctx, Out);
 
@@ -297,16 +400,17 @@ void X86AddressSanitizer::InstrumentMOV(const MCInst &Inst,
   }
 
   const bool IsWrite = MII.get(Inst.getOpcode()).mayStore();
-  RegisterContext RegCtx(X86::RDI /* AddressReg */, X86::RAX /* ShadowReg */,
-                         IsSmallMemAccess(AccessSize)
-                             ? X86::RCX
-                             : X86::NoRegister /* ScratchReg */);
 
   for (unsigned Ix = 0; Ix < Operands.size(); ++Ix) {
     assert(Operands[Ix]);
     MCParsedAsmOperand &Op = *Operands[Ix];
     if (Op.isMem()) {
       X86Operand &MemOp = static_cast<X86Operand &>(Op);
+      RegisterContext RegCtx(
+          X86::RDI /* AddressReg */, X86::RAX /* ShadowReg */,
+          IsSmallMemAccess(AccessSize) ? X86::RCX
+                                       : X86::NoRegister /* ScratchReg */);
+      RegCtx.AddBusyRegs(MemOp);
       InstrumentMemOperandPrologue(RegCtx, Ctx, Out);
       InstrumentMemOperand(MemOp, AccessSize, IsWrite, RegCtx, Ctx, Out);
       InstrumentMemOperandEpilogue(RegCtx, Ctx, Out);
@@ -414,42 +518,51 @@ public:
   virtual void InstrumentMemOperandPrologue(const RegisterContext &RegCtx,
                                             MCContext &Ctx,
                                             MCStreamer &Out) override {
+    unsigned LocalFrameReg = RegCtx.ChooseFrameReg(MVT::i32);
+    assert(LocalFrameReg != X86::NoRegister);
+
     const MCRegisterInfo *MRI = Ctx.getRegisterInfo();
     unsigned FrameReg = GetFrameReg(Ctx, Out);
     if (MRI && FrameReg != X86::NoRegister) {
-      SpillReg(Out, X86::EBP);
+      SpillReg(Out, LocalFrameReg);
       if (FrameReg == X86::ESP) {
-        Out.EmitCFIAdjustCfaOffset(4 /* byte size of the FrameReg */);
-        Out.EmitCFIRelOffset(MRI->getDwarfRegNum(X86::EBP, true /* IsEH */), 0);
+        Out.EmitCFIAdjustCfaOffset(4 /* byte size of the LocalFrameReg */);
+        Out.EmitCFIRelOffset(
+            MRI->getDwarfRegNum(LocalFrameReg, true /* IsEH */), 0);
       }
       EmitInstruction(
-          Out, MCInstBuilder(X86::MOV32rr).addReg(X86::EBP).addReg(FrameReg));
+          Out,
+          MCInstBuilder(X86::MOV32rr).addReg(LocalFrameReg).addReg(FrameReg));
       Out.EmitCFIRememberState();
-      Out.EmitCFIDefCfaRegister(MRI->getDwarfRegNum(X86::EBP, true /* IsEH */));
+      Out.EmitCFIDefCfaRegister(
+          MRI->getDwarfRegNum(LocalFrameReg, true /* IsEH */));
     }
 
-    SpillReg(Out, RegCtx.addressReg(MVT::i32));
-    SpillReg(Out, RegCtx.shadowReg(MVT::i32));
-    if (RegCtx.ScratchReg != X86::NoRegister)
-      SpillReg(Out, RegCtx.scratchReg(MVT::i32));
+    SpillReg(Out, RegCtx.AddressReg(MVT::i32));
+    SpillReg(Out, RegCtx.ShadowReg(MVT::i32));
+    if (RegCtx.ScratchReg(MVT::i32) != X86::NoRegister)
+      SpillReg(Out, RegCtx.ScratchReg(MVT::i32));
     StoreFlags(Out);
   }
 
   virtual void InstrumentMemOperandEpilogue(const RegisterContext &RegCtx,
                                             MCContext &Ctx,
                                             MCStreamer &Out) override {
+    unsigned LocalFrameReg = RegCtx.ChooseFrameReg(MVT::i32);
+    assert(LocalFrameReg != X86::NoRegister);
+
     RestoreFlags(Out);
-    if (RegCtx.ScratchReg != X86::NoRegister)
-      RestoreReg(Out, RegCtx.scratchReg(MVT::i32));
-    RestoreReg(Out, RegCtx.shadowReg(MVT::i32));
-    RestoreReg(Out, RegCtx.addressReg(MVT::i32));
+    if (RegCtx.ScratchReg(MVT::i32) != X86::NoRegister)
+      RestoreReg(Out, RegCtx.ScratchReg(MVT::i32));
+    RestoreReg(Out, RegCtx.ShadowReg(MVT::i32));
+    RestoreReg(Out, RegCtx.AddressReg(MVT::i32));
 
     unsigned FrameReg = GetFrameReg(Ctx, Out);
     if (Ctx.getRegisterInfo() && FrameReg != X86::NoRegister) {
-      RestoreReg(Out, X86::EBP);
+      RestoreReg(Out, LocalFrameReg);
       Out.EmitCFIRestoreState();
       if (FrameReg == X86::ESP)
-        Out.EmitCFIAdjustCfaOffset(-4 /* byte size of the FrameReg */);
+        Out.EmitCFIAdjustCfaOffset(-4 /* byte size of the LocalFrameReg */);
     }
   }
 
@@ -477,7 +590,7 @@ private:
                              .addReg(X86::ESP)
                              .addImm(-16));
     EmitInstruction(
-        Out, MCInstBuilder(X86::PUSH32r).addReg(RegCtx.addressReg(MVT::i32)));
+        Out, MCInstBuilder(X86::PUSH32r).addReg(RegCtx.AddressReg(MVT::i32)));
 
     const std::string &Fn = FuncName(AccessSize, IsWrite);
     MCSymbol *FnSym = Ctx.GetOrCreateSymbol(StringRef(Fn));
@@ -490,12 +603,12 @@ private:
 void X86AddressSanitizer32::InstrumentMemOperandSmall(
     X86Operand &Op, unsigned AccessSize, bool IsWrite,
     const RegisterContext &RegCtx, MCContext &Ctx, MCStreamer &Out) {
-  unsigned AddressRegI32 = RegCtx.addressReg(MVT::i32);
-  unsigned ShadowRegI32 = RegCtx.shadowReg(MVT::i32);
-  unsigned ShadowRegI8 = RegCtx.shadowReg(MVT::i8);
+  unsigned AddressRegI32 = RegCtx.AddressReg(MVT::i32);
+  unsigned ShadowRegI32 = RegCtx.ShadowReg(MVT::i32);
+  unsigned ShadowRegI8 = RegCtx.ShadowReg(MVT::i8);
 
-  assert(RegCtx.ScratchReg != X86::NoRegister);
-  unsigned ScratchRegI32 = RegCtx.scratchReg(MVT::i32);
+  assert(RegCtx.ScratchReg(MVT::i32) != X86::NoRegister);
+  unsigned ScratchRegI32 = RegCtx.ScratchReg(MVT::i32);
 
   ComputeMemOperandAddress(Op, MVT::i32, AddressRegI32, Ctx, Out);
 
@@ -565,8 +678,8 @@ void X86AddressSanitizer32::InstrumentMemOperandSmall(
 void X86AddressSanitizer32::InstrumentMemOperandLarge(
     X86Operand &Op, unsigned AccessSize, bool IsWrite,
     const RegisterContext &RegCtx, MCContext &Ctx, MCStreamer &Out) {
-  unsigned AddressRegI32 = RegCtx.addressReg(MVT::i32);
-  unsigned ShadowRegI32 = RegCtx.shadowReg(MVT::i32);
+  unsigned AddressRegI32 = RegCtx.AddressReg(MVT::i32);
+  unsigned ShadowRegI32 = RegCtx.ShadowReg(MVT::i32);
 
   ComputeMemOperandAddress(Op, MVT::i32, AddressRegI32, Ctx, Out);
 
@@ -663,44 +776,53 @@ public:
   virtual void InstrumentMemOperandPrologue(const RegisterContext &RegCtx,
                                             MCContext &Ctx,
                                             MCStreamer &Out) override {
+    unsigned LocalFrameReg = RegCtx.ChooseFrameReg(MVT::i64);
+    assert(LocalFrameReg != X86::NoRegister);
+
     const MCRegisterInfo *MRI = Ctx.getRegisterInfo();
     unsigned FrameReg = GetFrameReg(Ctx, Out);
     if (MRI && FrameReg != X86::NoRegister) {
       SpillReg(Out, X86::RBP);
       if (FrameReg == X86::RSP) {
-        Out.EmitCFIAdjustCfaOffset(8 /* byte size of the FrameReg */);
-        Out.EmitCFIRelOffset(MRI->getDwarfRegNum(X86::RBP, true /* IsEH */), 0);
+        Out.EmitCFIAdjustCfaOffset(8 /* byte size of the LocalFrameReg */);
+        Out.EmitCFIRelOffset(
+            MRI->getDwarfRegNum(LocalFrameReg, true /* IsEH */), 0);
       }
       EmitInstruction(
-          Out, MCInstBuilder(X86::MOV64rr).addReg(X86::RBP).addReg(FrameReg));
+          Out,
+          MCInstBuilder(X86::MOV64rr).addReg(LocalFrameReg).addReg(FrameReg));
       Out.EmitCFIRememberState();
-      Out.EmitCFIDefCfaRegister(MRI->getDwarfRegNum(X86::RBP, true /* IsEH */));
+      Out.EmitCFIDefCfaRegister(
+          MRI->getDwarfRegNum(LocalFrameReg, true /* IsEH */));
     }
 
     EmitAdjustRSP(Ctx, Out, -128);
-    SpillReg(Out, RegCtx.shadowReg(MVT::i64));
-    SpillReg(Out, RegCtx.addressReg(MVT::i64));
-    if (RegCtx.ScratchReg != X86::NoRegister)
-      SpillReg(Out, RegCtx.scratchReg(MVT::i64));
+    SpillReg(Out, RegCtx.ShadowReg(MVT::i64));
+    SpillReg(Out, RegCtx.AddressReg(MVT::i64));
+    if (RegCtx.ScratchReg(MVT::i64) != X86::NoRegister)
+      SpillReg(Out, RegCtx.ScratchReg(MVT::i64));
     StoreFlags(Out);
   }
 
   virtual void InstrumentMemOperandEpilogue(const RegisterContext &RegCtx,
                                             MCContext &Ctx,
                                             MCStreamer &Out) override {
+    unsigned LocalFrameReg = RegCtx.ChooseFrameReg(MVT::i64);
+    assert(LocalFrameReg != X86::NoRegister);
+
     RestoreFlags(Out);
-    if (RegCtx.ScratchReg != X86::NoRegister)
-      RestoreReg(Out, RegCtx.scratchReg(MVT::i64));
-    RestoreReg(Out, RegCtx.addressReg(MVT::i64));
-    RestoreReg(Out, RegCtx.shadowReg(MVT::i64));
+    if (RegCtx.ScratchReg(MVT::i64) != X86::NoRegister)
+      RestoreReg(Out, RegCtx.ScratchReg(MVT::i64));
+    RestoreReg(Out, RegCtx.AddressReg(MVT::i64));
+    RestoreReg(Out, RegCtx.ShadowReg(MVT::i64));
     EmitAdjustRSP(Ctx, Out, 128);
 
     unsigned FrameReg = GetFrameReg(Ctx, Out);
     if (Ctx.getRegisterInfo() && FrameReg != X86::NoRegister) {
-      RestoreReg(Out, X86::RBP);
+      RestoreReg(Out, LocalFrameReg);
       Out.EmitCFIRestoreState();
       if (FrameReg == X86::RSP)
-        Out.EmitCFIAdjustCfaOffset(-8 /* byte size of the FrameReg */);
+        Out.EmitCFIAdjustCfaOffset(-8 /* byte size of the LocalFrameReg */);
     }
   }
 
@@ -736,9 +858,9 @@ private:
                              .addReg(X86::RSP)
                              .addImm(-16));
 
-    if (RegCtx.AddressReg != X86::RDI) {
+    if (RegCtx.AddressReg(MVT::i64) != X86::RDI) {
       EmitInstruction(Out, MCInstBuilder(X86::MOV64rr).addReg(X86::RDI).addReg(
-                               RegCtx.addressReg(MVT::i64)));
+                               RegCtx.AddressReg(MVT::i64)));
     }
     const std::string &Fn = FuncName(AccessSize, IsWrite);
     MCSymbol *FnSym = Ctx.GetOrCreateSymbol(StringRef(Fn));
@@ -751,14 +873,14 @@ private:
 void X86AddressSanitizer64::InstrumentMemOperandSmall(
     X86Operand &Op, unsigned AccessSize, bool IsWrite,
     const RegisterContext &RegCtx, MCContext &Ctx, MCStreamer &Out) {
-  unsigned AddressRegI64 = RegCtx.addressReg(MVT::i64);
-  unsigned AddressRegI32 = RegCtx.addressReg(MVT::i32);
-  unsigned ShadowRegI64 = RegCtx.shadowReg(MVT::i64);
-  unsigned ShadowRegI32 = RegCtx.shadowReg(MVT::i32);
-  unsigned ShadowRegI8 = RegCtx.shadowReg(MVT::i8);
+  unsigned AddressRegI64 = RegCtx.AddressReg(MVT::i64);
+  unsigned AddressRegI32 = RegCtx.AddressReg(MVT::i32);
+  unsigned ShadowRegI64 = RegCtx.ShadowReg(MVT::i64);
+  unsigned ShadowRegI32 = RegCtx.ShadowReg(MVT::i32);
+  unsigned ShadowRegI8 = RegCtx.ShadowReg(MVT::i8);
 
-  assert(RegCtx.ScratchReg != X86::NoRegister);
-  unsigned ScratchRegI32 = RegCtx.scratchReg(MVT::i32);
+  assert(RegCtx.ScratchReg(MVT::i32) != X86::NoRegister);
+  unsigned ScratchRegI32 = RegCtx.ScratchReg(MVT::i32);
 
   ComputeMemOperandAddress(Op, MVT::i64, AddressRegI64, Ctx, Out);
 
@@ -827,8 +949,8 @@ void X86AddressSanitizer64::InstrumentMemOperandSmall(
 void X86AddressSanitizer64::InstrumentMemOperandLarge(
     X86Operand &Op, unsigned AccessSize, bool IsWrite,
     const RegisterContext &RegCtx, MCContext &Ctx, MCStreamer &Out) {
-  unsigned AddressRegI64 = RegCtx.addressReg(MVT::i64);
-  unsigned ShadowRegI64 = RegCtx.shadowReg(MVT::i64);
+  unsigned AddressRegI64 = RegCtx.AddressReg(MVT::i64);
+  unsigned ShadowRegI64 = RegCtx.ShadowReg(MVT::i64);
 
   ComputeMemOperandAddress(Op, MVT::i64, AddressRegI64, Ctx, Out);
 
