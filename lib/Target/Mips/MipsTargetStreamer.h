@@ -62,11 +62,12 @@ public:
   virtual void emitDirectiveSetMips64R2();
   virtual void emitDirectiveSetMips64R6();
   virtual void emitDirectiveSetDsp();
+  virtual void emitDirectiveSetNoDsp();
   virtual void emitDirectiveSetPop();
   virtual void emitDirectiveSetPush();
 
   // PIC support
-  virtual void emitDirectiveCpload(unsigned RegNo);
+  virtual void emitDirectiveCpLoad(unsigned RegNo);
   virtual void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                                     const MCSymbol &Sym, bool IsReg);
 
@@ -165,11 +166,12 @@ public:
   void emitDirectiveSetMips64R2() override;
   void emitDirectiveSetMips64R6() override;
   void emitDirectiveSetDsp() override;
+  void emitDirectiveSetNoDsp() override;
   void emitDirectiveSetPop() override;
   void emitDirectiveSetPush() override;
 
   // PIC support
-  void emitDirectiveCpload(unsigned RegNo) override;
+  void emitDirectiveCpLoad(unsigned RegNo) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
 
@@ -215,7 +217,7 @@ public:
   void emitFMask(unsigned FPUBitmask, int FPUTopSavedRegOff) override;
 
   // PIC support
-  void emitDirectiveCpload(unsigned RegNo) override;
+  void emitDirectiveCpLoad(unsigned RegNo) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
 

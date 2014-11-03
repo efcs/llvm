@@ -14,6 +14,7 @@
 #include "AArch64TargetMachine.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
+#include "llvm/IR/Function.h"
 #include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -75,9 +76,9 @@ EnableCondOpt("aarch64-condopt",
               cl::init(true), cl::Hidden);
 
 static cl::opt<bool>
-EnablePBQP("aarch64-pbqp", cl::Hidden,
-           cl::desc("Use PBQP register allocator (experimental)"),
-           cl::init(false));
+EnableA53Fix835769("aarch64-fix-cortex-a53-835769", cl::Hidden,
+                cl::desc("Work around Cortex-A53 erratum 835769"),
+                cl::init(false));
 
 extern "C" void LLVMInitializeAArch64Target() {
   // Register the target.
@@ -95,14 +96,34 @@ AArch64TargetMachine::AArch64TargetMachine(const Target &T, StringRef TT,
                                            CodeGenOpt::Level OL,
                                            bool LittleEndian)
     : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
-      Subtarget(TT, CPU, FS, *this, LittleEndian),
-      usingPBQP(false) {
+      Subtarget(TT, CPU, FS, *this, LittleEndian), isLittle(LittleEndian) {
   initAsmInfo();
+}
 
-  if (EnablePBQP && Subtarget.isCortexA57() && OL != CodeGenOpt::None) {
-    usingPBQP = true;
-    RegisterRegAlloc::setDefault(createAArch64A57PBQPRegAlloc);
+const AArch64Subtarget *
+AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
+  AttributeSet FnAttrs = F.getAttributes();
+  Attribute CPUAttr =
+      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-cpu");
+  Attribute FSAttr =
+      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-features");
+
+  std::string CPU = !CPUAttr.hasAttribute(Attribute::None)
+                        ? CPUAttr.getValueAsString().str()
+                        : TargetCPU;
+  std::string FS = !FSAttr.hasAttribute(Attribute::None)
+                       ? FSAttr.getValueAsString().str()
+                       : TargetFS;
+
+  auto &I = SubtargetMap[CPU + FS];
+  if (!I) {
+    // This needs to be done before we create a new subtarget since any
+    // creation will depend on the TM and the code generation flags on the
+    // function that reside in TargetOptions.
+    resetTargetOptions(F);
+    I = llvm::make_unique<AArch64Subtarget>(TargetTriple, CPU, FS, *this, isLittle);
   }
+  return I.get();
 }
 
 void AArch64leTargetMachine::anchor() { }
@@ -230,8 +251,9 @@ bool AArch64PassConfig::addPostRegAlloc() {
   if (TM->getOptLevel() != CodeGenOpt::None && EnableDeadRegisterElimination)
     addPass(createAArch64DeadRegisterDefinitions());
   if (TM->getOptLevel() != CodeGenOpt::None &&
-      TM->getSubtarget<AArch64Subtarget>().isCortexA57() &&
-      !static_cast<const AArch64TargetMachine *>(TM)->isPBQPUsed())
+      (TM->getSubtarget<AArch64Subtarget>().isCortexA53() ||
+       TM->getSubtarget<AArch64Subtarget>().isCortexA57()) &&
+      usingDefaultRegAlloc())
     // Improve performance for some FP/SIMD code for A57.
     addPass(createAArch64A57FPLoadBalancing());
   return true;
@@ -247,6 +269,8 @@ bool AArch64PassConfig::addPreSched2() {
 }
 
 bool AArch64PassConfig::addPreEmitPass() {
+  if (EnableA53Fix835769)
+    addPass(createAArch64A53Fix835769());
   // Relax conditional branch instructions if they're otherwise out of
   // range of their destination.
   addPass(createAArch64BranchRelaxation());

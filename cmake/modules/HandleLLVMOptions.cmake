@@ -128,7 +128,7 @@ endmacro()
 function(add_flag_or_print_warning flag name)
   check_c_compiler_flag("-Werror ${flag}" "C_SUPPORTS_${name}")
   check_cxx_compiler_flag("-Werror ${flag}" "CXX_SUPPORTS_${name}")
-  if ("C_SUPPORTS_${name}" AND "CXX_SUPPORTS_${name}")
+  if (C_SUPPORTS_${name} AND CXX_SUPPORTS_${name})
     message(STATUS "Building with ${flag}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flag}" PARENT_SCOPE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${flag}" PARENT_SCOPE)
@@ -243,6 +243,10 @@ if( MSVC )
     -wd4345 # Suppress 'behavior change: an object of POD type constructed with an initializer of the form () will be default-initialized'
     -wd4351 # Suppress 'new behavior: elements of array 'array' will be default initialized'
     -wd4355 # Suppress ''this' : used in base member initializer list'
+    -wd4456 # Suppress 'declaration of 'var' hides local variable'
+    -wd4457 # Suppress 'declaration of 'var' hides function parameter'
+    -wd4458 # Suppress 'declaration of 'var' hides class member'
+    -wd4459 # Suppress 'declaration of 'var' hides global declaration'
     -wd4503 # Suppress ''identifier' : decorated name length exceeded, name was truncated'
     -wd4624 # Suppress ''derived class' : destructor could not be generated because a base class destructor is inaccessible'
     -wd4722 # Suppress 'function' : destructor never returns, potential memory leak
@@ -332,6 +336,25 @@ elseif( LLVM_COMPILER_IS_GCC_COMPATIBLE )
       message(FATAL_ERROR "LLVM requires C++11 support but the '-std=c++11' flag isn't supported.")
     endif()
   endif()
+  if (LLVM_ENABLE_MODULES)
+    set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fmodules -fcxx-modules")
+    # Check that we can build code with modules enabled, and that repeatedly
+    # including <cassert> still manages to respect NDEBUG properly.
+    CHECK_CXX_SOURCE_COMPILES("#undef NDEBUG
+                               #include <cassert>
+                               #define NDEBUG
+                               #include <cassert>
+                               int main() { assert(this code is not compiled); }"
+                               CXX_SUPPORTS_MODULES)
+    set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQUIRED_FLAGS})
+    if (CXX_SUPPORTS_MODULES)
+      append_if(CXX_SUPPORTS_MODULES "-fmodules" CMAKE_C_FLAGS)
+      append_if(CXX_SUPPORTS_MODULES "-fmodules -fcxx-modules" CMAKE_CXX_FLAGS)
+    else()
+      message(FATAL_ERROR "LLVM_ENABLE_MODULES is not supported by this compiler")
+    endif()
+  endif(LLVM_ENABLE_MODULES)
 endif( MSVC )
 
 macro(append_common_sanitizer_flags)
@@ -374,7 +397,7 @@ endif()
 
 # Turn on -gsplit-dwarf if requested
 if(LLVM_USE_SPLIT_DWARF)
-  add_llvm_definitions("-gsplit-dwarf")
+  add_definitions("-gsplit-dwarf")
 endif()
 
 add_llvm_definitions( -D__STDC_CONSTANT_MACROS )

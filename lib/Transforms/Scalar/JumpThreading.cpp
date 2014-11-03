@@ -45,7 +45,7 @@ STATISTIC(NumFolds,   "Number of terminators folded");
 STATISTIC(NumDupes,   "Number of branch blocks duplicated to eliminate phi");
 
 static cl::opt<unsigned>
-Threshold("jump-threading-threshold",
+BBDuplicateThreshold("jump-threading-threshold",
           cl::desc("Max block size to duplicate for jump threading"),
           cl::init(6), cl::Hidden);
 
@@ -88,6 +88,8 @@ namespace {
 #endif
     DenseSet<std::pair<Value*, BasicBlock*> > RecursionSet;
 
+    unsigned BBDupThreshold;
+
     // RAII helper for updating the recursion stack.
     struct RecursionSetRemover {
       DenseSet<std::pair<Value*, BasicBlock*> > &TheSet;
@@ -103,7 +105,8 @@ namespace {
     };
   public:
     static char ID; // Pass identification
-    JumpThreading() : FunctionPass(ID) {
+    JumpThreading(int T = -1) : FunctionPass(ID) {
+      BBDupThreshold = (T == -1) ? BBDuplicateThreshold : unsigned(T);
       initializeJumpThreadingPass(*PassRegistry::getPassRegistry());
     }
 
@@ -147,7 +150,7 @@ INITIALIZE_PASS_END(JumpThreading, "jump-threading",
                 "Jump Threading", false, false)
 
 // Public interface to the Jump Threading pass
-FunctionPass *llvm::createJumpThreadingPass() { return new JumpThreading(); }
+FunctionPass *llvm::createJumpThreadingPass(int Threshold) { return new JumpThreading(Threshold); }
 
 /// runOnFunction - Top level algorithm.
 ///
@@ -898,6 +901,9 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
     // If the returned value is the load itself, replace with an undef. This can
     // only happen in dead loops.
     if (AvailableVal == LI) AvailableVal = UndefValue::get(LI->getType());
+    if (AvailableVal->getType() != LI->getType())
+      AvailableVal = CastInst::Create(CastInst::BitCast, AvailableVal,
+                                      LI->getType(), "", LI);
     LI->replaceAllUsesWith(AvailableVal);
     LI->eraseFromParent();
     return true;
@@ -1028,7 +1034,16 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
     assert(I != AvailablePreds.end() && I->first == P &&
            "Didn't find entry for predecessor!");
 
-    PN->addIncoming(I->second, I->first);
+    // If we have an available predecessor but it requires casting, insert the
+    // cast in the predecessor and use the cast. Note that we have to update the
+    // AvailablePreds vector as we go so that all of the PHI entries for this
+    // predecessor use the same bitcast.
+    Value *&PredV = I->second;
+    if (PredV->getType() != LI->getType())
+      PredV = CastInst::Create(CastInst::BitCast, PredV, LI->getType(), "",
+                               P->getTerminator());
+
+    PN->addIncoming(PredV, I->first);
   }
 
   //cerr << "PRE: " << *LI << *PN << "\n";
@@ -1389,8 +1404,8 @@ bool JumpThreading::ThreadEdge(BasicBlock *BB,
     return false;
   }
 
-  unsigned JumpThreadCost = getJumpThreadDuplicationCost(BB, Threshold);
-  if (JumpThreadCost > Threshold) {
+  unsigned JumpThreadCost = getJumpThreadDuplicationCost(BB, BBDupThreshold);
+  if (JumpThreadCost > BBDupThreshold) {
     DEBUG(dbgs() << "  Not threading BB '" << BB->getName()
           << "' - Cost is too high: " << JumpThreadCost << "\n");
     return false;
@@ -1532,8 +1547,8 @@ bool JumpThreading::DuplicateCondBranchOnPHIIntoPred(BasicBlock *BB,
     return false;
   }
 
-  unsigned DuplicationCost = getJumpThreadDuplicationCost(BB, Threshold);
-  if (DuplicationCost > Threshold) {
+  unsigned DuplicationCost = getJumpThreadDuplicationCost(BB, BBDupThreshold);
+  if (DuplicationCost > BBDupThreshold) {
     DEBUG(dbgs() << "  Not duplicating BB '" << BB->getName()
           << "' - Cost is too high: " << DuplicationCost << "\n");
     return false;

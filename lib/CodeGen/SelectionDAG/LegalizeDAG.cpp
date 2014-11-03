@@ -1627,7 +1627,7 @@ void SelectionDAGLegalize::ExpandDYNAMIC_STACKALLOC(SDNode* Node,
   Chain = SP.getValue(1);
   unsigned Align = cast<ConstantSDNode>(Tmp3)->getZExtValue();
   unsigned StackAlign =
-      TM.getSubtargetImpl()->getFrameLowering()->getStackAlignment();
+      DAG.getSubtarget().getFrameLowering()->getStackAlignment();
   Tmp1 = DAG.getNode(ISD::SUB, dl, VT, SP, Size);       // Value
   if (Align > StackAlign)
     Tmp1 = DAG.getNode(ISD::AND, dl, VT, Tmp1,
@@ -1881,7 +1881,8 @@ ExpandBVWithShuffles(SDNode *Node, SelectionDAG &DAG,
                                          ShuffleVec.data());
         else if (!TLI.isShuffleMaskLegal(ShuffleVec, VT))
           return false;
-        NewIntermedVals.push_back(std::make_pair(Shuffle, FinalIndices));
+        NewIntermedVals.push_back(
+            std::make_pair(Shuffle, std::move(FinalIndices)));
       }
 
       // If we had an odd number of defined values, then append the last
@@ -3399,6 +3400,16 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node) {
     Results.push_back(Tmp1);
     break;
   }
+  case ISD::FMINNUM:
+    Results.push_back(ExpandFPLibCall(Node, RTLIB::FMIN_F32, RTLIB::FMIN_F64,
+                                      RTLIB::FMIN_F80, RTLIB::FMIN_F128,
+                                      RTLIB::FMIN_PPCF128));
+    break;
+  case ISD::FMAXNUM:
+    Results.push_back(ExpandFPLibCall(Node, RTLIB::FMAX_F32, RTLIB::FMAX_F64,
+                                      RTLIB::FMAX_F80, RTLIB::FMAX_F128,
+                                      RTLIB::FMAX_PPCF128));
+    break;
   case ISD::FSQRT:
     Results.push_back(ExpandFPLibCall(Node, RTLIB::SQRT_F32, RTLIB::SQRT_F64,
                                       RTLIB::SQRT_F80, RTLIB::SQRT_F128,

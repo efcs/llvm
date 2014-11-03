@@ -170,7 +170,11 @@ def VGPR_512 : RegisterTuples<[sub0, sub1, sub2, sub3, sub4, sub5, sub6, sub7,
 //===----------------------------------------------------------------------===//
 
 // Special register classes for predicates and the M0 register
-def SCCReg : RegisterClass<"AMDGPU", [i32, i1], 32, (add SCC)>;
+def SCCReg : RegisterClass<"AMDGPU", [i32, i1], 32, (add SCC)> {
+  let CopyCost = -1; // Theoretically it is possible to read from SCC,
+                     // but it should never be necessary.
+}
+
 def VCCReg : RegisterClass<"AMDGPU", [i64, i1], 64, (add VCC)>;
 def EXECReg : RegisterClass<"AMDGPU", [i64, i1], 64, (add EXEC)>;
 def M0Reg : RegisterClass<"AMDGPU", [i32], 32, (add M0)>;
@@ -210,16 +214,28 @@ def VReg_512 : RegisterClass<"AMDGPU", [v16i32, v16f32], 512, (add VGPR_512)>;
 def VReg_1 : RegisterClass<"AMDGPU", [i1], 32, (add VGPR_32)>;
 
 //===----------------------------------------------------------------------===//
-//  [SV]Src_(32|64) register classes, can have either an immediate or an register
+//  SSrc_* Operands with an SGPR or a 32-bit immediate
 //===----------------------------------------------------------------------===//
 
 def SSrc_32 : RegisterClass<"AMDGPU", [i32, f32], 32, (add SReg_32)>;
 
 def SSrc_64 : RegisterClass<"AMDGPU", [i64, f64, i1], 64, (add SReg_64)>;
 
+//===----------------------------------------------------------------------===//
+//  VSrc_* Operands with an SGPR, VGPR or a 32-bit immediate
+//===----------------------------------------------------------------------===//
+
 def VSrc_32 : RegisterClass<"AMDGPU", [i32, f32], 32, (add VReg_32, SReg_32)>;
 
 def VSrc_64 : RegisterClass<"AMDGPU", [i64, f64], 64, (add VReg_64, SReg_64)>;
+
+//===----------------------------------------------------------------------===//
+//  VCSrc_* Operands with an SGPR, VGPR or an inline constant
+//===----------------------------------------------------------------------===//
+
+def VCSrc_32 : RegisterClass<"AMDGPU", [i32, f32], 32, (add VReg_32, SReg_32)>;
+
+def VCSrc_64 : RegisterClass<"AMDGPU", [i64, f64], 64, (add VReg_64, SReg_64)>;
 
 //===----------------------------------------------------------------------===//
 // SGPR and VGPR register classes

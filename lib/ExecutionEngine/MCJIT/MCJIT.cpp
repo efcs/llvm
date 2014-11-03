@@ -10,7 +10,6 @@
 #include "MCJIT.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ExecutionEngine/JITEventListener.h"
-#include "llvm/ExecutionEngine/JITMemoryManager.h"
 #include "llvm/ExecutionEngine/MCJIT.h"
 #include "llvm/ExecutionEngine/ObjectBuffer.h"
 #include "llvm/ExecutionEngine/ObjectImage.h"
@@ -110,8 +109,11 @@ void MCJIT::addObjectFile(std::unique_ptr<object::ObjectFile> Obj) {
 }
 
 void MCJIT::addObjectFile(object::OwningBinary<object::ObjectFile> Obj) {
-  addObjectFile(std::move(Obj.getBinary()));
-  Buffers.push_back(std::move(Obj.getBuffer()));
+  std::unique_ptr<object::ObjectFile> ObjFile;
+  std::unique_ptr<MemoryBuffer> MemBuf;
+  std::tie(ObjFile, MemBuf) = Obj.takeBinary();
+  addObjectFile(std::move(ObjFile));
+  Buffers.push_back(std::move(MemBuf));
 }
 
 void MCJIT::addArchive(object::OwningBinary<object::Archive> A) {
@@ -291,7 +293,7 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
     return Addr;
 
   for (object::OwningBinary<object::Archive> &OB : Archives) {
-    object::Archive *A = OB.getBinary().get();
+    object::Archive *A = OB.getBinary();
     // Look for our symbols in each Archive
     object::Archive::child_iterator ChildIt = A->findSym(Name);
     if (ChildIt != A->child_end()) {
@@ -351,10 +353,14 @@ uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
 void *MCJIT::getPointerToFunction(Function *F) {
   MutexGuard locked(lock);
 
+  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
+  SmallString<128> Name;
+  TM->getNameWithPrefix(Name, F, Mang);
+
   if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
     bool AbortOnFailure = !F->hasExternalWeakLinkage();
-    void *Addr = getPointerToNamedFunction(F->getName(), AbortOnFailure);
-    addGlobalMapping(F, Addr);
+    void *Addr = getPointerToNamedFunction(Name, AbortOnFailure);
+    updateGlobalMapping(F, Addr);
     return Addr;
   }
 
@@ -364,17 +370,18 @@ void *MCJIT::getPointerToFunction(Function *F) {
   // Make sure the relevant module has been compiled and loaded.
   if (HasBeenAddedButNotLoaded)
     generateCodeForModule(M);
-  else if (!OwnedModules.hasModuleBeenLoaded(M))
+  else if (!OwnedModules.hasModuleBeenLoaded(M)) {
     // If this function doesn't belong to one of our modules, we're done.
+    // FIXME: Asking for the pointer to a function that hasn't been registered,
+    //        and isn't a declaration (which is handled above) should probably
+    //        be an assertion.
     return nullptr;
+  }
 
   // FIXME: Should the Dyld be retaining module information? Probably not.
   //
   // This is the accessor for the target address, so make sure to check the
   // load address of the symbol, not the local address.
-  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
-  SmallString<128> Name;
-  TM->getNameWithPrefix(Name, F, Mang);
   return (void*)Dyld.getSymbolLoadAddress(Name);
 }
 

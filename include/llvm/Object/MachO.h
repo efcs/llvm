@@ -136,6 +136,54 @@ private:
 };
 typedef content_iterator<MachORebaseEntry> rebase_iterator;
 
+/// MachOBindEntry encapsulates the current state in the decompression of
+/// binding opcodes. This allows you to iterate through the compressed table of
+/// bindings using:
+///    for (const llvm::object::MachOBindEntry &Entry : Obj->bindTable()) {
+///    }
+class MachOBindEntry {
+public:
+  enum class Kind { Regular, Lazy, Weak };
+
+  MachOBindEntry(ArrayRef<uint8_t> Opcodes, bool is64Bit, MachOBindEntry::Kind);
+
+  uint32_t segmentIndex() const;
+  uint64_t segmentOffset() const;
+  StringRef typeName() const;
+  StringRef symbolName() const;
+  uint32_t flags() const;
+  int64_t addend() const;
+  int ordinal() const;
+
+  bool operator==(const MachOBindEntry &) const;
+
+  void moveNext();
+
+private:
+  friend class MachOObjectFile;
+  void moveToFirst();
+  void moveToEnd();
+  uint64_t readULEB128();
+  int64_t readSLEB128();
+
+  ArrayRef<uint8_t> Opcodes;
+  const uint8_t *Ptr;
+  uint64_t SegmentOffset;
+  uint32_t SegmentIndex;
+  StringRef SymbolName;
+  int      Ordinal;
+  uint32_t Flags;
+  int64_t  Addend;
+  uint64_t RemainingLoopCount;
+  uint64_t AdvanceAmount;
+  uint8_t  BindType;
+  uint8_t  PointerSize;
+  Kind     TableKind;
+  bool     Malformed;
+  bool     Done;
+};
+typedef content_iterator<MachOBindEntry> bind_iterator;
+
 class MachOObjectFile : public ObjectFile {
 public:
   struct LoadCommandInfo {
@@ -167,24 +215,19 @@ public:
   void moveSectionNext(DataRefImpl &Sec) const override;
   std::error_code getSectionName(DataRefImpl Sec,
                                  StringRef &Res) const override;
-  std::error_code getSectionAddress(DataRefImpl Sec,
-                                    uint64_t &Res) const override;
-  std::error_code getSectionSize(DataRefImpl Sec, uint64_t &Res) const override;
+  uint64_t getSectionAddress(DataRefImpl Sec) const override;
+  uint64_t getSectionSize(DataRefImpl Sec) const override;
   std::error_code getSectionContents(DataRefImpl Sec,
                                      StringRef &Res) const override;
-  std::error_code getSectionAlignment(DataRefImpl Sec,
-                                      uint64_t &Res) const override;
-  std::error_code isSectionText(DataRefImpl Sec, bool &Res) const override;
-  std::error_code isSectionData(DataRefImpl Sec, bool &Res) const override;
-  std::error_code isSectionBSS(DataRefImpl Sec, bool &Res) const override;
-  std::error_code isSectionRequiredForExecution(DataRefImpl Sec,
-                                                bool &Res) const override;
-  std::error_code isSectionVirtual(DataRefImpl Sec, bool &Res) const override;
-  std::error_code isSectionZeroInit(DataRefImpl Sec, bool &Res) const override;
-  std::error_code isSectionReadOnlyData(DataRefImpl Sec,
-                                        bool &Res) const override;
-  std::error_code sectionContainsSymbol(DataRefImpl Sec, DataRefImpl Symb,
-                                        bool &Result) const override;
+  uint64_t getSectionAlignment(DataRefImpl Sec) const override;
+  bool isSectionText(DataRefImpl Sec) const override;
+  bool isSectionData(DataRefImpl Sec) const override;
+  bool isSectionBSS(DataRefImpl Sec) const override;
+  bool isSectionRequiredForExecution(DataRefImpl Sec) const override;
+  bool isSectionVirtual(DataRefImpl Sec) const override;
+  bool isSectionZeroInit(DataRefImpl Sec) const override;
+  bool isSectionReadOnlyData(DataRefImpl Sec) const override;
+  bool sectionContainsSymbol(DataRefImpl Sec, DataRefImpl Symb) const override;
   relocation_iterator section_rel_begin(DataRefImpl Sec) const override;
   relocation_iterator section_rel_end(DataRefImpl Sec) const override;
 
@@ -244,6 +287,21 @@ public:
   /// For use examining rebase opcodes not in a MachOObjectFile.
   static iterator_range<rebase_iterator> rebaseTable(ArrayRef<uint8_t> Opcodes,
                                                      bool is64);
+
+  /// For use iterating over all bind table entries.
+  iterator_range<bind_iterator> bindTable() const;
+
+  /// For use iterating over all lazy bind table entries.
+  iterator_range<bind_iterator> lazyBindTable() const;
+
+  /// For use iterating over all lazy bind table entries.
+  iterator_range<bind_iterator> weakBindTable() const;
+
+  /// For use examining bind opcodes not in a MachOObjectFile.
+  static iterator_range<bind_iterator> bindTable(ArrayRef<uint8_t> Opcodes,
+                                                 bool is64,
+                                                 MachOBindEntry::Kind);
+
 
   // In a MachO file, sections have a segment name. This is used in the .o
   // files. They have a single segment, but this field specifies which segment
@@ -322,6 +380,7 @@ public:
   ArrayRef<uint8_t> getDyldInfoWeakBindOpcodes() const;
   ArrayRef<uint8_t> getDyldInfoLazyBindOpcodes() const;
   ArrayRef<uint8_t> getDyldInfoExportsTrie() const;
+  ArrayRef<uint8_t> getUuid() const;
 
   StringRef getStringTableData() const;
   bool is64Bit() const;
@@ -342,6 +401,8 @@ public:
 
   bool isRelocatableObject() const override;
 
+  bool hasPageZeroSegment() const { return HasPageZeroSegment; }
+
   static bool classof(const Binary *v) {
     return v->isMachO();
   }
@@ -357,6 +418,8 @@ private:
   const char *DysymtabLoadCmd;
   const char *DataInCodeLoadCmd;
   const char *DyldInfoLoadCmd;
+  const char *UuidLoadCmd;
+  bool HasPageZeroSegment;
 };
 
 /// DiceRef

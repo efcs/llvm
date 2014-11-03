@@ -92,7 +92,7 @@ public:
   unsigned getJumpBufSize() const override;
   bool shouldBuildLookupTables() const override;
   bool haveFastSqrt(Type *Ty) const override;
-  void getUnrollingPreferences(Loop *L,
+  void getUnrollingPreferences(const Function *F, Loop *L,
                                UnrollingPreferences &UP) const override;
 
   /// @}
@@ -199,7 +199,7 @@ bool BasicTTI::haveFastSqrt(Type *Ty) const {
   return TLI->isTypeLegal(VT) && TLI->isOperationLegalOrCustom(ISD::FSQRT, VT);
 }
 
-void BasicTTI::getUnrollingPreferences(Loop *L,
+void BasicTTI::getUnrollingPreferences(const Function *F, Loop *L,
                                        UnrollingPreferences &UP) const {
   // This unrolling functionality is target independent, but to provide some
   // motivation for its intended use, for x86:
@@ -225,7 +225,7 @@ void BasicTTI::getUnrollingPreferences(Loop *L,
   // until someone finds a case where it matters in practice.
 
   unsigned MaxOps;
-  const TargetSubtargetInfo *ST = &TM->getSubtarget<TargetSubtargetInfo>();
+  const TargetSubtargetInfo *ST = &TM->getSubtarget<TargetSubtargetInfo>(F);
   if (PartialUnrollingThreshold.getNumOccurrences() > 0)
     MaxOps = PartialUnrollingThreshold;
   else if (ST->getSchedModel().LoopMicroOpBufferSize > 0)
@@ -468,7 +468,8 @@ unsigned BasicTTI::getCmpSelInstrCost(unsigned Opcode, Type *ValTy,
 
   std::pair<unsigned, MVT> LT = TLI->getTypeLegalizationCost(ValTy);
 
-  if (!TLI->isOperationExpand(ISD, LT.second)) {
+  if (!(ValTy->isVectorTy() && !LT.second.isVector()) &&
+      !TLI->isOperationExpand(ISD, LT.second)) {
     // The operation is legal. Assume it costs 1. Multiply
     // by the type-legalization overhead.
     return LT.first * 1;
@@ -564,6 +565,8 @@ unsigned BasicTTI::getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
   case Intrinsic::log10:   ISD = ISD::FLOG10; break;
   case Intrinsic::log2:    ISD = ISD::FLOG2;  break;
   case Intrinsic::fabs:    ISD = ISD::FABS;   break;
+  case Intrinsic::minnum:  ISD = ISD::FMINNUM; break;
+  case Intrinsic::maxnum:  ISD = ISD::FMAXNUM; break;
   case Intrinsic::copysign: ISD = ISD::FCOPYSIGN; break;
   case Intrinsic::floor:   ISD = ISD::FFLOOR; break;
   case Intrinsic::ceil:    ISD = ISD::FCEIL;  break;
@@ -586,7 +589,7 @@ unsigned BasicTTI::getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
 
   if (TLI->isOperationLegalOrPromote(ISD, LT.second)) {
     // The operation is legal. Assume it costs 1.
-    // If the type is split to multiple registers, assume that thre is some
+    // If the type is split to multiple registers, assume that there is some
     // overhead to this.
     // TODO: Once we have extract/insert subvector cost we need to use them.
     if (LT.first > 1)

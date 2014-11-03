@@ -36,9 +36,11 @@ add_llvm_library(LLVMSupport
   Locale.cpp
   LockFileManager.cpp
   ManagedStatic.cpp
+  MathExtras.cpp
   MemoryBuffer.cpp
   MemoryObject.cpp
   MD5.cpp
+  Options.cpp
   PluginLoader.cpp
   PrettyStackTrace.cpp
   RandomNumberGenerator.cpp
@@ -100,6 +102,7 @@ add_llvm_library(LLVMSupport
   Unix/Program.inc
   Unix/RWMutex.inc
   Unix/Signals.inc
+  Unix/Threading.inc
   Unix/ThreadLocal.inc
   Unix/TimeValue.inc
   Unix/Watchdog.inc
@@ -112,6 +115,7 @@ add_llvm_library(LLVMSupport
   Windows/Program.inc
   Windows/RWMutex.inc
   Windows/Signals.inc
+  Windows/Threading.inc
   Windows/ThreadLocal.inc
   Windows/TimeValue.inc
   Windows/Watchdog.inc
@@ -141,6 +145,7 @@ if( NOT MSVC )
     if ( LLVM_ENABLE_ZLIB AND HAVE_LIBZ )
       set(system_libs ${system_libs} z)
     endif()
+    set(system_libs ${system_libs} m)
   endif( MINGW )
 endif( NOT MSVC )
 

@@ -71,7 +71,7 @@ static const uintptr_t kRetiredStackFrameMagic = 0x45E0360E;
 
 static const char *const kAsanModuleCtorName = "asan.module_ctor";
 static const char *const kAsanModuleDtorName = "asan.module_dtor";
-static const int         kAsanCtorAndDtorPriority = 1;
+static const uint64_t    kAsanCtorAndDtorPriority = 1;
 static const char *const kAsanReportErrorTemplate = "__asan_report_";
 static const char *const kAsanReportLoadN = "__asan_report_load_n";
 static const char *const kAsanReportStoreN = "__asan_report_store_n";
@@ -83,6 +83,7 @@ static const char *const kAsanUnpoisonGlobalsName = "__asan_after_dynamic_init";
 static const char *const kAsanInitName = "__asan_init_v4";
 static const char *const kAsanCovModuleInitName = "__sanitizer_cov_module_init";
 static const char *const kAsanCovName = "__sanitizer_cov";
+static const char *const kAsanCovIndirCallName = "__sanitizer_cov_indir_call16";
 static const char *const kAsanPtrCmp = "__sanitizer_ptr_cmp";
 static const char *const kAsanPtrSub = "__sanitizer_ptr_sub";
 static const char *const kAsanHandleNoReturnName = "__asan_handle_no_return";
@@ -136,7 +137,8 @@ static cl::opt<bool> ClGlobals("asan-globals",
        cl::desc("Handle global objects"), cl::Hidden, cl::init(true));
 static cl::opt<int> ClCoverage("asan-coverage",
        cl::desc("ASan coverage. 0: none, 1: entry block, 2: all blocks, "
-                "3: all blocks and critical edges"),
+                "3: all blocks and critical edges, "
+                "4: above plus indirect calls"),
        cl::Hidden, cl::init(false));
 static cl::opt<int> ClCoverageBlockThreshold("asan-coverage-block-threshold",
        cl::desc("Add coverage instrumentation only to the entry block if there "
@@ -300,7 +302,7 @@ struct ShadowMapping {
 static ShadowMapping getShadowMapping(const Module &M, int LongSize) {
   llvm::Triple TargetTriple(M.getTargetTriple());
   bool IsAndroid = TargetTriple.getEnvironment() == llvm::Triple::Android;
-  bool IsIOS = TargetTriple.getOS() == llvm::Triple::IOS;
+  bool IsIOS = TargetTriple.isiOS();
   bool IsFreeBSD = TargetTriple.getOS() == llvm::Triple::FreeBSD;
   bool IsLinux = TargetTriple.getOS() == llvm::Triple::Linux;
   bool IsPPC64 = TargetTriple.getArch() == llvm::Triple::ppc64 ||
@@ -387,7 +389,10 @@ struct AddressSanitizer : public FunctionPass {
 
   bool LooksLikeCodeInBug11395(Instruction *I);
   bool GlobalIsLinkerInitialized(GlobalVariable *G);
-  bool InjectCoverage(Function &F, ArrayRef<BasicBlock*> AllBlocks);
+  void InjectCoverageForIndirectCalls(Function &F,
+                                      ArrayRef<Instruction *> IndirCalls);
+  bool InjectCoverage(Function &F, ArrayRef<BasicBlock *> AllBlocks,
+                      ArrayRef<Instruction *> IndirCalls);
   void InjectCoverageAtBlock(Function &F, BasicBlock &BB);
 
   LLVMContext *C;
@@ -399,6 +404,7 @@ struct AddressSanitizer : public FunctionPass {
   Function *AsanInitFunction;
   Function *AsanHandleNoReturnFunc;
   Function *AsanCovFunction;
+  Function *AsanCovIndirCallFunction;
   Function *AsanPtrCmpFunction, *AsanPtrSubFunction;
   // This array is indexed by AccessIsWrite and log2(AccessSize).
   Function *AsanErrorCallback[2][kNumberOfAccessSizes];
@@ -928,10 +934,12 @@ void AddressSanitizerModule::createInitializerPoisonCalls(
     ConstantStruct *CS = cast<ConstantStruct>(OP);
 
     // Must have a function or null ptr.
-    // (CS->getOperand(0) is the init priority.)
     if (Function* F = dyn_cast<Function>(CS->getOperand(1))) {
-      if (F->getName() != kAsanModuleCtorName)
-        poisonOneInitializer(*F, ModuleName);
+      if (F->getName() == kAsanModuleCtorName) continue;
+      ConstantInt *Priority = dyn_cast<ConstantInt>(CS->getOperand(0));
+      // Don't instrument CTORs that will run before asan.module_ctor.
+      if (Priority->getLimitedValue() <= kAsanCtorAndDtorPriority) continue;
+      poisonOneInitializer(*F, ModuleName);
     }
   }
 }
@@ -1253,6 +1261,9 @@ void AddressSanitizer::initializeCallbacks(Module &M) {
       M.getOrInsertFunction(kAsanHandleNoReturnName, IRB.getVoidTy(), NULL));
   AsanCovFunction = checkInterfaceFunction(M.getOrInsertFunction(
       kAsanCovName, IRB.getVoidTy(), NULL));
+  AsanCovIndirCallFunction = checkInterfaceFunction(M.getOrInsertFunction(
+      kAsanCovIndirCallName, IRB.getVoidTy(), IntptrTy, IntptrTy, NULL));
+
   AsanPtrCmpFunction = checkInterfaceFunction(M.getOrInsertFunction(
       kAsanPtrCmp, IRB.getVoidTy(), IntptrTy, IntptrTy, NULL));
   AsanPtrSubFunction = checkInterfaceFunction(M.getOrInsertFunction(
@@ -1366,7 +1377,8 @@ void AddressSanitizer::InjectCoverageAtBlock(Function &F, BasicBlock &BB) {
 //  a) get the functionality to users earlier and
 //  b) collect usage statistics to help improve Clang coverage design.
 bool AddressSanitizer::InjectCoverage(Function &F,
-                                      ArrayRef<BasicBlock *> AllBlocks) {
+                                      ArrayRef<BasicBlock *> AllBlocks,
+                                      ArrayRef<Instruction*> IndirCalls) {
   if (!ClCoverage) return false;
 
   if (ClCoverage == 1 ||
@@ -1376,7 +1388,36 @@ bool AddressSanitizer::InjectCoverage(Function &F,
     for (auto BB : AllBlocks)
       InjectCoverageAtBlock(F, *BB);
   }
+  InjectCoverageForIndirectCalls(F, IndirCalls);
   return true;
+}
+
+// On every indirect call we call a run-time function
+// __sanitizer_cov_indir_call* with two parameters:
+//   - callee address,
+//   - global cache array that contains kCacheSize pointers (zero-initialed).
+//     The cache is used to speed up recording the caller-callee pairs.
+// The address of the caller is passed implicitly via caller PC.
+// kCacheSize is encoded in the name of the run-time function.
+void AddressSanitizer::InjectCoverageForIndirectCalls(
+    Function &F, ArrayRef<Instruction *> IndirCalls) {
+  if (ClCoverage < 4 || IndirCalls.empty()) return;
+  const int kCacheSize = 16;
+  const int kCacheAlignment = 64;  // Align for better performance.
+  Type *Ty = ArrayType::get(IntptrTy, kCacheSize);
+  for (auto I : IndirCalls) {
+    IRBuilder<> IRB(I);
+    CallSite CS(I);
+    Value *Callee = CS.getCalledValue();
+    if (dyn_cast<InlineAsm>(Callee)) continue;
+    GlobalVariable *CalleeCache = new GlobalVariable(
+        *F.getParent(), Ty, false, GlobalValue::PrivateLinkage,
+        Constant::getNullValue(Ty), "__asan_gen_callee_cache");
+    CalleeCache->setAlignment(kCacheAlignment);
+    IRB.CreateCall2(AsanCovIndirCallFunction,
+                    IRB.CreatePointerCast(Callee, IntptrTy),
+                    IRB.CreatePointerCast(CalleeCache, IntptrTy));
+  }
 }
 
 bool AddressSanitizer::runOnFunction(Function &F) {
@@ -1401,6 +1442,7 @@ bool AddressSanitizer::runOnFunction(Function &F) {
   SmallVector<Instruction*, 8> NoReturnCalls;
   SmallVector<BasicBlock*, 16> AllBlocks;
   SmallVector<Instruction*, 16> PointerComparisonsOrSubtracts;
+  SmallVector<Instruction*, 8> IndirCalls;
   int NumAllocas = 0;
   bool IsWrite;
   unsigned Alignment;
@@ -1433,6 +1475,8 @@ bool AddressSanitizer::runOnFunction(Function &F) {
           TempsToInstrument.clear();
           if (CS.doesNotReturn())
             NoReturnCalls.push_back(CS.getInstruction());
+          if (ClCoverage >= 4 && !CS.getCalledFunction())
+            IndirCalls.push_back(&Inst);
         }
         continue;
       }
@@ -1489,7 +1533,7 @@ bool AddressSanitizer::runOnFunction(Function &F) {
 
   bool res = NumInstrumented > 0 || ChangedStack || !NoReturnCalls.empty();
 
-  if (InjectCoverage(F, AllBlocks))
+  if (InjectCoverage(F, AllBlocks, IndirCalls))
     res = true;
 
   DEBUG(dbgs() << "ASAN done instrumenting: " << res << " " << F << "\n");

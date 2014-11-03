@@ -862,7 +862,26 @@ void DAGTypeLegalizer::PromoteSetCCOperands(SDValue &NewLHS,SDValue &NewRHS,
   switch (CCCode) {
   default: llvm_unreachable("Unknown integer comparison!");
   case ISD::SETEQ:
-  case ISD::SETNE:
+  case ISD::SETNE: {
+    SDValue OpL = GetPromotedInteger(NewLHS);
+    SDValue OpR = GetPromotedInteger(NewRHS);
+
+    // We would prefer to promote the comparison operand with sign extension,
+    // if we find the operand is actually to truncate an AssertSext. With this
+    // optimization, we can avoid inserting real truncate instruction, which
+    // is redudant eventually.
+    if (OpL->getOpcode() == ISD::AssertSext &&
+        cast<VTSDNode>(OpL->getOperand(1))->getVT() == NewLHS.getValueType() &&
+        OpR->getOpcode() == ISD::AssertSext &&
+        cast<VTSDNode>(OpR->getOperand(1))->getVT() == NewRHS.getValueType()) {
+      NewLHS = OpL;
+      NewRHS = OpR;
+    } else {
+      NewLHS = ZExtPromotedInteger(NewLHS);
+      NewRHS = ZExtPromotedInteger(NewRHS);
+    }
+    break;
+  }
   case ISD::SETUGE:
   case ISD::SETUGT:
   case ISD::SETULE:
@@ -946,7 +965,7 @@ SDValue DAGTypeLegalizer::PromoteIntOp_BUILD_VECTOR(SDNode *N) {
   EVT VecVT = N->getValueType(0);
   unsigned NumElts = VecVT.getVectorNumElements();
   assert(!((NumElts & 1) && (!TLI.isTypeLegal(VecVT))) &&
-		 "Legal vector of one illegal element?");
+         "Legal vector of one illegal element?");
 
   // Promote the inserted value.  The type does not need to match the
   // vector element type.  Check that any extra bits introduced will be

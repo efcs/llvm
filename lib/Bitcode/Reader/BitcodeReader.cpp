@@ -25,6 +25,8 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/ManagedStatic.h"
+
 using namespace llvm;
 
 enum {
@@ -54,7 +56,7 @@ std::error_code BitcodeReader::materializeForwardReferencedFunctions() {
       return Error(BitcodeError::NeverResolvedFunctionFromBlockAddress);
 
     // Try to materialize F.
-    if (std::error_code EC = Materialize(F))
+    if (std::error_code EC = materialize(F))
       return EC;
   }
   assert(BasicBlockFwdRefs.empty() && "Function missing from queue");
@@ -2068,8 +2070,10 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
       // If this is a function with a body, remember the prototype we are
       // creating now, so that we can match up the body with them later.
       if (!isProto) {
+        Func->setIsMaterializable(true);
         FunctionsWithBodies.push_back(Func);
-        if (LazyStreamer) DeferredFunctionInfo[Func] = 0;
+        if (LazyStreamer)
+          DeferredFunctionInfo[Func] = 0;
       }
       break;
     }
@@ -2098,9 +2102,9 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
       else
         UpgradeDLLImportExportLinkage(NewGA, Record[2]);
       if (Record.size() > 5)
-	NewGA->setThreadLocalMode(GetDecodedThreadLocalMode(Record[5]));
+        NewGA->setThreadLocalMode(GetDecodedThreadLocalMode(Record[5]));
       if (Record.size() > 6)
-	NewGA->setUnnamedAddr(Record[6]);
+        NewGA->setUnnamedAddr(Record[6]);
       ValueList.push_back(NewGA);
       AliasInits.push_back(std::make_pair(NewGA, Record[1]));
       break;
@@ -3278,15 +3282,7 @@ std::error_code BitcodeReader::FindFunctionInStream(
 
 void BitcodeReader::releaseBuffer() { Buffer.release(); }
 
-bool BitcodeReader::isMaterializable(const GlobalValue *GV) const {
-  if (const Function *F = dyn_cast<Function>(GV)) {
-    return F->isDeclaration() &&
-      DeferredFunctionInfo.count(const_cast<Function*>(F));
-  }
-  return false;
-}
-
-std::error_code BitcodeReader::Materialize(GlobalValue *GV) {
+std::error_code BitcodeReader::materialize(GlobalValue *GV) {
   Function *F = dyn_cast<Function>(GV);
   // If it's not a function or is already material, ignore the request.
   if (!F || !F->isMaterializable())
@@ -3305,6 +3301,7 @@ std::error_code BitcodeReader::Materialize(GlobalValue *GV) {
 
   if (std::error_code EC = ParseFunctionBody(F))
     return EC;
+  F->setIsMaterializable(false);
 
   // Upgrade any old intrinsic calls in the function.
   for (UpgradedIntrinsicMap::iterator I = UpgradedIntrinsics.begin(),
@@ -3345,7 +3342,8 @@ void BitcodeReader::Dematerialize(GlobalValue *GV) {
   assert(DeferredFunctionInfo.count(F) && "No info to read function later?");
 
   // Just forget the function body, we can remat it later.
-  F->deleteBody();
+  F->dropAllReferences();
+  F->setIsMaterializable(true);
 }
 
 std::error_code BitcodeReader::MaterializeModule(Module *M) {
@@ -3359,10 +3357,8 @@ std::error_code BitcodeReader::MaterializeModule(Module *M) {
   // disk.
   for (Module::iterator F = TheModule->begin(), E = TheModule->end();
        F != E; ++F) {
-    if (F->isMaterializable()) {
-      if (std::error_code EC = Materialize(F))
-        return EC;
-    }
+    if (std::error_code EC = materialize(F))
+      return EC;
   }
   // At this point, if there are any function bodies, the current bit is
   // pointing to the END_BLOCK record after them. Now make sure the rest
@@ -3502,9 +3498,10 @@ class BitcodeErrorCategoryType : public std::error_category {
 };
 }
 
+static ManagedStatic<BitcodeErrorCategoryType> ErrorCategory;
+
 const std::error_category &llvm::BitcodeErrorCategory() {
-  static BitcodeErrorCategoryType O;
-  return O;
+  return *ErrorCategory;
 }
 
 //===----------------------------------------------------------------------===//

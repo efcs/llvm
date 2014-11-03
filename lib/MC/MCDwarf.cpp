@@ -344,18 +344,6 @@ void MCDwarfLineTable::EmitCU(MCObjectStreamer *MCOS) const {
   for (const auto &LineSec : MCLineSections.getMCLineEntries())
     EmitDwarfLineTable(MCOS, LineSec.first, LineSec.second);
 
-  if (MCOS->getContext().getAsmInfo()->getLinkerRequiresNonEmptyDwarfLines() &&
-      MCLineSections.getMCLineEntries().empty()) {
-    // The darwin9 linker has a bug (see PR8715). For for 32-bit architectures
-    // it requires:
-    // total_length >= prologue_length + 10
-    // We are 4 bytes short, since we have total_length = 51 and
-    // prologue_length = 45
-
-    // The regular end_sequence should be sufficient.
-    MCDwarfLineAddr::Emit(MCOS, INT64_MAX, 0);
-  }
-
   // This is the end of the section, so set the value of the symbol at the end
   // of this section (that was used in a previous expression).
   MCOS->EmitLabel(LineEndSym);
@@ -536,7 +524,8 @@ static void EmitGenDwarfAbbrev(MCStreamer *MCOS) {
   MCOS->EmitULEB128IntValue(dwarf::DW_TAG_compile_unit);
   MCOS->EmitIntValue(dwarf::DW_CHILDREN_yes, 1);
   EmitAbbrev(MCOS, dwarf::DW_AT_stmt_list, dwarf::DW_FORM_data4);
-  if (MCOS->getContext().getGenDwarfSectionSyms().size() > 1) {
+  if (MCOS->getContext().getGenDwarfSectionSyms().size() > 1 &&
+      MCOS->getContext().getDwarfVersion() >= 3) {
     EmitAbbrev(MCOS, dwarf::DW_AT_ranges, dwarf::DW_FORM_data4);
   } else {
     EmitAbbrev(MCOS, dwarf::DW_AT_low_pc, dwarf::DW_FORM_addr);
@@ -873,10 +862,11 @@ void MCGenDwarfInfo::Emit(MCStreamer *MCOS) {
   if (MCOS->getContext().getGenDwarfSectionSyms().empty())
     return;
 
-  // We only need to use the .debug_ranges section if we have multiple
-  // code sections.
+  // We only use the .debug_ranges section if we have multiple code sections,
+  // and we are emitting a DWARF version which supports it.
   const bool UseRangesSection =
-      MCOS->getContext().getGenDwarfSectionSyms().size() > 1;
+      MCOS->getContext().getGenDwarfSectionSyms().size() > 1 &&
+      MCOS->getContext().getDwarfVersion() >= 3;
   CreateDwarfSectionSymbols |= UseRangesSection;
 
   MCOS->SwitchSection(context.getObjectFileInfo()->getDwarfInfoSection());

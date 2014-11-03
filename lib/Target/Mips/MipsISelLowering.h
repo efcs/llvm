@@ -214,10 +214,10 @@ namespace llvm {
   class MipsTargetLowering : public TargetLowering  {
     bool isMicroMips;
   public:
-    explicit MipsTargetLowering(MipsTargetMachine &TM,
+    explicit MipsTargetLowering(const MipsTargetMachine &TM,
                                 const MipsSubtarget &STI);
 
-    static const MipsTargetLowering *create(MipsTargetMachine &TM,
+    static const MipsTargetLowering *create(const MipsTargetMachine &TM,
                                             const MipsSubtarget &STI);
 
     /// createFastISel - This method returns a target specific FastISel object,
@@ -258,6 +258,8 @@ namespace llvm {
         return strcmp(S1, S2) < 0;
       }
     };
+
+    void HandleByVal(CCState *, unsigned &, unsigned) const override;
 
   protected:
     SDValue getGlobalReg(SelectionDAG &DAG, EVT Ty) const;
@@ -336,16 +338,8 @@ namespace llvm {
     getOpndList(SmallVectorImpl<SDValue> &Ops,
                 std::deque< std::pair<unsigned, SDValue> > &RegsToPass,
                 bool IsPICCall, bool GlobalOrExternal, bool InternalLinkage,
-                CallLoweringInfo &CLI, SDValue Callee, SDValue Chain) const;
-
-    /// ByValArgInfo - Byval argument information.
-    struct ByValArgInfo {
-      unsigned FirstIdx; // Index of the first register used.
-      unsigned NumRegs;  // Number of registers used for this argument.
-      unsigned Address;  // Offset of the stack area used to pass this argument.
-
-      ByValArgInfo() : FirstIdx(0), NumRegs(0), Address(0) {}
-    };
+                bool IsCallReloc, CallLoweringInfo &CLI, SDValue Callee,
+                SDValue Chain) const;
 
     /// MipsCC - This class provides methods used to analyze formal and call
     /// arguments and inquire about calling convention information.
@@ -356,28 +350,16 @@ namespace llvm {
       };
 
       MipsCC(CallingConv::ID CallConv, const MipsSubtarget &Subtarget,
-             CCState &Info,
-             SpecialCallingConvType SpecialCallingConv = NoSpecialCallingConv);
+             CCState &Info);
 
       void analyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Outs,
                                bool IsVarArg, bool IsSoftFloat,
                                const SDNode *CallNode,
-                               std::vector<ArgListEntry> &FuncArgs);
+                               std::vector<ArgListEntry> &FuncArgs,
+                               CCState &State);
       void analyzeFormalArguments(const SmallVectorImpl<ISD::InputArg> &Ins,
                                   bool IsSoftFloat,
-                                  Function::const_arg_iterator FuncArg);
-
-      void analyzeCallResult(const SmallVectorImpl<ISD::InputArg> &Ins,
-                             bool IsSoftFloat, const SDNode *CallNode,
-                             const Type *RetTy) const;
-
-      void analyzeReturn(const SmallVectorImpl<ISD::OutputArg> &Outs,
-                         bool IsSoftFloat, const Type *RetTy) const;
-
-      const CCState &getCCInfo() const { return CCInfo; }
-
-      /// hasByValArg - Returns true if function has byval arguments.
-      bool hasByValArg() const { return !ByValArgs.empty(); }
+                                  CCState &State);
 
       /// reservedArgArea - The size of the area the caller reserves for
       /// register arguments. This is 16-byte if ABI is O32.
@@ -386,30 +368,7 @@ namespace llvm {
       /// Return pointer to array of integer argument registers.
       const ArrayRef<MCPhysReg> intArgRegs() const;
 
-      typedef SmallVectorImpl<ByValArgInfo>::const_iterator byval_iterator;
-      byval_iterator byval_begin() const { return ByValArgs.begin(); }
-      byval_iterator byval_end() const { return ByValArgs.end(); }
-
     private:
-      void handleByValArg(unsigned ValNo, MVT ValVT, MVT LocVT,
-                          CCValAssign::LocInfo LocInfo,
-                          ISD::ArgFlagsTy ArgFlags);
-
-      /// useRegsForByval - Returns true if the calling convention allows the
-      /// use of registers to pass byval arguments.
-      bool useRegsForByval() const { return CallConv != CallingConv::Fast; }
-
-      /// Return the function that analyzes fixed argument list functions.
-      llvm::CCAssignFn *fixedArgFn() const;
-
-      /// Return the function that analyzes variable argument list functions.
-      llvm::CCAssignFn *varArgFn() const;
-
-      const MCPhysReg *shadowRegs() const;
-
-      void allocateRegs(ByValArgInfo &ByVal, unsigned ByValSize,
-                        unsigned Align);
-
       /// Return the type of the register which is used to pass an argument or
       /// return a value. This function returns f64 if the argument is an i64
       /// value which has been generated as a result of softening an f128 value.
@@ -417,15 +376,10 @@ namespace llvm {
       MVT getRegVT(MVT VT, const Type *OrigTy, const SDNode *CallNode,
                    bool IsSoftFloat) const;
 
-      template<typename Ty>
-      void analyzeReturn(const SmallVectorImpl<Ty> &RetVals, bool IsSoftFloat,
-                         const SDNode *CallNode, const Type *RetTy) const;
+      SpecialCallingConvType getSpecialCallingConv(const SDNode *Callee) const;
 
-      CCState &CCInfo;
       CallingConv::ID CallConv;
       const MipsSubtarget &Subtarget;
-      SpecialCallingConvType SpecialCallingConv;
-      SmallVector<ByValArgInfo, 2> ByValArgs;
     };
   protected:
     SDValue lowerLOAD(SDValue Op, SelectionDAG &DAG) const;
@@ -455,14 +409,12 @@ namespace llvm {
     SDValue getTargetNode(ConstantPoolSDNode *N, EVT Ty, SelectionDAG &DAG,
                           unsigned Flag) const;
 
-    MipsCC::SpecialCallingConvType getSpecialCallingConv(SDValue Callee) const;
     // Lower Operand helpers
     SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
                             CallingConv::ID CallConv, bool isVarArg,
-                            const SmallVectorImpl<ISD::InputArg> &Ins,
-                            SDLoc dl, SelectionDAG &DAG,
-                            SmallVectorImpl<SDValue> &InVals,
-                            const SDNode *CallNode, const Type *RetTy) const;
+                            const SmallVectorImpl<ISD::InputArg> &Ins, SDLoc dl,
+                            SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals,
+                            TargetLowering::CallLoweringInfo &CLI) const;
 
     // Lower Operand specifics
     SDValue lowerBR_JT(SDValue Op, SelectionDAG &DAG) const;
@@ -492,33 +444,35 @@ namespace llvm {
     /// isEligibleForTailCallOptimization - Check whether the call is eligible
     /// for tail call optimization.
     virtual bool
-    isEligibleForTailCallOptimization(const MipsCC &MipsCCInfo,
+    isEligibleForTailCallOptimization(const CCState &CCInfo,
                                       unsigned NextStackOffset,
-                                      const MipsFunctionInfo& FI) const = 0;
+                                      const MipsFunctionInfo &FI) const = 0;
 
     /// copyByValArg - Copy argument registers which were used to pass a byval
     /// argument to the stack. Create a stack frame object for the byval
     /// argument.
-    void copyByValRegs(SDValue Chain, SDLoc DL,
-                       std::vector<SDValue> &OutChains, SelectionDAG &DAG,
-                       const ISD::ArgFlagsTy &Flags,
+    void copyByValRegs(SDValue Chain, SDLoc DL, std::vector<SDValue> &OutChains,
+                       SelectionDAG &DAG, const ISD::ArgFlagsTy &Flags,
                        SmallVectorImpl<SDValue> &InVals,
-                       const Argument *FuncArg,
-                       const MipsCC &CC, const ByValArgInfo &ByVal) const;
+                       const Argument *FuncArg, const MipsCC &CC,
+                       unsigned FirstReg, unsigned LastReg,
+                       const CCValAssign &VA) const;
 
     /// passByValArg - Pass a byval argument in registers or on stack.
     void passByValArg(SDValue Chain, SDLoc DL,
-                      std::deque< std::pair<unsigned, SDValue> > &RegsToPass,
+                      std::deque<std::pair<unsigned, SDValue>> &RegsToPass,
                       SmallVectorImpl<SDValue> &MemOpChains, SDValue StackPtr,
                       MachineFrameInfo *MFI, SelectionDAG &DAG, SDValue Arg,
-                      const MipsCC &CC, const ByValArgInfo &ByVal,
-                      const ISD::ArgFlagsTy &Flags, bool isLittle) const;
+                      const MipsCC &CC, unsigned FirstReg, unsigned LastReg,
+                      const ISD::ArgFlagsTy &Flags, bool isLittle,
+                      const CCValAssign &VA) const;
 
     /// writeVarArgRegs - Write variable function arguments passed in registers
     /// to the stack. Also create a stack frame object for the first variable
     /// argument.
     void writeVarArgRegs(std::vector<SDValue> &OutChains, const MipsCC &CC,
-                         SDValue Chain, SDLoc DL, SelectionDAG &DAG) const;
+                         SDValue Chain, SDLoc DL, SelectionDAG &DAG,
+                         CCState &State) const;
 
     SDValue
       LowerFormalArguments(SDValue Chain,
@@ -609,9 +563,11 @@ namespace llvm {
 
   /// Create MipsTargetLowering objects.
   const MipsTargetLowering *
-  createMips16TargetLowering(MipsTargetMachine &TM, const MipsSubtarget &STI);
+  createMips16TargetLowering(const MipsTargetMachine &TM,
+                             const MipsSubtarget &STI);
   const MipsTargetLowering *
-  createMipsSETargetLowering(MipsTargetMachine &TM, const MipsSubtarget &STI);
+  createMipsSETargetLowering(const MipsTargetMachine &TM,
+                             const MipsSubtarget &STI);
 
   namespace Mips {
     FastISel *createFastISel(FunctionLoweringInfo &funcInfo,

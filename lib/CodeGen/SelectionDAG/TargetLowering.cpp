@@ -2241,14 +2241,11 @@ TargetLowering::AsmOperandInfoVector TargetLowering::ParseConstraints(
 
   // Do a prepass over the constraints, canonicalizing them, and building up the
   // ConstraintOperands list.
-  InlineAsm::ConstraintInfoVector
-    ConstraintInfos = IA->ParseConstraints();
-
   unsigned ArgNo = 0;   // ArgNo - The argument of the CallInst.
   unsigned ResNo = 0;   // ResNo - The result number of the next output.
 
-  for (unsigned i = 0, e = ConstraintInfos.size(); i != e; ++i) {
-    ConstraintOperands.push_back(AsmOperandInfo(ConstraintInfos[i]));
+  for (InlineAsm::ConstraintInfo &CI : IA->ParseConstraints()) {
+    ConstraintOperands.emplace_back(std::move(CI));
     AsmOperandInfo &OpInfo = ConstraintOperands.back();
 
     // Update multiple alternative constraint count.
@@ -2327,7 +2324,7 @@ TargetLowering::AsmOperandInfoVector TargetLowering::ParseConstraints(
   }
 
   // If we have multiple alternative constraints, select the best alternative.
-  if (ConstraintInfos.size()) {
+  if (ConstraintOperands.size()) {
     if (maCount) {
       unsigned bestMAIndex = 0;
       int bestWeight = -1;
@@ -2648,6 +2645,8 @@ SDValue TargetLowering::BuildExactSDIV(SDValue Op1, SDValue Op2, SDLoc dl,
 SDValue TargetLowering::BuildSDIV(SDNode *N, const APInt &Divisor,
                                   SelectionDAG &DAG, bool IsAfterLegalization,
                                   std::vector<SDNode *> *Created) const {
+  assert(Created && "No vector to hold sdiv ops.");
+
   EVT VT = N->getValueType(0);
   SDLoc dl(N);
 
@@ -2675,28 +2674,24 @@ SDValue TargetLowering::BuildSDIV(SDNode *N, const APInt &Divisor,
   // If d > 0 and m < 0, add the numerator
   if (Divisor.isStrictlyPositive() && magics.m.isNegative()) {
     Q = DAG.getNode(ISD::ADD, dl, VT, Q, N->getOperand(0));
-    if (Created)
-      Created->push_back(Q.getNode());
+    Created->push_back(Q.getNode());
   }
   // If d < 0 and m > 0, subtract the numerator.
   if (Divisor.isNegative() && magics.m.isStrictlyPositive()) {
     Q = DAG.getNode(ISD::SUB, dl, VT, Q, N->getOperand(0));
-    if (Created)
-      Created->push_back(Q.getNode());
+    Created->push_back(Q.getNode());
   }
   // Shift right algebraic if shift value is nonzero
   if (magics.s > 0) {
     Q = DAG.getNode(ISD::SRA, dl, VT, Q,
                  DAG.getConstant(magics.s, getShiftAmountTy(Q.getValueType())));
-    if (Created)
-      Created->push_back(Q.getNode());
+    Created->push_back(Q.getNode());
   }
   // Extract the sign bit and add it to the quotient
   SDValue T = DAG.getNode(ISD::SRL, dl, VT, Q,
                           DAG.getConstant(VT.getScalarSizeInBits() - 1,
                                           getShiftAmountTy(Q.getValueType())));
-  if (Created)
-    Created->push_back(T.getNode());
+  Created->push_back(T.getNode());
   return DAG.getNode(ISD::ADD, dl, VT, Q, T);
 }
 
@@ -2707,6 +2702,8 @@ SDValue TargetLowering::BuildSDIV(SDNode *N, const APInt &Divisor,
 SDValue TargetLowering::BuildUDIV(SDNode *N, const APInt &Divisor,
                                   SelectionDAG &DAG, bool IsAfterLegalization,
                                   std::vector<SDNode *> *Created) const {
+  assert(Created && "No vector to hold udiv ops.");
+
   EVT VT = N->getValueType(0);
   SDLoc dl(N);
 
@@ -2727,8 +2724,7 @@ SDValue TargetLowering::BuildUDIV(SDNode *N, const APInt &Divisor,
     unsigned Shift = Divisor.countTrailingZeros();
     Q = DAG.getNode(ISD::SRL, dl, VT, Q,
                     DAG.getConstant(Shift, getShiftAmountTy(Q.getValueType())));
-    if (Created)
-      Created->push_back(Q.getNode());
+    Created->push_back(Q.getNode());
 
     // Get magic number for the shifted divisor.
     magics = Divisor.lshr(Shift).magicu(Shift);
@@ -2746,8 +2742,8 @@ SDValue TargetLowering::BuildUDIV(SDNode *N, const APInt &Divisor,
                             DAG.getConstant(magics.m, VT)).getNode(), 1);
   else
     return SDValue();       // No mulhu or equvialent
-  if (Created)
-    Created->push_back(Q.getNode());
+
+  Created->push_back(Q.getNode());
 
   if (magics.a == 0) {
     assert(magics.s < Divisor.getBitWidth() &&
@@ -2756,15 +2752,12 @@ SDValue TargetLowering::BuildUDIV(SDNode *N, const APInt &Divisor,
                  DAG.getConstant(magics.s, getShiftAmountTy(Q.getValueType())));
   } else {
     SDValue NPQ = DAG.getNode(ISD::SUB, dl, VT, N->getOperand(0), Q);
-    if (Created)
-      Created->push_back(NPQ.getNode());
+    Created->push_back(NPQ.getNode());
     NPQ = DAG.getNode(ISD::SRL, dl, VT, NPQ,
                       DAG.getConstant(1, getShiftAmountTy(NPQ.getValueType())));
-    if (Created)
-      Created->push_back(NPQ.getNode());
+    Created->push_back(NPQ.getNode());
     NPQ = DAG.getNode(ISD::ADD, dl, VT, NPQ, Q);
-    if (Created)
-      Created->push_back(NPQ.getNode());
+    Created->push_back(NPQ.getNode());
     return DAG.getNode(ISD::SRL, dl, VT, NPQ,
              DAG.getConstant(magics.s-1, getShiftAmountTy(NPQ.getValueType())));
   }
@@ -2787,7 +2780,7 @@ verifyReturnAddressArgumentIsConstant(SDValue Op, SelectionDAG &DAG) const {
 
 bool TargetLowering::expandMUL(SDNode *N, SDValue &Lo, SDValue &Hi, EVT HiLoVT,
                                SelectionDAG &DAG, SDValue LL, SDValue LH,
-			       SDValue RL, SDValue RH) const {
+                               SDValue RL, SDValue RH) const {
   EVT VT = N->getValueType(0);
   SDLoc dl(N);
 
@@ -2820,8 +2813,8 @@ bool TargetLowering::expandMUL(SDNode *N, SDValue &Lo, SDValue &Hi, EVT HiLoVT,
       // The inputs are both zero-extended.
       if (HasUMUL_LOHI) {
         // We can emit a umul_lohi.
-        Lo = DAG.getNode(ISD::UMUL_LOHI, dl,
-	                 DAG.getVTList(HiLoVT, HiLoVT), LL, RL);
+        Lo = DAG.getNode(ISD::UMUL_LOHI, dl, DAG.getVTList(HiLoVT, HiLoVT), LL,
+                         RL);
         Hi = SDValue(Lo.getNode(), 1);
         return true;
       }
@@ -2836,8 +2829,8 @@ bool TargetLowering::expandMUL(SDNode *N, SDValue &Lo, SDValue &Hi, EVT HiLoVT,
       // The input values are both sign-extended.
       if (HasSMUL_LOHI) {
         // We can emit a smul_lohi.
-        Lo = DAG.getNode(ISD::SMUL_LOHI, dl,
-	                 DAG.getVTList(HiLoVT, HiLoVT), LL, RL);
+        Lo = DAG.getNode(ISD::SMUL_LOHI, dl, DAG.getVTList(HiLoVT, HiLoVT), LL,
+                         RL);
         Hi = SDValue(Lo.getNode(), 1);
         return true;
       }

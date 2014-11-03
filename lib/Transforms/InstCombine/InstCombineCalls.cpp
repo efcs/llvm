@@ -16,6 +16,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -116,7 +117,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
 
         // If the memcpy has metadata describing the members, see if we can
         // get the TBAA tag describing our copy.
-        if (MDNode *M = MI->getMetadata(LLVMContext::MD_tbaa_struct)) {
+        if (MDNode *M = MI->getMDNode(LLVMContext::MD_tbaa_struct)) {
           if (M->getNumOperands() == 3 &&
               M->getOperand(0) &&
               isa<ConstantInt>(M->getOperand(0)) &&
@@ -518,6 +519,90 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       }
     }
     break;
+  case Intrinsic::minnum:
+  case Intrinsic::maxnum: {
+    Value *Arg0 = II->getArgOperand(0);
+    Value *Arg1 = II->getArgOperand(1);
+
+    // fmin(x, x) -> x
+    if (Arg0 == Arg1)
+      return ReplaceInstUsesWith(CI, Arg0);
+
+    const ConstantFP *C0 = dyn_cast<ConstantFP>(Arg0);
+    const ConstantFP *C1 = dyn_cast<ConstantFP>(Arg1);
+
+    // Canonicalize constants into the RHS.
+    if (C0 && !C1) {
+      II->setArgOperand(0, Arg1);
+      II->setArgOperand(1, Arg0);
+      return II;
+    }
+
+    // fmin(x, nan) -> x
+    if (C1 && C1->isNaN())
+      return ReplaceInstUsesWith(CI, Arg0);
+
+    // This is the value because if undef were NaN, we would return the other
+    // value and cannot return a NaN unless both operands are.
+    //
+    // fmin(undef, x) -> x
+    if (isa<UndefValue>(Arg0))
+      return ReplaceInstUsesWith(CI, Arg1);
+
+    // fmin(x, undef) -> x
+    if (isa<UndefValue>(Arg1))
+      return ReplaceInstUsesWith(CI, Arg0);
+
+    Value *X = nullptr;
+    Value *Y = nullptr;
+    if (II->getIntrinsicID() == Intrinsic::minnum) {
+      // fmin(x, fmin(x, y)) -> fmin(x, y)
+      // fmin(y, fmin(x, y)) -> fmin(x, y)
+      if (match(Arg1, m_FMin(m_Value(X), m_Value(Y)))) {
+        if (Arg0 == X || Arg0 == Y)
+          return ReplaceInstUsesWith(CI, Arg1);
+      }
+
+      // fmin(fmin(x, y), x) -> fmin(x, y)
+      // fmin(fmin(x, y), y) -> fmin(x, y)
+      if (match(Arg0, m_FMin(m_Value(X), m_Value(Y)))) {
+        if (Arg1 == X || Arg1 == Y)
+          return ReplaceInstUsesWith(CI, Arg0);
+      }
+
+      // TODO: fmin(nnan x, inf) -> x
+      // TODO: fmin(nnan ninf x, flt_max) -> x
+      if (C1 && C1->isInfinity()) {
+        // fmin(x, -inf) -> -inf
+        if (C1->isNegative())
+          return ReplaceInstUsesWith(CI, Arg1);
+      }
+    } else {
+      assert(II->getIntrinsicID() == Intrinsic::maxnum);
+      // fmax(x, fmax(x, y)) -> fmax(x, y)
+      // fmax(y, fmax(x, y)) -> fmax(x, y)
+      if (match(Arg1, m_FMax(m_Value(X), m_Value(Y)))) {
+        if (Arg0 == X || Arg0 == Y)
+          return ReplaceInstUsesWith(CI, Arg1);
+      }
+
+      // fmax(fmax(x, y), x) -> fmax(x, y)
+      // fmax(fmax(x, y), y) -> fmax(x, y)
+      if (match(Arg0, m_FMax(m_Value(X), m_Value(Y)))) {
+        if (Arg1 == X || Arg1 == Y)
+          return ReplaceInstUsesWith(CI, Arg0);
+      }
+
+      // TODO: fmax(nnan x, -inf) -> x
+      // TODO: fmax(nnan ninf x, -flt_max) -> x
+      if (C1 && C1->isInfinity()) {
+        // fmax(x, inf) -> inf
+        if (!C1->isNegative())
+          return ReplaceInstUsesWith(CI, Arg1);
+      }
+    }
+    break;
+  }
   case Intrinsic::ppc_altivec_lvx:
   case Intrinsic::ppc_altivec_lvxl:
     // Turn PPC lvx -> load if the pointer is known aligned.
@@ -1016,6 +1101,14 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
                           II->getName());
       return EraseInstFromFunction(*II);
     }
+
+    // If there is a dominating assume with the same condition as this one,
+    // then this one is redundant, and should be removed.
+    APInt KnownZero(1, 0), KnownOne(1, 0);
+    computeKnownBits(IIOperand, KnownZero, KnownOne, 0, II);
+    if (KnownOne.isAllOnesValue())
+      return EraseInstFromFunction(*II);
+
     break;
   }
   }
@@ -1277,7 +1370,7 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
       if (!Caller->use_empty() &&
           // void -> non-void is handled specially
           !NewRetTy->isVoidTy())
-      return false;   // Cannot transform this return value.
+        return false;   // Cannot transform this return value.
     }
 
     if (!CallerPAL.isEmpty() && !Caller->use_empty()) {
@@ -1496,8 +1589,14 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
 
   if (!Caller->use_empty())
     ReplaceInstUsesWith(*Caller, NV);
-  else if (Caller->hasValueHandle())
-    ValueHandleBase::ValueIsRAUWd(Caller, NV);
+  else if (Caller->hasValueHandle()) {
+    if (OldRetTy == NV->getType())
+      ValueHandleBase::ValueIsRAUWd(Caller, NV);
+    else
+      // We cannot call ValueIsRAUWd with a different type, and the
+      // actual tracked value will disappear.
+      ValueHandleBase::ValueIsDeleted(Caller);
+  }
 
   EraseInstFromFunction(*Caller);
   return true;
