@@ -85,6 +85,15 @@ static cl::opt<bool>
 Rebase("rebase", cl::desc("Display mach-o rebasing info"));
 
 static cl::opt<bool>
+Bind("bind", cl::desc("Display mach-o binding info"));
+
+static cl::opt<bool>
+LazyBind("lazy-bind", cl::desc("Display mach-o lazy binding info"));
+
+static cl::opt<bool>
+WeakBind("weak-bind", cl::desc("Display mach-o weak binding info"));
+
+static cl::opt<bool>
 MachOOpt("macho", cl::desc("Use MachO specific object file parser"));
 static cl::alias
 MachOm("m", cl::desc("Alias for --macho"), cl::aliasopt(MachOOpt));
@@ -119,9 +128,10 @@ llvm::MAttrs("mattr",
   cl::desc("Target specific attributes"),
   cl::value_desc("a1,+a2,-a3,..."));
 
-static cl::opt<bool>
-NoShowRawInsn("no-show-raw-insn", cl::desc("When disassembling instructions, "
-                                           "do not print the instruction bytes."));
+cl::opt<bool>
+llvm::NoShowRawInsn("no-show-raw-insn", cl::desc("When disassembling "
+                                                 "instructions, do not print "
+                                                 "the instruction bytes."));
 
 static cl::opt<bool>
 UnwindInfo("unwind-info", cl::desc("Display unwind information"));
@@ -297,25 +307,17 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
   }
 
   for (const SectionRef &Section : Obj->sections()) {
-    bool Text;
-    if (error(Section.isText(Text)))
-      break;
+    bool Text = Section.isText();
     if (!Text)
       continue;
 
-    uint64_t SectionAddr;
-    if (error(Section.getAddress(SectionAddr)))
-      break;
-
-    uint64_t SectSize;
-    if (error(Section.getSize(SectSize)))
-      break;
+    uint64_t SectionAddr = Section.getAddress();
+    uint64_t SectSize = Section.getSize();
 
     // Make a list of all the symbols in this section.
     std::vector<std::pair<uint64_t, StringRef>> Symbols;
     for (const SymbolRef &Symbol : Obj->symbols()) {
-      bool contains;
-      if (!error(Section.containsSymbol(Symbol, contains)) && contains) {
+      if (Section.containsSymbol(Symbol)) {
         uint64_t Address;
         if (error(Symbol.getAddress(Address)))
           break;
@@ -491,19 +493,11 @@ static void PrintSectionHeaders(const ObjectFile *Obj) {
     StringRef Name;
     if (error(Section.getName(Name)))
       return;
-    uint64_t Address;
-    if (error(Section.getAddress(Address)))
-      return;
-    uint64_t Size;
-    if (error(Section.getSize(Size)))
-      return;
-    bool Text, Data, BSS;
-    if (error(Section.isText(Text)))
-      return;
-    if (error(Section.isData(Data)))
-      return;
-    if (error(Section.isBSS(BSS)))
-      return;
+    uint64_t Address = Section.getAddress();
+    uint64_t Size = Section.getSize();
+    bool Text = Section.isText();
+    bool Data = Section.isData();
+    bool BSS = Section.isBSS();
     std::string Type = (std::string(Text ? "TEXT " : "") +
                         (Data ? "DATA " : "") + (BSS ? "BSS" : ""));
     outs() << format("%3d %-13s %08" PRIx64 " %016" PRIx64 " %s\n", i,
@@ -517,20 +511,14 @@ static void PrintSectionContents(const ObjectFile *Obj) {
   for (const SectionRef &Section : Obj->sections()) {
     StringRef Name;
     StringRef Contents;
-    uint64_t BaseAddr;
-    bool BSS;
     if (error(Section.getName(Name)))
       continue;
-    if (error(Section.getAddress(BaseAddr)))
-      continue;
-    if (error(Section.isBSS(BSS)))
-      continue;
+    uint64_t BaseAddr = Section.getAddress();
+    bool BSS = Section.isBSS();
 
     outs() << "Contents of section " << Name << ":\n";
     if (BSS) {
-      uint64_t Size;
-      if (error(Section.getSize(Size)))
-        continue;
+      uint64_t Size = Section.getSize();
       outs() << format("<skipping contents of bss section at [%04" PRIx64
                        ", %04" PRIx64 ")>\n",
                        BaseAddr, BaseAddr + Size);
@@ -736,6 +724,38 @@ static void printRebaseTable(const ObjectFile *o) {
   }
 }
 
+static void printBindTable(const ObjectFile *o) {
+  outs() << "Bind table:\n";
+  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+    printMachOBindTable(MachO);
+  else {
+    errs() << "This operation is only currently supported "
+              "for Mach-O executable files.\n";
+    return;
+  }
+}
+
+static void printLazyBindTable(const ObjectFile *o) {
+  outs() << "Lazy bind table:\n";
+  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+    printMachOLazyBindTable(MachO);
+  else {
+    errs() << "This operation is only currently supported "
+              "for Mach-O executable files.\n";
+    return;
+  }
+}
+
+static void printWeakBindTable(const ObjectFile *o) {
+  outs() << "Weak bind table:\n";
+  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+    printMachOWeakBindTable(MachO);
+  else {
+    errs() << "This operation is only currently supported "
+              "for Mach-O executable files.\n";
+    return;
+  }
+}
 
 static void printPrivateFileHeader(const ObjectFile *o) {
   if (o->isELF()) {
@@ -770,6 +790,12 @@ static void DumpObject(const ObjectFile *o) {
     printExportsTrie(o);
   if (Rebase)
     printRebaseTable(o);
+  if (Bind)
+    printBindTable(o);
+  if (LazyBind)
+    printLazyBindTable(o);
+  if (WeakBind)
+    printWeakBindTable(o);
 }
 
 /// @brief Dump each object file in \a a;
@@ -853,7 +879,10 @@ int main(int argc, char **argv) {
       && !UnwindInfo
       && !PrivateHeaders
       && !ExportsTrie
-      && !Rebase) {
+      && !Rebase
+      && !Bind
+      && !LazyBind
+      && !WeakBind) {
     cl::PrintHelpMessage();
     return 2;
   }

@@ -55,6 +55,8 @@ private:
 
   void addDescImplicitUseDef(const MCInstrDesc &Desc, MachineInstr *MI) const;
 
+  unsigned findUsedSGPR(const MachineInstr *MI, int OpIndices[3]) const;
+
 public:
   explicit SIInstrInfo(const AMDGPUSubtarget &st);
 
@@ -70,10 +72,21 @@ public:
                             unsigned &BaseReg, unsigned &Offset,
                             const TargetRegisterInfo *TRI) const final;
 
+  bool shouldClusterLoads(MachineInstr *FirstLdSt,
+                          MachineInstr *SecondLdSt,
+                          unsigned NumLoads) const final;
+
   void copyPhysReg(MachineBasicBlock &MBB,
                    MachineBasicBlock::iterator MI, DebugLoc DL,
                    unsigned DestReg, unsigned SrcReg,
                    bool KillSrc) const override;
+
+  unsigned calculateLDSSpillAddress(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator MI,
+                                    RegScavenger *RS,
+                                    unsigned TmpReg,
+                                    unsigned Offset,
+                                    unsigned Size) const;
 
   void storeRegToStackSlot(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator MI,
@@ -92,7 +105,10 @@ public:
   unsigned commuteOpcode(unsigned Opcode) const;
 
   MachineInstr *commuteInstruction(MachineInstr *MI,
-                                   bool NewMI=false) const override;
+                                   bool NewMI = false) const override;
+  bool findCommutedOpIndices(MachineInstr *MI,
+                             unsigned &SrcOpIdx1,
+                             unsigned &SrcOpIdx2) const override;
 
   bool isTriviallyReMaterializable(const MachineInstr *MI,
                                    AliasAnalysis *AA = nullptr) const;
@@ -128,9 +144,17 @@ public:
   /// This function will return false if you pass it a 32-bit instruction.
   bool hasVALU32BitEncoding(unsigned Opcode) const;
 
+  /// \brief Returns true if this operand uses the constant bus.
+  bool usesConstantBus(const MachineRegisterInfo &MRI,
+                       const MachineOperand &MO) const;
+
   /// \brief Return true if this instruction has any modifiers.
   ///  e.g. src[012]_mod, omod, clamp.
   bool hasModifiers(unsigned Opcode) const;
+
+  bool hasModifiersSet(const MachineInstr &MI,
+                       unsigned OpName) const;
+
   bool verifyInstruction(const MachineInstr *MI,
                          StringRef &ErrInfo) const override;
 
@@ -211,6 +235,11 @@ public:
   /// \brief Returns the operand named \p Op.  If \p MI does not have an
   /// operand named \c Op, this function returns nullptr.
   MachineOperand *getNamedOperand(MachineInstr &MI, unsigned OperandName) const;
+
+  const MachineOperand *getNamedOperand(const MachineInstr &MI,
+                                        unsigned OpName) const {
+    return getNamedOperand(const_cast<MachineInstr &>(MI), OpName);
+  }
 };
 
 namespace AMDGPU {
@@ -229,22 +258,25 @@ namespace AMDGPU {
 
 } // End namespace AMDGPU
 
+namespace SI {
+namespace KernelInputOffsets {
+
+/// Offsets in bytes from the start of the input buffer
+enum Offsets {
+  NGROUPS_X = 0,
+  NGROUPS_Y = 4,
+  NGROUPS_Z = 8,
+  GLOBAL_SIZE_X = 12,
+  GLOBAL_SIZE_Y = 16,
+  GLOBAL_SIZE_Z = 20,
+  LOCAL_SIZE_X = 24,
+  LOCAL_SIZE_Y = 28,
+  LOCAL_SIZE_Z = 32
+};
+
+} // End namespace KernelInputOffsets
+} // End namespace SI
+
 } // End namespace llvm
-
-namespace SIInstrFlags {
-  enum Flags {
-    // First 4 bits are the instruction encoding
-    VM_CNT = 1 << 0,
-    EXP_CNT = 1 << 1,
-    LGKM_CNT = 1 << 2
-  };
-}
-
-namespace SISrcMods {
-  enum {
-   NEG = 1 << 0,
-   ABS = 1 << 1
-  };
-}
 
 #endif

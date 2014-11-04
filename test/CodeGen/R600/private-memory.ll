@@ -4,7 +4,7 @@
 
 declare i32 @llvm.r600.read.tidig.x() nounwind readnone
 
-; FUNC-LABEL: @mova_same_clause
+; FUNC-LABEL: {{^}}mova_same_clause:
 
 ; R600: LDS_WRITE
 ; R600: LDS_WRITE
@@ -45,7 +45,7 @@ entry:
 ; XXX: This generated code has unnecessary MOVs, we should be able to optimize
 ; this.
 
-; FUNC-LABEL: @multiple_structs
+; FUNC-LABEL: {{^}}multiple_structs:
 ; R600-NOT: MOVA_INT
 ; SI-NOT: V_MOVREL
 ; SI-NOT: V_MOVREL
@@ -76,7 +76,7 @@ entry:
 ; loads and stores should be lowered to copies, so there shouldn't be any
 ; MOVA instructions.
 
-; FUNC-LABEL: @direct_loop
+; FUNC-LABEL: {{^}}direct_loop:
 ; R600-NOT: MOVA_INT
 ; SI-NOT: V_MOVREL
 
@@ -112,7 +112,7 @@ for.end:
   ret void
 }
 
-; FUNC-LABEL: @short_array
+; FUNC-LABEL: {{^}}short_array:
 
 ; R600: MOVA_INT
 
@@ -133,7 +133,7 @@ entry:
   ret void
 }
 
-; FUNC-LABEL: @char_array
+; FUNC-LABEL: {{^}}char_array:
 
 ; R600: MOVA_INT
 
@@ -156,7 +156,7 @@ entry:
 
 ; Make sure we don't overwrite workitem information with private memory
 
-; FUNC-LABEL: @work_item_info
+; FUNC-LABEL: {{^}}work_item_info:
 ; R600-NOT: MOV T0.X
 ; Additional check in case the move ends up in the last slot
 ; R600-NOT: MOV * TO.X
@@ -179,7 +179,7 @@ entry:
 
 ; Test that two stack objects are not stored in the same register
 ; The second stack object should be in T3.X
-; FUNC-LABEL: @no_overlap
+; FUNC-LABEL: {{^}}no_overlap:
 ; R600_CHECK: MOV
 ; R600_CHECK: [[CHAN:[XYZW]]]+
 ; R600-NOT: [[CHAN]]+
@@ -290,3 +290,22 @@ entry:
   ret void
 }
 
+; AMDGPUPromoteAlloca does not know how to handle ptrtoint.  When it
+; finds one, it should stop trying to promote.
+
+; FUNC-LABEL: ptrtoint:
+; SI-NOT: DS_WRITE
+; SI: BUFFER_STORE_DWORD v{{[0-9]+}}, v{{[0-9]+}}, s[{{[0-9]+:[0-9]+}}], s{{[0-9]+}} offen
+; SI: BUFFER_LOAD_DWORD v{{[0-9]+}}, v{{[0-9]+}}, s[{{[0-9]+:[0-9]+}}], s{{[0-9]+}} offen offset:0x5
+define void @ptrtoint(i32 addrspace(1)* %out, i32 %a, i32 %b) {
+  %alloca = alloca [16 x i32]
+  %tmp0 = getelementptr [16 x i32]* %alloca, i32 0, i32 %a
+  store i32 5, i32* %tmp0
+  %tmp1 = ptrtoint [16 x i32]* %alloca to i32
+  %tmp2 = add i32 %tmp1, 5
+  %tmp3 = inttoptr i32 %tmp2 to i32*
+  %tmp4 = getelementptr i32* %tmp3, i32 %b
+  %tmp5 = load i32* %tmp4
+  store i32 %tmp5, i32 addrspace(1)* %out
+  ret void
+}

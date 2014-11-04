@@ -40,8 +40,10 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/AssumptionTracker.h"
+#include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/CFG.h"
@@ -70,11 +72,6 @@ STATISTIC(NumExpand,    "Number of expansions");
 STATISTIC(NumFactor   , "Number of factorizations");
 STATISTIC(NumReassoc  , "Number of reassociations");
 
-static cl::opt<bool> UnsafeFPShrink("enable-double-float-shrink", cl::Hidden,
-                                   cl::init(false),
-                                   cl::desc("Enable unsafe double to float "
-                                            "shrinking for math lib calls"));
-
 // Initialization Routines
 void llvm::initializeInstCombine(PassRegistry &Registry) {
   initializeInstCombinerPass(Registry);
@@ -93,7 +90,8 @@ INITIALIZE_PASS_END(InstCombiner, "instcombine",
                 "Combine redundant instructions", false, false)
 
 void InstCombiner::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.setPreservesCFG();
+  AU.addPreserved<DominatorTreeWrapperPass>();
+  AU.addPreserved<LoopInfo>();
   AU.addRequired<AssumptionTracker>();
   AU.addRequired<TargetLibraryInfo>();
 }
@@ -799,13 +797,14 @@ Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I) {
     // If the incoming non-constant value is in I's block, we will remove one
     // instruction, but insert another equivalent one, leading to infinite
     // instcombine.
-    if (NonConstBB == I.getParent())
+    if (isPotentiallyReachable(I.getParent(), NonConstBB, DT,
+                               getAnalysisIfAvailable<LoopInfo>()))
       return nullptr;
   }
 
   // If there is exactly one non-constant value, we can insert a copy of the
   // operation in that block.  However, if this is a critical edge, we would be
-  // inserting the computation one some other paths (e.g. inside a loop).  Only
+  // inserting the computation on some other paths (e.g. inside a loop).  Only
   // do this if the pred block is unconditionally branching into the phi block.
   if (NonConstBB != nullptr) {
     BranchInst *BI = dyn_cast<BranchInst>(NonConstBB->getTerminator());
@@ -2074,6 +2073,37 @@ Instruction *InstCombiner::visitBranchInst(BranchInst &BI) {
 
 Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
   Value *Cond = SI.getCondition();
+  unsigned BitWidth = cast<IntegerType>(Cond->getType())->getBitWidth();
+  APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
+  computeKnownBits(Cond, KnownZero, KnownOne);
+  unsigned LeadingKnownZeros = KnownZero.countLeadingOnes();
+  unsigned LeadingKnownOnes = KnownOne.countLeadingOnes();
+
+  // Compute the number of leading bits we can ignore.
+  for (auto &C : SI.cases()) {
+    LeadingKnownZeros = std::min(
+        LeadingKnownZeros, C.getCaseValue()->getValue().countLeadingZeros());
+    LeadingKnownOnes = std::min(
+        LeadingKnownOnes, C.getCaseValue()->getValue().countLeadingOnes());
+  }
+
+  unsigned NewWidth = BitWidth - std::max(LeadingKnownZeros, LeadingKnownOnes);
+
+  // Truncate the condition operand if the new type is equal to or larger than
+  // the largest legal integer type. We need to be conservative here since
+  // x86 generates redundant zero-extenstion instructions if the operand is
+  // truncated to i8 or i16.
+  if (BitWidth > NewWidth && NewWidth >= DL->getLargestLegalIntTypeSize()) {
+    IntegerType *Ty = IntegerType::get(SI.getContext(), NewWidth);
+    Builder->SetInsertPoint(&SI);
+    Value *NewCond = Builder->CreateTrunc(SI.getCondition(), Ty, "trunc");
+    SI.setCondition(NewCond);
+
+    for (auto &C : SI.cases())
+      static_cast<SwitchInst::CaseIt *>(&C)->setValue(ConstantInt::get(
+          SI.getContext(), C.getCaseValue()->getValue().trunc(NewWidth)));
+  }
+
   if (Instruction *I = dyn_cast<Instruction>(Cond)) {
     if (I->getOpcode() == Instruction::Add)
       if (ConstantInt *AddRHS = dyn_cast<ConstantInt>(I->getOperand(1))) {
@@ -2907,13 +2937,13 @@ bool InstCombiner::DoOneIteration(Function &F, unsigned Iteration) {
 }
 
 namespace {
-class InstCombinerLibCallSimplifier : public LibCallSimplifier {
+class InstCombinerLibCallSimplifier final : public LibCallSimplifier {
   InstCombiner *IC;
 public:
   InstCombinerLibCallSimplifier(const DataLayout *DL,
                                 const TargetLibraryInfo *TLI,
                                 InstCombiner *IC)
-    : LibCallSimplifier(DL, TLI, UnsafeFPShrink) {
+    : LibCallSimplifier(DL, TLI) {
     this->IC = IC;
   }
 

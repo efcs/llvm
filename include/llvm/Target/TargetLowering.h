@@ -262,16 +262,28 @@ public:
   bool isMaskAndBranchFoldingLegal() const {
     return MaskAndBranchFoldingIsLegal;
   }
-  
+
+  /// Return true if the target can combine store(extractelement VectorTy,
+  /// Idx).
+  /// \p Cost[out] gives the cost of that transformation when this is true.
+  virtual bool canCombineStoreAndExtract(Type *VectorTy, Value *Idx,
+                                         unsigned &Cost) const {
+    return false;
+  }
+
   /// Return true if target supports floating point exceptions.
   bool hasFloatingPointExceptions() const {
     return HasFloatingPointExceptions;
   }
 
-  /// Return the ValueType of the result of SETCC operations.  Also used to
-  /// obtain the target's preferred type for the condition operand of SELECT and
-  /// BRCOND nodes.  In the case of BRCOND the argument passed is MVT::Other
-  /// since there are no other operands to get a type hint from.
+  /// Return true if target always beneficiates from combining into FMA for a
+  /// given value type. This must typically return false on targets where FMA
+  /// takes more cycles to execute than FADD.
+  virtual bool enableAggressiveFMAFusion(EVT VT) const {
+    return false;
+  }
+
+  /// Return the ValueType of the result of SETCC operations.
   virtual EVT getSetCCResultType(LLVMContext &Context, EVT VT) const;
 
   /// Return the ValueType for comparison libcalls. Comparions libcalls include
@@ -936,6 +948,10 @@ public:
   /// \name Helpers for atomic expansion.
   /// @{
 
+  /// True if AtomicExpandPass should use emitLoadLinked/emitStoreConditional
+  /// and expand AtomicCmpXchgInst.
+  virtual bool hasLoadLinkedStoreConditional() const { return false; }
+
   /// Perform a load-linked operation on Addr, returning a "Value *" with the
   /// corresponding pointee type. This may entail some non-trivial operations to
   /// truncate or reconstruct types that will be illegal in the backend. See
@@ -956,21 +972,54 @@ public:
   /// It is called by AtomicExpandPass before expanding an
   ///   AtomicRMW/AtomicCmpXchg/AtomicStore/AtomicLoad.
   /// RMW and CmpXchg set both IsStore and IsLoad to true.
+  /// This function should either return a nullptr, or a pointer to an IR-level
+  ///   Instruction*. Even complex fence sequences can be represented by a
+  ///   single Instruction* through an intrinsic to be lowered later.
   /// Backends with !getInsertFencesForAtomic() should keep a no-op here.
-  virtual void emitLeadingFence(IRBuilder<> &Builder, AtomicOrdering Ord,
+  /// Backends should override this method to produce target-specific intrinsic
+  ///   for their fences.
+  /// FIXME: Please note that the default implementation here in terms of
+  ///   IR-level fences exists for historical/compatibility reasons and is
+  ///   *unsound* ! Fences cannot, in general, be used to restore sequential
+  ///   consistency. For example, consider the following example:
+  /// atomic<int> x = y = 0;
+  /// int r1, r2, r3, r4;
+  /// Thread 0:
+  ///   x.store(1);
+  /// Thread 1:
+  ///   y.store(1);
+  /// Thread 2:
+  ///   r1 = x.load();
+  ///   r2 = y.load();
+  /// Thread 3:
+  ///   r3 = y.load();
+  ///   r4 = x.load();
+  ///  r1 = r3 = 1 and r2 = r4 = 0 is impossible as long as the accesses are all
+  ///  seq_cst. But if they are lowered to monotonic accesses, no amount of
+  ///  IR-level fences can prevent it.
+  /// @{
+  virtual Instruction* emitLeadingFence(IRBuilder<> &Builder, AtomicOrdering Ord,
           bool IsStore, bool IsLoad) const {
-    assert(!getInsertFencesForAtomic());
+    if (!getInsertFencesForAtomic())
+      return nullptr;
+
+    if (isAtLeastRelease(Ord) && IsStore)
+      return Builder.CreateFence(Ord);
+    else
+      return nullptr;
   }
 
-  /// Inserts in the IR a target-specific intrinsic specifying a fence.
-  /// It is called by AtomicExpandPass after expanding an
-  ///   AtomicRMW/AtomicCmpXchg/AtomicStore/AtomicLoad.
-  /// RMW and CmpXchg set both IsStore and IsLoad to true.
-  /// Backends with !getInsertFencesForAtomic() should keep a no-op here.
-  virtual void emitTrailingFence(IRBuilder<> &Builder, AtomicOrdering Ord,
+  virtual Instruction* emitTrailingFence(IRBuilder<> &Builder, AtomicOrdering Ord,
           bool IsStore, bool IsLoad) const {
-    assert(!getInsertFencesForAtomic());
+    if (!getInsertFencesForAtomic())
+      return nullptr;
+
+    if (isAtLeastAcquire(Ord))
+      return Builder.CreateFence(Ord);
+    else
+      return nullptr;
   }
+  /// @}
 
   /// Returns true if the given (atomic) store should be expanded by the
   /// IR-level AtomicExpand pass into an "atomic xchg" which ignores its input.
@@ -989,6 +1038,20 @@ public:
     return false;
   }
 
+  /// On some platforms, an AtomicRMW that never actually modifies the value
+  /// (such as fetch_add of 0) can be turned into a fence followed by an
+  /// atomic load. This may sound useless, but it makes it possible for the
+  /// processor to keep the cacheline shared, dramatically improving
+  /// performance. And such idempotent RMWs are useful for implementing some
+  /// kinds of locks, see for example (justification + benchmarks):
+  /// http://www.hpl.hp.com/techreports/2012/HPL-2012-68.pdf
+  /// This method tries doing that transformation, returning the atomic load if
+  /// it succeeds, and nullptr otherwise.
+  /// If shouldExpandAtomicLoadInIR returns true on that load, it will undergo
+  /// another round of expansion.
+  virtual LoadInst *lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *RMWI) const {
+    return nullptr;
+  }
   //===--------------------------------------------------------------------===//
   // TargetLowering Configuration Methods - These methods should be invoked by
   // the derived class constructor to configure this object for the target.
@@ -2514,11 +2577,10 @@ public:
     unsigned getMatchedOperand() const;
 
     /// Copy constructor for copying from a ConstraintInfo.
-    AsmOperandInfo(const InlineAsm::ConstraintInfo &info)
-      : InlineAsm::ConstraintInfo(info),
-        ConstraintType(TargetLowering::C_Unknown),
-        CallOperandVal(nullptr), ConstraintVT(MVT::Other) {
-    }
+    AsmOperandInfo(InlineAsm::ConstraintInfo Info)
+        : InlineAsm::ConstraintInfo(std::move(Info)),
+          ConstraintType(TargetLowering::C_Unknown), CallOperandVal(nullptr),
+          ConstraintVT(MVT::Other) {}
   };
 
   typedef std::vector<AsmOperandInfo> AsmOperandInfoVector;
@@ -2588,6 +2650,40 @@ public:
   virtual SDValue BuildSDIVPow2(SDNode *N, const APInt &Divisor,
                                 SelectionDAG &DAG,
                                 std::vector<SDNode *> *Created) const {
+    return SDValue();
+  }
+
+  /// Hooks for building estimates in place of slower divisions and square
+  /// roots.
+  
+  /// Return a reciprocal square root estimate value for the input operand.
+  /// The RefinementSteps output is the number of Newton-Raphson refinement
+  /// iterations required to generate a sufficient (though not necessarily
+  /// IEEE-754 compliant) estimate for the value type.
+  /// The boolean UseOneConstNR output is used to select a Newton-Raphson
+  /// algorithm implementation that uses one constant or two constants.
+  /// A target may choose to implement its own refinement within this function.
+  /// If that's true, then return '0' as the number of RefinementSteps to avoid
+  /// any further refinement of the estimate.
+  /// An empty SDValue return means no estimate sequence can be created.
+  virtual SDValue getRsqrtEstimate(SDValue Operand,
+                              DAGCombinerInfo &DCI,
+                              unsigned &RefinementSteps,
+                              bool &UseOneConstNR) const {
+    return SDValue();
+  }
+
+  /// Return a reciprocal estimate value for the input operand.
+  /// The RefinementSteps output is the number of Newton-Raphson refinement
+  /// iterations required to generate a sufficient (though not necessarily
+  /// IEEE-754 compliant) estimate for the value type.
+  /// A target may choose to implement its own refinement within this function.
+  /// If that's true, then return '0' as the number of RefinementSteps to avoid
+  /// any further refinement of the estimate.
+  /// An empty SDValue return means no estimate sequence can be created.
+  virtual SDValue getRecipEstimate(SDValue Operand,
+                                   DAGCombinerInfo &DCI,
+                                   unsigned &RefinementSteps) const {
     return SDValue();
   }
 

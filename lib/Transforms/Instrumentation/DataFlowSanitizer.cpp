@@ -51,6 +51,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstVisitor.h"
@@ -243,6 +244,7 @@ class DataFlowSanitizer : public ModulePass {
   DFSanABIList ABIList;
   DenseMap<Value *, Function *> UnwrappedFnMap;
   AttributeSet ReadOnlyNoneAttrs;
+  DenseMap<const Function *, DISubprogram> FunctionDIs;
 
   Value *getShadowAddress(Value *Addr, Instruction *Pos);
   bool isInstrumented(const Function *F);
@@ -387,7 +389,6 @@ FunctionType *DataFlowSanitizer::getTrampolineFunctionType(FunctionType *T) {
 }
 
 FunctionType *DataFlowSanitizer::getCustomFunctionType(FunctionType *T) {
-  assert(!T->isVarArg());
   llvm::SmallVector<Type *, 4> ArgTypes;
   for (FunctionType::param_iterator i = T->param_begin(), e = T->param_end();
        i != e; ++i) {
@@ -402,10 +403,12 @@ FunctionType *DataFlowSanitizer::getCustomFunctionType(FunctionType *T) {
   }
   for (unsigned i = 0, e = T->getNumParams(); i != e; ++i)
     ArgTypes.push_back(ShadowTy);
+  if (T->isVarArg())
+    ArgTypes.push_back(ShadowPtrTy);
   Type *RetType = T->getReturnType();
   if (!RetType->isVoidTy())
     ArgTypes.push_back(ShadowPtrTy);
-  return FunctionType::get(T->getReturnType(), ArgTypes, false);
+  return FunctionType::get(T->getReturnType(), ArgTypes, T->isVarArg());
 }
 
 bool DataFlowSanitizer::doInitialization(Module &M) {
@@ -476,7 +479,7 @@ DataFlowSanitizer::WrapperKind DataFlowSanitizer::getWrapperKind(Function *F) {
     return WK_Functional;
   if (ABIList.isIn(*F, "discard"))
     return WK_Discard;
-  if (ABIList.isIn(*F, "custom") && !F->isVarArg())
+  if (ABIList.isIn(*F, "custom"))
     return WK_Custom;
 
   return WK_Warning;
@@ -567,6 +570,8 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 
   if (ABIList.isIn(M, "skip"))
     return false;
+
+  FunctionDIs = makeSubprogramMap(M);
 
   if (!GetArgTLSPtr) {
     Type *ArgTLSTy = ArrayType::get(ShadowTy, 64);
@@ -704,11 +709,6 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
       } else {
         addGlobalNamePrefix(&F);
       }
-               // Hopefully, nobody will try to indirectly call a vararg
-               // function... yet.
-    } else if (FT->isVarArg()) {
-      UnwrappedFnMap[&F] = &F;
-      *i = nullptr;
     } else if (!IsZeroArgsVoidRet || getWrapperKind(&F) == WK_Custom) {
       // Build a wrapper function for F.  The wrapper simply calls F, and is
       // added to FnsToInstrument so that any instrumentation according to its
@@ -725,6 +725,12 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
       Value *WrappedFnCst =
           ConstantExpr::getBitCast(NewF, PointerType::getUnqual(FT));
       F.replaceAllUsesWith(WrappedFnCst);
+
+      // Patch the pointer to LLVM function in debug info descriptor.
+      auto DI = FunctionDIs.find(&F);
+      if (DI != FunctionDIs.end())
+        DI->second.replaceFunction(&F);
+
       UnwrappedFnMap[WrappedFnCst] = &F;
       *i = NewF;
 
@@ -744,6 +750,11 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
         i = FnsToInstrument.begin() + N;
         e = FnsToInstrument.begin() + Count;
       }
+               // Hopefully, nobody will try to indirectly call a vararg
+               // function... yet.
+    } else if (FT->isVarArg()) {
+      UnwrappedFnMap[&F] = &F;
+      *i = nullptr;
     }
   }
 
@@ -1352,6 +1363,10 @@ void DFSanVisitor::visitCallSite(CallSite CS) {
     return;
   }
 
+  assert(!(cast<FunctionType>(
+      CS.getCalledValue()->getType()->getPointerElementType())->isVarArg() &&
+           dyn_cast<InvokeInst>(CS.getInstruction())));
+
   IRBuilder<> IRB(CS.getInstruction());
 
   DenseMap<Value *, Function *>::iterator i =
@@ -1423,6 +1438,20 @@ void DFSanVisitor::visitCallSite(CallSite CS) {
         for (unsigned n = FT->getNumParams(); n != 0; ++i, --n)
           Args.push_back(DFSF.getShadow(*i));
 
+        if (FT->isVarArg()) {
+          auto LabelVAAlloca =
+              new AllocaInst(ArrayType::get(DFSF.DFS.ShadowTy,
+                                            CS.arg_size() - FT->getNumParams()),
+                             "labelva", DFSF.F->getEntryBlock().begin());
+
+          for (unsigned n = 0; i != CS.arg_end(); ++i, ++n) {
+            auto LabelVAPtr = IRB.CreateStructGEP(LabelVAAlloca, n);
+            IRB.CreateStore(DFSF.getShadow(*i), LabelVAPtr);
+          }
+
+          Args.push_back(IRB.CreateStructGEP(LabelVAAlloca, 0));
+        }
+
         if (!FT->getReturnType()->isVoidTy()) {
           if (!DFSF.LabelReturnAlloca) {
             DFSF.LabelReturnAlloca =
@@ -1431,6 +1460,9 @@ void DFSanVisitor::visitCallSite(CallSite CS) {
           }
           Args.push_back(DFSF.LabelReturnAlloca);
         }
+
+        for (i = CS.arg_begin() + FT->getNumParams(); i != CS.arg_end(); ++i)
+          Args.push_back(*i);
 
         CallInst *CustomCI = IRB.CreateCall(CustomF, Args);
         CustomCI->setCallingConv(CI->getCallingConv());

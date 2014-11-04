@@ -213,6 +213,12 @@ void Argument::removeAttr(AttributeSet AS) {
 // Helper Methods in Function
 //===----------------------------------------------------------------------===//
 
+bool Function::isMaterializable() const {
+  return getGlobalObjectSubClassData();
+}
+
+void Function::setIsMaterializable(bool V) { setGlobalObjectSubClassData(V); }
+
 LLVMContext &Function::getContext() const {
   return getType()->getContext();
 }
@@ -241,12 +247,13 @@ void Function::eraseFromParent() {
 // Function Implementation
 //===----------------------------------------------------------------------===//
 
-Function::Function(FunctionType *Ty, LinkageTypes Linkage,
-                   const Twine &name, Module *ParentModule)
-  : GlobalObject(PointerType::getUnqual(Ty),
-                Value::FunctionVal, nullptr, 0, Linkage, name) {
+Function::Function(FunctionType *Ty, LinkageTypes Linkage, const Twine &name,
+                   Module *ParentModule)
+    : GlobalObject(PointerType::getUnqual(Ty), Value::FunctionVal, nullptr, 0,
+                   Linkage, name) {
   assert(FunctionType::isValidReturnType(getReturnType()) &&
          "invalid return type");
+  setIsMaterializable(false);
   SymTab = new ValueSymbolTable();
 
   // If the function has arguments, mark them as lazily built.
@@ -318,6 +325,8 @@ void Function::setParent(Module *parent) {
 // delete.
 //
 void Function::dropAllReferences() {
+  setIsMaterializable(false);
+
   for (iterator I = begin(), E = end(); I != E; ++I)
     I->dropAllReferences();
 
@@ -493,19 +502,20 @@ enum IIT_Info {
   IIT_ARG  = 15,
 
   // Values from 16+ are only encodable with the inefficient encoding.
-  IIT_MMX  = 16,
-  IIT_METADATA = 17,
-  IIT_EMPTYSTRUCT = 18,
-  IIT_STRUCT2 = 19,
-  IIT_STRUCT3 = 20,
-  IIT_STRUCT4 = 21,
-  IIT_STRUCT5 = 22,
-  IIT_EXTEND_ARG = 23,
-  IIT_TRUNC_ARG = 24,
-  IIT_ANYPTR = 25,
-  IIT_V1   = 26,
-  IIT_VARARG = 27,
-  IIT_HALF_VEC_ARG = 28
+  IIT_V64  = 16,
+  IIT_MMX  = 17,
+  IIT_METADATA = 18,
+  IIT_EMPTYSTRUCT = 19,
+  IIT_STRUCT2 = 20,
+  IIT_STRUCT3 = 21,
+  IIT_STRUCT4 = 22,
+  IIT_STRUCT5 = 23,
+  IIT_EXTEND_ARG = 24,
+  IIT_TRUNC_ARG = 25,
+  IIT_ANYPTR = 26,
+  IIT_V1   = 27,
+  IIT_VARARG = 28,
+  IIT_HALF_VEC_ARG = 29
 };
 
 
@@ -574,6 +584,10 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
     return;
   case IIT_V32:
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::Vector, 32));
+    DecodeIITType(NextElt, Infos, OutputTable);
+    return;
+  case IIT_V64:
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::Vector, 64));
     DecodeIITType(NextElt, Infos, OutputTable);
     return;
   case IIT_PTR:
@@ -734,6 +748,12 @@ FunctionType *Intrinsic::getType(LLVMContext &Context,
   while (!TableRef.empty())
     ArgTys.push_back(DecodeFixedType(TableRef, Tys, Context));
 
+  // DecodeFixedType returns Void for IITDescriptor::Void and IITDescriptor::VarArg
+  // If we see void type as the type of the last argument, it is vararg intrinsic
+  if (!ArgTys.empty() && ArgTys.back()->isVoidTy()) {
+    ArgTys.pop_back();
+    return FunctionType::get(ResultTy, ArgTys, true);
+  }
   return FunctionType::get(ResultTy, ArgTys, false);
 }
 

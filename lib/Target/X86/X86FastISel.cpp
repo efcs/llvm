@@ -164,46 +164,6 @@ private:
 
 } // end anonymous namespace.
 
-static CmpInst::Predicate optimizeCmpPredicate(const CmpInst *CI) {
-  // If both operands are the same, then try to optimize or fold the cmp.
-  CmpInst::Predicate Predicate = CI->getPredicate();
-  if (CI->getOperand(0) != CI->getOperand(1))
-    return Predicate;
-
-  switch (Predicate) {
-  default: llvm_unreachable("Invalid predicate!");
-  case CmpInst::FCMP_FALSE: Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::FCMP_OEQ:   Predicate = CmpInst::FCMP_ORD;   break;
-  case CmpInst::FCMP_OGT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::FCMP_OGE:   Predicate = CmpInst::FCMP_ORD;   break;
-  case CmpInst::FCMP_OLT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::FCMP_OLE:   Predicate = CmpInst::FCMP_ORD;   break;
-  case CmpInst::FCMP_ONE:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::FCMP_ORD:   Predicate = CmpInst::FCMP_ORD;   break;
-  case CmpInst::FCMP_UNO:   Predicate = CmpInst::FCMP_UNO;   break;
-  case CmpInst::FCMP_UEQ:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::FCMP_UGT:   Predicate = CmpInst::FCMP_UNO;   break;
-  case CmpInst::FCMP_UGE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::FCMP_ULT:   Predicate = CmpInst::FCMP_UNO;   break;
-  case CmpInst::FCMP_ULE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::FCMP_UNE:   Predicate = CmpInst::FCMP_UNO;   break;
-  case CmpInst::FCMP_TRUE:  Predicate = CmpInst::FCMP_TRUE;  break;
-
-  case CmpInst::ICMP_EQ:    Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::ICMP_NE:    Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::ICMP_UGT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::ICMP_UGE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::ICMP_ULT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::ICMP_ULE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::ICMP_SGT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::ICMP_SGE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  case CmpInst::ICMP_SLT:   Predicate = CmpInst::FCMP_FALSE; break;
-  case CmpInst::ICMP_SLE:   Predicate = CmpInst::FCMP_TRUE;  break;
-  }
-
-  return Predicate;
-}
-
 static std::pair<X86::CondCode, bool>
 getX86ConditionCode(CmpInst::Predicate Predicate) {
   X86::CondCode CC = X86::COND_INVALID;
@@ -2289,8 +2249,10 @@ bool X86FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
     const MCInstrDesc &II = TII.get(TargetOpcode::DBG_VALUE);
     // FIXME may need to add RegState::Debug to any registers produced,
     // although ESP/EBP should be the only ones at the moment.
-    addFullAddress(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II), AM).
-      addImm(0).addMetadata(DI->getVariable());
+    addFullAddress(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II), AM)
+        .addImm(0)
+        .addMetadata(DI->getVariable())
+        .addMetadata(DI->getExpression());
     return true;
   }
   case Intrinsic::trap: {
@@ -2841,6 +2803,9 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
       // VExt has not been implemented, so this should be impossible to reach
       // for now.  However, fallback to Selection DAG isel once implemented.
       return false;
+    case CCValAssign::AExtUpper:
+    case CCValAssign::SExtUpper:
+    case CCValAssign::ZExtUpper:
     case CCValAssign::FPExt:
       llvm_unreachable("Unexpected loc info!");
     case CCValAssign::Indirect:
@@ -3372,7 +3337,8 @@ bool X86FastISel::tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
   AM.getFullAddress(AddrOps);
 
   MachineInstr *Result =
-    XII.foldMemoryOperandImpl(*FuncInfo.MF, MI, OpNo, AddrOps, Size, Alignment);
+    XII.foldMemoryOperandImpl(*FuncInfo.MF, MI, OpNo, AddrOps,
+                              Size, Alignment, /*AllowCommute=*/true);
   if (!Result)
     return false;
 

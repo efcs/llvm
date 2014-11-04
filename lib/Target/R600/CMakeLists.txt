@@ -13,6 +13,7 @@ add_public_tablegen_target(AMDGPUCommonTableGen)
 
 add_llvm_target(R600CodeGen
   AMDILCFGStructurizer.cpp
+  AMDGPUAlwaysInlinePass.cpp
   AMDGPUAsmPrinter.cpp
   AMDGPUFrameLowering.cpp
   AMDGPUIntrinsicInfo.cpp
@@ -44,6 +45,7 @@ add_llvm_target(R600CodeGen
   SIInsertWaits.cpp
   SIInstrInfo.cpp
   SIISelLowering.cpp
+  SILoadStoreOptimizer.cpp
   SILowerControlFlow.cpp
   SILowerI1Copies.cpp
   SIMachineFunctionInfo.cpp

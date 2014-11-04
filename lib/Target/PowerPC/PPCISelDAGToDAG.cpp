@@ -1322,7 +1322,13 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
     else if (N->getValueType(0) == MVT::f32)
       SelectCCOp = PPC::SELECT_CC_F4;
     else if (N->getValueType(0) == MVT::f64)
-      SelectCCOp = PPC::SELECT_CC_F8;
+      if (PPCSubTarget->hasVSX())
+        SelectCCOp = PPC::SELECT_CC_VSFRC;
+      else
+        SelectCCOp = PPC::SELECT_CC_F8;
+    else if (N->getValueType(0) == MVT::v2f64 ||
+             N->getValueType(0) == MVT::v2i64)
+      SelectCCOp = PPC::SELECT_CC_VSRC;
     else
       SelectCCOp = PPC::SELECT_CC_VRRC;
 
@@ -1446,7 +1452,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
 
     // For medium and large code model, we generate two instructions as
     // described below.  Otherwise we allow SelectCodeCommon to handle this,
-    // selecting one of LDtoc, LDtocJTI, and LDtocCPT.
+    // selecting one of LDtoc, LDtocJTI, LDtocCPT, and LDtocBA.
     CodeModel::Model CModel = TM.getCodeModel();
     if (CModel != CodeModel::Medium && CModel != CodeModel::Large)
       break;
@@ -1463,7 +1469,8 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
     SDNode *Tmp = CurDAG->getMachineNode(PPC::ADDIStocHA, dl, MVT::i64,
                                         TOCbase, GA);
 
-    if (isa<JumpTableSDNode>(GA) || CModel == CodeModel::Large)
+    if (isa<JumpTableSDNode>(GA) || isa<BlockAddressSDNode>(GA) ||
+        CModel == CodeModel::Large)
       return CurDAG->getMachineNode(PPC::LDtocL, dl, MVT::i64, GA,
                                     SDValue(Tmp, 0));
 
@@ -1686,7 +1693,9 @@ void PPCDAGToDAGISel::PeepholeCROps() {
       case PPC::SELECT_I8:
       case PPC::SELECT_F4:
       case PPC::SELECT_F8:
-      case PPC::SELECT_VRRC: {
+      case PPC::SELECT_VRRC:
+      case PPC::SELECT_VSFRC:
+      case PPC::SELECT_VSRC: {
         SDValue Op = MachineNode->getOperand(0);
         if (Op.isMachineOpcode()) {
           if (Op.getMachineOpcode() == PPC::CRSET)
@@ -1992,6 +2001,8 @@ void PPCDAGToDAGISel::PeepholeCROps() {
       case PPC::SELECT_F4:
       case PPC::SELECT_F8:
       case PPC::SELECT_VRRC:
+      case PPC::SELECT_VSFRC:
+      case PPC::SELECT_VSRC:
         if (Op1Set)
           ResNode = MachineNode->getOperand(1).getNode();
         else if (Op1Unset)

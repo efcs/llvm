@@ -47,13 +47,13 @@ void COFFDumper::dumpSections(unsigned NumSections) {
   for (const auto &Section : Obj.sections()) {
     const object::coff_section *Sect = Obj.getCOFFSection(Section);
     COFFYAML::Section Sec;
-    Sec.Name = Sect->Name; // FIXME: check the null termination!
-    uint32_t Characteristics = Sect->Characteristics;
-    Sec.Header.Characteristics = Characteristics;
-    Sec.Alignment = 1 << (((Characteristics >> 20) & 0xf) - 1);
+    Section.getName(Sec.Name);
+    Sec.Header.Characteristics = Sect->Characteristics;
+    Sec.Alignment = Section.getAlignment();
 
     ArrayRef<uint8_t> sectionData;
-    Obj.getSectionContents(Sect, sectionData);
+    if (!Section.isBSS())
+      Obj.getSectionContents(Sect, sectionData);
     Sec.SectionData = yaml::BinaryRef(sectionData);
 
     std::vector<COFFYAML::Relocation> Relocations;
@@ -161,7 +161,7 @@ void COFFDumper::dumpSymbols(unsigned NumSymbols) {
             reinterpret_cast<const object::coff_aux_bf_and_ef_symbol *>(
                 AuxData.data());
         dumpbfAndEfLineInfo(&Sym, ObjBES);
-      } else if (Symbol.isWeakExternal()) {
+      } else if (Symbol.isAnyUndefined()) {
         // This symbol represents a weak external definition.
         assert(Symbol.getNumberOfAuxSymbols() == 1 &&
                "Expected a single aux symbol to describe this weak symbol!");

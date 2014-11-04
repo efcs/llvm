@@ -46,11 +46,11 @@ let Defs = [ESP, EFLAGS], Uses = [ESP] in {
 def ADJCALLSTACKDOWN32 : I<0, Pseudo, (outs), (ins i32imm:$amt),
                            "#ADJCALLSTACKDOWN",
                            [(X86callseq_start timm:$amt)]>,
-                          Requires<[Not64BitMode]>;
+                          Requires<[NotLP64]>;
 def ADJCALLSTACKUP32   : I<0, Pseudo, (outs), (ins i32imm:$amt1, i32imm:$amt2),
                            "#ADJCALLSTACKUP",
                            [(X86callseq_end timm:$amt1, timm:$amt2)]>,
-                          Requires<[Not64BitMode]>;
+                          Requires<[NotLP64]>;
 }
 
 // ADJCALLSTACKDOWN/UP implicitly use/def RSP because they may be expanded into
@@ -62,11 +62,11 @@ let Defs = [RSP, EFLAGS], Uses = [RSP] in {
 def ADJCALLSTACKDOWN64 : I<0, Pseudo, (outs), (ins i32imm:$amt),
                            "#ADJCALLSTACKDOWN",
                            [(X86callseq_start timm:$amt)]>,
-                          Requires<[In64BitMode]>;
+                          Requires<[IsLP64]>;
 def ADJCALLSTACKUP64   : I<0, Pseudo, (outs), (ins i32imm:$amt1, i32imm:$amt2),
                            "#ADJCALLSTACKUP",
                            [(X86callseq_end timm:$amt1, timm:$amt2)]>,
-                          Requires<[In64BitMode]>;
+                          Requires<[IsLP64]>;
 }
 
 
@@ -118,7 +118,7 @@ def SEG_ALLOCA_32 : I<0, Pseudo, (outs GR32:$dst), (ins GR32:$size),
                       "# variable sized alloca for segmented stacks",
                       [(set GR32:$dst,
                          (X86SegAlloca GR32:$size))]>,
-                    Requires<[Not64BitMode]>;
+                    Requires<[NotLP64]>;
 
 let Defs = [RAX, RSP, EFLAGS], Uses = [RSP] in
 def SEG_ALLOCA_64 : I<0, Pseudo, (outs GR64:$dst), (ins GR64:$size),
@@ -800,12 +800,12 @@ defm RELEASE_INC : RELEASE_UNOP<
     (add (atomic_load_8  addr:$dst), (i8 1)),
     (add (atomic_load_16 addr:$dst), (i16 1)),
     (add (atomic_load_32 addr:$dst), (i32 1)),
-    (add (atomic_load_64 addr:$dst), (i64 1))>;
+    (add (atomic_load_64 addr:$dst), (i64 1))>, Requires<[NotSlowIncDec]>;
 defm RELEASE_DEC : RELEASE_UNOP<
     (add (atomic_load_8  addr:$dst), (i8 -1)),
     (add (atomic_load_16 addr:$dst), (i16 -1)),
     (add (atomic_load_32 addr:$dst), (i32 -1)),
-    (add (atomic_load_64 addr:$dst), (i64 -1))>;
+    (add (atomic_load_64 addr:$dst), (i64 -1))>, Requires<[NotSlowIncDec]>;
 /*
 TODO: These don't work because the type inference of TableGen fails.
 TODO: find a way to fix it.

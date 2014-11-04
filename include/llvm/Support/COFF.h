@@ -63,7 +63,7 @@ namespace COFF {
   };
 
   struct BigObjHeader {
-    enum { MinBigObjectVersion = 2 };
+    enum : uint16_t { MinBigObjectVersion = 2 };
 
     uint16_t Sig1; ///< Must be IMAGE_FILE_MACHINE_UNKNOWN (0).
     uint16_t Sig2; ///< Must be 0xFFFF.
@@ -662,9 +662,14 @@ namespace COFF {
 
   enum CodeViewLineTableIdentifiers {
     DEBUG_SECTION_MAGIC           = 0x4,
+    DEBUG_SYMBOL_SUBSECTION       = 0xF1,
     DEBUG_LINE_TABLE_SUBSECTION   = 0xF2,
     DEBUG_STRING_TABLE_SUBSECTION = 0xF3,
-    DEBUG_INDEX_SUBSECTION        = 0xF4
+    DEBUG_INDEX_SUBSECTION        = 0xF4,
+
+    // Symbol subsections are split into records of different types.
+    DEBUG_SYMBOL_TYPE_PROC_START = 0x1147,
+    DEBUG_SYMBOL_TYPE_PROC_END   = 0x114F
   };
 
   inline bool isReservedSectionNumber(int32_t SectionNumber) {

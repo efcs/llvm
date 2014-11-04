@@ -90,11 +90,11 @@ static void cacheAnnotationFromMD(const Module *m, const GlobalValue *gv) {
     return;
 
   if ((*annotationCache).find(m) != (*annotationCache).end())
-    (*annotationCache)[m][gv] = tmp;
+    (*annotationCache)[m][gv] = std::move(tmp);
   else {
     global_val_annot_t tmp1;
-    tmp1[gv] = tmp;
-    (*annotationCache)[m] = tmp1;
+    tmp1[gv] = std::move(tmp);
+    (*annotationCache)[m] = std::move(tmp1);
   }
 }
 
@@ -319,7 +319,7 @@ bool llvm::getAlign(const Function &F, unsigned index, unsigned &align) {
 }
 
 bool llvm::getAlign(const CallInst &I, unsigned index, unsigned &align) {
-  if (MDNode *alignNode = I.getMetadata("callalign")) {
+  if (MDNode *alignNode = I.getMDNode("callalign")) {
     for (int i = 0, n = alignNode->getNumOperands(); i < n; i++) {
       if (const ConstantInt *CI =
               dyn_cast<ConstantInt>(alignNode->getOperand(i))) {
