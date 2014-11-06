@@ -140,18 +140,19 @@ public:
     PreAnalyzeCallOperandsForF128(Outs, FuncArgs, CallNode);
   }
   // FIXME: Remove this from a public inteface ASAP. It's a temporary trap door
-  //        to allow analyzeFormalArguments to be removed incrementally.
-  void
-  PreAnalyzeFormalArgumentsForF128_(const SmallVectorImpl<ISD::InputArg> &Ins) {
-    PreAnalyzeFormalArgumentsForF128(Ins);
-  }
-  // FIXME: Remove this from a public inteface ASAP. It's a temporary trap door
   //        to clean up after the above functions.
   void ClearOriginalArgWasF128() { OriginalArgWasF128.clear(); }
 
   MipsCCState(CallingConv::ID CC, bool isVarArg, MachineFunction &MF,
               SmallVectorImpl<CCValAssign> &locs, LLVMContext &C)
       : CCState(CC, isVarArg, MF, locs, C) {}
+
+  void AnalyzeFormalArguments(const SmallVectorImpl<ISD::InputArg> &Ins,
+                              CCAssignFn Fn) {
+    PreAnalyzeFormalArgumentsForF128(Ins);
+    CCState::AnalyzeFormalArguments(Ins, Fn);
+    OriginalArgWasF128.clear();
+  }
 
   void AnalyzeCallResult(const SmallVectorImpl<ISD::InputArg> &Ins,
                          CCAssignFn Fn,
@@ -1693,8 +1694,6 @@ SDValue MipsTargetLowering::lowerSETCC(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue MipsTargetLowering::lowerGlobalAddress(SDValue Op,
                                                SelectionDAG &DAG) const {
-  // FIXME there isn't actually debug info here
-  SDLoc DL(Op);
   EVT Ty = Op.getValueType();
   GlobalAddressSDNode *N = cast<GlobalAddressSDNode>(Op);
   const GlobalValue *GV = N->getGlobal();
@@ -1704,15 +1703,9 @@ SDValue MipsTargetLowering::lowerGlobalAddress(SDValue Op,
     const MipsTargetObjectFile &TLOF =
       (const MipsTargetObjectFile&)getObjFileLowering();
 
-    // %gp_rel relocation
-    if (TLOF.IsGlobalInSmallSection(GV, getTargetMachine())) {
-      SDValue GA = DAG.getTargetGlobalAddress(GV, DL, MVT::i32, 0,
-                                              MipsII::MO_GPREL);
-      SDValue GPRelNode = DAG.getNode(MipsISD::GPRel, DL,
-                                      DAG.getVTList(MVT::i32), GA);
-      SDValue GPReg = DAG.getRegister(Mips::GP, MVT::i32);
-      return DAG.getNode(ISD::ADD, DL, MVT::i32, GPReg, GPRelNode);
-    }
+    if (TLOF.IsGlobalInSmallSection(GV, getTargetMachine()))
+      // %gp_rel relocation
+      return getAddrGPRel(N, Ty, DAG);
 
     // %hi/%lo relocation
     return getAddrNonPIC(N, Ty, DAG);
@@ -1843,21 +1836,20 @@ lowerJumpTable(SDValue Op, SelectionDAG &DAG) const
 SDValue MipsTargetLowering::
 lowerConstantPool(SDValue Op, SelectionDAG &DAG) const
 {
-  // gp_rel relocation
-  // FIXME: we should reference the constant pool using small data sections,
-  // but the asm printer currently doesn't support this feature without
-  // hacking it. This feature should come soon so we can uncomment the
-  // stuff below.
-  //if (IsInSmallSection(C->getType())) {
-  //  SDValue GPRelNode = DAG.getNode(MipsISD::GPRel, MVT::i32, CP);
-  //  SDValue GOT = DAG.getGLOBAL_OFFSET_TABLE(MVT::i32);
-  //  ResNode = DAG.getNode(ISD::ADD, MVT::i32, GOT, GPRelNode);
   ConstantPoolSDNode *N = cast<ConstantPoolSDNode>(Op);
   EVT Ty = Op.getValueType();
 
   if (getTargetMachine().getRelocationModel() != Reloc::PIC_ &&
-      !Subtarget.isABI_N64())
+      !Subtarget.isABI_N64()) {
+    const MipsTargetObjectFile &TLOF =
+      (const MipsTargetObjectFile&)getObjFileLowering();
+
+    if (TLOF.IsConstantInSmallSection(N->getConstVal(), getTargetMachine()))
+      // %gp_rel relocation
+      return getAddrGPRel(N, Ty, DAG);
+
     return getAddrNonPIC(N, Ty, DAG);
+  }
 
   return getAddrLocal(N, Ty, DAG,
                       Subtarget.isABI_N32() || Subtarget.isABI_N64());
@@ -2601,8 +2593,8 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   MipsCC MipsCCInfo(CallConv, Subtarget, CCInfo);
 
   CCInfo.PreAnalyzeCallOperandsForF128_(Outs, CLI.getArgs(), Callee.getNode());
-  MipsCCInfo.analyzeCallOperands(Outs, IsVarArg, Subtarget.abiUsesSoftFloat(),
-                                 Callee.getNode(), CLI.getArgs(), CCInfo);
+  MipsCCInfo.analyzeCallOperands(Outs, IsVarArg, Callee.getNode(),
+                                 CLI.getArgs(), CCInfo);
   CCInfo.ClearOriginalArgWasF128();
 
   // Get a count of how many bytes are to be pushed on the stack.
@@ -2894,11 +2886,8 @@ MipsTargetLowering::LowerFormalArguments(SDValue Chain,
   MipsCC MipsCCInfo(CallConv, Subtarget, CCInfo);
   Function::const_arg_iterator FuncArg =
     DAG.getMachineFunction().getFunction()->arg_begin();
-  bool UseSoftFloat = Subtarget.abiUsesSoftFloat();
 
-  CCInfo.PreAnalyzeFormalArgumentsForF128_(Ins);
-  MipsCCInfo.analyzeFormalArguments(Ins, UseSoftFloat, CCInfo);
-  CCInfo.ClearOriginalArgWasF128();
+  CCInfo.AnalyzeFormalArguments(Ins, CC_Mips_FixedArg);
   MipsFI->setFormalArgInfo(CCInfo.getNextStackOffset(),
                            CCInfo.getInRegsParamsCount() > 0);
 
@@ -3611,8 +3600,8 @@ MipsTargetLowering::MipsCC::MipsCC(CallingConv::ID CC,
 
 void MipsTargetLowering::MipsCC::analyzeCallOperands(
     const SmallVectorImpl<ISD::OutputArg> &Args, bool IsVarArg,
-    bool IsSoftFloat, const SDNode *CallNode,
-    std::vector<ArgListEntry> &FuncArgs, CCState &State) {
+    const SDNode *CallNode, std::vector<ArgListEntry> &FuncArgs,
+    CCState &State) {
   MipsCC::SpecialCallingConvType SpecialCallingConv =
       getSpecialCallingConv(CallNode);
   assert((CallConv != CallingConv::Fast || !IsVarArg) &&
@@ -3641,26 +3630,6 @@ void MipsTargetLowering::MipsCC::analyzeCallOperands(
 #endif
       llvm_unreachable(nullptr);
     }
-  }
-}
-
-void MipsTargetLowering::MipsCC::analyzeFormalArguments(
-    const SmallVectorImpl<ISD::InputArg> &Args, bool IsSoftFloat,
-    CCState &State) {
-  unsigned NumArgs = Args.size();
-
-  for (unsigned I = 0; I != NumArgs; ++I) {
-    MVT ArgVT = Args[I].VT;
-    ISD::ArgFlagsTy ArgFlags = Args[I].Flags;
-
-    if (!CC_Mips_FixedArg(I, ArgVT, ArgVT, CCValAssign::Full, ArgFlags, State))
-      continue;
-
-#ifndef NDEBUG
-    dbgs() << "Formal Arg #" << I << " has unhandled type "
-           << EVT(ArgVT).getEVTString();
-#endif
-    llvm_unreachable(nullptr);
   }
 }
 
