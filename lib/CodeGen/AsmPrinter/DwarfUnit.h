@@ -55,7 +55,8 @@ private:
   SmallVector<RangeSpan, 2> Ranges;
 
 public:
-  RangeSpanList(MCSymbol *Sym) : RangeSym(Sym) {}
+  RangeSpanList(MCSymbol *Sym, SmallVector<RangeSpan, 2> Ranges)
+      : RangeSym(Sym), Ranges(std::move(Ranges)) {}
   MCSymbol *getSym() const { return RangeSym; }
   const SmallVectorImpl<RangeSpan> &getRanges() const { return Ranges; }
   void addRange(RangeSpan Range) { Ranges.push_back(Range); }
@@ -125,6 +126,8 @@ protected:
   void addLocalString(DIE &Die, dwarf::Attribute Attribute, StringRef Str);
 
   void addIndexedString(DIE &Die, dwarf::Attribute Attribute, StringRef Str);
+
+  bool applySubprogramDefinitionAttributes(DISubprogram SP, DIE &SPDie);
 
 public:
   virtual ~DwarfUnit();
@@ -277,7 +280,7 @@ public:
   DIE *getOrCreateNameSpace(DINameSpace NS);
 
   /// getOrCreateSubprogramDIE - Create new DIE using SP.
-  DIE *getOrCreateSubprogramDIE(DISubprogram SP);
+  DIE *getOrCreateSubprogramDIE(DISubprogram SP, bool Minimal = false);
 
   void applySubprogramAttributes(DISubprogram SP, DIE &SPDie,
                                  bool Minimal = false);

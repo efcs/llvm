@@ -330,6 +330,12 @@ bool DwarfDebug::isLexicalScopeDIENull(LexicalScope *Scope) {
   return !getLabelAfterInsn(Ranges.front().second);
 }
 
+template <typename Func> void forBothCUs(DwarfCompileUnit &CU, Func F) {
+  F(CU);
+  if (auto *SkelCU = CU.getSkeleton())
+    F(*SkelCU);
+}
+
 void DwarfDebug::constructAbstractSubprogramScopeDIE(LexicalScope *Scope) {
   assert(Scope && Scope->getScopeNode());
   assert(Scope->isAbstractScope());
@@ -341,7 +347,10 @@ void DwarfDebug::constructAbstractSubprogramScopeDIE(LexicalScope *Scope) {
 
   // Find the subprogram's DwarfCompileUnit in the SPMap in case the subprogram
   // was inlined from another compile unit.
-  SPMap[SP]->constructAbstractSubprogramScopeDIE(Scope);
+  auto &CU = SPMap[SP];
+  forBothCUs(*CU, [&](DwarfCompileUnit &CU) {
+    CU.constructAbstractSubprogramScopeDIE(Scope);
+  });
 }
 
 void DwarfDebug::addGnuPubAttributes(DwarfUnit &U, DIE &D) const {
@@ -441,8 +450,8 @@ void DwarfDebug::beginModule() {
 
   SingleCU = CU_Nodes->getNumOperands() == 1;
 
-  for (MDNode *N : CU_Nodes->operands()) {
-    DICompileUnit CUNode(N);
+  for (Value *N : CU_Nodes->operands()) {
+    DICompileUnit CUNode(cast<MDNode>(N));
     DwarfCompileUnit &CU = constructDwarfCompileUnit(CUNode);
     DIArray ImportedEntities = CUNode.getImportedEntities();
     for (unsigned i = 0, e = ImportedEntities.getNumElements(); i != e; ++i)
@@ -506,7 +515,9 @@ void DwarfDebug::finishVariableDefinitions() {
 
 void DwarfDebug::finishSubprogramDefinitions() {
   for (const auto &P : SPMap)
-    P.second->finishSubprogramDefinition(DISubprogram(P.first));
+    forBothCUs(*P.second, [&](DwarfCompileUnit &CU) {
+      CU.finishSubprogramDefinition(DISubprogram(P.first));
+    });
 }
 
 
@@ -515,8 +526,8 @@ void DwarfDebug::collectDeadVariables() {
   const Module *M = MMI->getModule();
 
   if (NamedMDNode *CU_Nodes = M->getNamedMetadata("llvm.dbg.cu")) {
-    for (MDNode *N : CU_Nodes->operands()) {
-      DICompileUnit TheCU(N);
+    for (Value *N : CU_Nodes->operands()) {
+      DICompileUnit TheCU(cast<MDNode>(N));
       // Construct subprogram DIE and add variables DIEs.
       DwarfCompileUnit *SPCU =
           static_cast<DwarfCompileUnit *>(CUMap.lookup(TheCU));
@@ -578,23 +589,16 @@ void DwarfDebug::finalizeModuleInfo() {
     // .subsections_via_symbols in mach-o. This would mean turning on
     // ranges for all subprogram DIEs for mach-o.
     DwarfCompileUnit &U = SkCU ? *SkCU : TheCU;
-    unsigned NumRanges = TheCU.getRanges().size();
-    if (NumRanges) {
-      if (NumRanges > 1) {
-        U.addSectionLabel(U.getUnitDie(), dwarf::DW_AT_ranges,
-                          Asm->GetTempSymbol("cu_ranges", U.getUniqueID()),
-                          DwarfDebugRangeSectionSym);
-
+    if (unsigned NumRanges = TheCU.getRanges().size()) {
+      if (NumRanges > 1)
         // A DW_AT_low_pc attribute may also be specified in combination with
         // DW_AT_ranges to specify the default base address for use in
         // location lists (see Section 2.6.2) and range lists (see Section
         // 2.17.3).
         U.addUInt(U.getUnitDie(), dwarf::DW_AT_low_pc, dwarf::DW_FORM_addr, 0);
-      } else {
-        const RangeSpan &Range = TheCU.getRanges().back();
-        TheCU.setBaseAddress(Range.getStart());
-        U.attachLowHighPC(U.getUnitDie(), Range.getStart(), Range.getEnd());
-      }
+      else
+        TheCU.setBaseAddress(TheCU.getRanges().front().getStart());
+      U.attachRangesOrLowHighPC(U.getUnitDie(), TheCU.takeRanges());
     }
   }
 
@@ -1293,6 +1297,9 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
   }
 
   TheCU.constructSubprogramScopeDIE(FnScope);
+  if (auto *SkelCU = TheCU.getSkeleton())
+    if (!LScopes.getAbstractScopesList().empty())
+      SkelCU->constructSubprogramScopeDIE(FnScope);
 
   // Clear debug info
   // Ownership of DbgVariables is a bit subtle - ScopeVariables owns all the
@@ -1787,7 +1794,6 @@ void DwarfDebug::emitDebugLoc() {
   for (const auto &DebugLoc : DotDebugLocEntries) {
     Asm->OutStreamer.EmitLabel(DebugLoc.Label);
     const DwarfCompileUnit *CU = DebugLoc.CU;
-    assert(!CU->getRanges().empty());
     for (const auto &Entry : DebugLoc.List) {
       // Set up the range. This range is relative to the entry point of the
       // compile unit. This is a hard coded 0 for low_pc when we're emitting
@@ -1992,6 +1998,9 @@ void DwarfDebug::emitDebugRanges() {
   for (const auto &I : CUMap) {
     DwarfCompileUnit *TheCU = I.second;
 
+    if (auto *Skel = TheCU->getSkeleton())
+      TheCU = Skel;
+
     // Iterate over the misc ranges for the compile units in the module.
     for (const RangeSpanList &List : TheCU->getRangeLists()) {
       // Emit our symbol so we can find the beginning of the range.
@@ -2011,23 +2020,6 @@ void DwarfDebug::emitDebugRanges() {
         }
       }
 
-      // And terminate the list with two 0 values.
-      Asm->OutStreamer.EmitIntValue(0, Size);
-      Asm->OutStreamer.EmitIntValue(0, Size);
-    }
-
-    // Now emit a range for the CU itself.
-    if (TheCU->getRanges().size() > 1) {
-      Asm->OutStreamer.EmitLabel(
-          Asm->GetTempSymbol("cu_ranges", TheCU->getUniqueID()));
-      for (const RangeSpan &Range : TheCU->getRanges()) {
-        const MCSymbol *Begin = Range.getStart();
-        const MCSymbol *End = Range.getEnd();
-        assert(Begin && "Range without a begin symbol?");
-        assert(End && "Range without an end symbol?");
-        Asm->OutStreamer.EmitSymbolValue(Begin, Size);
-        Asm->OutStreamer.EmitSymbolValue(End, Size);
-      }
       // And terminate the list with two 0 values.
       Asm->OutStreamer.EmitIntValue(0, Size);
       Asm->OutStreamer.EmitIntValue(0, Size);

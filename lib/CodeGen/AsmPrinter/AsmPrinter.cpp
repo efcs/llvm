@@ -222,14 +222,12 @@ bool AsmPrinter::doInitialization(Module &M) {
   }
 
   if (MAI->doesSupportDebugInformation()) {
-    if (Triple(TM.getTargetTriple()).isKnownWindowsMSVCEnvironment()) {
+    if (Triple(TM.getTargetTriple()).isKnownWindowsMSVCEnvironment())
       Handlers.push_back(HandlerInfo(new WinCodeViewLineTables(this),
                                      DbgTimerName,
                                      CodeViewLineTablesGroupName));
-    } else {
-      DD = new DwarfDebug(this, &M);
-      Handlers.push_back(HandlerInfo(DD, DbgTimerName, DWARFGroupName));
-    }
+    DD = new DwarfDebug(this, &M);
+    Handlers.push_back(HandlerInfo(DD, DbgTimerName, DWARFGroupName));
   }
 
   EHStreamer *ES = nullptr;
@@ -1249,8 +1247,9 @@ void AsmPrinter::EmitJumpTableEntry(const MachineJumpTableInfo *MJTI,
       break;
     }
     Value = MCSymbolRefExpr::Create(MBB->getSymbol(), OutContext);
-    const MCExpr *JTI = MCSymbolRefExpr::Create(GetJTISymbol(UID), OutContext);
-    Value = MCBinaryExpr::CreateSub(Value, JTI, OutContext);
+    const TargetLowering *TLI = TM.getSubtargetImpl()->getTargetLowering();
+    const MCExpr *Base = TLI->getPICJumpTableRelocBaseExpr(MF, UID, OutContext);
+    Value = MCBinaryExpr::CreateSub(Value, Base, OutContext);
     break;
   }
   }
@@ -1400,7 +1399,7 @@ void AsmPrinter::EmitModuleIdents(Module &M) {
 
   if (const NamedMDNode *NMD = M.getNamedMetadata("llvm.ident")) {
     for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i) {
-      const MDNode *N = NMD->getOperand(i);
+      const MDNode *N = NMD->getOperandAsMDNode(i);
       assert(N->getNumOperands() == 1 &&
              "llvm.ident metadata entry can have only one operand");
       const MDString *S = cast<MDString>(N->getOperand(0));
