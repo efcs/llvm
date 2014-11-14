@@ -3480,13 +3480,13 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   Type *Ty = I.getType();
 
   bool isVolatile = I.isVolatile();
-  bool isNonTemporal = I.getMDNode(LLVMContext::MD_nontemporal) != nullptr;
-  bool isInvariant = I.getMDNode(LLVMContext::MD_invariant_load) != nullptr;
+  bool isNonTemporal = I.getMetadata(LLVMContext::MD_nontemporal) != nullptr;
+  bool isInvariant = I.getMetadata(LLVMContext::MD_invariant_load) != nullptr;
   unsigned Alignment = I.getAlignment();
 
   AAMDNodes AAInfo;
   I.getAAMetadata(AAInfo);
-  const MDNode *Ranges = I.getMDNode(LLVMContext::MD_range);
+  const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
 
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   SmallVector<EVT, 4> ValueVTs;
@@ -3584,7 +3584,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
                                           NumValues));
   EVT PtrVT = Ptr.getValueType();
   bool isVolatile = I.isVolatile();
-  bool isNonTemporal = I.getMDNode(LLVMContext::MD_nontemporal) != nullptr;
+  bool isNonTemporal = I.getMetadata(LLVMContext::MD_nontemporal) != nullptr;
   unsigned Alignment = I.getAlignment();
 
   AAMDNodes AAInfo;
@@ -4847,7 +4847,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
 
   case Intrinsic::eh_typeid_for: {
     // Find the type id for the given typeinfo.
-    GlobalVariable *GV = ExtractTypeInfo(I.getArgOperand(0));
+    GlobalValue *GV = ExtractTypeInfo(I.getArgOperand(0));
     unsigned TypeID = DAG.getMachineFunction().getMMI().getTypeIDFor(GV);
     Res = DAG.getConstant(TypeID, MVT::i32);
     setValue(&I, Res);
@@ -6479,7 +6479,7 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
   // If we have a !srcloc metadata node associated with it, we want to attach
   // this to the ultimately generated inline asm machineinstr.  To do this, we
   // pass in the third operand as this (potentially null) inline asm MDNode.
-  const MDNode *SrcLoc = CS.getInstruction()->getMDNode("srcloc");
+  const MDNode *SrcLoc = CS.getInstruction()->getMetadata("srcloc");
   AsmNodeOperands.push_back(DAG.getMDNode(SrcLoc));
 
   // Remember the HasSideEffect, AlignStack, AsmDialect, MayLoad and MayStore
