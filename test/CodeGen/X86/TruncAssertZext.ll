@@ -5,7 +5,7 @@
 
 define i64 @main(i64 %a) { 
 ; CHECK-LABEL: main
-; CHECK: movl %ecx, %eax
+; CHECK: movl %e{{..}}, %eax
 ; CHECK: ret
   %or = or i64 %a, -2
   %trunc = trunc i64 %or to i32

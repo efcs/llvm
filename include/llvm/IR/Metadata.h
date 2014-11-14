@@ -34,33 +34,56 @@ enum LLVMConstants : uint32_t {
   DEBUG_METADATA_VERSION = 2  // Current debug info version number.
 };
 
+/// \brief Root of the metadata hierarchy.
+///
+/// This is a root class for typeless data in the IR.
+///
+/// TODO: Detach from the Value hierarchy.
+class Metadata : public Value {
+protected:
+  Metadata(Type *Type, unsigned ID) : Value(Type, ID) {}
+
+public:
+  static bool classof(const Value *V) {
+    return V->getValueID() == MDNodeVal;
+  }
+};
+
 //===----------------------------------------------------------------------===//
 /// \brief A single uniqued string.
 ///
 /// These are used to efficiently contain a byte sequence for metadata.
 /// MDString is always unnamed.
+///
+/// TODO: Inherit from Metadata.
 class MDString : public Value {
+  friend class StringMapEntry<MDString>;
+
   virtual void anchor();
   MDString(const MDString &) LLVM_DELETED_FUNCTION;
 
   explicit MDString(LLVMContext &C);
+
+  /// \brief Shadow Value::getName() to prevent its use.
+  StringRef getName() const LLVM_DELETED_FUNCTION;
+
 public:
   static MDString *get(LLVMContext &Context, StringRef Str);
   static MDString *get(LLVMContext &Context, const char *Str) {
     return get(Context, Str ? StringRef(Str) : StringRef());
   }
 
-  StringRef getString() const { return getName(); }
+  StringRef getString() const;
 
-  unsigned getLength() const { return (unsigned)getName().size(); }
+  unsigned getLength() const { return (unsigned)getString().size(); }
 
   typedef StringRef::iterator iterator;
 
   /// \brief Pointer to the first byte of the string.
-  iterator begin() const { return getName().begin(); }
+  iterator begin() const { return getString().begin(); }
 
   /// \brief Pointer to one byte past the end of the string.
-  iterator end() const { return getName().end(); }
+  iterator end() const { return getString().end(); }
 
   /// \brief Methods for support type inquiry through isa, cast, and dyn_cast.
   static bool classof(const Value *V) {
@@ -115,8 +138,8 @@ struct DenseMapInfo<AAMDNodes> {
 class MDNodeOperand;
 
 //===----------------------------------------------------------------------===//
-/// \brief A tuple of other values.
-class MDNode : public Value, public FoldingSetNode {
+/// \brief Generic tuple of metadata.
+class MDNode : public Metadata, public FoldingSetNode {
   MDNode(const MDNode &) LLVM_DELETED_FUNCTION;
   void operator=(const MDNode &) LLVM_DELETED_FUNCTION;
   friend class MDNodeOperand;
@@ -237,10 +260,12 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
-/// \brief A tuple of metadata nodes.
+/// \brief A tuple of MDNodes.
 ///
 /// Despite its name, a NamedMDNode isn't itself an MDNode. NamedMDNodes belong
-/// to modules, have names, and contain lists of metadata nodes.
+/// to modules, have names, and contain lists of MDNodes.
+///
+/// TODO: Inherit from Metadata.
 class NamedMDNode : public ilist_node<NamedMDNode> {
   friend class SymbolTableListTraits<NamedMDNode, Module>;
   friend struct ilist_traits<NamedMDNode>;
@@ -250,7 +275,7 @@ class NamedMDNode : public ilist_node<NamedMDNode> {
 
   std::string Name;
   Module *Parent;
-  void *Operands; // SmallVector<TrackingVH<Value>, 4>
+  void *Operands; // SmallVector<TrackingVH<MDNode>, 4>
 
   void setParent(Module *M) { Parent = M; }
 
@@ -305,12 +330,9 @@ public:
   inline Module *getParent() { return Parent; }
   inline const Module *getParent() const { return Parent; }
 
-  Value *getOperand(unsigned i) const;
-  MDNode *getOperandAsMDNode(unsigned i) const {
-    return cast_or_null<MDNode>(getOperand(i));
-  }
+  MDNode *getOperand(unsigned i) const;
   unsigned getNumOperands() const;
-  void addOperand(Value *M);
+  void addOperand(MDNode *M);
   StringRef getName() const;
   void print(raw_ostream &ROS) const;
   void dump() const;
@@ -318,11 +340,11 @@ public:
   // ---------------------------------------------------------------------------
   // Operand Iterator interface...
   //
-  typedef op_iterator_impl<Value *, Value> op_iterator;
+  typedef op_iterator_impl<MDNode *, MDNode> op_iterator;
   op_iterator op_begin() { return op_iterator(this, 0); }
   op_iterator op_end()   { return op_iterator(this, getNumOperands()); }
 
-  typedef op_iterator_impl<const Value *, Value> const_op_iterator;
+  typedef op_iterator_impl<const MDNode *, MDNode> const_op_iterator;
   const_op_iterator op_begin() const { return const_op_iterator(this, 0); }
   const_op_iterator op_end()   const { return const_op_iterator(this, getNumOperands()); }
 
