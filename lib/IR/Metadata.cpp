@@ -25,7 +25,11 @@
 #include "llvm/IR/LeakDetector.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ValueHandle.h"
+
 using namespace llvm;
+
+Metadata::Metadata(LLVMContext &Context, unsigned ID)
+    : Value(Type::getMetadataTy(Context), ID) {}
 
 //===----------------------------------------------------------------------===//
 // MDString implementation.
@@ -33,17 +37,22 @@ using namespace llvm;
 
 void MDString::anchor() { }
 
-MDString::MDString(LLVMContext &C)
-  : Value(Type::getMetadataTy(C), Value::MDStringVal) {}
-
 MDString *MDString::get(LLVMContext &Context, StringRef Str) {
-  LLVMContextImpl *pImpl = Context.pImpl;
-  StringMapEntry<Value*> &Entry =
-    pImpl->MDStringCache.GetOrCreateValue(Str);
-  Value *&S = Entry.getValue();
-  if (!S) S = new MDString(Context);
-  S->setValueName(&Entry);
-  return cast<MDString>(S);
+  auto &Store = Context.pImpl->MDStringCache;
+  auto I = Store.find(Str);
+  if (I != Store.end())
+    return &I->second;
+
+  auto *Entry =
+      StringMapEntry<MDString>::Create(Str, Store.getAllocator(), Context);
+  bool WasInserted = Store.insert(Entry);
+  (void)WasInserted;
+  assert(WasInserted && "Expected entry to be inserted");
+  return &Entry->second;
+}
+
+StringRef MDString::getString() const {
+  return StringMapEntry<MDString>::GetStringMapEntryFromValue(*this).first();
 }
 
 //===----------------------------------------------------------------------===//
@@ -110,7 +119,7 @@ void MDNode::replaceOperandWith(unsigned i, Value *Val) {
 }
 
 MDNode::MDNode(LLVMContext &C, ArrayRef<Value *> Vals, bool isFunctionLocal)
-    : Metadata(Type::getMetadataTy(C), Value::MDNodeVal) {
+    : Metadata(C, Value::MDNodeVal) {
   NumOperands = Vals.size();
 
   if (isFunctionLocal)

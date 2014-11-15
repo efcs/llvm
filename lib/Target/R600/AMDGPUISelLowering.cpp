@@ -103,7 +103,7 @@ EVT AMDGPUTargetLowering::getEquivalentLoadRegType(LLVMContext &Ctx, EVT VT) {
 }
 
 AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
-  TargetLowering(TM, TM.getObjFileLowering()) {
+  TargetLowering(TM) {
 
   Subtarget = &TM.getSubtarget<AMDGPUSubtarget>();
 
@@ -378,6 +378,7 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
   setOperationAction(ISD::FNEARBYINT, MVT::f64, Custom);
 
   setTargetDAGCombine(ISD::MUL);
+  setTargetDAGCombine(ISD::SELECT);
   setTargetDAGCombine(ISD::SELECT_CC);
   setTargetDAGCombine(ISD::STORE);
 
@@ -691,6 +692,17 @@ SDValue AMDGPUTargetLowering::LowerConstantInitializer(const Constant* Init,
   llvm_unreachable("Unhandled constant initializer");
 }
 
+static bool hasDefinedInitializer(const GlobalValue *GV) {
+  const GlobalVariable *GVar = dyn_cast<GlobalVariable>(GV);
+  if (!GVar || !GVar->hasInitializer())
+    return false;
+
+  if (isa<UndefValue>(GVar->getInitializer()))
+    return false;
+
+  return true;
+}
+
 SDValue AMDGPUTargetLowering::LowerGlobalAddress(AMDGPUMachineFunction* MFI,
                                                  SDValue Op,
                                                  SelectionDAG &DAG) const {
@@ -700,12 +712,14 @@ SDValue AMDGPUTargetLowering::LowerGlobalAddress(AMDGPUMachineFunction* MFI,
   const GlobalValue *GV = G->getGlobal();
 
   switch (G->getAddressSpace()) {
-  default: llvm_unreachable("Global Address lowering not implemented for this "
-                            "address space");
   case AMDGPUAS::LOCAL_ADDRESS: {
     // XXX: What does the value of G->getOffset() mean?
     assert(G->getOffset() == 0 &&
          "Do not know what to do with an non-zero offset");
+
+    // TODO: We could emit code to handle the initialization somewhere.
+    if (hasDefinedInitializer(GV))
+      break;
 
     unsigned Offset;
     if (MFI->LocalMemoryObjects.count(GV) == 0) {
@@ -760,6 +774,12 @@ SDValue AMDGPUTargetLowering::LowerGlobalAddress(AMDGPUMachineFunction* MFI,
     return DAG.getZExtOrTrunc(InitPtr, SDLoc(Op), ConstPtrVT);
   }
   }
+
+  const Function &Fn = *DAG.getMachineFunction().getFunction();
+  DiagnosticInfoUnsupported BadInit(Fn,
+                                    "initializer for address space");
+  DAG.getContext()->diagnose(BadInit);
+  return SDValue();
 }
 
 SDValue AMDGPUTargetLowering::LowerCONCAT_VECTORS(SDValue Op,
@@ -980,21 +1000,16 @@ SDValue AMDGPUTargetLowering::LowerIntrinsicLRP(SDValue Op,
 }
 
 /// \brief Generate Min/Max node
-SDValue AMDGPUTargetLowering::CombineMinMax(SDNode *N,
-                                            SelectionDAG &DAG) const {
-  SDLoc DL(N);
-  EVT VT = N->getValueType(0);
-
-  SDValue LHS = N->getOperand(0);
-  SDValue RHS = N->getOperand(1);
-  SDValue True = N->getOperand(2);
-  SDValue False = N->getOperand(3);
-  SDValue CC = N->getOperand(4);
-
-  if (VT != MVT::f32 ||
-      !((LHS == True && RHS == False) || (LHS == False && RHS == True))) {
+SDValue AMDGPUTargetLowering::CombineFMinMax(SDLoc DL,
+                                             EVT VT,
+                                             SDValue LHS,
+                                             SDValue RHS,
+                                             SDValue True,
+                                             SDValue False,
+                                             SDValue CC,
+                                             SelectionDAG &DAG) const {
+  if (!(LHS == True && RHS == False) && !(LHS == False && RHS == True))
     return SDValue();
-  }
 
   ISD::CondCode CCOpcode = cast<CondCodeSDNode>(CC)->get();
   switch (CCOpcode) {
@@ -1010,14 +1025,15 @@ SDValue AMDGPUTargetLowering::CombineMinMax(SDNode *N,
   case ISD::SETTRUE2:
   case ISD::SETUO:
   case ISD::SETO:
-    llvm_unreachable("Operation should already be optimised!");
+    break;
   case ISD::SETULE:
   case ISD::SETULT:
   case ISD::SETOLE:
   case ISD::SETOLT:
   case ISD::SETLE:
   case ISD::SETLT: {
-    unsigned Opc = (LHS == True) ? AMDGPUISD::FMIN : AMDGPUISD::FMAX;
+    unsigned Opc
+      = (LHS == True) ? AMDGPUISD::FMIN_LEGACY : AMDGPUISD::FMAX_LEGACY;
     return DAG.getNode(Opc, DL, VT, LHS, RHS);
   }
   case ISD::SETGT:
@@ -1026,13 +1042,53 @@ SDValue AMDGPUTargetLowering::CombineMinMax(SDNode *N,
   case ISD::SETOGE:
   case ISD::SETUGT:
   case ISD::SETOGT: {
-    unsigned Opc = (LHS == True) ? AMDGPUISD::FMAX : AMDGPUISD::FMIN;
+    unsigned Opc
+      = (LHS == True) ? AMDGPUISD::FMAX_LEGACY : AMDGPUISD::FMIN_LEGACY;
     return DAG.getNode(Opc, DL, VT, LHS, RHS);
   }
   case ISD::SETCC_INVALID:
     llvm_unreachable("Invalid setcc condcode!");
   }
   return SDValue();
+}
+
+/// \brief Generate Min/Max node
+SDValue AMDGPUTargetLowering::CombineIMinMax(SDLoc DL,
+                                             EVT VT,
+                                             SDValue LHS,
+                                             SDValue RHS,
+                                             SDValue True,
+                                             SDValue False,
+                                             SDValue CC,
+                                             SelectionDAG &DAG) const {
+  if (!(LHS == True && RHS == False) && !(LHS == False && RHS == True))
+    return SDValue();
+
+  ISD::CondCode CCOpcode = cast<CondCodeSDNode>(CC)->get();
+  switch (CCOpcode) {
+  case ISD::SETULE:
+  case ISD::SETULT: {
+    unsigned Opc = (LHS == True) ? AMDGPUISD::UMIN : AMDGPUISD::UMAX;
+    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+  }
+  case ISD::SETLE:
+  case ISD::SETLT: {
+    unsigned Opc = (LHS == True) ? AMDGPUISD::SMIN : AMDGPUISD::SMAX;
+    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+  }
+  case ISD::SETGT:
+  case ISD::SETGE: {
+    unsigned Opc = (LHS == True) ? AMDGPUISD::SMAX : AMDGPUISD::SMIN;
+    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+  }
+  case ISD::SETUGE:
+  case ISD::SETUGT: {
+    unsigned Opc = (LHS == True) ? AMDGPUISD::UMAX : AMDGPUISD::UMIN;
+    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+  }
+  default:
+    return SDValue();
+  }
 }
 
 SDValue AMDGPUTargetLowering::ScalarizeVectorLoad(const SDValue Op,
@@ -2091,9 +2147,51 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
       simplifyI24(N1, DCI);
       return SDValue();
     }
-    case ISD::SELECT_CC: {
-      return CombineMinMax(N, DAG);
+  case ISD::SELECT_CC: {
+    SDLoc DL(N);
+    EVT VT = N->getValueType(0);
+
+    if (VT == MVT::f32 ||
+        (VT == MVT::f64 &&
+         Subtarget->getGeneration() >= AMDGPUSubtarget::SOUTHERN_ISLANDS)) {
+      SDValue LHS = N->getOperand(0);
+      SDValue RHS = N->getOperand(1);
+      SDValue True = N->getOperand(2);
+      SDValue False = N->getOperand(3);
+      SDValue CC = N->getOperand(4);
+
+      return CombineFMinMax(DL, VT, LHS, RHS, True, False, CC, DAG);
     }
+
+    break;
+  }
+  case ISD::SELECT: {
+    SDValue Cond = N->getOperand(0);
+    if (Cond.getOpcode() == ISD::SETCC) {
+      SDLoc DL(N);
+      EVT VT = N->getValueType(0);
+      SDValue LHS = Cond.getOperand(0);
+      SDValue RHS = Cond.getOperand(1);
+      SDValue CC = Cond.getOperand(2);
+
+      SDValue True = N->getOperand(1);
+      SDValue False = N->getOperand(2);
+
+      if (VT == MVT::f32 ||
+          (VT == MVT::f64 &&
+           Subtarget->getGeneration() >= AMDGPUSubtarget::SOUTHERN_ISLANDS)) {
+        return CombineFMinMax(DL, VT, LHS, RHS, True, False, CC, DAG);
+      }
+
+      // TODO: Implement min / max Evergreen instructions.
+      if (VT == MVT::i32 &&
+          Subtarget->getGeneration() >= AMDGPUSubtarget::SOUTHERN_ISLANDS) {
+        return CombineIMinMax(DL, VT, LHS, RHS, True, False, CC, DAG);
+      }
+    }
+
+    break;
+  }
   case AMDGPUISD::BFE_I32:
   case AMDGPUISD::BFE_U32: {
     assert(!N->getValueType(0).isVector() &&
@@ -2270,12 +2368,18 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(FRACT)
   NODE_NAME_CASE(CLAMP)
   NODE_NAME_CASE(MAD)
-  NODE_NAME_CASE(FMAX)
+  NODE_NAME_CASE(FMAX_LEGACY)
   NODE_NAME_CASE(SMAX)
   NODE_NAME_CASE(UMAX)
-  NODE_NAME_CASE(FMIN)
+  NODE_NAME_CASE(FMIN_LEGACY)
   NODE_NAME_CASE(SMIN)
   NODE_NAME_CASE(UMIN)
+  NODE_NAME_CASE(FMAX3)
+  NODE_NAME_CASE(SMAX3)
+  NODE_NAME_CASE(UMAX3)
+  NODE_NAME_CASE(FMIN3)
+  NODE_NAME_CASE(SMIN3)
+  NODE_NAME_CASE(UMIN3)
   NODE_NAME_CASE(URECIP)
   NODE_NAME_CASE(DIV_SCALE)
   NODE_NAME_CASE(DIV_FMAS)

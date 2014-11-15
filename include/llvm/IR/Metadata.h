@@ -41,11 +41,11 @@ enum LLVMConstants : uint32_t {
 /// TODO: Detach from the Value hierarchy.
 class Metadata : public Value {
 protected:
-  Metadata(Type *Type, unsigned ID) : Value(Type, ID) {}
+  Metadata(LLVMContext &Context, unsigned ID);
 
 public:
   static bool classof(const Value *V) {
-    return V->getValueID() == MDNodeVal;
+    return V->getValueID() == MDNodeVal || V->getValueID() == MDStringVal;
   }
 };
 
@@ -54,30 +54,35 @@ public:
 ///
 /// These are used to efficiently contain a byte sequence for metadata.
 /// MDString is always unnamed.
-///
-/// TODO: Inherit from Metadata.
-class MDString : public Value {
+class MDString : public Metadata {
+  friend class StringMapEntry<MDString>;
+
   virtual void anchor();
   MDString(const MDString &) LLVM_DELETED_FUNCTION;
 
-  explicit MDString(LLVMContext &C);
+  explicit MDString(LLVMContext &Context)
+      : Metadata(Context, Value::MDStringVal) {}
+
+  /// \brief Shadow Value::getName() to prevent its use.
+  StringRef getName() const LLVM_DELETED_FUNCTION;
+
 public:
   static MDString *get(LLVMContext &Context, StringRef Str);
   static MDString *get(LLVMContext &Context, const char *Str) {
     return get(Context, Str ? StringRef(Str) : StringRef());
   }
 
-  StringRef getString() const { return getName(); }
+  StringRef getString() const;
 
-  unsigned getLength() const { return (unsigned)getName().size(); }
+  unsigned getLength() const { return (unsigned)getString().size(); }
 
   typedef StringRef::iterator iterator;
 
   /// \brief Pointer to the first byte of the string.
-  iterator begin() const { return getName().begin(); }
+  iterator begin() const { return getString().begin(); }
 
   /// \brief Pointer to one byte past the end of the string.
-  iterator end() const { return getName().end(); }
+  iterator end() const { return getString().end(); }
 
   /// \brief Methods for support type inquiry through isa, cast, and dyn_cast.
   static bool classof(const Value *V) {
