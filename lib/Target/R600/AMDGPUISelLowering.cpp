@@ -1032,9 +1032,12 @@ SDValue AMDGPUTargetLowering::CombineFMinMax(SDLoc DL,
   case ISD::SETOLT:
   case ISD::SETLE:
   case ISD::SETLT: {
-    unsigned Opc
-      = (LHS == True) ? AMDGPUISD::FMIN_LEGACY : AMDGPUISD::FMAX_LEGACY;
-    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+    // We need to permute the operands to get the correct NaN behavior. The
+    // selected operand is the second one based on the failing compare with NaN,
+    // so permute it based on the compare type the hardware uses.
+    if (LHS == True)
+      return DAG.getNode(AMDGPUISD::FMIN_LEGACY, DL, VT, RHS, LHS);
+    return DAG.getNode(AMDGPUISD::FMAX_LEGACY, DL, VT, LHS, RHS);
   }
   case ISD::SETGT:
   case ISD::SETGE:
@@ -1042,9 +1045,9 @@ SDValue AMDGPUTargetLowering::CombineFMinMax(SDLoc DL,
   case ISD::SETOGE:
   case ISD::SETUGT:
   case ISD::SETOGT: {
-    unsigned Opc
-      = (LHS == True) ? AMDGPUISD::FMAX_LEGACY : AMDGPUISD::FMIN_LEGACY;
-    return DAG.getNode(Opc, DL, VT, LHS, RHS);
+    if (LHS == True)
+      return DAG.getNode(AMDGPUISD::FMAX_LEGACY, DL, VT, RHS, LHS);
+    return DAG.getNode(AMDGPUISD::FMIN_LEGACY, DL, VT, LHS, RHS);
   }
   case ISD::SETCC_INVALID:
     llvm_unreachable("Invalid setcc condcode!");
@@ -1562,10 +1565,91 @@ SDValue AMDGPUTargetLowering::LowerDIVREM24(SDValue Op, SelectionDAG &DAG, bool 
   return DAG.getMergeValues(Res, DL);
 }
 
+void AMDGPUTargetLowering::LowerUDIVREM64(SDValue Op,
+                                      SelectionDAG &DAG,
+                                      SmallVectorImpl<SDValue> &Results) const {
+  assert(Op.getValueType() == MVT::i64);
+
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  EVT HalfVT = VT.getHalfSizedIntegerVT(*DAG.getContext());
+
+  SDValue one = DAG.getConstant(1, HalfVT);
+  SDValue zero = DAG.getConstant(0, HalfVT);
+
+  //HiLo split
+  SDValue LHS = Op.getOperand(0);
+  SDValue LHS_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, LHS, zero);
+  SDValue LHS_Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, LHS, one);
+
+  SDValue RHS = Op.getOperand(1);
+  SDValue RHS_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, RHS, zero);
+  SDValue RHS_Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, RHS, one);
+
+  // Get Speculative values
+  SDValue DIV_Part = DAG.getNode(ISD::UDIV, DL, HalfVT, LHS_Hi, RHS_Lo);
+  SDValue REM_Part = DAG.getNode(ISD::UREM, DL, HalfVT, LHS_Hi, RHS_Lo);
+
+  SDValue REM_Hi = zero;
+  SDValue REM_Lo = DAG.getSelectCC(DL, RHS_Hi, zero, REM_Part, LHS_Hi, ISD::SETEQ);
+
+  SDValue DIV_Hi = DAG.getSelectCC(DL, RHS_Hi, zero, DIV_Part, zero, ISD::SETEQ);
+  SDValue DIV_Lo = zero;
+
+  const unsigned halfBitWidth = HalfVT.getSizeInBits();
+
+  for (unsigned i = 0; i < halfBitWidth; ++i) {
+    SDValue POS = DAG.getConstant(halfBitWidth - i - 1, HalfVT);
+    // Get Value of high bit
+    SDValue HBit;
+    if (halfBitWidth == 32 && Subtarget->hasBFE()) {
+      HBit = DAG.getNode(AMDGPUISD::BFE_U32, DL, HalfVT, LHS_Lo, POS, one);
+    } else {
+      HBit = DAG.getNode(ISD::SRL, DL, HalfVT, LHS_Lo, POS);
+      HBit = DAG.getNode(ISD::AND, DL, HalfVT, HBit, one);
+    }
+
+    SDValue Carry = DAG.getNode(ISD::SRL, DL, HalfVT, REM_Lo,
+      DAG.getConstant(halfBitWidth - 1, HalfVT));
+    REM_Hi = DAG.getNode(ISD::SHL, DL, HalfVT, REM_Hi, one);
+    REM_Hi = DAG.getNode(ISD::OR, DL, HalfVT, REM_Hi, Carry);
+
+    REM_Lo = DAG.getNode(ISD::SHL, DL, HalfVT, REM_Lo, one);
+    REM_Lo = DAG.getNode(ISD::OR, DL, HalfVT, REM_Lo, HBit);
+
+
+    SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, REM_Lo, REM_Hi);
+
+    SDValue BIT = DAG.getConstant(1 << (halfBitWidth - i - 1), HalfVT);
+    SDValue realBIT = DAG.getSelectCC(DL, REM, RHS, BIT, zero, ISD::SETUGE);
+
+    DIV_Lo = DAG.getNode(ISD::OR, DL, HalfVT, DIV_Lo, realBIT);
+
+    // Update REM
+
+    SDValue REM_sub = DAG.getNode(ISD::SUB, DL, VT, REM, RHS);
+
+    REM = DAG.getSelectCC(DL, REM, RHS, REM_sub, REM, ISD::SETUGE);
+    REM_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, REM, zero);
+    REM_Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, REM, one);
+  }
+
+  SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, REM_Lo, REM_Hi);
+  SDValue DIV = DAG.getNode(ISD::BUILD_PAIR, DL, VT, DIV_Lo, DIV_Hi);
+  Results.push_back(DIV);
+  Results.push_back(REM);
+}
+
 SDValue AMDGPUTargetLowering::LowerUDIVREM(SDValue Op,
                                            SelectionDAG &DAG) const {
   SDLoc DL(Op);
   EVT VT = Op.getValueType();
+
+  if (VT == MVT::i64) {
+    SmallVector<SDValue, 2> Results;
+    LowerUDIVREM64(Op, DAG, Results);
+    return DAG.getMergeValues(Results, DL);
+  }
 
   SDValue Num = Op.getOperand(0);
   SDValue Den = Op.getOperand(1);
@@ -2374,6 +2458,12 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(FMIN_LEGACY)
   NODE_NAME_CASE(SMIN)
   NODE_NAME_CASE(UMIN)
+  NODE_NAME_CASE(FMAX3)
+  NODE_NAME_CASE(SMAX3)
+  NODE_NAME_CASE(UMAX3)
+  NODE_NAME_CASE(FMIN3)
+  NODE_NAME_CASE(SMIN3)
+  NODE_NAME_CASE(UMIN3)
   NODE_NAME_CASE(URECIP)
   NODE_NAME_CASE(DIV_SCALE)
   NODE_NAME_CASE(DIV_FMAS)
