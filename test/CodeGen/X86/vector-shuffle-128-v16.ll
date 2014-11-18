@@ -538,7 +538,7 @@ define <16 x i8> @shuffle_v16i8_zz_zz_zz_zz_zz_16_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz(
 ; SSE2:       # BB#0:
 ; SSE2-NEXT:    movzbl %dil, %eax
 ; SSE2-NEXT:    movd %eax, %xmm0
-; SSE2-NEXT:    pslldq $5, %xmm0
+; SSE2-NEXT:    pslldq {{.*#+}} xmm0 = zero,zero,zero,zero,zero,xmm0[0,1,2,3,4,5,6,7,8,9,10]
 ; SSE2-NEXT:    retq
 ;
 ; SSSE3-LABEL: shuffle_v16i8_zz_zz_zz_zz_zz_16_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz:
@@ -577,7 +577,7 @@ define <16 x i8> @shuffle_v16i8_zz_uu_uu_zz_uu_uu_zz_zz_zz_zz_zz_zz_zz_zz_zz_16(
 ; SSE2:       # BB#0:
 ; SSE2-NEXT:    movzbl %dil, %eax
 ; SSE2-NEXT:    movd %eax, %xmm0
-; SSE2-NEXT:    pslldq $15, %xmm0
+; SSE2-NEXT:    pslldq {{.*#+}} xmm0 = zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,xmm0[0]
 ; SSE2-NEXT:    retq
 ;
 ; SSSE3-LABEL: shuffle_v16i8_zz_uu_uu_zz_uu_uu_zz_zz_zz_zz_zz_zz_zz_zz_zz_16:
@@ -616,7 +616,7 @@ define <16 x i8> @shuffle_v16i8_zz_zz_19_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz(
 ; SSE2:       # BB#0:
 ; SSE2-NEXT:    movzbl %dil, %eax
 ; SSE2-NEXT:    movd %eax, %xmm0
-; SSE2-NEXT:    pslldq $2, %xmm0
+; SSE2-NEXT:    pslldq {{.*#+}} xmm0 = zero,zero,xmm0[0,1,2,3,4,5,6,7,8,9,10,11,12,13]
 ; SSE2-NEXT:    retq
 ;
 ; SSSE3-LABEL: shuffle_v16i8_zz_zz_19_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz_zz:
@@ -1218,4 +1218,15 @@ entry:
   %s.2.0 = shufflevector <16 x i8> %s.1.0, <16 x i8> %s.1.1, <16 x i32> <i32 22, i32 1, i32 12, i32 3, i32 30, i32 4, i32 30, i32 undef, i32 1, i32 10, i32 14, i32 18, i32 27, i32 13, i32 16, i32 19>
 
   ret <16 x i8> %s.2.0
+}
+
+define void @constant_gets_selected() {
+; ALL-LABEL: constant_gets_selected:
+; ALL-NOT movd $0, {{%xmm[0-9]+}}
+  %weird_zero = bitcast <4 x i32> zeroinitializer to <16 x i8>
+  %shuffle.i = shufflevector <16 x i8> <i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 undef, i8 0, i8 0, i8 0, i8 0>, <16 x i8> %weird_zero, <16 x i32> <i32 12, i32 13, i32 14, i32 15, i32 16, i32 17, i32 18, i32 19, i32 20, i32 21, i32 22, i32 23, i32 24, i32 25, i32 26, i32 27>
+  %weirder_zero = bitcast <16 x i8> %shuffle.i to <4 x i32>
+  store <4 x i32> %weirder_zero, <4 x i32>* undef, align 16
+  store <4 x i32> zeroinitializer, <4 x i32>* undef, align 16
+  ret void
 }

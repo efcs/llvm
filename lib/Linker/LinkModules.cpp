@@ -1287,7 +1287,7 @@ bool ModuleLinker::linkModuleFlagsMetadata() {
   DenseMap<MDString*, MDNode*> Flags;
   SmallSetVector<MDNode*, 16> Requirements;
   for (unsigned I = 0, E = DstModFlags->getNumOperands(); I != E; ++I) {
-    MDNode *Op = DstModFlags->getOperandAsMDNode(I);
+    MDNode *Op = DstModFlags->getOperand(I);
     ConstantInt *Behavior = cast<ConstantInt>(Op->getOperand(0));
     MDString *ID = cast<MDString>(Op->getOperand(1));
 
@@ -1302,7 +1302,7 @@ bool ModuleLinker::linkModuleFlagsMetadata() {
   // requirements.
   bool HasErr = false;
   for (unsigned I = 0, E = SrcModFlags->getNumOperands(); I != E; ++I) {
-    MDNode *SrcOp = SrcModFlags->getOperandAsMDNode(I);
+    MDNode *SrcOp = SrcModFlags->getOperand(I);
     ConstantInt *SrcBehavior = cast<ConstantInt>(SrcOp->getOperand(0));
     MDString *ID = cast<MDString>(SrcOp->getOperand(1));
     MDNode *DstOp = Flags.lookup(ID);
@@ -1594,16 +1594,23 @@ bool ModuleLinker::run() {
   return false;
 }
 
-Linker::Linker(Module *M, DiagnosticHandlerFunction DiagnosticHandler)
-    : Composite(M), DiagnosticHandler(DiagnosticHandler) {}
+void Linker::init(Module *M, DiagnosticHandlerFunction DiagnosticHandler) {
+  this->Composite = M;
+  this->DiagnosticHandler = DiagnosticHandler;
 
-Linker::Linker(Module *M)
-    : Composite(M), DiagnosticHandler([this](const DiagnosticInfo &DI) {
-                      Composite->getContext().diagnose(DI);
-                    }) {
   TypeFinder StructTypes;
   StructTypes.run(*M, true);
   IdentifiedStructTypes.insert(StructTypes.begin(), StructTypes.end());
+}
+
+Linker::Linker(Module *M, DiagnosticHandlerFunction DiagnosticHandler) {
+  init(M, DiagnosticHandler);
+}
+
+Linker::Linker(Module *M) {
+  init(M, [this](const DiagnosticInfo &DI) {
+    Composite->getContext().diagnose(DI);
+  });
 }
 
 Linker::~Linker() {

@@ -110,12 +110,14 @@ struct pe32_header {
   support::ulittle32_t SizeOfHeaders;
   support::ulittle32_t CheckSum;
   support::ulittle16_t Subsystem;
+  // FIXME: This should be DllCharacteristics.
   support::ulittle16_t DLLCharacteristics;
   support::ulittle32_t SizeOfStackReserve;
   support::ulittle32_t SizeOfStackCommit;
   support::ulittle32_t SizeOfHeapReserve;
   support::ulittle32_t SizeOfHeapCommit;
   support::ulittle32_t LoaderFlags;
+  // FIXME: This should be NumberOfRvaAndSizes.
   support::ulittle32_t NumberOfRvaAndSize;
 };
 
@@ -299,7 +301,9 @@ public:
 
   uint8_t getBaseType() const { return getType() & 0x0F; }
 
-  uint8_t getComplexType() const { return (getType() & 0xF0) >> 4; }
+  uint8_t getComplexType() const {
+    return (getType() & 0xF0) >> COFF::SCT_COMPLEX_TYPE_SHIFT;
+  }
 
   bool isExternal() const {
     return getStorageClass() == COFF::IMAGE_SYM_CLASS_EXTERNAL;
@@ -373,9 +377,9 @@ struct coff_section {
   // Returns true if the actual number of relocations is stored in
   // VirtualAddress field of the first relocation table entry.
   bool hasExtendedRelocations() const {
-    return Characteristics & COFF::IMAGE_SCN_LNK_NRELOC_OVFL &&
-        NumberOfRelocations == UINT16_MAX;
-  };
+    return (Characteristics & COFF::IMAGE_SCN_LNK_NRELOC_OVFL) &&
+           NumberOfRelocations == UINT16_MAX;
+  }
 };
 
 struct coff_relocation {
@@ -504,7 +508,8 @@ public:
   }
   uint16_t getSizeOfOptionalHeader() const {
     if (COFFHeader)
-      return COFFHeader->SizeOfOptionalHeader;
+      return COFFHeader->isImportLibrary() ? 0
+                                           : COFFHeader->SizeOfOptionalHeader;
     // bigobj doesn't have this field.
     if (COFFBigObjHeader)
       return 0;
@@ -512,7 +517,7 @@ public:
   }
   uint16_t getCharacteristics() const {
     if (COFFHeader)
-      return COFFHeader->Characteristics;
+      return COFFHeader->isImportLibrary() ? 0 : COFFHeader->Characteristics;
     // bigobj doesn't have characteristics to speak of,
     // editbin will silently lie to you if you attempt to set any.
     if (COFFBigObjHeader)
@@ -528,21 +533,22 @@ public:
   }
   uint32_t getNumberOfSections() const {
     if (COFFHeader)
-      return COFFHeader->NumberOfSections;
+      return COFFHeader->isImportLibrary() ? 0 : COFFHeader->NumberOfSections;
     if (COFFBigObjHeader)
       return COFFBigObjHeader->NumberOfSections;
     llvm_unreachable("no COFF header!");
   }
   uint32_t getPointerToSymbolTable() const {
     if (COFFHeader)
-      return COFFHeader->PointerToSymbolTable;
+      return COFFHeader->isImportLibrary() ? 0
+                                           : COFFHeader->PointerToSymbolTable;
     if (COFFBigObjHeader)
       return COFFBigObjHeader->PointerToSymbolTable;
     llvm_unreachable("no COFF header!");
   }
   uint32_t getNumberOfSymbols() const {
     if (COFFHeader)
-      return COFFHeader->NumberOfSymbols;
+      return COFFHeader->isImportLibrary() ? 0 : COFFHeader->NumberOfSymbols;
     if (COFFBigObjHeader)
       return COFFBigObjHeader->NumberOfSymbols;
     llvm_unreachable("no COFF header!");
@@ -653,7 +659,7 @@ public:
         return EC;
       return COFFSymbolRef(Symb);
     }
-    llvm_unreachable("no symbol table pointer!");
+    return object_error::parse_failed;
   }
   template <typename T>
   std::error_code getAuxSymbol(uint32_t index, const T *&Res) const {
@@ -686,6 +692,7 @@ public:
                               StringRef &Name) const;
 
   bool isRelocatableObject() const override;
+  bool is64() const { return PE32PlusHeader; }
 
   static inline bool classof(const Binary *v) { return v->isCOFF(); }
 };
@@ -738,6 +745,7 @@ public:
   std::error_code getName(StringRef &Result) const;
   std::error_code getDelayImportTable(
       const delay_import_directory_table_entry *&Result) const;
+  std::error_code getImportAddress(int AddrIndex, uint64_t &Result) const;
 
 private:
   const delay_import_directory_table_entry *Table;

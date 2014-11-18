@@ -184,6 +184,8 @@ def FeatureSlowIncDec : SubtargetFeature<"slow-incdec", "SlowIncDec", "true",
                                    "INC and DEC instructions are slower than ADD and SUB">;
 def FeatureUseSqrtEst : SubtargetFeature<"use-sqrt-est", "UseSqrtEst", "true",
                             "Use RSQRT* to optimize square root calculations">;
+def FeatureUseRecipEst : SubtargetFeature<"use-recip-est", "UseReciprocalEst",
+                          "true", "Use RCP* to optimize division calculations">;
 
 //===----------------------------------------------------------------------===//
 // X86 processors supported.
@@ -278,7 +280,7 @@ def : ProcessorModel<"core-avx2", HaswellModel,
                       FeaturePOPCNT, FeatureAES, FeaturePCLMUL, FeatureRDRAND,
                       FeatureF16C, FeatureFSGSBase, FeatureMOVBE, FeatureLZCNT,
                       FeatureBMI, FeatureBMI2, FeatureFMA, FeatureRTM,
-                      FeatureHLE]>;
+                      FeatureHLE, FeatureSlowIncDec]>;
 
 // Broadwell
 def : ProcessorModel<"broadwell", HaswellModel,
@@ -286,7 +288,8 @@ def : ProcessorModel<"broadwell", HaswellModel,
                       FeaturePOPCNT, FeatureAES, FeaturePCLMUL, FeatureRDRAND,
                       FeatureF16C, FeatureFSGSBase, FeatureMOVBE, FeatureLZCNT,
                       FeatureBMI, FeatureBMI2, FeatureFMA, FeatureRTM,
-                      FeatureHLE, FeatureADX, FeatureRDSEED, FeatureSMAP]>;
+                      FeatureHLE, FeatureADX, FeatureRDSEED, FeatureSMAP,
+                      FeatureSlowIncDec]>;
 // KNL
 // FIXME: define KNL model
 def : ProcessorModel<"knl", HaswellModel,
@@ -350,7 +353,7 @@ def : ProcessorModel<"btver2", BtVer2Model,
                       FeaturePRFCHW, FeatureAES, FeaturePCLMUL,
                       FeatureBMI, FeatureF16C, FeatureMOVBE,
                       FeatureLZCNT, FeaturePOPCNT, FeatureSlowSHLD,
-                      FeatureUseSqrtEst]>;
+                      FeatureUseSqrtEst, FeatureUseRecipEst]>;
 
 // Bulldozer
 def : Proc<"bdver1",          [FeatureXOP, FeatureFMA4, FeatureCMPXCHG16B,
