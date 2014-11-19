@@ -57,6 +57,7 @@ public:
   void printUnwindInfo() override;
   void printCOFFImports() override;
   void printCOFFDirectives() override;
+  void printCOFFBaseReloc() override;
 
 private:
   void printSymbol(const SymbolRef &Sym);
@@ -1074,5 +1075,32 @@ void COFFDumper::printCOFFDirectives() {
       return;
 
     W.printString("Directive(s)", Contents);
+  }
+}
+
+static StringRef getBaseRelocTypeName(uint8_t Type) {
+  switch (Type) {
+  case COFF::IMAGE_REL_BASED_ABSOLUTE: return "ABSOLUTE";
+  case COFF::IMAGE_REL_BASED_HIGH: return "HIGH";
+  case COFF::IMAGE_REL_BASED_LOW: return "LOW";
+  case COFF::IMAGE_REL_BASED_HIGHLOW: return "HIGHLOW";
+  case COFF::IMAGE_REL_BASED_HIGHADJ: return "HIGHADJ";
+  case COFF::IMAGE_REL_BASED_DIR64: return "DIR64";
+  default: return "unknown (" + std::to_string(Type) + ")";
+  }
+}
+
+void COFFDumper::printCOFFBaseReloc() {
+  ListScope D(W, "BaseReloc");
+  for (const BaseRelocRef &I : Obj->base_relocs()) {
+    uint8_t Type;
+    uint32_t RVA;
+    if (error(I.getRVA(RVA)))
+      continue;
+    if (error(I.getType(Type)))
+      continue;
+    DictScope Import(W, "Entry");
+    W.printString("Type", getBaseRelocTypeName(Type));
+    W.printHex("Address", RVA);
   }
 }
