@@ -347,14 +347,14 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
   // Set mask and the first source register.
   switch (Opc) {
     case Hexagon::CMPEHexagon4rr:
-    case Hexagon::CMPEQri:
-    case Hexagon::CMPEQrr:
+    case Hexagon::C2_cmpeqi:
+    case Hexagon::C2_cmpeq:
     case Hexagon::CMPGT64rr:
     case Hexagon::CMPGTU64rr:
-    case Hexagon::CMPGTUri:
-    case Hexagon::CMPGTUrr:
-    case Hexagon::CMPGTri:
-    case Hexagon::CMPGTrr:
+    case Hexagon::C2_cmpgtui:
+    case Hexagon::C2_cmpgtu:
+    case Hexagon::C2_cmpgti:
+    case Hexagon::C2_cmpgt:
       SrcReg = MI->getOperand(1).getReg();
       Mask = ~0;
       break;
@@ -381,11 +381,11 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
   // Set the value/second source register.
   switch (Opc) {
     case Hexagon::CMPEHexagon4rr:
-    case Hexagon::CMPEQrr:
+    case Hexagon::C2_cmpeq:
     case Hexagon::CMPGT64rr:
     case Hexagon::CMPGTU64rr:
-    case Hexagon::CMPGTUrr:
-    case Hexagon::CMPGTrr:
+    case Hexagon::C2_cmpgtu:
+    case Hexagon::C2_cmpgt:
     case Hexagon::CMPbEQrr_sbsb_V4:
     case Hexagon::CMPbEQrr_ubub_V4:
     case Hexagon::CMPbGTUrr_V4:
@@ -397,9 +397,9 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
       SrcReg2 = MI->getOperand(2).getReg();
       return true;
 
-    case Hexagon::CMPEQri:
-    case Hexagon::CMPGTUri:
-    case Hexagon::CMPGTri:
+    case Hexagon::C2_cmpeqi:
+    case Hexagon::C2_cmpgtui:
+    case Hexagon::C2_cmpgti:
     case Hexagon::CMPbEQri_V4:
     case Hexagon::CMPbGTUri_V4:
     case Hexagon::CMPhEQri_V4:
@@ -1264,12 +1264,12 @@ isSpillPredRegOp(const MachineInstr *MI) const {
 bool HexagonInstrInfo::isNewValueJumpCandidate(const MachineInstr *MI) const {
   switch (MI->getOpcode()) {
     default: return false;
-    case Hexagon::CMPEQrr:
-    case Hexagon::CMPEQri:
-    case Hexagon::CMPGTrr:
-    case Hexagon::CMPGTri:
-    case Hexagon::CMPGTUrr:
-    case Hexagon::CMPGTUri:
+    case Hexagon::C2_cmpeq:
+    case Hexagon::C2_cmpeqi:
+    case Hexagon::C2_cmpgt:
+    case Hexagon::C2_cmpgti:
+    case Hexagon::C2_cmpgtu:
+    case Hexagon::C2_cmpgtui:
       return true;
   }
 }
@@ -1291,7 +1291,6 @@ isConditionalTransfer (const MachineInstr *MI) const {
 }
 
 bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
-  const HexagonRegisterInfo& QRI = getRegisterInfo();
   switch (MI->getOpcode())
   {
     default: return false;

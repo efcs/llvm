@@ -208,9 +208,6 @@ FindUniqueOperandCommands(std::vector<std::string> &UniqueOperandCommands,
       // Otherwise, scan to see if all of the other instructions in this command
       // set share the operand.
       bool AllSame = true;
-      // Keep track of the maximum, number of operands or any
-      // instruction we see in the group.
-      size_t MaxSize = FirstInst->Operands.size();
 
       for (NIT = std::find(NIT+1, InstIdxs.end(), CommandIdx);
            NIT != InstIdxs.end();
@@ -219,10 +216,6 @@ FindUniqueOperandCommands(std::vector<std::string> &UniqueOperandCommands,
         // matches, we're ok, otherwise bail out.
         const AsmWriterInst *OtherInst =
           getAsmWriterInstByID(NIT-InstIdxs.begin());
-
-        if (OtherInst &&
-            OtherInst->Operands.size() > FirstInst->Operands.size())
-          MaxSize = std::max(MaxSize, OtherInst->Operands.size());
 
         if (!OtherInst || OtherInst->Operands.size() == Op ||
             OtherInst->Operands[Op] != FirstInst->Operands[Op]) {
@@ -350,7 +343,7 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
   // in the opcode-indexed table.
   unsigned BitsLeft = 64-AsmStrBits;
 
-  std::vector<std::vector<std::string> > TableDrivenOperandPrinters;
+  std::vector<std::vector<std::string>> TableDrivenOperandPrinters;
 
   while (1) {
     std::vector<std::string> UniqueOperandCommands;
@@ -393,7 +386,7 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
     }
 
     // Remember the handlers for this set of operands.
-    TableDrivenOperandPrinters.push_back(UniqueOperandCommands);
+    TableDrivenOperandPrinters.push_back(std::move(UniqueOperandCommands));
   }
 
 
@@ -531,12 +524,12 @@ static const char *getMinimalTypeForRange(uint64_t Range) {
 
 static void
 emitRegisterNameString(raw_ostream &O, StringRef AltName,
-                       const std::vector<CodeGenRegister*> &Registers) {
+                       const std::deque<CodeGenRegister> &Registers) {
   SequenceToOffsetTable<std::string> StringTable;
   SmallVector<std::string, 4> AsmNames(Registers.size());
-  for (unsigned i = 0, e = Registers.size(); i != e; ++i) {
-    const CodeGenRegister &Reg = *Registers[i];
-    std::string &AsmName = AsmNames[i];
+  unsigned i = 0;
+  for (const auto &Reg : Registers) {
+    std::string &AsmName = AsmNames[i++];
 
     // "NoRegAltName" is special. We don't need to do a lookup for that,
     // as it's just a reference to the default register name.
@@ -587,8 +580,7 @@ emitRegisterNameString(raw_ostream &O, StringRef AltName,
 void AsmWriterEmitter::EmitGetRegisterName(raw_ostream &O) {
   Record *AsmWriter = Target.getAsmWriter();
   std::string ClassName = AsmWriter->getValueAsString("AsmWriterClassName");
-  const std::vector<CodeGenRegister*> &Registers =
-    Target.getRegBank().getRegisters();
+  const auto &Registers = Target.getRegBank().getRegisters();
   std::vector<Record*> AltNameIndices = Target.getRegAltNameIndices();
   bool hasAltNames = AltNameIndices.size() > 1;
 
@@ -1093,13 +1085,10 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
 AsmWriterEmitter::AsmWriterEmitter(RecordKeeper &R) : Records(R), Target(R) {
   Record *AsmWriter = Target.getAsmWriter();
-  for (CodeGenTarget::inst_iterator I = Target.inst_begin(),
-                                    E = Target.inst_end();
-       I != E; ++I)
-    if (!(*I)->AsmString.empty() && (*I)->TheDef->getName() != "PHI")
+  for (const CodeGenInstruction *I : Target.instructions())
+    if (!I->AsmString.empty() && I->TheDef->getName() != "PHI")
       Instructions.push_back(
-          AsmWriterInst(**I, AsmWriter->getValueAsInt("Variant"),
-                        AsmWriter->getValueAsInt("OperandSpacing")));
+          AsmWriterInst(*I, AsmWriter->getValueAsInt("Variant")));
 
   // Get the instruction numbering.
   NumberedInstructions = &Target.getInstructionsByEnumValue();
