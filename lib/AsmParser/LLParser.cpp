@@ -62,6 +62,8 @@ bool LLParser::ValidateEndOfModule() {
             NumberedMetadata[SlotNo] == nullptr)
           return Error(MDList[i].Loc, "use of undefined metadata '!" +
                        Twine(SlotNo) + "'");
+        assert(!NumberedMetadata[SlotNo]->isFunctionLocal() &&
+               "Unexpected function-local metadata");
         Inst->setMetadata(MDList[i].MDKind, NumberedMetadata[SlotNo]);
       }
     }
@@ -1529,6 +1531,8 @@ bool LLParser::ParseInstructionMetadata(Instruction *Inst,
       if (ParseMetadataListValue(ID, PFS))
         return true;
       assert(ID.Kind == ValID::t_MDNode);
+      if (ID.MDNodeVal->isFunctionLocal())
+        return TokError("unexpected function-local metadata");
       Inst->setMetadata(MDK, ID.MDNodeVal);
     } else {
       unsigned NodeID = 0;
@@ -3122,7 +3126,7 @@ bool LLParser::ParseTypeAndBasicBlock(BasicBlock *&BB, LocTy &Loc,
 /// FunctionHeader
 ///   ::= OptionalLinkage OptionalVisibility OptionalCallingConv OptRetAttrs
 ///       OptUnnamedAddr Type GlobalName '(' ArgList ')' OptFuncAttrs OptSection
-///       OptionalAlign OptGC OptionalPrefix
+///       OptionalAlign OptGC OptionalPrefix OptionalPrologue
 bool LLParser::ParseFunctionHeader(Function *&Fn, bool isDefine) {
   // Parse the linkage.
   LocTy LinkageLoc = Lex.getLoc();
@@ -3203,6 +3207,7 @@ bool LLParser::ParseFunctionHeader(Function *&Fn, bool isDefine) {
   bool UnnamedAddr;
   LocTy UnnamedAddrLoc;
   Constant *Prefix = nullptr;
+  Constant *Prologue = nullptr;
   Comdat *C;
 
   if (ParseArgumentList(ArgList, isVarArg) ||
@@ -3217,7 +3222,9 @@ bool LLParser::ParseFunctionHeader(Function *&Fn, bool isDefine) {
       (EatIfPresent(lltok::kw_gc) &&
        ParseStringConstant(GC)) ||
       (EatIfPresent(lltok::kw_prefix) &&
-       ParseGlobalTypeAndValue(Prefix)))
+       ParseGlobalTypeAndValue(Prefix)) ||
+      (EatIfPresent(lltok::kw_prologue) &&
+       ParseGlobalTypeAndValue(Prologue)))
     return true;
 
   if (FuncAttrs.contains(Attribute::Builtin))
@@ -3318,6 +3325,7 @@ bool LLParser::ParseFunctionHeader(Function *&Fn, bool isDefine) {
   Fn->setComdat(C);
   if (!GC.empty()) Fn->setGC(GC.c_str());
   Fn->setPrefixData(Prefix);
+  Fn->setPrologueData(Prologue);
   ForwardRefAttrGroups[Fn] = FwdRefAttrGrps;
 
   // Add all of the arguments we parsed to the function.
@@ -4664,7 +4672,11 @@ bool LLParser::ParseMDNodeVector(SmallVectorImpl<Value*> &Elts,
   if (Lex.getKind() == lltok::rbrace)
     return false;
 
+  bool IsLocal = false;
   do {
+    if (IsLocal)
+      return TokError("unexpected operand after function-local metadata");
+
     // Null is a special case since it is typeless.
     if (EatIfPresent(lltok::kw_null)) {
       Elts.push_back(nullptr);
@@ -4674,6 +4686,15 @@ bool LLParser::ParseMDNodeVector(SmallVectorImpl<Value*> &Elts,
     Value *V = nullptr;
     if (ParseTypeAndValue(V, PFS)) return true;
     Elts.push_back(V);
+
+    if (isa<MDNode>(V) && cast<MDNode>(V)->isFunctionLocal())
+      return TokError("unexpected nested function-local metadata");
+    if (!V->getType()->isMetadataTy() && !isa<Constant>(V)) {
+      assert(PFS && "Unexpected function-local metadata without PFS");
+      if (Elts.size() > 1)
+        return TokError("unexpected function-local metadata");
+      IsLocal = true;
+    }
   } while (EatIfPresent(lltok::comma));
 
   return false;

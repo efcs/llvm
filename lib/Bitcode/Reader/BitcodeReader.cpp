@@ -487,7 +487,20 @@ Type *BitcodeReader::getTypeByID(unsigned ID) {
 
   // If we have a forward reference, the only possible case is when it is to a
   // named struct.  Just create a placeholder for now.
-  return TypeList[ID] = StructType::create(Context);
+  return TypeList[ID] = createIdentifiedStructType(Context);
+}
+
+StructType *BitcodeReader::createIdentifiedStructType(LLVMContext &Context,
+                                                      StringRef Name) {
+  auto *Ret = StructType::create(Context, Name);
+  IdentifiedStructTypes.push_back(Ret);
+  return Ret;
+}
+
+StructType *BitcodeReader::createIdentifiedStructType(LLVMContext &Context) {
+  auto *Ret = StructType::create(Context);
+  IdentifiedStructTypes.push_back(Ret);
+  return Ret;
 }
 
 
@@ -922,7 +935,7 @@ std::error_code BitcodeReader::ParseTypeTableBody() {
         Res->setName(TypeName);
         TypeList[NumRecords] = nullptr;
       } else  // Otherwise, create a new struct.
-        Res = StructType::create(Context, TypeName);
+        Res = createIdentifiedStructType(Context, TypeName);
       TypeName.clear();
 
       SmallVector<Type*, 8> EltTys;
@@ -951,7 +964,7 @@ std::error_code BitcodeReader::ParseTypeTableBody() {
         Res->setName(TypeName);
         TypeList[NumRecords] = nullptr;
       } else  // Otherwise, create a new struct with no body.
-        Res = StructType::create(Context, TypeName);
+        Res = createIdentifiedStructType(Context, TypeName);
       TypeName.clear();
       ResultTy = Res;
       break;
@@ -1059,7 +1072,6 @@ std::error_code BitcodeReader::ParseMetadata() {
       break;
     }
 
-    bool IsFunctionLocal = false;
     // Read a record.
     Record.clear();
     unsigned Code = Stream.readRecord(Entry.ID, Record);
@@ -1087,9 +1099,34 @@ std::error_code BitcodeReader::ParseMetadata() {
       }
       break;
     }
-    case bitc::METADATA_FN_NODE:
-      IsFunctionLocal = true;
-      // fall-through
+    case bitc::METADATA_FN_NODE: {
+      // This is a function-local node.
+      if (Record.size() % 2 == 1)
+        return Error(BitcodeError::InvalidRecord);
+
+      // If this isn't a single-operand node that directly references
+      // non-metadata, we're dropping it.  This used to be legal, but there's
+      // no upgrade path.
+      auto dropRecord = [&] {
+        MDValueList.AssignValue(MDNode::get(Context, None), NextMDValueNo++);
+      };
+      if (Record.size() != 2) {
+        dropRecord();
+        break;
+      }
+
+      Type *Ty = getTypeByID(Record[0]);
+      if (Ty->isMetadataTy() || Ty->isVoidTy()) {
+        dropRecord();
+        break;
+      }
+
+      Value *Elts[] = {ValueList.getValueFwdRef(Record[1], Ty)};
+      Value *V = MDNode::getWhenValsUnresolved(Context, Elts,
+                                               /*IsFunctionLocal*/ true);
+      MDValueList.AssignValue(V, NextMDValueNo++);
+      break;
+    }
     case bitc::METADATA_NODE: {
       if (Record.size() % 2 == 1)
         return Error(BitcodeError::InvalidRecord);
@@ -1107,8 +1144,8 @@ std::error_code BitcodeReader::ParseMetadata() {
         else
           Elts.push_back(nullptr);
       }
-      Value *V = MDNode::getWhenValsUnresolved(Context, Elts, IsFunctionLocal);
-      IsFunctionLocal = false;
+      Value *V = MDNode::getWhenValsUnresolved(Context, Elts,
+                                               /*IsFunctionLocal*/ false);
       MDValueList.AssignValue(V, NextMDValueNo++);
       break;
     }
@@ -1152,10 +1189,12 @@ std::error_code BitcodeReader::ResolveGlobalAndAliasInits() {
   std::vector<std::pair<GlobalVariable*, unsigned> > GlobalInitWorklist;
   std::vector<std::pair<GlobalAlias*, unsigned> > AliasInitWorklist;
   std::vector<std::pair<Function*, unsigned> > FunctionPrefixWorklist;
+  std::vector<std::pair<Function*, unsigned> > FunctionPrologueWorklist;
 
   GlobalInitWorklist.swap(GlobalInits);
   AliasInitWorklist.swap(AliasInits);
   FunctionPrefixWorklist.swap(FunctionPrefixes);
+  FunctionPrologueWorklist.swap(FunctionPrologues);
 
   while (!GlobalInitWorklist.empty()) {
     unsigned ValID = GlobalInitWorklist.back().second;
@@ -1195,6 +1234,19 @@ std::error_code BitcodeReader::ResolveGlobalAndAliasInits() {
         return Error(BitcodeError::ExpectedConstant);
     }
     FunctionPrefixWorklist.pop_back();
+  }
+
+  while (!FunctionPrologueWorklist.empty()) {
+    unsigned ValID = FunctionPrologueWorklist.back().second;
+    if (ValID >= ValueList.size()) {
+      FunctionPrologues.push_back(FunctionPrologueWorklist.back());
+    } else {
+      if (Constant *C = dyn_cast_or_null<Constant>(ValueList[ValID]))
+        FunctionPrologueWorklist.back().first->setPrologueData(C);
+      else
+        return Error(BitcodeError::ExpectedConstant);
+    }
+    FunctionPrologueWorklist.pop_back();
   }
 
   return std::error_code();
@@ -2011,7 +2063,7 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
     }
     // FUNCTION:  [type, callingconv, isproto, linkage, paramattr,
     //             alignment, section, visibility, gc, unnamed_addr,
-    //             dllstorageclass]
+    //             prologuedata, dllstorageclass, comdat, prefixdata]
     case bitc::MODULE_CODE_FUNCTION: {
       if (Record.size() < 8)
         return Error(BitcodeError::InvalidRecord);
@@ -2053,7 +2105,7 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
         UnnamedAddr = Record[9];
       Func->setUnnamedAddr(UnnamedAddr);
       if (Record.size() > 10 && Record[10] != 0)
-        FunctionPrefixes.push_back(std::make_pair(Func, Record[10]-1));
+        FunctionPrologues.push_back(std::make_pair(Func, Record[10]-1));
 
       if (Record.size() > 11)
         Func->setDLLStorageClass(GetDecodedDLLStorageClass(Record[11]));
@@ -2065,6 +2117,9 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
           assert(ComdatID <= ComdatList.size());
           Func->setComdat(ComdatList[ComdatID - 1]);
         }
+
+      if (Record.size() > 13 && Record[13] != 0)
+        FunctionPrefixes.push_back(std::make_pair(Func, Record[13]-1));
 
       ValueList.push_back(Func);
 
@@ -2304,8 +2359,12 @@ std::error_code BitcodeReader::ParseMetadataAttachment() {
           MDKindMap.find(Kind);
         if (I == MDKindMap.end())
           return Error(BitcodeError::InvalidID);
-        Value *Node = MDValueList.getValueFwdRef(Record[i+1]);
-        Inst->setMetadata(I->second, cast<MDNode>(Node));
+        MDNode *Node = cast<MDNode>(MDValueList.getValueFwdRef(Record[i+1]));
+        if (Node->isFunctionLocal())
+          // Drop the attachment.  This used to be legal, but there's no
+          // upgrade path.
+          break;
+        Inst->setMetadata(I->second, Node);
         if (I->second == LLVMContext::MD_tbaa)
           InstsWithTBAATag.push_back(Inst);
       }
@@ -3396,6 +3455,10 @@ std::error_code BitcodeReader::MaterializeModule(Module *M) {
 
   UpgradeDebugInfo(*M);
   return std::error_code();
+}
+
+std::vector<StructType *> BitcodeReader::getIdentifiedStructTypes() const {
+  return IdentifiedStructTypes;
 }
 
 std::error_code BitcodeReader::InitStream() {

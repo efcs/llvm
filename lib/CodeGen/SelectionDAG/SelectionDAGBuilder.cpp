@@ -16,6 +16,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -46,6 +47,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -884,6 +886,7 @@ void SelectionDAGBuilder::clear() {
   CurInst = nullptr;
   HasTailCall = false;
   SDNodeOrder = LowestSDNodeOrder;
+  StatepointLowering.clear();
 }
 
 /// clearDanglingDebugInfo - Clear the dangling debug information
@@ -2695,32 +2698,55 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
   if (SwitchMBB + 1 != FuncInfo.MF->end())
     NextBlock = SwitchMBB + 1;
 
+
+  // Create a vector of Cases, sorted so that we can efficiently create a binary
+  // search tree from them.
+  CaseVector Cases;
+  Clusterify(Cases, SI);
+
+  // Get the default destination MBB.
   MachineBasicBlock *Default = FuncInfo.MBBMap[SI.getDefaultDest()];
 
-  // If there is only the default destination, branch to it if it is not the
-  // next basic block.  Otherwise, just fall through.
-  if (!SI.getNumCases()) {
+  if (isa<UnreachableInst>(SI.getDefaultDest()->getFirstNonPHIOrDbg()) &&
+      !Cases.empty()) {
+    // Replace an unreachable default destination with the most popular case
+    // destination.
+    DenseMap<const BasicBlock *, uint64_t> Popularity;
+    uint64_t MaxPop = 0;
+    const BasicBlock *MaxBB = nullptr;
+    for (auto I : SI.cases()) {
+      const BasicBlock *BB = I.getCaseSuccessor();
+      if (++Popularity[BB] > MaxPop) {
+        MaxPop = Popularity[BB];
+        MaxBB = BB;
+      }
+    }
+
+    // Set new default.
+    assert(MaxPop > 0);
+    assert(MaxBB);
+    Default = FuncInfo.MBBMap[MaxBB];
+
+    // Remove cases that were pointing to the destination that is now the default.
+    Cases.erase(std::remove_if(Cases.begin(), Cases.end(),
+                               [&](const Case &C) { return C.BB == Default; }),
+                Cases.end());
+  }
+
+  // If there is only the default destination, go there directly.
+  if (Cases.empty()) {
     // Update machine-CFG edges.
     SwitchMBB->addSuccessor(Default);
 
     // If this is not a fall-through branch, emit the branch.
-    if (Default != NextBlock)
-      DAG.setRoot(DAG.getNode(ISD::BR, getCurSDLoc(),
-                              MVT::Other, getControlRoot(),
-                              DAG.getBasicBlock(Default)));
-
+    if (Default != NextBlock) {
+      DAG.setRoot(DAG.getNode(ISD::BR, getCurSDLoc(), MVT::Other,
+                              getControlRoot(), DAG.getBasicBlock(Default)));
+    }
     return;
   }
 
-  // If there are any non-default case statements, create a vector of Cases
-  // representing each one, and sort the vector so that we can efficiently
-  // create a binary search tree from them.
-  CaseVector Cases;
-  Clusterify(Cases, SI);
-
-  // Get the Value to be switched on and default basic blocks, which will be
-  // inserted into CaseBlock records, representing basic blocks in the binary
-  // search tree.
+  // Get the Value to be switched on.
   const Value *SV = SI.getCondition();
 
   // Push the initial CaseRec onto the worklist
@@ -3612,6 +3638,70 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   SDValue StoreNode = DAG.getNode(ISD::TokenFactor, getCurSDLoc(), MVT::Other,
                                   makeArrayRef(Chains.data(), ChainI));
   DAG.setRoot(StoreNode);
+}
+
+void SelectionDAGBuilder::visitMaskedStore(const CallInst &I) {
+  SDLoc sdl = getCurSDLoc();
+
+  Value  *PtrOperand = I.getArgOperand(0);
+  SDValue Ptr = getValue(PtrOperand);
+  SDValue Src0 = getValue(I.getArgOperand(1));
+  SDValue Mask = getValue(I.getArgOperand(3));
+  EVT VT = Src0.getValueType();
+  unsigned Alignment = (cast<ConstantInt>(I.getArgOperand(2)))->getZExtValue();
+  if (!Alignment)
+    Alignment = DAG.getEVTAlignment(VT);
+
+  AAMDNodes AAInfo;
+  I.getAAMetadata(AAInfo);
+
+  MachineMemOperand *MMO =
+    DAG.getMachineFunction().
+    getMachineMemOperand(MachinePointerInfo(PtrOperand),
+                          MachineMemOperand::MOStore,  VT.getStoreSize(),
+                          Alignment, AAInfo);
+  SDValue StoreNode = DAG.getMaskedStore(getRoot(), sdl, Src0, Ptr, Mask, MMO);
+  DAG.setRoot(StoreNode);
+  setValue(&I, StoreNode);
+}
+
+void SelectionDAGBuilder::visitMaskedLoad(const CallInst &I) {
+  SDLoc sdl = getCurSDLoc();
+
+  Value  *PtrOperand = I.getArgOperand(0);
+  SDValue Ptr = getValue(PtrOperand);
+  SDValue Src0 = getValue(I.getArgOperand(1));
+  SDValue Mask = getValue(I.getArgOperand(3));
+
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  EVT VT = TLI.getValueType(I.getType());
+  unsigned Alignment = (cast<ConstantInt>(I.getArgOperand(2)))->getZExtValue();
+  if (!Alignment)
+    Alignment = DAG.getEVTAlignment(VT);
+
+  AAMDNodes AAInfo;
+  I.getAAMetadata(AAInfo);
+  const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
+
+  SDValue InChain = DAG.getRoot();
+  if (AA->pointsToConstantMemory(
+      AliasAnalysis::Location(PtrOperand,
+                              AA->getTypeStoreSize(I.getType()),
+                              AAInfo))) {
+    // Do not serialize (non-volatile) loads of constant memory with anything.
+    InChain = DAG.getEntryNode();
+  }
+
+  MachineMemOperand *MMO =
+    DAG.getMachineFunction().
+    getMachineMemOperand(MachinePointerInfo(PtrOperand),
+                          MachineMemOperand::MOLoad,  VT.getStoreSize(),
+                          Alignment, AAInfo, Ranges);
+
+  SDValue Load = DAG.getMaskedLoad(VT, sdl, InChain, Ptr, Mask, Src0, MMO);
+  SDValue OutChain = Load.getValue(1);
+  DAG.setRoot(OutChain);
+  setValue(&I, Load);
 }
 
 void SelectionDAGBuilder::visitAtomicCmpXchg(const AtomicCmpXchgInst &I) {
@@ -4915,6 +5005,12 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     return nullptr;
   }
 
+  case Intrinsic::masked_load:
+    visitMaskedLoad(I);
+    return nullptr;
+  case Intrinsic::masked_store:
+    visitMaskedStore(I);
+    return nullptr;
   case Intrinsic::x86_mmx_pslli_w:
   case Intrinsic::x86_mmx_pslli_d:
   case Intrinsic::x86_mmx_pslli_q:
@@ -5458,6 +5554,20 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   case Intrinsic::experimental_patchpoint_void:
   case Intrinsic::experimental_patchpoint_i64: {
     visitPatchpoint(&I);
+    return nullptr;
+  }
+  case Intrinsic::experimental_gc_statepoint: {
+    visitStatepoint(I);
+    return nullptr;
+  }
+  case Intrinsic::experimental_gc_result_int:
+  case Intrinsic::experimental_gc_result_float:
+  case Intrinsic::experimental_gc_result_ptr: {
+    visitGCResult(I);
+    return nullptr;
+  }
+  case Intrinsic::experimental_gc_relocate: {
+    visitGCRelocate(I);
     return nullptr;
   }
   }
