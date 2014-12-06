@@ -382,6 +382,9 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
   setTargetDAGCombine(ISD::SELECT_CC);
   setTargetDAGCombine(ISD::STORE);
 
+  setBooleanContents(ZeroOrNegativeOneBooleanContent);
+  setBooleanVectorContents(ZeroOrNegativeOneBooleanContent);
+
   setSchedulingPreference(Sched::RegPressure);
   setJumpIsExpensive(true);
 
@@ -2155,7 +2158,8 @@ SDValue AMDGPUTargetLowering::performStoreCombine(SDNode *N,
   SDValue Value = SN->getValue();
   EVT VT = Value.getValueType();
 
-  if (isTypeLegal(VT) || SN->isVolatile() || !ISD::isNormalLoad(Value.getNode()))
+  if (isTypeLegal(VT) || SN->isVolatile() ||
+      !ISD::isNormalLoad(Value.getNode()) || VT.getSizeInBits() < 8)
     return SDValue();
 
   LoadSDNode *LoadVal = cast<LoadSDNode>(Value);
