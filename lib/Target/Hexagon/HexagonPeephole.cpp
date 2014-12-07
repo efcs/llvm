@@ -269,10 +269,9 @@ bool HexagonPeephole::runOnMachineFunction(MachineFunction &MF) {
           unsigned PR = 1, S1 = 2, S2 = 3;   // Operand indices.
 
           switch (Op) {
-            case Hexagon::TFR_condset_rr:
+            case Hexagon::C2_mux:
+            case Hexagon::C2_muxii:
             case Hexagon::TFR_condset_ii:
-            case Hexagon::MUX_ii:
-            case Hexagon::MUX_rr:
               NewOp = Op;
               break;
             case Hexagon::TFR_condset_ri:
@@ -281,11 +280,11 @@ bool HexagonPeephole::runOnMachineFunction(MachineFunction &MF) {
             case Hexagon::TFR_condset_ir:
               NewOp = Hexagon::TFR_condset_ri;
               break;
-            case Hexagon::MUX_ri:
-              NewOp = Hexagon::MUX_ir;
+            case Hexagon::C2_muxri:
+              NewOp = Hexagon::C2_muxir;
               break;
-            case Hexagon::MUX_ir:
-              NewOp = Hexagon::MUX_ri;
+            case Hexagon::C2_muxir:
+              NewOp = Hexagon::C2_muxri;
               break;
           }
           if (NewOp) {

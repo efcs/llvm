@@ -96,8 +96,10 @@ defm S_BUFFER_LOAD_DWORDX16 : SMRD_Helper <
 //===----------------------------------------------------------------------===//
 
 let isMoveImm = 1 in {
+let isReMaterializable = 1 in {
 def S_MOV_B32 : SOP1_32 <0x00000003, "s_mov_b32", []>;
 def S_MOV_B64 : SOP1_64 <0x00000004, "s_mov_b64", []>;
+} // let isRematerializeable = 1
 def S_CMOV_B32 : SOP1_32 <0x00000005, "s_cmov_b32", []>;
 def S_CMOV_B64 : SOP1_64 <0x00000006, "s_cmov_b64", []>;
 } // End isMoveImm = 1
@@ -1684,29 +1686,7 @@ defm V_TRIG_PREOP_F64 : VOP3Inst <
 //===----------------------------------------------------------------------===//
 // Pseudo Instructions
 //===----------------------------------------------------------------------===//
-
 let isCodeGenOnly = 1, isPseudo = 1 in {
-
-def V_MOV_I1 : InstSI <
-  (outs VReg_1:$dst),
-  (ins i1imm:$src),
-  "", [(set i1:$dst, (imm:$src))]
->;
-
-def V_AND_I1 : InstSI <
-   (outs VReg_1:$dst), (ins VReg_1:$src0, VReg_1:$src1), "",
-   [(set i1:$dst, (and i1:$src0, i1:$src1))]
->;
-
-def V_OR_I1 : InstSI <
-   (outs VReg_1:$dst), (ins VReg_1:$src0, VReg_1:$src1), "",
-   [(set i1:$dst, (or i1:$src0, i1:$src1))]
->;
-
-def V_XOR_I1 : InstSI <
-  (outs VReg_1:$dst), (ins VReg_1:$src0, VReg_1:$src1), "",
-  [(set i1:$dst, (xor i1:$src0, i1:$src1))]
->;
 
 let hasSideEffects = 1 in {
 def SGPR_USE : InstSI <(outs),(ins), "", []>;
@@ -2493,21 +2473,33 @@ def : Pat <
   (S_MOV_B64 InlineImm<i64>:$imm)
 >;
 
+// XXX - Should this use a s_cmp to set SCC?
+
+// Set to sign-extended 64-bit value (true = -1, false = 0)
+def : Pat <
+  (i1 imm:$imm),
+  (S_MOV_B64 (i64 (as_i64imm $imm)))
+>;
+
 /********** ===================== **********/
 /********** Interpolation Paterns **********/
 /********** ===================== **********/
 
+// The value of $params is constant through out the entire kernel.
+// We need to use S_MOV_B32 $params, because CSE ignores copies, so
+// without it we end up with a lot of redundant moves.
+
 def : Pat <
   (int_SI_fs_constant imm:$attr_chan, imm:$attr, i32:$params),
-  (V_INTERP_MOV_F32 INTERP.P0, imm:$attr_chan, imm:$attr, $params)
+  (V_INTERP_MOV_F32 INTERP.P0, imm:$attr_chan, imm:$attr, (S_MOV_B32 $params))
 >;
 
 def : Pat <
-  (int_SI_fs_interp imm:$attr_chan, imm:$attr, M0Reg:$params, v2i32:$ij),
+  (int_SI_fs_interp imm:$attr_chan, imm:$attr, i32:$params, v2i32:$ij),
   (V_INTERP_P2_F32 (V_INTERP_P1_F32 (EXTRACT_SUBREG v2i32:$ij, sub0),
-                                    imm:$attr_chan, imm:$attr, i32:$params),
+                                    imm:$attr_chan, imm:$attr, (S_MOV_B32 $params)),
                    (EXTRACT_SUBREG $ij, sub1),
-                   imm:$attr_chan, imm:$attr, $params)
+                   imm:$attr_chan, imm:$attr, (S_MOV_B32 $params))
 >;
 
 /********** ================== **********/
@@ -2612,7 +2604,7 @@ def : ROTRPattern <V_ALIGNBIT_B32>;
 
 class DSReadPat <DS inst, ValueType vt, PatFrag frag> : Pat <
   (vt (frag (DS1Addr1Offset i32:$ptr, i32:$offset))),
-  (inst (i1 0), $ptr, (as_i16imm $offset))
+  (inst (i1 0), $ptr, (as_i16imm $offset), (S_MOV_B32 -1))
 >;
 
 def : DSReadPat <DS_READ_I8,  i32, sextloadi8_local>;
@@ -2630,12 +2622,12 @@ def : DSReadPat <DS_READ_B64, v2i32, local_load_aligned8bytes>;
 def : Pat <
   (v2i32 (local_load (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
                                                     i8:$offset1))),
-  (DS_READ2_B32 (i1 0), $ptr, $offset0, $offset1)
+  (DS_READ2_B32 (i1 0), $ptr, $offset0, $offset1, (S_MOV_B32 -1))
 >;
 
 class DSWritePat <DS inst, ValueType vt, PatFrag frag> : Pat <
   (frag vt:$value, (DS1Addr1Offset i32:$ptr, i32:$offset)),
-  (inst (i1 0), $ptr, $value, (as_i16imm $offset))
+  (inst (i1 0), $ptr, $value, (as_i16imm $offset), (S_MOV_B32 -1))
 >;
 
 def : DSWritePat <DS_WRITE_B8, i32, truncstorei8_local>;
@@ -2651,12 +2643,13 @@ def : Pat <
   (local_store v2i32:$value, (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
                                                             i8:$offset1)),
   (DS_WRITE2_B32 (i1 0), $ptr, (EXTRACT_SUBREG $value, sub0),
-                        (EXTRACT_SUBREG $value, sub1), $offset0, $offset1)
+                        (EXTRACT_SUBREG $value, sub1), $offset0, $offset1,
+                        (S_MOV_B32 -1))
 >;
 
 class DSAtomicRetPat<DS inst, ValueType vt, PatFrag frag> : Pat <
   (frag (DS1Addr1Offset i32:$ptr, i32:$offset), vt:$value),
-  (inst (i1 0), $ptr, $value, (as_i16imm $offset))
+  (inst (i1 0), $ptr, $value, (as_i16imm $offset), (S_MOV_B32 -1))
 >;
 
 // Special case of DSAtomicRetPat for add / sub 1 -> inc / dec
@@ -2672,13 +2665,13 @@ class DSAtomicRetPat<DS inst, ValueType vt, PatFrag frag> : Pat <
 class DSAtomicIncRetPat<DS inst, ValueType vt,
                         Instruction LoadImm, PatFrag frag> : Pat <
   (frag (DS1Addr1Offset i32:$ptr, i32:$offset), (vt 1)),
-  (inst (i1 0), $ptr, (LoadImm (vt -1)), (as_i16imm $offset))
+  (inst (i1 0), $ptr, (LoadImm (vt -1)), (as_i16imm $offset), (S_MOV_B32 -1))
 >;
 
 
 class DSAtomicCmpXChg <DS inst, ValueType vt, PatFrag frag> : Pat <
   (frag (DS1Addr1Offset i32:$ptr, i32:$offset), vt:$cmp, vt:$swap),
-  (inst (i1 0), $ptr, $cmp, $swap, (as_i16imm $offset))
+  (inst (i1 0), $ptr, $cmp, $swap, (as_i16imm $offset), (S_MOV_B32 -1))
 >;
 
 
@@ -3038,6 +3031,27 @@ def : Pat <
     (V_CNDMASK_B32_e64 0, -1, $src), sub1)
 >;
 
+// If we need to perform a logical operation on i1 values, we need to
+// use vector comparisons since there is only one SCC register. Vector
+// comparisions still write to a pair of SGPRs, so treat these as
+// 64-bit comparisons. When legalizing SGPR copies, instructions
+// resulting in the copies from SCC to these instructions will be
+// moved to the VALU.
+def : Pat <
+  (i1 (and i1:$src0, i1:$src1)),
+  (S_AND_B64 $src0, $src1)
+>;
+
+def : Pat <
+  (i1 (or i1:$src0, i1:$src1)),
+  (S_OR_B64 $src0, $src1)
+>;
+
+def : Pat <
+  (i1 (xor i1:$src0, i1:$src1)),
+  (S_XOR_B64 $src0, $src1)
+>;
+
 def : Pat <
   (f32 (sint_to_fp i1:$src)),
   (V_CNDMASK_B32_e64 (i32 0), CONST.FP32_NEG_ONE, $src)
@@ -3050,7 +3064,7 @@ def : Pat <
 
 def : Pat <
   (f64 (sint_to_fp i1:$src)),
-    (V_CVT_F64_I32_e32 (V_CNDMASK_B32_e64 (i32 0), (i32 -1), $src))
+  (V_CVT_F64_I32_e32 (V_CNDMASK_B32_e64 (i32 0), (i32 -1), $src))
 >;
 
 def : Pat <

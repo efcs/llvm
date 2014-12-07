@@ -110,8 +110,7 @@ X86ELFMCAsmInfo::X86ELFMCAsmInfo(const Triple &T) {
 
   // OpenBSD and Bitrig have buggy support for .quad in 32-bit mode, just split
   // into two .words.
-  if ((T.getOS() == Triple::OpenBSD || T.getOS() == Triple::Bitrig) &&
-       T.getArch() == Triple::x86)
+  if ((T.isOSOpenBSD() || T.isOSBitrig()) && T.getArch() == Triple::x86)
     Data64bitsDirective = nullptr;
 
   // Always enable the integrated assembler by default.
@@ -135,6 +134,7 @@ void X86MCAsmInfoMicrosoft::anchor() { }
 X86MCAsmInfoMicrosoft::X86MCAsmInfoMicrosoft(const Triple &Triple) {
   if (Triple.getArch() == Triple::x86_64) {
     PrivateGlobalPrefix = ".L";
+    PrivateLabelPrefix = ".L";
     PointerSize = 8;
     WinEHEncodingType = WinEH::EncodingType::Itanium;
     ExceptionsType = ExceptionHandling::ItaniumWinEH;
@@ -155,6 +155,7 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple) {
   assert(Triple.isOSWindows() && "Windows is the only supported COFF target");
   if (Triple.getArch() == Triple::x86_64) {
     PrivateGlobalPrefix = ".L";
+    PrivateLabelPrefix = ".L";
     PointerSize = 8;
     WinEHEncodingType = WinEH::EncodingType::Itanium;
     ExceptionsType = ExceptionHandling::ItaniumWinEH;

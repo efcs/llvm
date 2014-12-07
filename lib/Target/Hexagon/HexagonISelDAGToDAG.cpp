@@ -338,20 +338,20 @@ static unsigned doesIntrinsicContainPredicate(unsigned ID)
     case Intrinsic::hexagon_C2_mask:
       return Hexagon::MASK_p;
     case Intrinsic::hexagon_C2_mux:
-      return Hexagon::MUX_rr;
+      return Hexagon::C2_mux;
 
       // Mapping hexagon_C2_muxir to MUX_pri.  This is pretty weird - but
       // that's how it's mapped in q6protos.h.
     case Intrinsic::hexagon_C2_muxir:
-      return Hexagon::MUX_ri;
+      return Hexagon::C2_muxri;
 
       // Mapping hexagon_C2_muxri to MUX_pir.  This is pretty weird - but
       // that's how it's mapped in q6protos.h.
     case Intrinsic::hexagon_C2_muxri:
-      return Hexagon::MUX_ir;
+      return Hexagon::C2_muxir;
 
     case Intrinsic::hexagon_C2_muxii:
-      return Hexagon::MUX_ii;
+      return Hexagon::C2_muxii;
     case Intrinsic::hexagon_C2_vmux:
       return Hexagon::VMUX_prr64;
     case Intrinsic::hexagon_S2_valignrb:
@@ -934,7 +934,7 @@ SDNode *HexagonDAGToDAGISel::SelectSelect(SDNode *N) {
             if (N000 == N2 &&
                 N0.getNode()->getValueType(N0.getResNo()) == MVT::i1 &&
                 N00.getNode()->getValueType(N00.getResNo()) == MVT::i32) {
-              SDNode *SextNode = CurDAG->getMachineNode(Hexagon::SXTH, dl,
+              SDNode *SextNode = CurDAG->getMachineNode(Hexagon::A2_sxth, dl,
                                                         MVT::i32, N000);
               SDNode *Result = CurDAG->getMachineNode(Hexagon::MAXw_rr, dl,
                                                       MVT::i32,
@@ -958,7 +958,7 @@ SDNode *HexagonDAGToDAGISel::SelectSelect(SDNode *N) {
             if (N000 == N2 &&
                 N0.getNode()->getValueType(N0.getResNo()) == MVT::i1 &&
                 N00.getNode()->getValueType(N00.getResNo()) == MVT::i32) {
-              SDNode *SextNode = CurDAG->getMachineNode(Hexagon::SXTH, dl,
+              SDNode *SextNode = CurDAG->getMachineNode(Hexagon::A2_sxth, dl,
                                                         MVT::i32, N000);
               SDNode *Result = CurDAG->getMachineNode(Hexagon::MINw_rr, dl,
                                                       MVT::i32,
