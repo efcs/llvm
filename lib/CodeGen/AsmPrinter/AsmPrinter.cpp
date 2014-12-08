@@ -508,6 +508,10 @@ void AsmPrinter::EmitFunctionHeader() {
     OutStreamer.GetCommentOS() << '\n';
   }
 
+  // Emit the prefix data.
+  if (F->hasPrefixData())
+    EmitGlobalConstant(F->getPrefixData());
+
   // Emit the CurrentFnSym.  This is a virtual function to allow targets to
   // do their wild and crazy things as required.
   EmitFunctionEntryLabel();
@@ -528,9 +532,9 @@ void AsmPrinter::EmitFunctionHeader() {
     HI.Handler->beginFunction(MF);
   }
 
-  // Emit the prefix data.
-  if (F->hasPrefixData())
-    EmitGlobalConstant(F->getPrefixData());
+  // Emit the prologue data.
+  if (F->hasPrologueData())
+    EmitGlobalConstant(F->getPrologueData());
 }
 
 /// EmitFunctionEntryLabel - Emit the label that is the entrypoint for the
@@ -1167,7 +1171,8 @@ void AsmPrinter::EmitJumpTableInfo() {
       const MCExpr *Base = TLI->getPICJumpTableRelocBaseExpr(MF,JTI,OutContext);
       for (unsigned ii = 0, ee = JTBBs.size(); ii != ee; ++ii) {
         const MachineBasicBlock *MBB = JTBBs[ii];
-        if (!EmittedSets.insert(MBB)) continue;
+        if (!EmittedSets.insert(MBB).second)
+          continue;
 
         // .set LJTSet, LBB32-base
         const MCExpr *LHS =

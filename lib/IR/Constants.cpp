@@ -316,7 +316,7 @@ static bool canTrapImpl(const Constant *C,
   // ConstantExpr traps if any operands can trap.
   for (unsigned i = 0, e = C->getNumOperands(); i != e; ++i) {
     if (ConstantExpr *Op = dyn_cast<ConstantExpr>(CE->getOperand(i))) {
-      if (NonTrappingOps.insert(Op) && canTrapImpl(Op, NonTrappingOps))
+      if (NonTrappingOps.insert(Op).second && canTrapImpl(Op, NonTrappingOps))
         return true;
     }
   }
@@ -363,7 +363,7 @@ ConstHasGlobalValuePredicate(const Constant *C,
       const Constant *ConstOp = dyn_cast<Constant>(Op);
       if (!ConstOp)
         continue;
-      if (Visited.insert(ConstOp))
+      if (Visited.insert(ConstOp).second)
         WorkList.push_back(ConstOp);
     }
   }
@@ -554,19 +554,17 @@ Constant *ConstantInt::getFalse(Type *Ty) {
                                   ConstantInt::getFalse(Ty->getContext()));
 }
 
-
-// Get a ConstantInt from an APInt. Note that the value stored in the DenseMap 
-// as the key, is a DenseMapAPIntKeyInfo::KeyTy which has provided the
-// operator== and operator!= to ensure that the DenseMap doesn't attempt to
-// compare APInt's of different widths, which would violate an APInt class
-// invariant which generates an assertion.
+// Get a ConstantInt from an APInt.
 ConstantInt *ConstantInt::get(LLVMContext &Context, const APInt &V) {
-  // Get the corresponding integer type for the bit width of the value.
-  IntegerType *ITy = IntegerType::get(Context, V.getBitWidth());
   // get an existing value or the insertion position
   LLVMContextImpl *pImpl = Context.pImpl;
-  ConstantInt *&Slot = pImpl->IntConstants[DenseMapAPIntKeyInfo::KeyTy(V, ITy)];
-  if (!Slot) Slot = new ConstantInt(ITy, V);
+  ConstantInt *&Slot = pImpl->IntConstants[V];
+  if (!Slot) {
+    // Get the corresponding integer type for the bit width of the value.
+    IntegerType *ITy = IntegerType::get(Context, V.getBitWidth());
+    Slot = new ConstantInt(ITy, V);
+  }
+  assert(Slot->getType() == IntegerType::get(Context, V.getBitWidth()));
   return Slot;
 }
 
@@ -689,7 +687,7 @@ Constant *ConstantFP::getZeroValueForNegation(Type *Ty) {
 ConstantFP* ConstantFP::get(LLVMContext &Context, const APFloat& V) {
   LLVMContextImpl* pImpl = Context.pImpl;
 
-  ConstantFP *&Slot = pImpl->FPConstants[DenseMapAPFloatKeyInfo::KeyTy(V)];
+  ConstantFP *&Slot = pImpl->FPConstants[V];
 
   if (!Slot) {
     Type *Ty;
@@ -2436,14 +2434,16 @@ Constant *ConstantDataSequential::getImpl(StringRef Elements, Type *Ty) {
     return ConstantAggregateZero::get(Ty);
 
   // Do a lookup to see if we have already formed one of these.
-  StringMap<ConstantDataSequential*>::MapEntryTy &Slot =
-    Ty->getContext().pImpl->CDSConstants.GetOrCreateValue(Elements);
+  auto &Slot =
+      *Ty->getContext()
+           .pImpl->CDSConstants.insert(std::make_pair(Elements, nullptr))
+           .first;
 
   // The bucket can point to a linked list of different CDS's that have the same
   // body but different types.  For example, 0,0,0,1 could be a 4 element array
   // of i8, or a 1-element array of i32.  They'll both end up in the same
   /// StringMap bucket, linked up by their Next pointers.  Walk the list.
-  ConstantDataSequential **Entry = &Slot.getValue();
+  ConstantDataSequential **Entry = &Slot.second;
   for (ConstantDataSequential *Node = *Entry; Node;
        Entry = &Node->Next, Node = *Entry)
     if (Node->getType() == Ty)
@@ -2452,10 +2452,10 @@ Constant *ConstantDataSequential::getImpl(StringRef Elements, Type *Ty) {
   // Okay, we didn't get a hit.  Create a node of the right class, link it in,
   // and return it.
   if (isa<ArrayType>(Ty))
-    return *Entry = new ConstantDataArray(Ty, Slot.getKeyData());
+    return *Entry = new ConstantDataArray(Ty, Slot.first().data());
 
   assert(isa<VectorType>(Ty));
-  return *Entry = new ConstantDataVector(Ty, Slot.getKeyData());
+  return *Entry = new ConstantDataVector(Ty, Slot.first().data());
 }
 
 void ConstantDataSequential::destroyConstant() {

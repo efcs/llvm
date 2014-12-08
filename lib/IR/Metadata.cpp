@@ -48,11 +48,13 @@ MDString *MDString::get(LLVMContext &Context, StringRef Str) {
   bool WasInserted = Store.insert(Entry);
   (void)WasInserted;
   assert(WasInserted && "Expected entry to be inserted");
+  Entry->second.Entry = Entry;
   return &Entry->second;
 }
 
 StringRef MDString::getString() const {
-  return StringMapEntry<MDString>::GetStringMapEntryFromValue(*this).first();
+  assert(Entry && "Expected to find string map entry");
+  return Entry->first();
 }
 
 //===----------------------------------------------------------------------===//
@@ -66,25 +68,25 @@ class MDNodeOperand : public CallbackVH {
     MDNodeOperand *Cur = this;
 
     while (Cur->getValPtrInt() != 1)
-      --Cur;
+      ++Cur;
 
     assert(Cur->getValPtrInt() == 1 &&
-           "Couldn't find the beginning of the operand list!");
-    return reinterpret_cast<MDNode*>(Cur) - 1;
+           "Couldn't find the end of the operand list!");
+    return reinterpret_cast<MDNode *>(Cur + 1);
   }
 
 public:
-  MDNodeOperand(Value *V) : CallbackVH(V) {}
+  MDNodeOperand() {}
   virtual ~MDNodeOperand();
 
   void set(Value *V) {
-    unsigned IsFirst = this->getValPtrInt();
+    unsigned IsLast = this->getValPtrInt();
     this->setValPtr(V);
-    this->setAsFirstOperand(IsFirst);
+    this->setAsLastOperand(IsLast);
   }
 
   /// \brief Accessor method to mark the operand as the first in the list.
-  void setAsFirstOperand(unsigned V) { this->setValPtrInt(V); }
+  void setAsLastOperand(unsigned I) { this->setValPtrInt(I); }
 
   void deleted() override;
   void allUsesReplacedWith(Value *NV) override;
@@ -110,7 +112,7 @@ void MDNodeOperand::allUsesReplacedWith(Value *NV) {
 static MDNodeOperand *getOperandPtr(MDNode *N, unsigned Op) {
   // Use <= instead of < to permit a one-past-the-end address.
   assert(Op <= N->getNumOperands() && "Invalid operand number");
-  return reinterpret_cast<MDNodeOperand*>(N + 1) + Op;
+  return reinterpret_cast<MDNodeOperand *>(N) - N->getNumOperands() + Op;
 }
 
 void MDNode::replaceOperandWith(unsigned i, Value *Val) {
@@ -118,40 +120,54 @@ void MDNode::replaceOperandWith(unsigned i, Value *Val) {
   replaceOperand(Op, Val);
 }
 
-MDNode::MDNode(LLVMContext &C, ArrayRef<Value *> Vals, bool isFunctionLocal)
-    : Metadata(C, Value::MDNodeVal) {
+void *MDNode::operator new(size_t Size, unsigned NumOps) {
+  void *Ptr = ::operator new(Size + NumOps * sizeof(MDNodeOperand));
+  MDNodeOperand *Op = static_cast<MDNodeOperand *>(Ptr);
+  if (NumOps) {
+    MDNodeOperand *Last = Op + NumOps;
+    for (; Op != Last; ++Op)
+      new (Op) MDNodeOperand();
+    (Op - 1)->setAsLastOperand(1);
+  }
+  return Op;
+}
+
+void MDNode::operator delete(void *Mem) {
+  MDNode *N = static_cast<MDNode *>(Mem);
+  MDNodeOperand *Op = static_cast<MDNodeOperand *>(Mem);
+  for (unsigned I = 0, E = N->NumOperands; I != E; ++I)
+    (--Op)->~MDNodeOperand();
+  ::operator delete(Op);
+}
+
+MDNode::MDNode(LLVMContext &C, unsigned ID, ArrayRef<Value *> Vals,
+               bool isFunctionLocal)
+    : Metadata(C, ID) {
   NumOperands = Vals.size();
 
   if (isFunctionLocal)
     setValueSubclassData(getSubclassDataFromValue() | FunctionLocalBit);
 
-  // Initialize the operand list, which is co-allocated on the end of the node.
+  // Initialize the operand list.
   unsigned i = 0;
-  for (MDNodeOperand *Op = getOperandPtr(this, 0), *E = Op+NumOperands;
-       Op != E; ++Op, ++i) {
-    new (Op) MDNodeOperand(Vals[i]);
-
-    // Mark the first MDNodeOperand as being the first in the list of operands.
-    if (i == 0)
-      Op->setAsFirstOperand(1);
-  }
+  for (MDNodeOperand *Op = getOperandPtr(this, 0), *E = Op + NumOperands;
+       Op != E; ++Op, ++i)
+    Op->set(Vals[i]);
 }
 
-/// ~MDNode - Destroy MDNode.
-MDNode::~MDNode() {
-  assert((getSubclassDataFromValue() & DestroyFlag) != 0 &&
-         "Not being destroyed through destroy()?");
+GenericMDNode::~GenericMDNode() {
   LLVMContextImpl *pImpl = getType()->getContext().pImpl;
   if (isNotUniqued()) {
     pImpl->NonUniquedMDNodes.erase(this);
   } else {
-    pImpl->MDNodeSet.RemoveNode(this);
+    pImpl->MDNodeSet.erase(this);
   }
+}
 
-  // Destroy the operands.
-  for (MDNodeOperand *Op = getOperandPtr(this, 0), *E = Op+NumOperands;
+void GenericMDNode::dropAllReferences() {
+  for (MDNodeOperand *Op = getOperandPtr(this, 0), *E = Op + NumOperands;
        Op != E; ++Op)
-    Op->~MDNodeOperand();
+    Op->set(nullptr);
 }
 
 static const Function *getFunctionForValue(Value *V) {
@@ -169,51 +185,20 @@ static const Function *getFunctionForValue(Value *V) {
   return nullptr;
 }
 
-#ifndef NDEBUG
-static const Function *assertLocalFunction(const MDNode *N) {
-  if (!N->isFunctionLocal()) return nullptr;
-
-  // FIXME: This does not handle cyclic function local metadata.
-  const Function *F = nullptr, *NewF = nullptr;
-  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
-    if (Value *V = N->getOperand(i)) {
-      if (MDNode *MD = dyn_cast<MDNode>(V))
-        NewF = assertLocalFunction(MD);
-      else
-        NewF = getFunctionForValue(V);
-    }
-    if (!F)
-      F = NewF;
-    else
-      assert((NewF == nullptr || F == NewF) &&
-             "inconsistent function-local metadata");
-  }
-  return F;
-}
-#endif
-
 // getFunction - If this metadata is function-local and recursively has a
 // function-local operand, return the first such operand's parent function.
 // Otherwise, return null. getFunction() should not be used for performance-
 // critical code because it recursively visits all the MDNode's operands.  
 const Function *MDNode::getFunction() const {
-#ifndef NDEBUG
-  return assertLocalFunction(this);
-#else
-  if (!isFunctionLocal()) return nullptr;
-  for (unsigned i = 0, e = getNumOperands(); i != e; ++i)
-    if (const Function *F = getFunctionForValue(getOperand(i)))
-      return F;
-  return nullptr;
-#endif
-}
-
-// destroy - Delete this node.  Only when there are no uses.
-void MDNode::destroy() {
-  setValueSubclassData(getSubclassDataFromValue() | DestroyFlag);
-  // Placement delete, then free the memory.
-  this->~MDNode();
-  free(this);
+  if (!isFunctionLocal())
+    return nullptr;
+  assert(getNumOperands() == 1 &&
+         "Expected one operand for function-local metadata");
+  assert(getOperand(0) &&
+         "Expected non-null operand for function-local metadata");
+  assert(!getOperand(0)->getType()->isMetadataTy() &&
+         "Expected non-metadata as operand of function-local metadata");
+  return getFunctionForValue(getOperand(0));
 }
 
 /// \brief Check if the Value  would require a function-local MDNode.
@@ -224,21 +209,14 @@ static bool isFunctionLocalValue(Value *V) {
 
 MDNode *MDNode::getMDNode(LLVMContext &Context, ArrayRef<Value*> Vals,
                           FunctionLocalness FL, bool Insert) {
-  LLVMContextImpl *pImpl = Context.pImpl;
+  auto &Store = Context.pImpl->MDNodeSet;
 
-  // Add all the operand pointers. Note that we don't have to add the
-  // isFunctionLocal bit because that's implied by the operands.
-  // Note that if the operands are later nulled out, the node will be
-  // removed from the uniquing map.
-  FoldingSetNodeID ID;
-  for (Value *V : Vals)
-    ID.AddPointer(V);
-
-  void *InsertPoint;
-  MDNode *N = pImpl->MDNodeSet.FindNodeOrInsertPos(ID, InsertPoint);
-
-  if (N || !Insert)
-    return N;
+  GenericMDNodeInfo::KeyTy Key(Vals);
+  auto I = Store.find_as(Key);
+  if (I != Store.end())
+    return *I;
+  if (!Insert)
+    return nullptr;
 
   bool isFunctionLocal = false;
   switch (FL) {
@@ -259,16 +237,20 @@ MDNode *MDNode::getMDNode(LLVMContext &Context, ArrayRef<Value*> Vals,
     break;
   }
 
+  if (isFunctionLocal) {
+    assert(Vals.size() == 1 &&
+           "Expected exactly one operand for function-local metadata");
+    assert(Vals[0] && "Expected non-null operand for function-local metadata");
+    assert(!Vals[0]->getType()->isMetadataTy() &&
+           "Expected non-metadata as operand of function-local metadata");
+  }
+
   // Coallocate space for the node and Operands together, then placement new.
-  void *Ptr = malloc(sizeof(MDNode) + Vals.size() * sizeof(MDNodeOperand));
-  N = new (Ptr) MDNode(Context, Vals, isFunctionLocal);
+  GenericMDNode *N =
+      new (Vals.size()) GenericMDNode(Context, Vals, isFunctionLocal);
 
-  // Cache the operand hash.
-  N->Hash = ID.ComputeHash();
-
-  // InsertPoint will have been set by the FindNodeOrInsertPos call.
-  pImpl->MDNodeSet.InsertNode(N, InsertPoint);
-
+  N->Hash = Key.Hash;
+  Store.insert(N);
   return N;
 }
 
@@ -287,27 +269,19 @@ MDNode *MDNode::getIfExists(LLVMContext &Context, ArrayRef<Value*> Vals) {
 }
 
 MDNode *MDNode::getTemporary(LLVMContext &Context, ArrayRef<Value*> Vals) {
-  MDNode *N =
-    (MDNode *)malloc(sizeof(MDNode) + Vals.size() * sizeof(MDNodeOperand));
-  N = new (N) MDNode(Context, Vals, FL_No);
-  N->setValueSubclassData(N->getSubclassDataFromValue() |
-                          NotUniquedBit);
+  MDNode *N = new (Vals.size()) MDNodeFwdDecl(Context, Vals, FL_No);
+  N->setValueSubclassData(N->getSubclassDataFromValue() | NotUniquedBit);
   LeakDetector::addGarbageObject(N);
   return N;
 }
 
 void MDNode::deleteTemporary(MDNode *N) {
   assert(N->use_empty() && "Temporary MDNode has uses!");
-  assert(!N->getContext().pImpl->MDNodeSet.RemoveNode(N) &&
-         "Deleting a non-temporary uniqued node!");
-  assert(!N->getContext().pImpl->NonUniquedMDNodes.erase(N) &&
-         "Deleting a non-temporary non-uniqued node!");
+  assert(isa<MDNodeFwdDecl>(N) && "Expected forward declaration");
   assert((N->getSubclassDataFromValue() & NotUniquedBit) &&
          "Temporary MDNode does not have NotUniquedBit set!");
-  assert((N->getSubclassDataFromValue() & DestroyFlag) == 0 &&
-         "Temporary MDNode has DestroyFlag set!");
   LeakDetector::removeGarbageObject(N);
-  N->destroy();
+  delete cast<MDNodeFwdDecl>(N);
 }
 
 /// \brief Return specified operand.
@@ -316,19 +290,12 @@ Value *MDNode::getOperand(unsigned i) const {
   return *getOperandPtr(const_cast<MDNode*>(this), i);
 }
 
-void MDNode::Profile(FoldingSetNodeID &ID) const {
-  // Add all the operand pointers. Note that we don't have to add the
-  // isFunctionLocal bit because that's implied by the operands.
-  // Note that if the operands are later nulled out, the node will be
-  // removed from the uniquing map.
-  for (unsigned i = 0, e = getNumOperands(); i != e; ++i)
-    ID.AddPointer(getOperand(i));
-}
-
 void MDNode::setIsNotUniqued() {
   setValueSubclassData(getSubclassDataFromValue() | NotUniquedBit);
   LLVMContextImpl *pImpl = getType()->getContext().pImpl;
-  pImpl->NonUniquedMDNodes.insert(this);
+  auto *G = cast<GenericMDNode>(this);
+  G->Hash = 0;
+  pImpl->NonUniquedMDNodes.insert(G);
 }
 
 // Replace value from this node's operand list.
@@ -341,6 +308,8 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
   // Handle this case by implicitly dropping the MDNode reference to null.
   // Likewise if the MDNode is function-local but for a different function.
   if (To && isFunctionLocalValue(To)) {
+    assert(!To->getType()->isMetadataTy() &&
+           "Expected non-metadata as operand of function-local metadata");
     if (!isFunctionLocal())
       To = nullptr;
     else {
@@ -356,60 +325,74 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
   if (From == To)
     return;
 
-  // Update the operand.
-  Op->set(To);
+  // If this MDValue was previously function-local but no longer is, clear
+  // its function-local flag.
+  if (isFunctionLocal() && !(To && isFunctionLocalValue(To))) {
+    assert(getNumOperands() == 1 &&
+           "Expected function-local metadata to have exactly one operand");
+    setValueSubclassData(getSubclassDataFromValue() & ~FunctionLocalBit);
+  }
 
   // If this node is already not being uniqued (because one of the operands
   // already went to null), then there is nothing else to do here.
-  if (isNotUniqued()) return;
+  if (isNotUniqued()) {
+    Op->set(To);
+    return;
+  }
 
-  LLVMContextImpl *pImpl = getType()->getContext().pImpl;
+  auto &Store = getContext().pImpl->MDNodeSet;
+  auto *N = cast<GenericMDNode>(this);
 
-  // Remove "this" from the context map.  FoldingSet doesn't have to reprofile
-  // this node to remove it, so we don't care what state the operands are in.
-  pImpl->MDNodeSet.RemoveNode(this);
+  // Remove "this" from the context map.
+  Store.erase(N);
+
+  // Update the operand.
+  Op->set(To);
 
   // If we are dropping an argument to null, we choose to not unique the MDNode
   // anymore.  This commonly occurs during destruction, and uniquing these
   // brings little reuse.  Also, this means we don't need to include
-  // isFunctionLocal bits in FoldingSetNodeIDs for MDNodes.
-  if (!To) {
+  // isFunctionLocal bits in the hash for MDNodes.
+  //
+  // Also drop uniquing if this has a reference to itself.
+  if (!To || To == this) {
     setIsNotUniqued();
     return;
   }
 
-  // Now that the node is out of the folding set, get ready to reinsert it.
-  // First, check to see if another node with the same operands already exists
-  // in the set.  If so, then this node is redundant.
-  FoldingSetNodeID ID;
-  Profile(ID);
-  void *InsertPoint;
-  if (MDNode *N = pImpl->MDNodeSet.FindNodeOrInsertPos(ID, InsertPoint)) {
-    replaceAllUsesWith(N);
-    destroy();
+  // Now that the node is out of the table, get ready to reinsert it.  First,
+  // check to see if another node with the same operands already exists in the
+  // set.  If so, then this node is redundant.
+  SmallVector<Value *, 8> Vals;
+  GenericMDNodeInfo::KeyTy Key(N, Vals);
+  auto I = Store.find_as(Key);
+  if (I != Store.end()) {
+    N->replaceAllUsesWith(*I);
+    delete N;
     return;
   }
 
-  // Cache the operand hash.
-  Hash = ID.ComputeHash();
-  // InsertPoint will have been set by the FindNodeOrInsertPos call.
-  pImpl->MDNodeSet.InsertNode(this, InsertPoint);
+  N->Hash = Key.Hash;
+  Store.insert(N);
+}
 
-  // If this MDValue was previously function-local but no longer is, clear
-  // its function-local flag.
-  if (isFunctionLocal() && !isFunctionLocalValue(To)) {
-    bool isStillFunctionLocal = false;
-    for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
-      Value *V = getOperand(i);
-      if (!V) continue;
-      if (isFunctionLocalValue(V)) {
-        isStillFunctionLocal = true;
-        break;
+/// \brief Get a node, or a self-reference that looks like it.
+///
+/// Special handling for finding self-references, for use by \a
+/// MDNode::concatenate() and \a MDNode::intersect() to maintain behaviour from
+/// when self-referencing nodes were still uniqued.  If the first operand has
+/// the same operands as \c Ops, return the first operand instead.
+static MDNode *getOrSelfReference(LLVMContext &Context, ArrayRef<Value *> Ops) {
+  if (!Ops.empty())
+    if (MDNode *N = dyn_cast_or_null<MDNode>(Ops[0]))
+      if (N->getNumOperands() == Ops.size() && N == N->getOperand(0)) {
+        for (unsigned I = 1, E = Ops.size(); I != E; ++I)
+          if (Ops[I] != N->getOperand(I))
+            return MDNode::get(Context, Ops);
+        return N;
       }
-    }
-    if (!isStillFunctionLocal)
-      setValueSubclassData(getSubclassDataFromValue() & ~FunctionLocalBit);
-  }
+
+  return MDNode::get(Context, Ops);
 }
 
 MDNode *MDNode::concatenate(MDNode *A, MDNode *B) {
@@ -427,7 +410,9 @@ MDNode *MDNode::concatenate(MDNode *A, MDNode *B) {
   for (unsigned i = 0, ie = B->getNumOperands(); i != ie; ++i)
     Vals[j++] = B->getOperand(i);
 
-  return MDNode::get(A->getContext(), Vals);
+  // FIXME: This preserves long-standing behaviour, but is it really the right
+  // behaviour?  Or was that an unintended side-effect of node uniquing?
+  return getOrSelfReference(A->getContext(), Vals);
 }
 
 MDNode *MDNode::intersect(MDNode *A, MDNode *B) {
@@ -444,7 +429,9 @@ MDNode *MDNode::intersect(MDNode *A, MDNode *B) {
       }
   }
 
-  return MDNode::get(A->getContext(), Vals);
+  // FIXME: This preserves long-standing behaviour, but is it really the right
+  // behaviour?  Or was that an unintended side-effect of node uniquing?
+  return getOrSelfReference(A->getContext(), Vals);
 }
 
 MDNode *MDNode::getMostGenericFPMath(MDNode *A, MDNode *B) {
@@ -677,6 +664,8 @@ void Instruction::setMetadata(unsigned KindID, MDNode *Node) {
   
   // Handle the case when we're adding/updating metadata on an instruction.
   if (Node) {
+    assert(!Node->isFunctionLocal() &&
+           "Function-local metadata cannot be attached to instructions");
     LLVMContextImpl::MDMapTy &Info = getContext().pImpl->MetadataStore[this];
     assert(!Info.empty() == hasMetadataHashEntry() &&
            "HasMetadata bit is wonked");

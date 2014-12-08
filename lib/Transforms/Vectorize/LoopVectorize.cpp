@@ -1194,8 +1194,6 @@ private:
     NewLoopID->replaceOperandWith(0, NewLoopID);
 
     TheLoop->setLoopID(NewLoopID);
-    if (LoopID)
-      LoopID->replaceAllUsesWith(NewLoopID);
     LoopID = NewLoopID;
   }
 
@@ -3537,6 +3535,15 @@ bool LoopVectorizationLegality::canVectorize() {
     return false;
   }
 
+  // We only handle bottom-tested loops, i.e. loop in which the condition is
+  // checked at the end of each iteration. With that we can assume that all
+  // instructions in the loop are executed the same number of times.
+  if (TheLoop->getExitingBlock() != TheLoop->getLoopLatch()) {
+    emitAnalysis(
+        Report() << "loop control flow is not understood by vectorizer");
+    return false;
+  }
+
   // We need to have a loop header.
   DEBUG(dbgs() << "LV: Found a loop: " <<
         TheLoop->getHeader()->getName() << '\n');
@@ -4801,7 +4808,7 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
 
     // If we did *not* see this pointer before, insert it to  the read-write
     // list. At this phase it is only a 'write' list.
-    if (Seen.insert(Ptr)) {
+    if (Seen.insert(Ptr).second) {
       ++NumReadWrites;
 
       AliasAnalysis::Location Loc = AA->getLocation(ST);
@@ -4834,7 +4841,8 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
     // read a few words, modify, and write a few words, and some of the
     // words may be written to the same address.
     bool IsReadOnlyPtr = false;
-    if (Seen.insert(Ptr) || !isStridedPtr(SE, DL, Ptr, TheLoop, Strides)) {
+    if (Seen.insert(Ptr).second ||
+        !isStridedPtr(SE, DL, Ptr, TheLoop, Strides)) {
       ++NumReads;
       IsReadOnlyPtr = true;
     }
@@ -5097,7 +5105,7 @@ bool LoopVectorizationLegality::AddReductionVar(PHINode *Phi,
       // value must only be used once, except by phi nodes and min/max
       // reductions which are represented as a cmp followed by a select.
       ReductionInstDesc IgnoredVal(false, nullptr);
-      if (VisitedInsts.insert(UI)) {
+      if (VisitedInsts.insert(UI).second) {
         if (isa<PHINode>(UI))
           PHIs.push_back(UI);
         else

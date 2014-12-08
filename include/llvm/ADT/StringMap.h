@@ -179,19 +179,6 @@ public:
     return Create(Key, ValueTy());
   }
 
-  /// GetStringMapEntryFromValue - Given a value that is known to be embedded
-  /// into a StringMapEntry, return the StringMapEntry itself.
-  static StringMapEntry &GetStringMapEntryFromValue(ValueTy &V) {
-    StringMapEntry *EPtr = 0;
-    char *Ptr = reinterpret_cast<char*>(&V) -
-                  (reinterpret_cast<char*>(&EPtr->second) -
-                   reinterpret_cast<char*>(EPtr));
-    return *reinterpret_cast<StringMapEntry*>(Ptr);
-  }
-  static const StringMapEntry &GetStringMapEntryFromValue(const ValueTy &V) {
-    return GetStringMapEntryFromValue(const_cast<ValueTy&>(V));
-  }
-
   /// GetStringMapEntryFromKeyData - Given key data that is known to be embedded
   /// into a StringMapEntry, return the StringMapEntry itself.
   static StringMapEntry &GetStringMapEntryFromKeyData(const char *KeyData) {
@@ -296,7 +283,7 @@ public:
   }
 
   ValueTy &operator[](StringRef Key) {
-    return GetOrCreateValue(Key).getValue();
+    return insert(std::make_pair(Key, ValueTy())).first->second;
   }
 
   /// count - Return 1 if the element is in the map, 0 otherwise.
@@ -361,19 +348,6 @@ public:
 
     NumItems = 0;
     NumTombstones = 0;
-  }
-
-  /// GetOrCreateValue - Look up the specified key in the table.  If a value
-  /// exists, return it.  Otherwise, default construct a value, insert it, and
-  /// return.
-  template <typename InitTy>
-  MapEntryTy &GetOrCreateValue(StringRef Key, InitTy &&Val) {
-    return *insert(std::pair<StringRef, ValueTy>(
-                       Key, std::forward<InitTy>(Val))).first;
-  }
-
-  MapEntryTy &GetOrCreateValue(StringRef Key) {
-    return GetOrCreateValue(Key, ValueTy());
   }
 
   /// remove - Remove the specified key/value pair from the map, but do not
