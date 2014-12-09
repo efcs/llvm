@@ -346,11 +346,11 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
 
   // Set mask and the first source register.
   switch (Opc) {
-    case Hexagon::CMPEHexagon4rr:
+    case Hexagon::C2_cmpeqp:
     case Hexagon::C2_cmpeqi:
     case Hexagon::C2_cmpeq:
-    case Hexagon::CMPGT64rr:
-    case Hexagon::CMPGTU64rr:
+    case Hexagon::C2_cmpgtp:
+    case Hexagon::C2_cmpgtup:
     case Hexagon::C2_cmpgtui:
     case Hexagon::C2_cmpgtu:
     case Hexagon::C2_cmpgti:
@@ -380,10 +380,10 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
 
   // Set the value/second source register.
   switch (Opc) {
-    case Hexagon::CMPEHexagon4rr:
+    case Hexagon::C2_cmpeqp:
     case Hexagon::C2_cmpeq:
-    case Hexagon::CMPGT64rr:
-    case Hexagon::CMPGTU64rr:
+    case Hexagon::C2_cmpgtp:
+    case Hexagon::C2_cmpgtup:
     case Hexagon::C2_cmpgtu:
     case Hexagon::C2_cmpgt:
     case Hexagon::CMPbEQrr_sbsb_V4:
@@ -418,16 +418,16 @@ void HexagonInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  unsigned DestReg, unsigned SrcReg,
                                  bool KillSrc) const {
   if (Hexagon::IntRegsRegClass.contains(SrcReg, DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR), DestReg).addReg(SrcReg);
+    BuildMI(MBB, I, DL, get(Hexagon::A2_tfr), DestReg).addReg(SrcReg);
     return;
   }
   if (Hexagon::DoubleRegsRegClass.contains(SrcReg, DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR64), DestReg).addReg(SrcReg);
+    BuildMI(MBB, I, DL, get(Hexagon::A2_tfrp), DestReg).addReg(SrcReg);
     return;
   }
   if (Hexagon::PredRegsRegClass.contains(SrcReg, DestReg)) {
     // Map Pd = Ps to Pd = or(Ps, Ps).
-    BuildMI(MBB, I, DL, get(Hexagon::OR_pp),
+    BuildMI(MBB, I, DL, get(Hexagon::C2_or),
             DestReg).addReg(SrcReg).addReg(SrcReg);
     return;
   }
@@ -436,13 +436,13 @@ void HexagonInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     // We can have an overlap between single and double reg: r1:0 = r0.
     if(SrcReg == RI.getSubReg(DestReg, Hexagon::subreg_loreg)) {
         // r1:0 = r0
-        BuildMI(MBB, I, DL, get(Hexagon::TFRI), (RI.getSubReg(DestReg,
+        BuildMI(MBB, I, DL, get(Hexagon::A2_tfrsi), (RI.getSubReg(DestReg,
                 Hexagon::subreg_hireg))).addImm(0);
     } else {
         // r1:0 = r1 or no overlap.
-        BuildMI(MBB, I, DL, get(Hexagon::TFR), (RI.getSubReg(DestReg,
+        BuildMI(MBB, I, DL, get(Hexagon::A2_tfr), (RI.getSubReg(DestReg,
                 Hexagon::subreg_loreg))).addReg(SrcReg);
-        BuildMI(MBB, I, DL, get(Hexagon::TFRI), (RI.getSubReg(DestReg,
+        BuildMI(MBB, I, DL, get(Hexagon::A2_tfrsi), (RI.getSubReg(DestReg,
                 Hexagon::subreg_hireg))).addImm(0);
     }
     return;
@@ -454,13 +454,13 @@ void HexagonInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
   if (Hexagon::PredRegsRegClass.contains(SrcReg) &&
       Hexagon::IntRegsRegClass.contains(DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR_RsPd), DestReg).
+    BuildMI(MBB, I, DL, get(Hexagon::C2_tfrpr), DestReg).
       addReg(SrcReg, getKillRegState(KillSrc));
     return;
   }
   if (Hexagon::IntRegsRegClass.contains(SrcReg) &&
       Hexagon::PredRegsRegClass.contains(DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR_PdRs), DestReg).
+    BuildMI(MBB, I, DL, get(Hexagon::C2_tfrrp), DestReg).
       addReg(SrcReg, getKillRegState(KillSrc));
     return;
   }
@@ -648,7 +648,7 @@ bool HexagonInstrInfo::isPredicable(MachineInstr *MI) const {
   const int Opc = MI->getOpcode();
 
   switch(Opc) {
-  case Hexagon::TFRI:
+  case Hexagon::A2_tfrsi:
     return isInt<12>(MI->getOperand(1).getImm());
 
   case Hexagon::STrid:
@@ -739,10 +739,10 @@ unsigned HexagonInstrInfo::getInvertedPredicatedOpcode(const int Opc) const {
 
   switch(Opc) {
     default: llvm_unreachable("Unexpected predicated instruction");
-    case Hexagon::COMBINE_rr_cPt:
-      return Hexagon::COMBINE_rr_cNotPt;
-    case Hexagon::COMBINE_rr_cNotPt:
-      return Hexagon::COMBINE_rr_cPt;
+    case Hexagon::C2_ccombinewt:
+      return Hexagon::C2_ccombinewf;
+    case Hexagon::C2_ccombinewf:
+      return Hexagon::C2_ccombinewt;
 
       // Dealloc_return.
     case Hexagon::DEALLOC_RET_cPt_V4:
@@ -780,9 +780,9 @@ getMatchingCondBranchOpcode(int Opc, bool invertPredicate) const {
   case Hexagon::TFRI_f:
     return !invertPredicate ? Hexagon::TFRI_cPt_f :
                               Hexagon::TFRI_cNotPt_f;
-  case Hexagon::COMBINE_rr:
-    return !invertPredicate ? Hexagon::COMBINE_rr_cPt :
-                              Hexagon::COMBINE_rr_cNotPt;
+  case Hexagon::A2_combinew:
+    return !invertPredicate ? Hexagon::C2_ccombinewt :
+                              Hexagon::C2_ccombinewf;
 
   // Word.
   case Hexagon::STriw_f:
@@ -1278,14 +1278,14 @@ bool HexagonInstrInfo::
 isConditionalTransfer (const MachineInstr *MI) const {
   switch (MI->getOpcode()) {
     default: return false;
-    case Hexagon::TFR_cPt:
-    case Hexagon::TFR_cNotPt:
-    case Hexagon::TFRI_cPt:
-    case Hexagon::TFRI_cNotPt:
-    case Hexagon::TFR_cdnPt:
-    case Hexagon::TFR_cdnNotPt:
-    case Hexagon::TFRI_cdnPt:
-    case Hexagon::TFRI_cdnNotPt:
+    case Hexagon::A2_tfrt:
+    case Hexagon::A2_tfrf:
+    case Hexagon::C2_cmoveit:
+    case Hexagon::C2_cmoveif:
+    case Hexagon::A2_tfrtnew:
+    case Hexagon::A2_tfrfnew:
+    case Hexagon::C2_cmovenewit:
+    case Hexagon::C2_cmovenewif:
       return true;
   }
 }
@@ -1340,8 +1340,8 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
     case Hexagon::A4_pzxthtnew:
     case Hexagon::ADD_ri_cPt:
     case Hexagon::ADD_ri_cNotPt:
-    case Hexagon::COMBINE_rr_cPt:
-    case Hexagon::COMBINE_rr_cNotPt:
+    case Hexagon::C2_ccombinewt:
+    case Hexagon::C2_ccombinewf:
       return true;
   }
 }
@@ -1627,10 +1627,10 @@ int HexagonInstrInfo::GetDotNewPredOp(MachineInstr *MI,
 
 
   // Conditional combine
-  case Hexagon::COMBINE_rr_cPt :
-    return Hexagon::COMBINE_rr_cdnPt;
-  case Hexagon::COMBINE_rr_cNotPt :
-    return Hexagon::COMBINE_rr_cdnNotPt;
+  case Hexagon::C2_ccombinewt:
+    return Hexagon::C2_ccombinewnewt;
+  case Hexagon::C2_ccombinewf:
+    return Hexagon::C2_ccombinewnewf;
   }
 }
 
