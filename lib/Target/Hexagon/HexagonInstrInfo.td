@@ -1264,22 +1264,33 @@ def VSPLICE_rrp : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1,
 // CR -
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// JR +
+//===----------------------------------------------------------------------===//
+
 def retflag : SDNode<"HexagonISD::RET_FLAG", SDTNone,
                                [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
-def eh_return: SDNode<"HexagonISD::EH_RETURN", SDTNone,
-                      [SDNPHasChain]>;
+def eh_return: SDNode<"HexagonISD::EH_RETURN", SDTNone, [SDNPHasChain]>;
 
 def SDHexagonBR_JT: SDTypeProfile<0, 1, [SDTCisVT<0, i32>]>;
 def HexagonBR_JT: SDNode<"HexagonISD::BR_JT", SDHexagonBR_JT, [SDNPHasChain]>;
 
-let InputType = "imm", isBarrier = 1, isPredicable = 1,
-Defs = [PC], isExtendable = 1, opExtendable = 0, isExtentSigned = 1,
-opExtentBits = 24, isCodeGenOnly = 0 in
-class T_JMP <dag InsDag, list<dag> JumpList = []>
-            : JInst<(outs), InsDag,
-            "jump $dst" , JumpList> {
-    bits<24> dst;
+class CondStr<string CReg, bit True, bit New> {
+  string S = "if (" # !if(True,"","!") # CReg # !if(New,".new","") # ") ";
+}
+class JumpOpcStr<string Mnemonic, bit New, bit Taken> {
+  string S = Mnemonic # !if(New, !if(Taken,":t",":nt"), "");
+}
 
+let isBranch = 1, isBarrier = 1, Defs = [PC], hasSideEffects = 0,
+    isPredicable = 1,
+    isExtendable = 1, opExtendable = 0, isExtentSigned = 1,
+    opExtentBits = 24, opExtentAlign = 2, InputType = "imm" in
+class T_JMP<string ExtStr>
+  : JInst<(outs), (ins brtarget:$dst),
+      "jump " # ExtStr # "$dst",
+      [], "", J_tc_2early_SLOT23> {
+    bits<24> dst;
     let IClass = 0b0101;
 
     let Inst{27-25} = 0b100;
@@ -1287,16 +1298,16 @@ class T_JMP <dag InsDag, list<dag> JumpList = []>
     let Inst{13-1} = dst{14-2};
 }
 
-let InputType = "imm", isExtendable = 1, opExtendable = 1, isExtentSigned = 1,
-Defs = [PC], isPredicated = 1, opExtentBits = 17 in
-class T_JMP_c <bit PredNot, bit isPredNew, bit isTak>:
-            JInst<(outs ), (ins PredRegs:$src, brtarget:$dst),
-            !if(PredNot, "if (!$src", "if ($src")#
-            !if(isPredNew, ".new) ", ") ")#"jump"#
-            !if(isPredNew, !if(isTak, ":t ", ":nt "), " ")#"$dst"> {
-
+let isBranch = 1, Defs = [PC], hasSideEffects = 0, isPredicated = 1,
+    isExtendable = 1, opExtendable = 1, isExtentSigned = 1,
+    opExtentBits = 17, opExtentAlign = 2, InputType = "imm" in
+class T_JMP_c<bit PredNot, bit isPredNew, bit isTak, string ExtStr>
+  : JInst<(outs), (ins PredRegs:$src, brtarget:$dst),
+      CondStr<"$src", !if(PredNot,0,1), isPredNew>.S #
+        JumpOpcStr<"jump", isPredNew, isTak>.S # " " #
+        ExtStr # "$dst",
+      [], "", J_tc_2early_SLOT23>, ImmRegRel {
     let isTaken = isTak;
-    let isBrTaken = !if(isPredNew, !if(isTaken, "true", "false"), "");
     let isPredicatedFalse = PredNot;
     let isPredicatedNew = isPredNew;
     bits<2> src;
@@ -1315,11 +1326,28 @@ class T_JMP_c <bit PredNot, bit isPredNew, bit isTak>:
     let Inst{7-1} = dst{8-2};
   }
 
-let isBarrier = 1, Defs = [PC], isPredicable = 1, InputType = "reg" in
-class T_JMPr<dag InsDag = (ins IntRegs:$dst)>
-            : JRInst<(outs ), InsDag,
-            "jumpr $dst" ,
-            []> {
+multiclass JMP_Pred<bit PredNot, string ExtStr> {
+  def NAME : T_JMP_c<PredNot, 0, 0, ExtStr>;
+  // Predicate new
+  def NAME#newpt : T_JMP_c<PredNot, 1, 1, ExtStr>; // taken
+  def NAME#new   : T_JMP_c<PredNot, 1, 0, ExtStr>; // not taken
+}
+
+multiclass JMP_base<string BaseOp, string ExtStr> {
+  let BaseOpcode = BaseOp in {
+    def NAME : T_JMP<ExtStr>;
+    defm t : JMP_Pred<0, ExtStr>;
+    defm f : JMP_Pred<1, ExtStr>;
+  }
+}
+
+// Jumps to address stored in a register, JUMPR_MISC
+// if ([[!]P[.new]]) jumpr[:t/nt] Rs
+let isBranch = 1, isIndirectBranch = 1, isBarrier = 1, Defs = [PC],
+    isPredicable = 1, hasSideEffects = 0, InputType = "reg" in
+class T_JMPr
+  : JRInst<(outs), (ins IntRegs:$dst),
+      "jumpr $dst", [], "", J_tc_2early_SLOT2> {
     bits<5> dst;
 
     let IClass = 0b0101;
@@ -1327,15 +1355,15 @@ class T_JMPr<dag InsDag = (ins IntRegs:$dst)>
     let Inst{20-16} = dst;
 }
 
-let Defs = [PC], isPredicated = 1, InputType = "reg" in
-class T_JMPr_c <bit PredNot, bit isPredNew, bit isTak>:
-            JRInst <(outs ), (ins PredRegs:$src, IntRegs:$dst),
-            !if(PredNot, "if (!$src", "if ($src")#
-            !if(isPredNew, ".new) ", ") ")#"jumpr"#
-            !if(isPredNew, !if(isTak, ":t ", ":nt "), " ")#"$dst"> {
+let isBranch = 1, isIndirectBranch = 1, Defs = [PC], isPredicated = 1,
+    hasSideEffects = 0, InputType = "reg" in
+class T_JMPr_c <bit PredNot, bit isPredNew, bit isTak>
+  : JRInst <(outs), (ins PredRegs:$src, IntRegs:$dst),
+      CondStr<"$src", !if(PredNot,0,1), isPredNew>.S #
+        JumpOpcStr<"jumpr", isPredNew, isTak>.S # " $dst", [],
+      "", J_tc_2early_SLOT2> {
 
     let isTaken = isTak;
-    let isBrTaken = !if(isPredNew, !if(isTaken, "true", "false"), "");
     let isPredicatedFalse = PredNot;
     let isPredicatedNew = isPredNew;
     bits<2> src;
@@ -1349,70 +1377,85 @@ class T_JMPr_c <bit PredNot, bit isPredNew, bit isTak>:
     let Inst{12} = !if(isPredNew, isTak, zero);
     let Inst{11} = isPredNew;
     let Inst{9-8} = src;
-    let Predicates = !if(isPredNew, [HasV3T], [HasV2T]);
-    let validSubTargets = !if(isPredNew, HasV3SubT, HasV2SubT);
-}
-
-multiclass JMP_Pred<bit PredNot> {
-  def _#NAME : T_JMP_c<PredNot, 0, 0>;
-  // Predicate new
-  def _#NAME#new_t  : T_JMP_c<PredNot, 1, 1>; // taken
-  def _#NAME#new_nt : T_JMP_c<PredNot, 1, 0>; // not taken
-}
-
-multiclass JMP_base<string BaseOp> {
-  let BaseOpcode = BaseOp in {
-    def NAME : T_JMP<(ins brtarget:$dst), [(br bb:$dst)]>;
-    defm t : JMP_Pred<0>;
-    defm f : JMP_Pred<1>;
-  }
 }
 
 multiclass JMPR_Pred<bit PredNot> {
   def NAME: T_JMPr_c<PredNot, 0, 0>;
   // Predicate new
-  def NAME#new_tV3  : T_JMPr_c<PredNot, 1, 1>; // taken
-  def NAME#new_ntV3 : T_JMPr_c<PredNot, 1, 0>; // not taken
+  def NAME#newpt  : T_JMPr_c<PredNot, 1, 1>; // taken
+  def NAME#new    : T_JMPr_c<PredNot, 1, 0>; // not taken
 }
 
 multiclass JMPR_base<string BaseOp> {
   let BaseOpcode = BaseOp in {
     def NAME : T_JMPr;
-    defm _t : JMPR_Pred<0>;
-    defm _f : JMPR_Pred<1>;
+    defm t : JMPR_Pred<0>;
+    defm f : JMPR_Pred<1>;
   }
 }
 
-let isTerminator = 1, hasSideEffects = 0 in {
-let isBranch = 1 in
-defm JMP : JMP_base<"JMP">, PredNewRel;
+let isCall = 1, hasSideEffects = 1 in
+class JUMPR_MISC_CALLR<bit isPred, bit isPredNot,
+               dag InputDag = (ins IntRegs:$Rs)>
+  : JRInst<(outs), InputDag,
+      !if(isPred, !if(isPredNot, "if (!$Pu) callr $Rs",
+                                 "if ($Pu) callr $Rs"),
+                                 "callr $Rs"),
+      [], "", J_tc_2early_SLOT2> {
+    bits<5> Rs;
+    bits<2> Pu;
+    let isPredicated = isPred;
+    let isPredicatedFalse = isPredNot;
 
-let isBranch = 1, isIndirectBranch = 1 in
-defm JMPR : JMPR_base<"JMPr">, PredNewRel;
+    let IClass = 0b0101;
+    let Inst{27-25} = 0b000;
+    let Inst{24-23} = !if (isPred, 0b10, 0b01);
+    let Inst{22} = 0;
+    let Inst{21} = isPredNot;
+    let Inst{9-8} = !if (isPred, Pu, 0b00);
+    let Inst{20-16} = Rs;
 
-let isReturn = 1, isCodeGenOnly = 1 in
-defm JMPret : JMPR_base<"JMPret">, PredNewRel;
+  }
+
+let Defs = VolatileV3.Regs, isCodeGenOnly = 0 in {
+  def J2_callrt : JUMPR_MISC_CALLR<1, 0, (ins PredRegs:$Pu, IntRegs:$Rs)>;
+  def J2_callrf : JUMPR_MISC_CALLR<1, 1, (ins PredRegs:$Pu, IntRegs:$Rs)>;
 }
 
-def : Pat<(retflag),
-          (JMPret (i32 R31))>;
+let isTerminator = 1, hasSideEffects = 0, isCodeGenOnly = 0 in {
+  defm J2_jump : JMP_base<"JMP", "">, PredNewRel;
 
-def : Pat <(brcond (i1 PredRegs:$src1), bb:$offset),
-      (JMP_t (i1 PredRegs:$src1), bb:$offset)>;
+  // Deal with explicit assembly
+  //  - never extened a jump #,  always extend a jump ##
+  let isAsmParserOnly = 1 in {
+    defm J2_jump_ext   : JMP_base<"JMP", "##">;
+    defm J2_jump_noext : JMP_base<"JMP", "#">;
+  }
+
+  defm J2_jumpr : JMPR_base<"JMPr">, PredNewRel;
+
+  let isReturn = 1, isCodeGenOnly = 1 in
+  defm JMPret : JMPR_base<"JMPret">, PredNewRel;
+}
+
+def: Pat<(br bb:$dst),
+         (J2_jump brtarget:$dst)>;
+def: Pat<(retflag),
+         (JMPret (i32 R31))>;
+def: Pat<(brcond (i1 PredRegs:$src1), bb:$offset),
+         (J2_jumpt PredRegs:$src1, bb:$offset)>;
 
 // A return through builtin_eh_return.
 let isReturn = 1, isTerminator = 1, isBarrier = 1, hasSideEffects = 0,
-isCodeGenOnly = 1, Defs = [PC], Uses = [R28], isPredicable = 0 in
+    isCodeGenOnly = 1, Defs = [PC], Uses = [R28], isPredicable = 0 in
 def EH_RETURN_JMPR : T_JMPr;
 
-def : Pat<(eh_return),
-          (EH_RETURN_JMPR (i32 R31))>;
-
-def : Pat<(HexagonBR_JT (i32 IntRegs:$dst)),
-          (JMPR (i32 IntRegs:$dst))>;
-
-def : Pat<(brind (i32 IntRegs:$dst)),
-          (JMPR (i32 IntRegs:$dst))>;
+def: Pat<(eh_return),
+         (EH_RETURN_JMPR (i32 R31))>;
+def: Pat<(HexagonBR_JT (i32 IntRegs:$dst)),
+         (J2_jumpr IntRegs:$dst)>;
+def: Pat<(brind (i32 IntRegs:$dst)),
+         (J2_jumpr IntRegs:$dst)>;
 
 //===----------------------------------------------------------------------===//
 // JR -
@@ -1498,7 +1541,7 @@ def : Pat < (i64 (load ADDRriS11_3:$addr)),
 
 
 // Load - Base with Immediate offset addressing mode
-multiclass LD_Idxd_Pbase<string mnemonic, RegisterClass RC, Operand predImmOp,
+multiclass LD_Idxd_Pbase2<string mnemonic, RegisterClass RC, Operand predImmOp,
                         bit isNot, bit isPredNew> {
   let isPredicatedNew = isPredNew in
   def NAME : LDInst2<(outs RC:$dst),
@@ -1508,17 +1551,17 @@ multiclass LD_Idxd_Pbase<string mnemonic, RegisterClass RC, Operand predImmOp,
             []>;
 }
 
-multiclass LD_Idxd_Pred<string mnemonic, RegisterClass RC, Operand predImmOp,
+multiclass LD_Idxd_Pred2<string mnemonic, RegisterClass RC, Operand predImmOp,
                         bit PredNot> {
   let isPredicatedFalse = PredNot in {
-    defm _c#NAME : LD_Idxd_Pbase<mnemonic, RC, predImmOp, PredNot, 0>;
+    defm _c#NAME : LD_Idxd_Pbase2<mnemonic, RC, predImmOp, PredNot, 0>;
     // Predicate new
-    defm _cdn#NAME : LD_Idxd_Pbase<mnemonic, RC, predImmOp, PredNot, 1>;
+    defm _cdn#NAME : LD_Idxd_Pbase2<mnemonic, RC, predImmOp, PredNot, 1>;
   }
 }
 
 let isExtendable = 1, hasSideEffects = 0 in
-multiclass LD_Idxd<string mnemonic, string CextOp, RegisterClass RC,
+multiclass LD_Idxd2<string mnemonic, string CextOp, RegisterClass RC,
                    Operand ImmOp, Operand predImmOp, bits<5> ImmBits,
                    bits<5> PredImmBits> {
 
@@ -1531,31 +1574,31 @@ multiclass LD_Idxd<string mnemonic, string CextOp, RegisterClass RC,
 
     let opExtendable = 3, isExtentSigned = 0, opExtentBits = PredImmBits,
         isPredicated = 1 in {
-      defm Pt : LD_Idxd_Pred<mnemonic, RC, predImmOp, 0 >;
-      defm NotPt : LD_Idxd_Pred<mnemonic, RC, predImmOp, 1 >;
+      defm Pt : LD_Idxd_Pred2<mnemonic, RC, predImmOp, 0 >;
+      defm NotPt : LD_Idxd_Pred2<mnemonic, RC, predImmOp, 1 >;
     }
   }
 }
 
 let addrMode = BaseImmOffset in {
   let accessSize = ByteAccess in {
-    defm LDrib_indexed: LD_Idxd <"memb", "LDrib", IntRegs, s11_0Ext, u6_0Ext,
+    defm LDrib_indexed: LD_Idxd2 <"memb", "LDrib", IntRegs, s11_0Ext, u6_0Ext,
                                   11, 6>, AddrModeRel;
-    defm LDriub_indexed: LD_Idxd <"memub" , "LDriub", IntRegs, s11_0Ext, u6_0Ext,
+    defm LDriub_indexed: LD_Idxd2 <"memub" , "LDriub", IntRegs, s11_0Ext, u6_0Ext,
                                    11, 6>, AddrModeRel;
   }
   let accessSize = HalfWordAccess in {
-    defm LDrih_indexed: LD_Idxd <"memh", "LDrih", IntRegs, s11_1Ext, u6_1Ext,
+    defm LDrih_indexed: LD_Idxd2 <"memh", "LDrih", IntRegs, s11_1Ext, u6_1Ext,
                                  12, 7>, AddrModeRel;
-    defm LDriuh_indexed: LD_Idxd <"memuh", "LDriuh", IntRegs, s11_1Ext, u6_1Ext,
+    defm LDriuh_indexed: LD_Idxd2 <"memuh", "LDriuh", IntRegs, s11_1Ext, u6_1Ext,
                                   12, 7>, AddrModeRel;
   }
   let accessSize = WordAccess in
-    defm LDriw_indexed: LD_Idxd <"memw", "LDriw", IntRegs, s11_2Ext, u6_2Ext,
+    defm LDriw_indexed: LD_Idxd2 <"memw", "LDriw", IntRegs, s11_2Ext, u6_2Ext,
                                  13, 8>, AddrModeRel;
 
   let accessSize = DoubleWordAccess in
-    defm LDrid_indexed: LD_Idxd <"memd", "LDrid", DoubleRegs, s11_3Ext, u6_3Ext,
+    defm LDrid_indexed: LD_Idxd2 <"memd", "LDrid", DoubleRegs, s11_3Ext, u6_3Ext,
                                  14, 9>, AddrModeRel;
 }
 
@@ -2157,11 +2200,34 @@ def NOT_rr64 : ALU64_rr<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1),
                "$dst = not($src1)",
                [(set (i64 DoubleRegs:$dst), (not (i64 DoubleRegs:$src1)))]>;
 
+let hasSideEffects = 0 in
+class T_S2op_1 <string mnemonic, bits<4> RegTyBits, RegisterClass RCOut,
+                RegisterClass RCIn, bits<2> MajOp, bits<3> MinOp, bit isSat>
+  : SInst <(outs RCOut:$dst), (ins RCIn:$src),
+  "$dst = "#mnemonic#"($src)"#!if(isSat, ":sat", ""),
+  [], "", S_2op_tc_1_SLOT23 > {
+    bits<5> dst;
+    bits<5> src;
 
-// Sign extend word to doubleword.
-def SXTW : ALU64_rr<(outs DoubleRegs:$dst), (ins IntRegs:$src1),
-           "$dst = sxtw($src1)",
-           [(set (i64 DoubleRegs:$dst), (sext (i32 IntRegs:$src1)))]>;
+    let IClass = 0b1000;
+
+    let Inst{27-24} = RegTyBits;
+    let Inst{23-22} = MajOp;
+    let Inst{21} = 0b0;
+    let Inst{20-16} = src;
+    let Inst{7-5} = MinOp;
+    let Inst{4-0} = dst;
+  }
+
+class T_S2op_1_di <string mnemonic, bits<2> MajOp, bits<3> MinOp>
+  : T_S2op_1 <mnemonic, 0b0100, DoubleRegs, IntRegs, MajOp, MinOp, 0>;
+
+// Sign extend word to doubleword
+let isCodeGenOnly = 0 in
+def A2_sxtw   : T_S2op_1_di <"sxtw", 0b01, 0b000>;
+
+def: Pat <(i64 (sext I32:$src)), (A2_sxtw I32:$src)>;
+
 //===----------------------------------------------------------------------===//
 // STYPE/ALU -
 //===----------------------------------------------------------------------===//
@@ -2611,15 +2677,9 @@ let isCall = 1, hasSideEffects = 0,
              "call $dst", []>;
 }
 
-// Call subroutine from register.
-let isCall = 1, hasSideEffects = 0,
-  Defs = [D0, D1, D2, D3, D4, D5, D6, D7, D8, D9, D10,
-          R22, R23, R28, R31, P0, P1, P2, P3, LC0, LC1, SA0, SA1] in {
-  def CALLR : JRInst<(outs), (ins IntRegs:$dst),
-              "callr $dst",
-              []>;
- }
-
+// Call subroutine indirectly.
+let Defs = VolatileV3.Regs, isCodeGenOnly = 0 in
+def J2_callr : JUMPR_MISC_CALLR<0, 1>;
 
 // Indirect tail-call.
 let isCodeGenOnly = 1, isCall = 1, isReturn = 1  in
@@ -2628,13 +2688,15 @@ def TCRETURNR : T_JMPr;
 // Direct tail-calls.
 let isCall = 1, isReturn = 1, isBarrier = 1, isPredicable = 0,
 isTerminator = 1, isCodeGenOnly = 1 in {
-  def TCRETURNtg   : T_JMP<(ins calltarget:$dst)>;
-  def TCRETURNtext : T_JMP<(ins calltarget:$dst)>;
+  def TCRETURNtg   : JInst<(outs), (ins calltarget:$dst), "jump $dst",
+      [], "", J_tc_2early_SLOT23>;
+  def TCRETURNtext : JInst<(outs), (ins calltarget:$dst), "jump $dst",
+      [], "", J_tc_2early_SLOT23>;
 }
 
 // Map call instruction.
 def : Pat<(call (i32 IntRegs:$dst)),
-      (CALLR (i32 IntRegs:$dst))>, Requires<[HasV2TOnly]>;
+      (J2_callr (i32 IntRegs:$dst))>, Requires<[HasV2TOnly]>;
 def : Pat<(call tglobaladdr:$dst),
       (CALL tglobaladdr:$dst)>, Requires<[HasV2TOnly]>;
 def : Pat<(call texternalsym:$dst),
@@ -2746,7 +2808,7 @@ def : Pat <(select (not (i1 PredRegs:$src1)), IntRegs:$src2, s12ImmPred:$src3),
 
 // Map from p0 = pnot(p0); if (p0) jump => if (!p0) jump.
 def : Pat <(brcond (not (i1 PredRegs:$src1)), bb:$offset),
-      (JMP_f (i1 PredRegs:$src1), bb:$offset)>;
+      (J2_jumpf (i1 PredRegs:$src1), bb:$offset)>;
 
 // Map from p2 = pnot(p2); p1 = and(p0, p2) => p1 = and(p0, !p2).
 def : Pat <(and (i1 PredRegs:$src1), (not (i1 PredRegs:$src2))),
@@ -2764,61 +2826,61 @@ let AddedComplexity = 10 in
 def : Pat <(i32 (zextloadi1 ADDRriS11_0:$addr)),
       (i32 (A2_and (i32 (LDrib ADDRriS11_0:$addr)), (A2_tfrsi 0x1)))>;
 
-// Map from Rdd = sign_extend_inreg(Rss, i32) -> Rdd = SXTW(Rss.lo).
+// Map from Rdd = sign_extend_inreg(Rss, i32) -> Rdd = A2_sxtw(Rss.lo).
 def : Pat <(i64 (sext_inreg (i64 DoubleRegs:$src1), i32)),
-      (i64 (SXTW (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1), subreg_loreg))))>;
+      (i64 (A2_sxtw (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1), subreg_loreg))))>;
 
-// Map from Rdd = sign_extend_inreg(Rss, i16) -> Rdd = SXTW(SXTH(Rss.lo)).
+// Map from Rdd = sign_extend_inreg(Rss, i16) -> Rdd = A2_sxtw(SXTH(Rss.lo)).
 def : Pat <(i64 (sext_inreg (i64 DoubleRegs:$src1), i16)),
-      (i64 (SXTW (i32 (A2_sxth (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1),
+      (i64 (A2_sxtw (i32 (A2_sxth (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1),
                                                  subreg_loreg))))))>;
 
-// Map from Rdd = sign_extend_inreg(Rss, i8) -> Rdd = SXTW(SXTB(Rss.lo)).
+// Map from Rdd = sign_extend_inreg(Rss, i8) -> Rdd = A2_sxtw(SXTB(Rss.lo)).
 def : Pat <(i64 (sext_inreg (i64 DoubleRegs:$src1), i8)),
-      (i64 (SXTW (i32 (A2_sxtb (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1),
+      (i64 (A2_sxtw (i32 (A2_sxtb (i32 (EXTRACT_SUBREG (i64 DoubleRegs:$src1),
                                                  subreg_loreg))))))>;
 
 // We want to prevent emitting pnot's as much as possible.
-// Map brcond with an unsupported setcc to a JMP_f.
+// Map brcond with an unsupported setcc to a J2_jumpf.
 def : Pat <(brcond (i1 (setne (i32 IntRegs:$src1), (i32 IntRegs:$src2))),
                         bb:$offset),
-      (JMP_f (C2_cmpeq (i32 IntRegs:$src1), (i32 IntRegs:$src2)),
+      (J2_jumpf (C2_cmpeq (i32 IntRegs:$src1), (i32 IntRegs:$src2)),
                 bb:$offset)>;
 
 def : Pat <(brcond (i1 (setne (i32 IntRegs:$src1), s10ImmPred:$src2)),
                         bb:$offset),
-      (JMP_f (C2_cmpeqi (i32 IntRegs:$src1), s10ImmPred:$src2), bb:$offset)>;
+      (J2_jumpf (C2_cmpeqi (i32 IntRegs:$src1), s10ImmPred:$src2), bb:$offset)>;
 
 def : Pat <(brcond (i1 (setne (i1 PredRegs:$src1), (i1 -1))), bb:$offset),
-      (JMP_f (i1 PredRegs:$src1), bb:$offset)>;
+      (J2_jumpf (i1 PredRegs:$src1), bb:$offset)>;
 
 def : Pat <(brcond (i1 (setne (i1 PredRegs:$src1), (i1 0))), bb:$offset),
-      (JMP_t (i1 PredRegs:$src1), bb:$offset)>;
+      (J2_jumpt (i1 PredRegs:$src1), bb:$offset)>;
 
 // cmp.lt(Rs, Imm) -> !cmp.ge(Rs, Imm) -> !cmp.gt(Rs, Imm-1)
 def : Pat <(brcond (i1 (setlt (i32 IntRegs:$src1), s8ImmPred:$src2)),
                         bb:$offset),
-      (JMP_f (C2_cmpgti (i32 IntRegs:$src1),
+      (J2_jumpf (C2_cmpgti (i32 IntRegs:$src1),
                 (DEC_CONST_SIGNED s8ImmPred:$src2)), bb:$offset)>;
 
 // cmp.lt(r0, r1) -> cmp.gt(r1, r0)
 def : Pat <(brcond (i1 (setlt (i32 IntRegs:$src1), (i32 IntRegs:$src2))),
                         bb:$offset),
-      (JMP_t (C2_cmpgt (i32 IntRegs:$src2), (i32 IntRegs:$src1)), bb:$offset)>;
+      (J2_jumpt (C2_cmpgt (i32 IntRegs:$src2), (i32 IntRegs:$src1)), bb:$offset)>;
 
 def : Pat <(brcond (i1 (setuge (i64 DoubleRegs:$src1), (i64 DoubleRegs:$src2))),
                    bb:$offset),
-      (JMP_f (C2_cmpgtup (i64 DoubleRegs:$src2), (i64 DoubleRegs:$src1)),
+      (J2_jumpf (C2_cmpgtup (i64 DoubleRegs:$src2), (i64 DoubleRegs:$src1)),
                    bb:$offset)>;
 
 def : Pat <(brcond (i1 (setule (i32 IntRegs:$src1), (i32 IntRegs:$src2))),
                         bb:$offset),
-      (JMP_f (C2_cmpgtu (i32 IntRegs:$src1), (i32 IntRegs:$src2)),
+      (J2_jumpf (C2_cmpgtu (i32 IntRegs:$src1), (i32 IntRegs:$src2)),
                 bb:$offset)>;
 
 def : Pat <(brcond (i1 (setule (i64 DoubleRegs:$src1), (i64 DoubleRegs:$src2))),
                    bb:$offset),
-      (JMP_f (C2_cmpgtup (i64 DoubleRegs:$src1), (i64 DoubleRegs:$src2)),
+      (J2_jumpf (C2_cmpgtup (i64 DoubleRegs:$src1), (i64 DoubleRegs:$src2)),
                 bb:$offset)>;
 
 // Map from a 64-bit select to an emulated 64-bit mux.
@@ -2888,11 +2950,11 @@ def : Pat<(store (i1 -1), ADDRriS11_2:$addr),
 def : Pat<(store (i1 PredRegs:$src1), ADDRriS11_2:$addr),
       (STrib ADDRriS11_2:$addr, (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0)) )>;
 
-// Map Rdd = anyext(Rs) -> Rdd = sxtw(Rs).
+// Map Rdd = anyext(Rs) -> Rdd = A2_sxtw(Rs).
 // Hexagon_TODO: We can probably use combine but that will cost 2 instructions.
 // Better way to do this?
 def : Pat<(i64 (anyext (i32 IntRegs:$src1))),
-      (i64 (SXTW (i32 IntRegs:$src1)))>;
+      (i64 (A2_sxtw (i32 IntRegs:$src1)))>;
 
 // Map cmple -> cmpgt.
 // rs <= rt -> !(rs > rt).
@@ -3015,22 +3077,22 @@ def : Pat <(i64 (sext (i1 PredRegs:$src1))),
 // Convert sign-extended load back to load and sign extend.
 // i8 -> i64
 def:  Pat <(i64 (sextloadi8 ADDRriS11_0:$src1)),
-      (i64 (SXTW (LDrib ADDRriS11_0:$src1)))>;
+      (i64 (A2_sxtw (LDrib ADDRriS11_0:$src1)))>;
 
 // Convert any-extended load back to load and sign extend.
 // i8 -> i64
 def:  Pat <(i64 (extloadi8 ADDRriS11_0:$src1)),
-      (i64 (SXTW (LDrib ADDRriS11_0:$src1)))>;
+      (i64 (A2_sxtw (LDrib ADDRriS11_0:$src1)))>;
 
 // Convert sign-extended load back to load and sign extend.
 // i16 -> i64
 def:  Pat <(i64 (sextloadi16 ADDRriS11_1:$src1)),
-      (i64 (SXTW (LDrih ADDRriS11_1:$src1)))>;
+      (i64 (A2_sxtw (LDrih ADDRriS11_1:$src1)))>;
 
 // Convert sign-extended load back to load and sign extend.
 // i32 -> i64
 def:  Pat <(i64 (sextloadi32 ADDRriS11_2:$src1)),
-      (i64 (SXTW (LDriw ADDRriS11_2:$src1)))>;
+      (i64 (A2_sxtw (LDriw ADDRriS11_2:$src1)))>;
 
 
 // Zero extends.
@@ -3107,9 +3169,9 @@ def : Pat <(i32 (zext (i1 PredRegs:$src1))),
 def : Pat <(i32 (anyext (i1 PredRegs:$src1))),
       (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))>;
 
-// Map from Rss = Pd to Rdd = sxtw (mux(Pd, #1, #0))
+// Map from Rss = Pd to Rdd = A2_sxtw (mux(Pd, #1, #0))
 def : Pat <(i64 (anyext (i1 PredRegs:$src1))),
-      (i64 (SXTW (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))))>;
+      (i64 (A2_sxtw (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))))>;
 
 
 let AddedComplexity = 100 in
