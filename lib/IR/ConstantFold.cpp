@@ -27,12 +27,14 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include <limits>
 using namespace llvm;
+using namespace llvm::PatternMatch;
 
 //===----------------------------------------------------------------------===//
 //                ConstantFold*Instruction Implementations
@@ -913,49 +915,70 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode,
         return C1;
       return Constant::getNullValue(C1->getType());   // undef & X -> 0
     case Instruction::Mul: {
-      ConstantInt *CI;
-      // X * undef -> undef   if X is odd or undef
-      if (((CI = dyn_cast<ConstantInt>(C1)) && CI->getValue()[0]) ||
-          ((CI = dyn_cast<ConstantInt>(C2)) && CI->getValue()[0]) ||
-          (isa<UndefValue>(C1) && isa<UndefValue>(C2)))
-        return UndefValue::get(C1->getType());
+      // undef * undef -> undef
+      if (isa<UndefValue>(C1) && isa<UndefValue>(C2))
+        return C1;
+      const APInt *CV;
+      // X * undef -> undef   if X is odd
+      if (match(C1, m_APInt(CV)) || match(C2, m_APInt(CV)))
+        if ((*CV)[0])
+          return UndefValue::get(C1->getType());
 
       // X * undef -> 0       otherwise
       return Constant::getNullValue(C1->getType());
     }
-    case Instruction::UDiv:
     case Instruction::SDiv:
+    case Instruction::UDiv:
+      // X / undef -> undef
+      if (match(C1, m_Zero()))
+        return C2;
+      // undef / 0 -> undef
       // undef / 1 -> undef
-      if (Opcode == Instruction::UDiv || Opcode == Instruction::SDiv)
-        if (ConstantInt *CI2 = dyn_cast<ConstantInt>(C2))
-          if (CI2->isOne())
-            return C1;
-      // FALL THROUGH
+      if (match(C2, m_Zero()) || match(C2, m_One()))
+        return C1;
+      // undef / X -> 0       otherwise
+      return Constant::getNullValue(C1->getType());
     case Instruction::URem:
     case Instruction::SRem:
-      if (!isa<UndefValue>(C2))                    // undef / X -> 0
-        return Constant::getNullValue(C1->getType());
-      return C2;                                   // X / undef -> undef
+      // X % undef -> undef
+      if (match(C2, m_Undef()))
+        return C2;
+      // undef % 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
+      // undef % X -> 0       otherwise
+      return Constant::getNullValue(C1->getType());
     case Instruction::Or:                          // X | undef -> -1
       if (isa<UndefValue>(C1) && isa<UndefValue>(C2)) // undef | undef -> undef
         return C1;
       return Constant::getAllOnesValue(C1->getType()); // undef | X -> ~0
     case Instruction::LShr:
-      if (isa<UndefValue>(C2) && isa<UndefValue>(C1))
-        return C1;                                  // undef lshr undef -> undef
-      return Constant::getNullValue(C1->getType()); // X lshr undef -> 0
-                                                    // undef lshr X -> 0
+      // X >>l undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // undef >>l 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
+      // undef >>l X -> 0
+      return Constant::getNullValue(C1->getType());
     case Instruction::AShr:
-      if (!isa<UndefValue>(C2))                     // undef ashr X --> all ones
-        return Constant::getAllOnesValue(C1->getType());
-      else if (isa<UndefValue>(C1)) 
-        return C1;                                  // undef ashr undef -> undef
-      else
-        return C1;                                  // X ashr undef --> X
+      // X >>a undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // undef >>a 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
+      // TODO: undef >>a X -> undef if the shift is exact
+      // undef >>a X -> 0
+      return Constant::getNullValue(C1->getType());
     case Instruction::Shl:
-      if (isa<UndefValue>(C2) && isa<UndefValue>(C1))
-        return C1;                                  // undef shl undef -> undef
-      // undef << X -> 0   or   X << undef -> 0
+      // X << undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // undef << 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
+      // undef << X -> 0
       return Constant::getNullValue(C1->getType());
     }
   }

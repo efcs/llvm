@@ -473,15 +473,6 @@ def : Pat <(f64 (bitconvert (i64 DoubleRegs:$src))),
            (f64 (A2_tfrp DoubleRegs:$src))>,
           Requires<[HasV5T]>;
 
-// Floating point fused multiply-add.
-def FMADD_dp : ALU64_acc<(outs DoubleRegs:$dst),
-                  (ins DoubleRegs:$src1, DoubleRegs:$src2, DoubleRegs:$src3),
-              "$dst += dfmpy($src2, $src3)",
-              [(set (f64 DoubleRegs:$dst),
-                  (fma DoubleRegs:$src2, DoubleRegs:$src3, DoubleRegs:$src1))],
-                  "$src1 = $dst">,
-              Requires<[HasV5T]>;
-
 def FMADD_sp : ALU64_acc<(outs IntRegs:$dst),
                   (ins IntRegs:$src1, IntRegs:$src2, IntRegs:$src3),
               "$dst += sfmpy($src2, $src3)",
@@ -492,15 +483,6 @@ def FMADD_sp : ALU64_acc<(outs IntRegs:$dst),
 
 
 // Floating point max/min.
-let AddedComplexity = 100 in
-def FMAX_dp : ALU64_rr<(outs DoubleRegs:$dst),
-                  (ins DoubleRegs:$src1, DoubleRegs:$src2),
-              "$dst = dfmax($src1, $src2)",
-              [(set DoubleRegs:$dst, (f64 (select (i1 (setolt DoubleRegs:$src2,
-                                                        DoubleRegs:$src1)),
-                                             DoubleRegs:$src1,
-                                             DoubleRegs:$src2)))]>,
-               Requires<[HasV5T]>;
 
 let AddedComplexity = 100 in
 def FMAX_sp : ALU64_rr<(outs IntRegs:$dst),
@@ -510,16 +492,6 @@ def FMAX_sp : ALU64_rr<(outs IntRegs:$dst),
                                                         IntRegs:$src1)),
                                              IntRegs:$src1,
                                              IntRegs:$src2)))]>,
-               Requires<[HasV5T]>;
-
-let AddedComplexity = 100 in
-def FMIN_dp : ALU64_rr<(outs DoubleRegs:$dst),
-                  (ins DoubleRegs:$src1, DoubleRegs:$src2),
-              "$dst = dfmin($src1, $src2)",
-              [(set DoubleRegs:$dst, (f64 (select (i1 (setogt DoubleRegs:$src2,
-                                                        DoubleRegs:$src1)),
-                                             DoubleRegs:$src1,
-                                             DoubleRegs:$src2)))]>,
                Requires<[HasV5T]>;
 
 let AddedComplexity = 100 in
@@ -615,19 +587,19 @@ def : Pat <(i32 (fp_to_sint (f64 DoubleRegs:$src1))),
           Requires<[HasV5T]>;
 
 def : Pat <(fabs (f32 IntRegs:$src1)),
-           (CLRBIT_31 (f32 IntRegs:$src1), 31)>,
+           (S2_clrbit_i (f32 IntRegs:$src1), 31)>,
           Requires<[HasV5T]>;
 
 def : Pat <(fneg (f32 IntRegs:$src1)),
-           (TOGBIT_31 (f32 IntRegs:$src1), 31)>,
+           (S2_togglebit_i (f32 IntRegs:$src1), 31)>,
           Requires<[HasV5T]>;
 
 /*
 def : Pat <(fabs (f64 DoubleRegs:$src1)),
-          (CLRBIT_31 (f32 (EXTRACT_SUBREG DoubleRegs:$src1, subreg_hireg)), 31)>,
+          (S2_clrbit_i (f32 (EXTRACT_SUBREG DoubleRegs:$src1, subreg_hireg)), 31)>,
           Requires<[HasV5T]>;
 
 def : Pat <(fabs (f64 DoubleRegs:$src1)),
-          (CLRBIT_31 (f32 (EXTRACT_SUBREG DoubleRegs:$src1, subreg_hireg)), 31)>,
+          (S2_clrbit_i (f32 (EXTRACT_SUBREG DoubleRegs:$src1, subreg_hireg)), 31)>,
           Requires<[HasV5T]>;
           */

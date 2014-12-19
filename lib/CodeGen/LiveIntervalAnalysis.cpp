@@ -192,9 +192,8 @@ void LiveIntervals::computeVirtRegInterval(LiveInterval &LI) {
   assert(LRCalc && "LRCalc not initialized.");
   assert(LI.empty() && "Should only compute empty intervals.");
   LRCalc->reset(MF, getSlotIndexes(), DomTree, &getVNInfoAllocator());
-  LRCalc->createDeadDefs(LI);
-  LRCalc->extendToUses(LI);
-  computeDeadValues(LI, LI);
+  LRCalc->calculate(LI);
+  computeDeadValues(LI, nullptr);
 }
 
 void LiveIntervals::computeVirtRegs() {
@@ -395,9 +394,8 @@ bool LiveIntervals::shrinkToUses(LiveInterval *li,
          && "Can only shrink virtual registers");
 
   // Shrink subregister live ranges.
-  for (LiveInterval::subrange_iterator I = li->subrange_begin(),
-       E = li->subrange_end(); I != E; ++I) {
-    shrinkToUses(*I, li->reg);
+  for (LiveInterval::SubRange &S : li->subranges()) {
+    shrinkToUses(S, li->reg);
   }
 
   // Find all the values used, including PHI kills.
@@ -435,49 +433,46 @@ bool LiveIntervals::shrinkToUses(LiveInterval *li,
   createSegmentsForValues(NewLR, make_range(li->vni_begin(), li->vni_end()));
   extendSegmentsToUses(NewLR, *Indexes, WorkList, *li);
 
-  // Handle dead values.
-  bool CanSeparate;
-  computeDeadValues(NewLR, *li, &CanSeparate, li->reg, dead);
-
   // Move the trimmed segments back.
   li->segments.swap(NewLR.segments);
+
+  // Handle dead values.
+  bool CanSeparate = computeDeadValues(*li, dead);
   DEBUG(dbgs() << "Shrunk: " << *li << '\n');
   return CanSeparate;
 }
 
-void LiveIntervals::computeDeadValues(LiveRange &Segments, LiveRange &LR,
-                                      bool *CanSeparateRes, unsigned Reg,
+bool LiveIntervals::computeDeadValues(LiveInterval &LI,
                                       SmallVectorImpl<MachineInstr*> *dead) {
-  bool CanSeparate = false;
-  for (auto VNI : make_range(LR.vni_begin(), LR.vni_end())) {
+  bool PHIRemoved = false;
+  for (auto VNI : LI.valnos) {
     if (VNI->isUnused())
       continue;
-    LiveRange::iterator LRI = Segments.FindSegmentContaining(VNI->def);
-    assert(LRI != Segments.end() && "Missing segment for PHI");
-    if (LRI->end != VNI->def.getDeadSlot())
+    LiveRange::iterator I = LI.FindSegmentContaining(VNI->def);
+    assert(I != LI.end() && "Missing segment for VNI");
+    if (I->end != VNI->def.getDeadSlot())
       continue;
     if (VNI->isPHIDef()) {
       // This is a dead PHI. Remove it.
       VNI->markUnused();
-      Segments.removeSegment(LRI->start, LRI->end);
+      LI.removeSegment(I);
       DEBUG(dbgs() << "Dead PHI at " << VNI->def << " may separate interval\n");
-      CanSeparate = true;
-    } else if (dead != nullptr) {
+      PHIRemoved = true;
+    } else {
       // This is a dead def. Make sure the instruction knows.
       MachineInstr *MI = getInstructionFromIndex(VNI->def);
       assert(MI && "No instruction defining live value");
-      MI->addRegisterDead(Reg, TRI);
+      MI->addRegisterDead(LI.reg, TRI);
       if (dead && MI->allDefsAreDead()) {
         DEBUG(dbgs() << "All defs dead: " << VNI->def << '\t' << *MI);
         dead->push_back(MI);
       }
     }
   }
-  if (CanSeparateRes != nullptr)
-    *CanSeparateRes = CanSeparate;
+  return PHIRemoved;
 }
 
-bool LiveIntervals::shrinkToUses(LiveInterval::SubRange &SR, unsigned Reg)
+void LiveIntervals::shrinkToUses(LiveInterval::SubRange &SR, unsigned Reg)
 {
   DEBUG(dbgs() << "Shrink: " << SR << '\n');
   assert(TargetRegisterInfo::isVirtualRegister(Reg)
@@ -524,14 +519,26 @@ bool LiveIntervals::shrinkToUses(LiveInterval::SubRange &SR, unsigned Reg)
   createSegmentsForValues(NewLR, make_range(SR.vni_begin(), SR.vni_end()));
   extendSegmentsToUses(NewLR, *Indexes, WorkList, SR);
 
-  // Handle dead values.
-  bool CanSeparate;
-  computeDeadValues(NewLR, SR, &CanSeparate);
-
   // Move the trimmed ranges back.
   SR.segments.swap(NewLR.segments);
+
+  // Remove dead PHI value numbers
+  for (auto VNI : SR.valnos) {
+    if (VNI->isUnused())
+      continue;
+    const LiveRange::Segment *Segment = SR.getSegmentContaining(VNI->def);
+    assert(Segment != nullptr && "Missing segment for VNI");
+    if (Segment->end != VNI->def.getDeadSlot())
+      continue;
+    if (VNI->isPHIDef()) {
+      // This is a dead PHI. Remove it.
+      VNI->markUnused();
+      SR.removeSegment(*Segment);
+      DEBUG(dbgs() << "Dead PHI at " << VNI->def << " may separate interval\n");
+    }
+  }
+
   DEBUG(dbgs() << "Shrunk: " << SR << '\n');
-  return CanSeparate;
 }
 
 void LiveIntervals::extendToIndices(LiveRange &LR,
@@ -606,9 +613,8 @@ void LiveIntervals::pruneValue(LiveInterval &LI, SlotIndex Kill,
                                SmallVectorImpl<SlotIndex> *EndPoints) {
   pruneValue((LiveRange&)LI, Kill, EndPoints);
 
-  for (LiveInterval::subrange_iterator SR = LI.subrange_begin(),
-       SE = LI.subrange_end(); SR != SE; ++SR) {
-    pruneValue(*SR, Kill, nullptr);
+  for (LiveInterval::SubRange &SR : LI.subranges()) {
+    pruneValue(SR, Kill, nullptr);
   }
 }
 
@@ -729,9 +735,7 @@ LiveIntervals::intervalIsInOneMBB(const LiveInterval &LI) const {
 
 bool
 LiveIntervals::hasPHIKill(const LiveInterval &LI, const VNInfo *VNI) const {
-  for (LiveInterval::const_vni_iterator I = LI.vni_begin(), E = LI.vni_end();
-       I != E; ++I) {
-    const VNInfo *PHI = *I;
+  for (const VNInfo *PHI : LI.valnos) {
     if (PHI->isUnused() || !PHI->isPHIDef())
       continue;
     const MachineBasicBlock *PHIMBB = getMBBFromIndex(PHI->def);
@@ -884,11 +888,10 @@ public:
         if (LI.hasSubRanges()) {
           unsigned SubReg = MO->getSubReg();
           unsigned LaneMask = TRI.getSubRegIndexLaneMask(SubReg);
-          for (LiveInterval::subrange_iterator S = LI.subrange_begin(),
-               SE = LI.subrange_end(); S != SE; ++S) {
-            if ((S->LaneMask & LaneMask) == 0)
+          for (LiveInterval::SubRange &S : LI.subranges()) {
+            if ((S.LaneMask & LaneMask) == 0)
               continue;
-            updateRange(*S, Reg, S->LaneMask);
+            updateRange(S, Reg, S.LaneMask);
           }
         }
         updateRange(LI, Reg, 0);
@@ -1324,9 +1327,8 @@ LiveIntervals::repairIntervalsInRange(MachineBasicBlock *MBB,
     if (!LI.hasAtLeastOneValue())
       continue;
 
-    for (LiveInterval::subrange_iterator S = LI.subrange_begin(),
-         SE = LI.subrange_end(); S != SE; ++S) {
-      repairOldRegInRange(Begin, End, endIdx, *S, Reg, S->LaneMask);
+    for (LiveInterval::SubRange &S : LI.subranges()) {
+      repairOldRegInRange(Begin, End, endIdx, S, Reg, S.LaneMask);
     }
     repairOldRegInRange(Begin, End, endIdx, LI, Reg);
   }
