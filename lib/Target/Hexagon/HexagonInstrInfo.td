@@ -614,11 +614,6 @@ let isExtendable = 1, opExtendable = 1, opExtentBits = 6 in
 def TFRI64_V4 : ALU64_rr<(outs DoubleRegs:$dst), (ins u6Ext:$src1),
                          "$dst = #$src1">;
 
-// Transfer control register.
-let hasSideEffects = 0 in
-def TFCR : CRInst<(outs CRRegs:$dst), (ins IntRegs:$src1),
-           "$dst = $src1",
-           []>;
 //===----------------------------------------------------------------------===//
 // ALU32/ALU -
 //===----------------------------------------------------------------------===//
@@ -835,14 +830,6 @@ def DEC_CONST_UNSIGNED : SDNodeXForm<imm, [{
    return XformUToUM1Imm(imm);
 }]>;
 
-def CTLZ_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1),
-    "$dst = cl0($src1)",
-    [(set (i32 IntRegs:$dst), (ctlz (i32 IntRegs:$src1)))]>;
-
-def CTTZ_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1),
-    "$dst = ct0($src1)",
-    [(set (i32 IntRegs:$dst), (cttz (i32 IntRegs:$src1)))]>;
-
 def CTLZ64_rr : SInst<(outs IntRegs:$dst), (ins DoubleRegs:$src1),
     "$dst = cl0($src1)",
     [(set (i32 IntRegs:$dst), (i32 (trunc (ctlz (i64 DoubleRegs:$src1)))))]>;
@@ -850,11 +837,6 @@ def CTLZ64_rr : SInst<(outs IntRegs:$dst), (ins DoubleRegs:$src1),
 def CTTZ64_rr : SInst<(outs IntRegs:$dst), (ins DoubleRegs:$src1),
     "$dst = ct0($src1)",
     [(set (i32 IntRegs:$dst), (i32 (trunc (cttz (i64 DoubleRegs:$src1)))))]>;
-
-def TSTBIT_rr : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-    "$dst = tstbit($src1, $src2)",
-    [(set (i1 PredRegs:$dst),
-          (setne (and (shl 1, (i32 IntRegs:$src2)), (i32 IntRegs:$src1)), 0))]>;
 
 //===----------------------------------------------------------------------===//
 // ALU32/PRED -
@@ -3160,58 +3142,6 @@ def S2_addasl_rrri: SInst <(outs IntRegs:$Rd),
     let Inst{4-0}   = Rd;
   }
 
-// Shift by immediate and add.
-let AddedComplexity = 100 in
-def ADDASL : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2,
-                                             u3Imm:$src3),
-             "$dst = addasl($src1, $src2, #$src3)",
-             [(set (i32 IntRegs:$dst), (add (i32 IntRegs:$src1),
-                                       (shl (i32 IntRegs:$src2),
-                                            u3ImmPred:$src3)))]>;
-
-// Shift by register.
-def ASL_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             "$dst = asl($src1, $src2)",
-             [(set (i32 IntRegs:$dst), (shl (i32 IntRegs:$src1),
-                                            (i32 IntRegs:$src2)))]>;
-
-def ASR_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             "$dst = asr($src1, $src2)",
-             [(set (i32 IntRegs:$dst), (sra (i32 IntRegs:$src1),
-                                            (i32 IntRegs:$src2)))]>;
-
-def LSL_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             "$dst = lsl($src1, $src2)",
-             [(set (i32 IntRegs:$dst), (shl (i32 IntRegs:$src1),
-                                            (i32 IntRegs:$src2)))]>;
-
-def LSR_rr : SInst<(outs IntRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             "$dst = lsr($src1, $src2)",
-             [(set (i32 IntRegs:$dst), (srl (i32 IntRegs:$src1),
-                                            (i32 IntRegs:$src2)))]>;
-
-def ASLd : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1, IntRegs:$src2),
-           "$dst = asl($src1, $src2)",
-           [(set (i64 DoubleRegs:$dst), (shl (i64 DoubleRegs:$src1),
-                                             (i32 IntRegs:$src2)))]>;
-
-def LSLd : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1, IntRegs:$src2),
-           "$dst = lsl($src1, $src2)",
-           [(set (i64 DoubleRegs:$dst), (shl (i64 DoubleRegs:$src1),
-                                             (i32 IntRegs:$src2)))]>;
-
-def ASRd_rr : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1,
-                                                 IntRegs:$src2),
-              "$dst = asr($src1, $src2)",
-              [(set (i64 DoubleRegs:$dst), (sra (i64 DoubleRegs:$src1),
-                                                (i32 IntRegs:$src2)))]>;
-
-def LSRd_rr : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1,
-                                                 IntRegs:$src2),
-              "$dst = lsr($src1, $src2)",
-              [(set (i64 DoubleRegs:$dst), (srl (i64 DoubleRegs:$src1),
-                                                (i32 IntRegs:$src2)))]>;
-
 //===----------------------------------------------------------------------===//
 // STYPE/SHIFT -
 //===----------------------------------------------------------------------===//
@@ -3237,14 +3167,15 @@ def LSRd_rr : SInst<(outs DoubleRegs:$dst), (ins DoubleRegs:$src1,
 //===----------------------------------------------------------------------===//
 // SYSTEM/USER +
 //===----------------------------------------------------------------------===//
-def SDHexagonBARRIER: SDTypeProfile<0, 0, []>;
-def HexagonBARRIER: SDNode<"HexagonISD::BARRIER", SDHexagonBARRIER,
-                           [SDNPHasChain]>;
+def HexagonBARRIER: SDNode<"HexagonISD::BARRIER", SDTNone, [SDNPHasChain]>;
 
-let hasSideEffects = 1, isSolo = 1 in
+let hasSideEffects = 1, isSoloAX = 1, isCodeGenOnly = 0 in
 def BARRIER : SYSInst<(outs), (ins),
                      "barrier",
-                     [(HexagonBARRIER)]>;
+                     [(HexagonBARRIER)],"",ST_tc_st_SLOT0> {
+  let Inst{31-28} = 0b1010;
+  let Inst{27-21} = 0b1000000;
+}
 
 //===----------------------------------------------------------------------===//
 // SYSTEM/SUPER -
@@ -3368,11 +3299,58 @@ defm J2_ploop2s : SPLOOP_ri<"2", 0b10>;
 defm J2_ploop3s : SPLOOP_ri<"3", 0b11>;
 }
 
-// TFRI64 - assembly mapped.
-let isReMaterializable = 1 in
-def TFRI64 : ALU64_rr<(outs DoubleRegs:$dst), (ins s8Imm64:$src1),
-             "$dst = #$src1",
-             [(set (i64 DoubleRegs:$dst), s8Imm64Pred:$src1)]>;
+// Transfer to/from Control/GPR Guest/GPR
+let hasSideEffects = 0 in
+class TFR_CR_RS_base<RegisterClass CTRC, RegisterClass RC, bit isDouble>
+  : CRInst <(outs CTRC:$dst), (ins RC:$src),
+  "$dst = $src", [], "", CR_tc_3x_SLOT3> {
+    bits<5> dst;
+    bits<5> src;
+
+    let IClass = 0b0110;
+
+    let Inst{27-25} = 0b001;
+    let Inst{24} = isDouble;
+    let Inst{23-21} = 0b001;
+    let Inst{20-16} = src;
+    let Inst{4-0} = dst;
+  }
+let isCodeGenOnly = 0 in
+def A2_tfrrcr : TFR_CR_RS_base<CtrRegs, IntRegs, 0b0>;
+def : InstAlias<"m0 = $Rs", (A2_tfrrcr C6, IntRegs:$Rs)>;
+def : InstAlias<"m1 = $Rs", (A2_tfrrcr C7, IntRegs:$Rs)>;
+
+let hasSideEffects = 0 in
+class TFR_RD_CR_base<RegisterClass RC, RegisterClass CTRC, bit isSingle>
+  : CRInst <(outs RC:$dst), (ins CTRC:$src),
+  "$dst = $src", [], "", CR_tc_3x_SLOT3> {
+    bits<5> dst;
+    bits<5> src;
+
+    let IClass = 0b0110;
+
+    let Inst{27-26} = 0b10;
+    let Inst{25} = isSingle;
+    let Inst{24-21} = 0b0000;
+    let Inst{20-16} = src;
+    let Inst{4-0} = dst;
+  }
+
+let hasNewValue = 1, opNewValue = 0, isCodeGenOnly = 0 in
+def A2_tfrcrr : TFR_RD_CR_base<IntRegs, CtrRegs, 1>;
+def : InstAlias<"$Rd = m0", (A2_tfrcrr IntRegs:$Rd, C6)>;
+def : InstAlias<"$Rd = m1", (A2_tfrcrr IntRegs:$Rd, C7)>;
+
+// Y4_trace: Send value to etm trace.
+let isSoloAX = 1, hasSideEffects = 0, isCodeGenOnly = 0 in
+def Y4_trace: CRInst <(outs), (ins IntRegs:$Rs),
+  "trace($Rs)"> {
+    bits<5> Rs;
+
+    let IClass = 0b0110;
+    let Inst{27-21} = 0b0010010;
+    let Inst{20-16} = Rs;
+  }
 
 let AddedComplexity = 100, isPredicated = 1 in
 def TFR_condset_ri : ALU32_rr<(outs IntRegs:$dst),
@@ -4237,79 +4215,466 @@ def : Pat<(HexagonWrapperJT tjumptable:$dst),
           (i32 (CONST32_set_jt tjumptable:$dst))>;
 
 // XTYPE/SHIFT
-
-// Multi-class for logical operators :
+//
+//===----------------------------------------------------------------------===//
+// Template Class
 // Shift by immediate/register and accumulate/logical
-multiclass xtype_imm<string OpcStr, SDNode OpNode1, SDNode OpNode2> {
-  def _ri : SInst_acc<(outs IntRegs:$dst),
-            (ins IntRegs:$src1, IntRegs:$src2, u5Imm:$src3),
-            !strconcat("$dst ", !strconcat(OpcStr, "($src2, #$src3)")),
-            [(set (i32 IntRegs:$dst),
-                  (OpNode2 (i32 IntRegs:$src1),
-                           (OpNode1 (i32 IntRegs:$src2),
-                                    u5ImmPred:$src3)))],
-            "$src1 = $dst">;
+//===----------------------------------------------------------------------===//
 
-  def d_ri : SInst_acc<(outs DoubleRegs:$dst),
-            (ins DoubleRegs:$src1, DoubleRegs:$src2, u6Imm:$src3),
-            !strconcat("$dst ", !strconcat(OpcStr, "($src2, #$src3)")),
-            [(set (i64 DoubleRegs:$dst), (OpNode2 (i64 DoubleRegs:$src1),
-                          (OpNode1 (i64 DoubleRegs:$src2), u6ImmPred:$src3)))],
-            "$src1 = $dst">;
+// Rx[+-&|]=asr(Rs,#u5)
+// Rx[+-&|^]=lsr(Rs,#u5)
+// Rx[+-&|^]=asl(Rs,#u5)
+
+let hasNewValue = 1, opNewValue = 0 in
+class T_shift_imm_acc_r <string opc1, string opc2, SDNode OpNode1,
+                         SDNode OpNode2, bits<3> majOp, bits<2> minOp>
+  : SInst_acc<(outs IntRegs:$Rx),
+              (ins IntRegs:$src1, IntRegs:$Rs, u5Imm:$u5),
+  "$Rx "#opc2#opc1#"($Rs, #$u5)",
+  [(set (i32 IntRegs:$Rx),
+         (OpNode2 (i32 IntRegs:$src1),
+                  (OpNode1 (i32 IntRegs:$Rs), u5ImmPred:$u5)))],
+  "$src1 = $Rx", S_2op_tc_2_SLOT23> {
+    bits<5> Rx;
+    bits<5> Rs;
+    bits<5> u5;
+
+    let IClass = 0b1000;
+
+    let Inst{27-24} = 0b1110;
+    let Inst{23-22} = majOp{2-1};
+    let Inst{13} = 0b0;
+    let Inst{7} = majOp{0};
+    let Inst{6-5} = minOp;
+    let Inst{4-0} = Rx;
+    let Inst{20-16} = Rs;
+    let Inst{12-8} = u5;
+  }
+
+// Rx[+-&|]=asr(Rs,Rt)
+// Rx[+-&|^]=lsr(Rs,Rt)
+// Rx[+-&|^]=asl(Rs,Rt)
+
+let hasNewValue = 1, opNewValue = 0 in
+class T_shift_reg_acc_r <string opc1, string opc2, SDNode OpNode1,
+                         SDNode OpNode2, bits<2> majOp, bits<2> minOp>
+  : SInst_acc<(outs IntRegs:$Rx),
+              (ins IntRegs:$src1, IntRegs:$Rs, IntRegs:$Rt),
+  "$Rx "#opc2#opc1#"($Rs, $Rt)",
+  [(set (i32 IntRegs:$Rx),
+         (OpNode2 (i32 IntRegs:$src1),
+                  (OpNode1 (i32 IntRegs:$Rs), (i32 IntRegs:$Rt))))],
+  "$src1 = $Rx", S_3op_tc_2_SLOT23 > {
+    bits<5> Rx;
+    bits<5> Rs;
+    bits<5> Rt;
+
+    let IClass = 0b1100;
+
+    let Inst{27-24} = 0b1100;
+    let Inst{23-22} = majOp;
+    let Inst{7-6} = minOp;
+    let Inst{4-0} = Rx;
+    let Inst{20-16} = Rs;
+    let Inst{12-8} = Rt;
+  }
+
+// Rxx[+-&|]=asr(Rss,#u6)
+// Rxx[+-&|^]=lsr(Rss,#u6)
+// Rxx[+-&|^]=asl(Rss,#u6)
+
+class T_shift_imm_acc_p <string opc1, string opc2, SDNode OpNode1,
+                         SDNode OpNode2, bits<3> majOp, bits<2> minOp>
+  : SInst_acc<(outs DoubleRegs:$Rxx),
+              (ins DoubleRegs:$src1, DoubleRegs:$Rss, u6Imm:$u6),
+  "$Rxx "#opc2#opc1#"($Rss, #$u6)",
+  [(set (i64 DoubleRegs:$Rxx),
+        (OpNode2 (i64 DoubleRegs:$src1),
+                 (OpNode1 (i64 DoubleRegs:$Rss), u6ImmPred:$u6)))],
+  "$src1 = $Rxx", S_2op_tc_2_SLOT23> {
+    bits<5> Rxx;
+    bits<5> Rss;
+    bits<6> u6;
+
+    let IClass = 0b1000;
+
+    let Inst{27-24} = 0b0010;
+    let Inst{23-22} = majOp{2-1};
+    let Inst{7} = majOp{0};
+    let Inst{6-5} = minOp;
+    let Inst{4-0} = Rxx;
+    let Inst{20-16} = Rss;
+    let Inst{13-8} = u6;
+  }
+
+
+// Rxx[+-&|]=asr(Rss,Rt)
+// Rxx[+-&|^]=lsr(Rss,Rt)
+// Rxx[+-&|^]=asl(Rss,Rt)
+// Rxx[+-&|^]=lsl(Rss,Rt)
+
+class T_shift_reg_acc_p <string opc1, string opc2, SDNode OpNode1,
+                         SDNode OpNode2, bits<3> majOp, bits<2> minOp>
+  : SInst_acc<(outs DoubleRegs:$Rxx),
+              (ins DoubleRegs:$src1, DoubleRegs:$Rss, IntRegs:$Rt),
+  "$Rxx "#opc2#opc1#"($Rss, $Rt)",
+  [(set (i64 DoubleRegs:$Rxx),
+        (OpNode2 (i64 DoubleRegs:$src1),
+                 (OpNode1 (i64 DoubleRegs:$Rss), (i32 IntRegs:$Rt))))],
+  "$src1 = $Rxx", S_3op_tc_2_SLOT23> {
+    bits<5> Rxx;
+    bits<5> Rss;
+    bits<5> Rt;
+
+    let IClass = 0b1100;
+
+    let Inst{27-24} = 0b1011;
+    let Inst{23-21} = majOp;
+    let Inst{20-16} = Rss;
+    let Inst{12-8} = Rt;
+    let Inst{7-6} = minOp;
+    let Inst{4-0} = Rxx;
+  }
+
+//===----------------------------------------------------------------------===//
+// Multi-class for the shift instructions with logical/arithmetic operators.
+//===----------------------------------------------------------------------===//
+
+multiclass xtype_imm_base<string OpcStr1, string OpcStr2, SDNode OpNode1,
+                         SDNode OpNode2, bits<3> majOp, bits<2> minOp > {
+  def _i_r#NAME : T_shift_imm_acc_r< OpcStr1, OpcStr2, OpNode1,
+                                     OpNode2, majOp, minOp >;
+  def _i_p#NAME : T_shift_imm_acc_p< OpcStr1, OpcStr2, OpNode1,
+                                     OpNode2, majOp, minOp >;
 }
 
-// Multi-class for logical operators :
-// Shift by register and accumulate/logical (32/64 bits)
-multiclass xtype_reg<string OpcStr, SDNode OpNode1, SDNode OpNode2> {
-  def _rr : SInst_acc<(outs IntRegs:$dst),
-            (ins IntRegs:$src1, IntRegs:$src2, IntRegs:$src3),
-            !strconcat("$dst ", !strconcat(OpcStr, "($src2, $src3)")),
-            [(set (i32 IntRegs:$dst),
-                  (OpNode2 (i32 IntRegs:$src1),
-                           (OpNode1 (i32 IntRegs:$src2),
-                                    (i32 IntRegs:$src3))))],
-            "$src1 = $dst">;
+multiclass xtype_imm_acc<string opc1, SDNode OpNode, bits<2>minOp> {
+  let AddedComplexity = 100 in
+  defm _acc  : xtype_imm_base< opc1, "+= ", OpNode, add, 0b001, minOp>;
 
-  def d_rr : SInst_acc<(outs DoubleRegs:$dst),
-            (ins DoubleRegs:$src1, DoubleRegs:$src2, IntRegs:$src3),
-            !strconcat("$dst ", !strconcat(OpcStr, "($src2, $src3)")),
-            [(set (i64 DoubleRegs:$dst),
-                  (OpNode2 (i64 DoubleRegs:$src1),
-                           (OpNode1 (i64 DoubleRegs:$src2),
-                                    (i32 IntRegs:$src3))))],
-            "$src1 = $dst">;
-
+  defm _nac  : xtype_imm_base< opc1, "-= ", OpNode, sub, 0b000, minOp>;
+  defm _and  : xtype_imm_base< opc1, "&= ", OpNode, and, 0b010, minOp>;
+  defm _or   : xtype_imm_base< opc1, "|= ", OpNode,  or, 0b011, minOp>;
 }
 
-multiclass basic_xtype_imm<string OpcStr, SDNode OpNode> {
+multiclass xtype_xor_imm_acc<string opc1, SDNode OpNode, bits<2>minOp> {
 let AddedComplexity = 100 in
-  defm _ADD : xtype_imm< !strconcat("+= ", OpcStr), OpNode, add>;
-  defm _SUB : xtype_imm< !strconcat("-= ", OpcStr), OpNode, sub>;
-  defm _AND : xtype_imm< !strconcat("&= ", OpcStr), OpNode, and>;
-  defm _OR  : xtype_imm< !strconcat("|= ", OpcStr), OpNode, or>;
+  defm _xacc  : xtype_imm_base< opc1, "^= ", OpNode, xor, 0b100, minOp>;
 }
 
-multiclass basic_xtype_reg<string OpcStr, SDNode OpNode> {
-let AddedComplexity = 100 in
-  defm _ADD : xtype_reg< !strconcat("+= ", OpcStr), OpNode, add>;
-  defm _SUB : xtype_reg< !strconcat("-= ", OpcStr), OpNode, sub>;
-  defm _AND : xtype_reg< !strconcat("&= ", OpcStr), OpNode, and>;
-  defm _OR  : xtype_reg< !strconcat("|= ", OpcStr), OpNode, or>;
+let isCodeGenOnly = 0 in {
+defm S2_asr : xtype_imm_acc<"asr", sra, 0b00>;
+
+defm S2_lsr : xtype_imm_acc<"lsr", srl, 0b01>,
+              xtype_xor_imm_acc<"lsr", srl, 0b01>;
+
+defm S2_asl : xtype_imm_acc<"asl", shl, 0b10>,
+              xtype_xor_imm_acc<"asl", shl, 0b10>;
 }
 
-multiclass xtype_xor_imm<string OpcStr, SDNode OpNode> {
-let AddedComplexity = 100 in
-  defm _XOR : xtype_imm< !strconcat("^= ", OpcStr), OpNode, xor>;
+multiclass xtype_reg_acc_r<string opc1, SDNode OpNode, bits<2>minOp> {
+  let AddedComplexity = 100 in
+  def _acc : T_shift_reg_acc_r <opc1, "+= ", OpNode, add, 0b11, minOp>;
+
+  def _nac : T_shift_reg_acc_r <opc1, "-= ", OpNode, sub, 0b10, minOp>;
+  def _and : T_shift_reg_acc_r <opc1, "&= ", OpNode, and, 0b01, minOp>;
+  def _or  : T_shift_reg_acc_r <opc1, "|= ", OpNode,  or, 0b00, minOp>;
 }
 
-defm ASL : basic_xtype_imm<"asl", shl>, basic_xtype_reg<"asl", shl>,
-           xtype_xor_imm<"asl", shl>;
+multiclass xtype_reg_acc_p<string opc1, SDNode OpNode, bits<2>minOp> {
+  let AddedComplexity = 100 in
+  def _acc : T_shift_reg_acc_p <opc1, "+= ", OpNode, add, 0b110, minOp>;
 
-defm LSR : basic_xtype_imm<"lsr", srl>, basic_xtype_reg<"lsr", srl>,
-           xtype_xor_imm<"lsr", srl>;
+  def _nac : T_shift_reg_acc_p <opc1, "-= ", OpNode, sub, 0b100, minOp>;
+  def _and : T_shift_reg_acc_p <opc1, "&= ", OpNode, and, 0b010, minOp>;
+  def _or  : T_shift_reg_acc_p <opc1, "|= ", OpNode,  or, 0b000, minOp>;
+  def _xor : T_shift_reg_acc_p <opc1, "^= ", OpNode, xor, 0b011, minOp>;
+}
 
-defm ASR : basic_xtype_imm<"asr", sra>, basic_xtype_reg<"asr", sra>;
-defm LSL : basic_xtype_reg<"lsl", shl>;
+multiclass xtype_reg_acc<string OpcStr, SDNode OpNode, bits<2> minOp > {
+  defm _r_r : xtype_reg_acc_r <OpcStr, OpNode, minOp>;
+  defm _r_p : xtype_reg_acc_p <OpcStr, OpNode, minOp>;
+}
+
+let isCodeGenOnly = 0 in {
+defm S2_asl : xtype_reg_acc<"asl", shl, 0b10>;
+defm S2_asr : xtype_reg_acc<"asr", sra, 0b00>;
+defm S2_lsr : xtype_reg_acc<"lsr", srl, 0b01>;
+defm S2_lsl : xtype_reg_acc<"lsl", shl, 0b11>;
+}
+
+//===----------------------------------------------------------------------===//
+let hasSideEffects = 0 in
+class T_S3op_1 <string mnemonic, RegisterClass RC, bits<2> MajOp, bits<3> MinOp,
+                bit SwapOps, bit isSat = 0, bit isRnd = 0, bit hasShift = 0>
+  : SInst <(outs RC:$dst),
+           (ins DoubleRegs:$src1, DoubleRegs:$src2),
+  "$dst = "#mnemonic#"($src1, $src2)"#!if(isRnd, ":rnd", "")
+                                     #!if(hasShift,":>>1","")
+                                     #!if(isSat, ":sat", ""),
+  [], "", S_3op_tc_2_SLOT23 > {
+    bits<5> dst;
+    bits<5> src1;
+    bits<5> src2;
+
+    let IClass = 0b1100;
+
+    let Inst{27-24} = 0b0001;
+    let Inst{23-22} = MajOp;
+    let Inst{20-16} = !if (SwapOps, src2, src1);
+    let Inst{12-8}  = !if (SwapOps, src1, src2);
+    let Inst{7-5}   = MinOp;
+    let Inst{4-0}   = dst;
+  }
+
+class T_S3op_64 <string mnemonic, bits<2> MajOp, bits<3> MinOp, bit SwapOps,
+                 bit isSat = 0, bit isRnd = 0, bit hasShift = 0 >
+  : T_S3op_1 <mnemonic, DoubleRegs, MajOp, MinOp, SwapOps,
+              isSat, isRnd, hasShift>;
+
+let isCodeGenOnly = 0 in
+def S2_lfsp : T_S3op_64 < "lfs", 0b10, 0b110, 0>;
+
+//===----------------------------------------------------------------------===//
+// Template class used by vector shift, vector rotate, vector neg,
+// 32-bit shift, 64-bit shifts, etc.
+//===----------------------------------------------------------------------===//
+
+let hasSideEffects = 0 in
+class T_S3op_3 <string mnemonic, RegisterClass RC, bits<2> MajOp,
+                 bits<2> MinOp, bit isSat = 0, list<dag> pattern = [] >
+  : SInst <(outs RC:$dst),
+           (ins RC:$src1, IntRegs:$src2),
+  "$dst = "#mnemonic#"($src1, $src2)"#!if(isSat, ":sat", ""),
+  pattern, "", S_3op_tc_1_SLOT23> {
+    bits<5> dst;
+    bits<5> src1;
+    bits<5> src2;
+
+    let IClass = 0b1100;
+
+    let Inst{27-24} = !if(!eq(!cast<string>(RC), "IntRegs"), 0b0110, 0b0011);
+    let Inst{23-22} = MajOp;
+    let Inst{20-16} = src1;
+    let Inst{12-8} = src2;
+    let Inst{7-6} = MinOp;
+    let Inst{4-0} = dst;
+  }
+
+let hasNewValue = 1 in
+class T_S3op_shift32 <string mnemonic, SDNode OpNode, bits<2> MinOp>
+  : T_S3op_3 <mnemonic, IntRegs, 0b01, MinOp, 0,
+    [(set (i32 IntRegs:$dst), (OpNode (i32 IntRegs:$src1),
+                                      (i32 IntRegs:$src2)))]>;
+
+let hasNewValue = 1, Itinerary = S_3op_tc_2_SLOT23 in
+class T_S3op_shift32_Sat <string mnemonic, bits<2> MinOp>
+  : T_S3op_3 <mnemonic, IntRegs, 0b00, MinOp, 1, []>;
+
+
+class T_S3op_shift64 <string mnemonic, SDNode OpNode, bits<2> MinOp>
+  : T_S3op_3 <mnemonic, DoubleRegs, 0b10, MinOp, 0,
+    [(set (i64 DoubleRegs:$dst), (OpNode (i64 DoubleRegs:$src1),
+                                         (i32 IntRegs:$src2)))]>;
+
+
+class T_S3op_shiftVect <string mnemonic, bits<2> MajOp, bits<2> MinOp>
+  : T_S3op_3 <mnemonic, DoubleRegs, MajOp, MinOp, 0, []>;
+
+
+// Shift by register
+// Rdd=[asr|lsr|asl|lsl](Rss,Rt)
+
+let isCodeGenOnly = 0 in {
+def S2_asr_r_p : T_S3op_shift64 < "asr", sra, 0b00>;
+def S2_lsr_r_p : T_S3op_shift64 < "lsr", srl, 0b01>;
+def S2_asl_r_p : T_S3op_shift64 < "asl", shl, 0b10>;
+def S2_lsl_r_p : T_S3op_shift64 < "lsl", shl, 0b11>;
+}
+
+// Rd=[asr|lsr|asl|lsl](Rs,Rt)
+
+let isCodeGenOnly = 0 in {
+def S2_asr_r_r : T_S3op_shift32<"asr", sra, 0b00>;
+def S2_lsr_r_r : T_S3op_shift32<"lsr", srl, 0b01>;
+def S2_asl_r_r : T_S3op_shift32<"asl", shl, 0b10>;
+def S2_lsl_r_r : T_S3op_shift32<"lsl", shl, 0b11>;
+}
+
+// Shift by register with saturation
+// Rd=asr(Rs,Rt):sat
+// Rd=asl(Rs,Rt):sat
+
+let Defs = [USR_OVF], isCodeGenOnly = 0 in {
+  def S2_asr_r_r_sat : T_S3op_shift32_Sat<"asr", 0b00>;
+  def S2_asl_r_r_sat : T_S3op_shift32_Sat<"asl", 0b10>;
+}
+
+//===----------------------------------------------------------------------===//
+// Template class for 'insert bitfield' instructions
+//===----------------------------------------------------------------------===//
+let hasSideEffects = 0 in
+class T_S3op_insert <string mnemonic, RegisterClass RC>
+  : SInst <(outs RC:$dst),
+           (ins RC:$src1, RC:$src2, DoubleRegs:$src3),
+  "$dst = "#mnemonic#"($src2, $src3)" ,
+  [], "$src1 = $dst", S_3op_tc_1_SLOT23 > {
+    bits<5> dst;
+    bits<5> src2;
+    bits<5> src3;
+
+    let IClass = 0b1100;
+
+    let Inst{27-26} = 0b10;
+    let Inst{25-24} = !if(!eq(!cast<string>(RC), "IntRegs"), 0b00, 0b10);
+    let Inst{23}    = 0b0;
+    let Inst{20-16} = src2;
+    let Inst{12-8}  = src3;
+    let Inst{4-0}   = dst;
+  }
+
+let hasSideEffects = 0 in
+class T_S2op_insert <bits<4> RegTyBits, RegisterClass RC, Operand ImmOp>
+  : SInst <(outs RC:$dst), (ins RC:$dst2, RC:$src1, ImmOp:$src2, ImmOp:$src3),
+  "$dst = insert($src1, #$src2, #$src3)",
+  [], "$dst2 = $dst", S_2op_tc_2_SLOT23> {
+    bits<5> dst;
+    bits<5> src1;
+    bits<6> src2;
+    bits<6> src3;
+    bit bit23;
+    bit bit13;
+    string ImmOpStr = !cast<string>(ImmOp);
+
+    let bit23 = !if (!eq(ImmOpStr, "u6Imm"), src3{5}, 0);
+    let bit13 = !if (!eq(ImmOpStr, "u6Imm"), src2{5}, 0);
+
+    let IClass = 0b1000;
+
+    let Inst{27-24} = RegTyBits;
+    let Inst{23}    = bit23;
+    let Inst{22-21} = src3{4-3};
+    let Inst{20-16} = src1;
+    let Inst{13}    = bit13;
+    let Inst{12-8}  = src2{4-0};
+    let Inst{7-5}   = src3{2-0};
+    let Inst{4-0}   = dst;
+  }
+
+// Rx=insert(Rs,Rtt)
+// Rx=insert(Rs,#u5,#U5)
+let hasNewValue = 1, isCodeGenOnly = 0 in {
+  def S2_insert_rp : T_S3op_insert <"insert", IntRegs>;
+  def S2_insert    : T_S2op_insert <0b1111, IntRegs, u5Imm>;
+}
+
+// Rxx=insert(Rss,Rtt)
+// Rxx=insert(Rss,#u6,#U6)
+let isCodeGenOnly = 0 in {
+def S2_insertp_rp : T_S3op_insert<"insert", DoubleRegs>;
+def S2_insertp    : T_S2op_insert <0b0011, DoubleRegs, u6Imm>;
+}
+
+//===----------------------------------------------------------------------===//
+// Template class for 'extract bitfield' instructions
+//===----------------------------------------------------------------------===//
+let hasNewValue = 1, hasSideEffects = 0 in
+class T_S3op_extract <string mnemonic, bits<2> MinOp>
+  : SInst <(outs IntRegs:$Rd), (ins IntRegs:$Rs, DoubleRegs:$Rtt),
+  "$Rd = "#mnemonic#"($Rs, $Rtt)",
+  [], "", S_3op_tc_2_SLOT23 > {
+    bits<5> Rd;
+    bits<5> Rs;
+    bits<5> Rtt;
+
+    let IClass = 0b1100;
+
+    let Inst{27-22} = 0b100100;
+    let Inst{20-16} = Rs;
+    let Inst{12-8}  = Rtt;
+    let Inst{7-6}   = MinOp;
+    let Inst{4-0}   = Rd;
+  }
+
+let hasSideEffects = 0 in
+class T_S2op_extract <string mnemonic, bits<4> RegTyBits,
+                      RegisterClass RC, Operand ImmOp>
+  : SInst <(outs RC:$dst), (ins RC:$src1, ImmOp:$src2, ImmOp:$src3),
+  "$dst = "#mnemonic#"($src1, #$src2, #$src3)",
+  [], "", S_2op_tc_2_SLOT23> {
+    bits<5> dst;
+    bits<5> src1;
+    bits<6> src2;
+    bits<6> src3;
+    bit bit23;
+    bit bit13;
+    string ImmOpStr = !cast<string>(ImmOp);
+
+    let bit23 = !if (!eq(ImmOpStr, "u6Imm"), src3{5},
+                !if (!eq(mnemonic, "extractu"), 0, 1));
+
+    let bit13 = !if (!eq(ImmOpStr, "u6Imm"), src2{5}, 0);
+
+    let IClass = 0b1000;
+
+    let Inst{27-24} = RegTyBits;
+    let Inst{23}    = bit23;
+    let Inst{22-21} = src3{4-3};
+    let Inst{20-16} = src1;
+    let Inst{13}    = bit13;
+    let Inst{12-8}  = src2{4-0};
+    let Inst{7-5}   = src3{2-0};
+    let Inst{4-0}   = dst;
+  }
+
+// Extract bitfield
+
+// Rdd=extractu(Rss,Rtt)
+// Rdd=extractu(Rss,#u6,#U6)
+let isCodeGenOnly = 0 in {
+def S2_extractup_rp : T_S3op_64 < "extractu", 0b00, 0b000, 0>;
+def S2_extractup    : T_S2op_extract <"extractu", 0b0001, DoubleRegs, u6Imm>;
+}
+
+// Rd=extractu(Rs,Rtt)
+// Rd=extractu(Rs,#u5,#U5)
+let hasNewValue = 1, isCodeGenOnly = 0 in {
+  def S2_extractu_rp : T_S3op_extract<"extractu", 0b00>;
+  def S2_extractu    : T_S2op_extract <"extractu", 0b1101, IntRegs, u5Imm>;
+}
+
+//===----------------------------------------------------------------------===//
+// :raw for of tableindx[bdhw] insns
+//===----------------------------------------------------------------------===//
+
+let hasSideEffects = 0, hasNewValue = 1, opNewValue = 0 in
+class tableidxRaw<string OpStr, bits<2>MinOp>
+  : SInst <(outs IntRegs:$Rx),
+           (ins IntRegs:$_dst_, IntRegs:$Rs, u4Imm:$u4, s6Imm:$S6),
+           "$Rx = "#OpStr#"($Rs, #$u4, #$S6):raw",
+    [], "$Rx = $_dst_" > {
+    bits<5> Rx;
+    bits<5> Rs;
+    bits<4> u4;
+    bits<6> S6;
+
+    let IClass = 0b1000;
+
+    let Inst{27-24} = 0b0111;
+    let Inst{23-22} = MinOp;
+    let Inst{21}    = u4{3};
+    let Inst{20-16} = Rs;
+    let Inst{13-8}  = S6;
+    let Inst{7-5}   = u4{2-0};
+    let Inst{4-0}   = Rx;
+  }
+
+let isCodeGenOnly = 0 in {
+def S2_tableidxb : tableidxRaw<"tableidxb", 0b00>;
+def S2_tableidxh : tableidxRaw<"tableidxh", 0b01>;
+def S2_tableidxw : tableidxRaw<"tableidxw", 0b10>;
+def S2_tableidxd : tableidxRaw<"tableidxd", 0b11>;
+}
 
 // Change the sign of the immediate for Rd=-mpyi(Rs,#u8)
 def : Pat <(mul (i32 IntRegs:$src1), (ineg n8ImmPred:$src2)),
