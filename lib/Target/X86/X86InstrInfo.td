@@ -2711,28 +2711,28 @@ def : InstAlias<"fnstsw"     , (FNSTSW16r)>;
 // this is compatible with what GAS does.
 def : InstAlias<"lcall $seg, $off", (FARCALL32i i32imm:$off, i16imm:$seg), 0>, Requires<[Not16BitMode]>;
 def : InstAlias<"ljmp $seg, $off",  (FARJMP32i  i32imm:$off, i16imm:$seg), 0>, Requires<[Not16BitMode]>;
-def : InstAlias<"lcall *$dst",      (FARCALL32m opaque48mem:$dst), 0>, Requires<[Not16BitMode]>;
-def : InstAlias<"ljmp *$dst",       (FARJMP32m  opaque48mem:$dst), 0>, Requires<[Not16BitMode]>;
+def : InstAlias<"lcall {*}$dst",    (FARCALL32m opaque48mem:$dst), 0>, Requires<[Not16BitMode]>;
+def : InstAlias<"ljmp {*}$dst",     (FARJMP32m  opaque48mem:$dst), 0>, Requires<[Not16BitMode]>;
 def : InstAlias<"lcall $seg, $off", (FARCALL16i i16imm:$off, i16imm:$seg), 0>, Requires<[In16BitMode]>;
 def : InstAlias<"ljmp $seg, $off",  (FARJMP16i  i16imm:$off, i16imm:$seg), 0>, Requires<[In16BitMode]>;
-def : InstAlias<"lcall *$dst",      (FARCALL16m opaque32mem:$dst), 0>, Requires<[In16BitMode]>;
-def : InstAlias<"ljmp *$dst",       (FARJMP16m  opaque32mem:$dst), 0>, Requires<[In16BitMode]>;
+def : InstAlias<"lcall {*}$dst",    (FARCALL16m opaque32mem:$dst), 0>, Requires<[In16BitMode]>;
+def : InstAlias<"ljmp {*}$dst",     (FARJMP16m  opaque32mem:$dst), 0>, Requires<[In16BitMode]>;
 
-def : InstAlias<"call *$dst",       (CALL64m i64mem:$dst), 0>, Requires<[In64BitMode]>;
-def : InstAlias<"jmp *$dst",        (JMP64m  i64mem:$dst), 0>, Requires<[In64BitMode]>;
-def : InstAlias<"call *$dst",       (CALL32m i32mem:$dst), 0>, Requires<[In32BitMode]>;
-def : InstAlias<"jmp *$dst",        (JMP32m  i32mem:$dst), 0>, Requires<[In32BitMode]>;
-def : InstAlias<"call *$dst",       (CALL16m i16mem:$dst), 0>, Requires<[In16BitMode]>;
-def : InstAlias<"jmp *$dst",        (JMP16m  i16mem:$dst), 0>, Requires<[In16BitMode]>;
+def : InstAlias<"call {*}$dst",     (CALL64m i64mem:$dst), 0>, Requires<[In64BitMode]>;
+def : InstAlias<"jmp {*}$dst",      (JMP64m  i64mem:$dst), 0>, Requires<[In64BitMode]>;
+def : InstAlias<"call {*}$dst",     (CALL32m i32mem:$dst), 0>, Requires<[In32BitMode]>;
+def : InstAlias<"jmp {*}$dst",      (JMP32m  i32mem:$dst), 0>, Requires<[In32BitMode]>;
+def : InstAlias<"call {*}$dst",     (CALL16m i16mem:$dst), 0>, Requires<[In16BitMode]>;
+def : InstAlias<"jmp {*}$dst",      (JMP16m  i16mem:$dst), 0>, Requires<[In16BitMode]>;
 
 
 // "imul <imm>, B" is an alias for "imul <imm>, B, B".
-def : InstAlias<"imulw $imm, $r", (IMUL16rri  GR16:$r, GR16:$r, i16imm:$imm)>;
-def : InstAlias<"imulw $imm, $r", (IMUL16rri8 GR16:$r, GR16:$r, i16i8imm:$imm)>;
-def : InstAlias<"imull $imm, $r", (IMUL32rri  GR32:$r, GR32:$r, i32imm:$imm)>;
-def : InstAlias<"imull $imm, $r", (IMUL32rri8 GR32:$r, GR32:$r, i32i8imm:$imm)>;
-def : InstAlias<"imulq $imm, $r",(IMUL64rri32 GR64:$r, GR64:$r,i64i32imm:$imm)>;
-def : InstAlias<"imulq $imm, $r", (IMUL64rri8 GR64:$r, GR64:$r, i64i8imm:$imm)>;
+def : InstAlias<"imulw {$imm, $r|$r, $imm}", (IMUL16rri  GR16:$r, GR16:$r, i16imm:$imm), 0>;
+def : InstAlias<"imulw {$imm, $r|$r, $imm}", (IMUL16rri8 GR16:$r, GR16:$r, i16i8imm:$imm), 0>;
+def : InstAlias<"imull {$imm, $r|$r, $imm}", (IMUL32rri  GR32:$r, GR32:$r, i32imm:$imm), 0>;
+def : InstAlias<"imull {$imm, $r|$r, $imm}", (IMUL32rri8 GR32:$r, GR32:$r, i32i8imm:$imm), 0>;
+def : InstAlias<"imulq {$imm, $r|$r, $imm}", (IMUL64rri32 GR64:$r, GR64:$r, i64i32imm:$imm), 0>;
+def : InstAlias<"imulq {$imm, $r|$r, $imm}", (IMUL64rri8 GR64:$r, GR64:$r, i64i8imm:$imm), 0>;
 
 // inb %dx -> inb %al, %dx
 def : InstAlias<"inb\t{%dx|dx}", (IN8rr), 0>;
@@ -2756,34 +2756,34 @@ def : InstAlias<"jmpl $seg, $off",  (FARJMP32i  i32imm:$off, i16imm:$seg)>;
 // Force mov without a suffix with a segment and mem to prefer the 'l' form of
 // the move.  All segment/mem forms are equivalent, this has the shortest
 // encoding.
-def : InstAlias<"mov $mem, $seg", (MOV32sm SEGMENT_REG:$seg, i32mem:$mem), 0>;
-def : InstAlias<"mov $seg, $mem", (MOV32ms i32mem:$mem, SEGMENT_REG:$seg), 0>;
+def : InstAlias<"mov {$mem, $seg|$seg, $mem}", (MOV32sm SEGMENT_REG:$seg, i32mem:$mem), 0>;
+def : InstAlias<"mov {$seg, $mem|$mem, $seg}", (MOV32ms i32mem:$mem, SEGMENT_REG:$seg), 0>;
 
 // Match 'movq <largeimm>, <reg>' as an alias for movabsq.
-def : InstAlias<"movq $imm, $reg", (MOV64ri GR64:$reg, i64imm:$imm), 0>;
+def : InstAlias<"movq {$imm, $reg|$reg, $imm}", (MOV64ri GR64:$reg, i64imm:$imm), 0>;
 
 // Match 'movq GR64, MMX' as an alias for movd.
-def : InstAlias<"movq $src, $dst",
+def : InstAlias<"movq {$src, $dst|$dst, $src}",
                 (MMX_MOVD64to64rr VR64:$dst, GR64:$src), 0>;
-def : InstAlias<"movq $src, $dst",
+def : InstAlias<"movq {$src, $dst|$dst, $src}",
                 (MMX_MOVD64from64rr GR64:$dst, VR64:$src), 0>;
 
 // movsx aliases
-def : InstAlias<"movsx $src, $dst", (MOVSX16rr8 GR16:$dst, GR8:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX16rm8 GR16:$dst, i8mem:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX32rr8 GR32:$dst, GR8:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX32rr16 GR32:$dst, GR16:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX64rr8 GR64:$dst, GR8:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX64rr16 GR64:$dst, GR16:$src), 0>;
-def : InstAlias<"movsx $src, $dst", (MOVSX64rr32 GR64:$dst, GR32:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX16rr8 GR16:$dst, GR8:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX16rm8 GR16:$dst, i8mem:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX32rr8 GR32:$dst, GR8:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX32rr16 GR32:$dst, GR16:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX64rr8 GR64:$dst, GR8:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX64rr16 GR64:$dst, GR16:$src), 0>;
+def : InstAlias<"movsx {$src, $dst|$dst, $src}", (MOVSX64rr32 GR64:$dst, GR32:$src), 0>;
 
 // movzx aliases
-def : InstAlias<"movzx $src, $dst", (MOVZX16rr8 GR16:$dst, GR8:$src), 0>;
-def : InstAlias<"movzx $src, $dst", (MOVZX16rm8 GR16:$dst, i8mem:$src), 0>;
-def : InstAlias<"movzx $src, $dst", (MOVZX32rr8 GR32:$dst, GR8:$src), 0>;
-def : InstAlias<"movzx $src, $dst", (MOVZX32rr16 GR32:$dst, GR16:$src), 0>;
-def : InstAlias<"movzx $src, $dst", (MOVZX64rr8_Q GR64:$dst, GR8:$src), 0>;
-def : InstAlias<"movzx $src, $dst", (MOVZX64rr16_Q GR64:$dst, GR16:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX16rr8 GR16:$dst, GR8:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX16rm8 GR16:$dst, i8mem:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX32rr8 GR32:$dst, GR8:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX32rr16 GR32:$dst, GR16:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX64rr8_Q GR64:$dst, GR8:$src), 0>;
+def : InstAlias<"movzx {$src, $dst|$dst, $src}", (MOVZX64rr16_Q GR64:$dst, GR16:$src), 0>;
 // Note: No GR32->GR64 movzx form.
 
 // outb %dx -> outb %al, %dx
