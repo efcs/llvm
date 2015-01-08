@@ -633,6 +633,10 @@ namespace llvm {
     /// This method returns the name of a target specific DAG node.
     const char *getTargetNodeName(unsigned Opcode) const override;
 
+    bool isCheapToSpeculateCttz() const override;
+
+    bool isCheapToSpeculateCtlz() const override;
+
     /// Return the value type to use for ISD::SETCC.
     EVT getSetCCResultType(LLVMContext &Context, EVT VT) const override;
 
@@ -765,6 +769,11 @@ namespace llvm {
       // shrink long double fp constant since fldt is very slow.
       return !X86ScalarSSEf64 || VT == MVT::f80;
     }
+
+    /// Return true if we believe it is correct and profitable to reduce the
+    /// load node to a smaller type.
+    bool shouldReduceLoadWidth(SDNode *Load, ISD::LoadExtType ExtTy,
+                               EVT NewVT) const override;
 
     const X86Subtarget* getSubtarget() const {
       return Subtarget;

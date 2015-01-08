@@ -236,6 +236,9 @@ MachOObjectFile::MachOObjectFile(MemoryBufferRef Object, bool IsLittleEndian,
       DataInCodeLoadCmd(nullptr), DyldInfoLoadCmd(nullptr),
       UuidLoadCmd(nullptr), HasPageZeroSegment(false) {
   uint32_t LoadCommandCount = this->getHeader().ncmds;
+  if (LoadCommandCount == 0)
+    return;
+
   MachO::LoadCommandType SegmentLoadType = is64Bit() ?
     MachO::LC_SEGMENT_64 : MachO::LC_SEGMENT;
 
@@ -2340,6 +2343,11 @@ MachOObjectFile::getRoutinesCommand(const LoadCommandInfo &L) const {
 MachO::routines_command_64
 MachOObjectFile::getRoutinesCommand64(const LoadCommandInfo &L) const {
   return getStruct<MachO::routines_command_64>(this, L.Ptr);
+}
+
+MachO::thread_command
+MachOObjectFile::getThreadCommand(const LoadCommandInfo &L) const {
+  return getStruct<MachO::thread_command>(this, L.Ptr);
 }
 
 MachO::any_relocation_info
