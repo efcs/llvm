@@ -773,7 +773,9 @@ static void WriteMDNode(const MDNode *N,
     assert(!isa<LocalAsMetadata>(MD) && "Unexpected function-local metadata");
     Record.push_back(VE.getMetadataID(MD) + 1);
   }
-  Stream.EmitRecord(bitc::METADATA_NODE, Record);
+  Stream.EmitRecord(N->isDistinct() ? bitc::METADATA_DISTINCT_NODE
+                                    : bitc::METADATA_NODE,
+                    Record);
   Record.clear();
 }
 
@@ -1716,7 +1718,7 @@ static void WriteFunction(const Function &F, ValueEnumerator &VE,
         Vals.push_back(DL.getCol());
         Vals.push_back(Scope ? VE.getMetadataID(Scope) + 1 : 0);
         Vals.push_back(IA ? VE.getMetadataID(IA) + 1 : 0);
-        Stream.EmitRecord(bitc::FUNC_CODE_DEBUG_LOC, Vals);
+        Stream.EmitRecord(bitc::FUNC_CODE_DEBUG_LOC_OLD, Vals);
         Vals.clear();
 
         LastDL = DL;

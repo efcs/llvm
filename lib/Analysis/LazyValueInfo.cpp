@@ -888,7 +888,7 @@ static bool getEdgeValueLocal(Value *Val, BasicBlock *BBFrom,
   // know that v != 0.
   if (BranchInst *BI = dyn_cast<BranchInst>(BBFrom->getTerminator())) {
     // If this is a conditional branch and only one successor goes to BBTo, then
-    // we maybe able to infer something from the condition. 
+    // we may be able to infer something from the condition.
     if (BI->isConditional() &&
         BI->getSuccessor(0) != BI->getSuccessor(1)) {
       bool isTrueDest = BI->getSuccessor(0) == BBTo;
@@ -905,9 +905,9 @@ static bool getEdgeValueLocal(Value *Val, BasicBlock *BBFrom,
       
       // If the condition of the branch is an equality comparison, we may be
       // able to infer the value.
-      ICmpInst *ICI = dyn_cast<ICmpInst>(BI->getCondition());
-      if (getValueFromFromCondition(Val, ICI, Result, isTrueDest))
-        return true;
+      if (ICmpInst *ICI = dyn_cast<ICmpInst>(BI->getCondition()))
+        if (getValueFromFromCondition(Val, ICI, Result, isTrueDest))
+          return true;
     }
   }
 
@@ -937,8 +937,8 @@ static bool getEdgeValueLocal(Value *Val, BasicBlock *BBFrom,
   return false;
 }
 
-/// \brief Compute the value of Val on the edge BBFrom -> BBTo, or the value at
-/// the basic block if the edge does not constraint Val.
+/// \brief Compute the value of Val on the edge BBFrom -> BBTo or the value at
+/// the basic block if the edge does not constrain Val.
 bool LazyValueInfoCache::getEdgeValue(Value *Val, BasicBlock *BBFrom,
                                       BasicBlock *BBTo, LVILatticeVal &Result,
                                       Instruction *CxtI) {
