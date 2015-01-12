@@ -566,6 +566,7 @@ static void getCopyToPartsVector(SelectionDAG &DAG, SDLoc DL,
   } else if (NumParts > 0) {
     // If the intermediate type was expanded, split each the value into
     // legal parts.
+    assert(NumIntermediates != 0 && "division by zero");
     assert(NumParts % NumIntermediates == 0 &&
            "Must expand into a divisible number of parts!");
     unsigned Factor = NumParts / NumIntermediates;
@@ -1237,24 +1238,29 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
     unsigned NumValues = ValueVTs.size();
     if (NumValues) {
       SDValue RetOp = getValue(I.getOperand(0));
-      for (unsigned j = 0, f = NumValues; j != f; ++j) {
+
+      const Function *F = I.getParent()->getParent();
+
+      ISD::NodeType ExtendKind = ISD::ANY_EXTEND;
+      if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
+                                          Attribute::SExt))
+        ExtendKind = ISD::SIGN_EXTEND;
+      else if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
+                                               Attribute::ZExt))
+        ExtendKind = ISD::ZERO_EXTEND;
+
+      LLVMContext &Context = F->getContext();
+      bool RetInReg = F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
+                                                      Attribute::InReg);
+
+      for (unsigned j = 0; j != NumValues; ++j) {
         EVT VT = ValueVTs[j];
 
-        ISD::NodeType ExtendKind = ISD::ANY_EXTEND;
-
-        const Function *F = I.getParent()->getParent();
-        if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
-                                            Attribute::SExt))
-          ExtendKind = ISD::SIGN_EXTEND;
-        else if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
-                                                 Attribute::ZExt))
-          ExtendKind = ISD::ZERO_EXTEND;
-
         if (ExtendKind != ISD::ANY_EXTEND && VT.isInteger())
-          VT = TLI.getTypeForExtArgOrReturn(*DAG.getContext(), VT, ExtendKind);
+          VT = TLI.getTypeForExtArgOrReturn(Context, VT, ExtendKind);
 
-        unsigned NumParts = TLI.getNumRegisters(*DAG.getContext(), VT);
-        MVT PartVT = TLI.getRegisterType(*DAG.getContext(), VT);
+        unsigned NumParts = TLI.getNumRegisters(Context, VT);
+        MVT PartVT = TLI.getRegisterType(Context, VT);
         SmallVector<SDValue, 4> Parts(NumParts);
         getCopyToParts(DAG, getCurSDLoc(),
                        SDValue(RetOp.getNode(), RetOp.getResNo() + j),
@@ -1262,8 +1268,7 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
 
         // 'inreg' on function refers to return value
         ISD::ArgFlagsTy Flags = ISD::ArgFlagsTy();
-        if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
-                                            Attribute::InReg))
+        if (RetInReg)
           Flags.setInReg();
 
         // Propagate extension type if any
@@ -1408,7 +1413,7 @@ SelectionDAGBuilder::EmitBranchForMergedCondition(const Value *Cond,
         if (TM.Options.NoNaNsFPMath)
           Condition = getFCmpCodeWithoutNaN(Condition);
       } else {
-        Condition = ISD::SETEQ; // silence warning.
+        (void)Condition; // silence warning.
         llvm_unreachable("Unknown compare instruction");
       }
 
@@ -2711,8 +2716,8 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
       !Cases.empty()) {
     // Replace an unreachable default destination with the most popular case
     // destination.
-    DenseMap<const BasicBlock *, uint64_t> Popularity;
-    uint64_t MaxPop = 0;
+    DenseMap<const BasicBlock *, unsigned> Popularity;
+    unsigned MaxPop = 0;
     const BasicBlock *MaxBB = nullptr;
     for (auto I : SI.cases()) {
       const BasicBlock *BB = I.getCaseSuccessor();
@@ -3643,9 +3648,10 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
 void SelectionDAGBuilder::visitMaskedStore(const CallInst &I) {
   SDLoc sdl = getCurSDLoc();
 
-  Value  *PtrOperand = I.getArgOperand(0);
+  // llvm.masked.store.*(Src0, Ptr, alignemt, Mask)
+  Value  *PtrOperand = I.getArgOperand(1);
   SDValue Ptr = getValue(PtrOperand);
-  SDValue Src0 = getValue(I.getArgOperand(1));
+  SDValue Src0 = getValue(I.getArgOperand(0));
   SDValue Mask = getValue(I.getArgOperand(3));
   EVT VT = Src0.getValueType();
   unsigned Alignment = (cast<ConstantInt>(I.getArgOperand(2)))->getZExtValue();
@@ -3668,14 +3674,15 @@ void SelectionDAGBuilder::visitMaskedStore(const CallInst &I) {
 void SelectionDAGBuilder::visitMaskedLoad(const CallInst &I) {
   SDLoc sdl = getCurSDLoc();
 
+  // @llvm.masked.load.*(Ptr, alignment, Mask, Src0)
   Value  *PtrOperand = I.getArgOperand(0);
   SDValue Ptr = getValue(PtrOperand);
-  SDValue Src0 = getValue(I.getArgOperand(1));
-  SDValue Mask = getValue(I.getArgOperand(3));
+  SDValue Src0 = getValue(I.getArgOperand(3));
+  SDValue Mask = getValue(I.getArgOperand(2));
 
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   EVT VT = TLI.getValueType(I.getType());
-  unsigned Alignment = (cast<ConstantInt>(I.getArgOperand(2)))->getZExtValue();
+  unsigned Alignment = (cast<ConstantInt>(I.getArgOperand(1)))->getZExtValue();
   if (!Alignment)
     Alignment = DAG.getEVTAlignment(VT);
 
@@ -4714,7 +4721,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     return nullptr;
   case Intrinsic::read_register: {
     Value *Reg = I.getArgOperand(0);
-    SDValue RegName = DAG.getMDNode(cast<MDNode>(Reg));
+    SDValue RegName =
+        DAG.getMDNode(cast<MDNode>(cast<MetadataAsValue>(Reg)->getMetadata()));
     EVT VT = TLI.getValueType(I.getType());
     setValue(&I, DAG.getNode(ISD::READ_REGISTER, sdl, VT, RegName));
     return nullptr;
@@ -4723,7 +4731,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     Value *Reg = I.getArgOperand(0);
     Value *RegValue = I.getArgOperand(1);
     SDValue Chain = getValue(RegValue).getOperand(0);
-    SDValue RegName = DAG.getMDNode(cast<MDNode>(Reg));
+    SDValue RegName =
+        DAG.getMDNode(cast<MDNode>(cast<MetadataAsValue>(Reg)->getMetadata()));
     DAG.setRoot(DAG.getNode(ISD::WRITE_REGISTER, sdl, MVT::Other, Chain,
                             RegName, getValue(RegValue)));
     return nullptr;

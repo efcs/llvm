@@ -220,6 +220,28 @@ getBranchTargetOpValue(const MCInst &MI, unsigned OpNo,
   return 0;
 }
 
+/// getBranchTarget7OpValueMM - Return binary encoding of the microMIPS branch
+/// target operand. If the machine operand requires relocation,
+/// record the relocation and return zero.
+unsigned MipsMCCodeEmitter::
+getBranchTarget7OpValueMM(const MCInst &MI, unsigned OpNo,
+                          SmallVectorImpl<MCFixup> &Fixups,
+                          const MCSubtargetInfo &STI) const {
+
+  const MCOperand &MO = MI.getOperand(OpNo);
+
+  // If the destination is an immediate, divide by 2.
+  if (MO.isImm()) return MO.getImm() >> 1;
+
+  assert(MO.isExpr() &&
+         "getBranchTargetOpValueMM expects only expressions or immediates");
+
+  const MCExpr *Expr = MO.getExpr();
+  Fixups.push_back(MCFixup::Create(0, Expr,
+                                   MCFixupKind(Mips::fixup_MICROMIPS_PC7_S1)));
+  return 0;
+}
+
 /// getBranchTargetOpValue - Return binary encoding of the microMIPS branch
 /// target operand. If the machine operand requires relocation,
 /// record the relocation and return zero.
@@ -678,6 +700,20 @@ getMemEncodingMMImm4Lsl2(const MCInst &MI, unsigned OpNo,
 }
 
 unsigned MipsMCCodeEmitter::
+getMemEncodingMMSPImm5Lsl2(const MCInst &MI, unsigned OpNo,
+                           SmallVectorImpl<MCFixup> &Fixups,
+                           const MCSubtargetInfo &STI) const {
+  // Register is encoded in bits 9-5, offset is encoded in bits 4-0.
+  assert(MI.getOperand(OpNo).isReg() &&
+         MI.getOperand(OpNo).getReg() == Mips::SP &&
+         "Unexpected base register!");
+  unsigned OffBits = getMachineOpValue(MI, MI.getOperand(OpNo+1),
+                                       Fixups, STI) >> 2;
+
+  return OffBits & 0x1F;
+}
+
+unsigned MipsMCCodeEmitter::
 getMemEncodingMMImm12(const MCInst &MI, unsigned OpNo,
                       SmallVectorImpl<MCFixup> &Fixups,
                       const MCSubtargetInfo &STI) const {
@@ -860,6 +896,13 @@ MipsMCCodeEmitter::getRegisterListOpValue16(const MCInst &MI, unsigned OpNo,
                                             SmallVectorImpl<MCFixup> &Fixups,
                                             const MCSubtargetInfo &STI) const {
   return (MI.getNumOperands() - 4);
+}
+
+unsigned
+MipsMCCodeEmitter::getRegisterPairOpValue(const MCInst &MI, unsigned OpNo,
+                                          SmallVectorImpl<MCFixup> &Fixups,
+                                          const MCSubtargetInfo &STI) const {
+  return getMachineOpValue(MI, MI.getOperand(OpNo), Fixups, STI);
 }
 
 #include "MipsGenMCCodeEmitter.inc"

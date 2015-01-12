@@ -14,6 +14,25 @@ define <4 x float> @merge_2_floats(float* nocapture %p) nounwind readonly {
 ; ALL-NEXT: retq
 }
 
+; Test-case generated due to a crash when trying to treat loading the first
+; two i64s of a <4 x i64> as a load of two i32s.
+define <4 x i64> @merge_2_floats_into_4() {
+  %1 = load i64** undef, align 8
+  %2 = getelementptr inbounds i64* %1, i64 0
+  %3 = load i64* %2
+  %4 = insertelement <4 x i64> undef, i64 %3, i32 0
+  %5 = load i64** undef, align 8
+  %6 = getelementptr inbounds i64* %5, i64 1
+  %7 = load i64* %6
+  %8 = insertelement <4 x i64> %4, i64 %7, i32 1
+  %9 = shufflevector <4 x i64> %8, <4 x i64> undef, <4 x i32> <i32 0, i32 1, i32 4, i32 5>
+  ret <4 x i64> %9
+  
+; ALL-LABEL: merge_2_floats_into_4
+; ALL: vmovups
+; ALL-NEXT: retq
+}
+
 define <4 x float> @merge_4_floats(float* %ptr) {
   %a = load float* %ptr, align 8
   %vec = insertelement <4 x float> undef, float %a, i32 0
@@ -70,7 +89,7 @@ define <8 x float> @merge_8_floats(float* %ptr) {
 ; FAST32-NEXT: retq
 
 ; SLOW32: vmovups
-; SLOW32: vinsertf128
+; SLOW32-NEXT: vinsertf128
 ; SLOW32-NEXT: retq
 }
 
@@ -93,7 +112,34 @@ define <4 x double> @merge_4_doubles(double* %ptr) {
 ; FAST32-NEXT: retq
 
 ; SLOW32: vmovups
-; SLOW32: vinsertf128
+; SLOW32-NEXT: vinsertf128
+; SLOW32-NEXT: retq
+}
+
+; PR21771 ( http://llvm.org/bugs/show_bug.cgi?id=21771 ) 
+; Recognize and combine consecutive loads even when the
+; first of the combined loads is offset from the base address.
+define <4 x double> @merge_4_doubles_offset(double* %ptr) {
+  %arrayidx4 = getelementptr inbounds double* %ptr, i64 4
+  %arrayidx5 = getelementptr inbounds double* %ptr, i64 5
+  %arrayidx6 = getelementptr inbounds double* %ptr, i64 6
+  %arrayidx7 = getelementptr inbounds double* %ptr, i64 7
+  %e = load double* %arrayidx4, align 8
+  %f = load double* %arrayidx5, align 8
+  %g = load double* %arrayidx6, align 8
+  %h = load double* %arrayidx7, align 8
+  %vecinit4 = insertelement <4 x double> undef, double %e, i32 0
+  %vecinit5 = insertelement <4 x double> %vecinit4, double %f, i32 1
+  %vecinit6 = insertelement <4 x double> %vecinit5, double %g, i32 2
+  %vecinit7 = insertelement <4 x double> %vecinit6, double %h, i32 3
+  ret <4 x double> %vecinit7
+
+; ALL-LABEL: merge_4_doubles_offset
+; FAST32: vmovups
+; FAST32-NEXT: retq
+
+; SLOW32: vmovups
+; SLOW32-NEXT: vinsertf128
 ; SLOW32-NEXT: retq
 }
 

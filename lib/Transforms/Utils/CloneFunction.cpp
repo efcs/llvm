@@ -164,8 +164,8 @@ static MDNode* FindSubprogram(const Function *F, DebugInfoFinder &Finder) {
 
 // Add an operand to an existing MDNode. The new operand will be added at the
 // back of the operand list.
-static void AddOperand(DICompileUnit CU, DIArray SPs, Value *NewSP) {
-  SmallVector<Value *, 16> NewSPs;
+static void AddOperand(DICompileUnit CU, DIArray SPs, Metadata *NewSP) {
+  SmallVector<Metadata *, 16> NewSPs;
   NewSPs.reserve(SPs->getNumOperands() + 1);
   for (unsigned I = 0, E = SPs->getNumOperands(); I != E; ++I)
     NewSPs.push_back(SPs->getOperand(I));
@@ -186,7 +186,7 @@ static void CloneDebugInfoMetadata(Function *NewFunc, const Function *OldFunc,
   // Ensure that OldFunc appears in the map.
   // (if it's already there it must point to NewFunc anyway)
   VMap[OldFunc] = NewFunc;
-  DISubprogram NewSubprogram(MapValue(OldSubprogramMDNode, VMap));
+  DISubprogram NewSubprogram(MapMetadata(OldSubprogramMDNode, VMap));
 
   for (DICompileUnit CU : Finder.compile_units()) {
     DIArray Subprograms(CU.getSubprograms());

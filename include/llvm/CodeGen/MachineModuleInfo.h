@@ -161,14 +161,24 @@ class MachineModuleInfo : public ImmutablePass {
   /// to _fltused on Windows targets.
   bool UsesVAFloatArgument;
 
+  /// UsesMorestackAddr - True if the module calls the __morestack function
+  /// indirectly, as is required under the large code model on x86. This is used
+  /// to emit a definition of a symbol, __morestack_addr, containing the
+  /// address. See comments in lib/Target/X86/X86FrameLowering.cpp for more
+  /// details.
+  bool UsesMorestackAddr;
+
 public:
   static char ID; // Pass identification, replacement for typeid
 
   struct VariableDbgInfo {
-    TrackingVH<MDNode> Var;
-    TrackingVH<MDNode> Expr;
+    TrackingMDNodeRef Var;
+    TrackingMDNodeRef Expr;
     unsigned Slot;
     DebugLoc Loc;
+
+    VariableDbgInfo(MDNode *Var, MDNode *Expr, unsigned Slot, DebugLoc Loc)
+        : Var(Var), Expr(Expr), Slot(Slot), Loc(Loc) {}
   };
   typedef SmallVector<VariableDbgInfo, 4> VariableDbgInfoMapTy;
   VariableDbgInfoMapTy VariableDbgInfos;
@@ -229,6 +239,14 @@ public:
 
   void setUsesVAFloatArgument(bool b) {
     UsesVAFloatArgument = b;
+  }
+
+  bool usesMorestackAddr() const {
+    return UsesMorestackAddr;
+  }
+
+  void setUsesMorestackAddr(bool b) {
+    UsesMorestackAddr = b;
   }
 
   /// \brief Returns a reference to a list of cfi instructions in the current
@@ -393,8 +411,7 @@ public:
   /// information of a variable.
   void setVariableDbgInfo(MDNode *Var, MDNode *Expr, unsigned Slot,
                           DebugLoc Loc) {
-    VariableDbgInfo Info = {Var, Expr, Slot, Loc};
-    VariableDbgInfos.push_back(std::move(Info));
+    VariableDbgInfos.emplace_back(Var, Expr, Slot, Loc);
   }
 
   VariableDbgInfoMapTy &getVariableDbgInfo() { return VariableDbgInfos; }
