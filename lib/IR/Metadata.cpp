@@ -427,13 +427,6 @@ UniquableMDNode::UniquableMDNode(LLVMContext &C, unsigned ID,
   SubclassData32 = NumUnresolved;
 }
 
-UniquableMDNode::~UniquableMDNode() {
-  if (isStoredDistinctInContext())
-    getContext().pImpl->DistinctMDNodes.erase(this);
-
-  dropAllReferences();
-}
-
 void UniquableMDNode::resolve() {
   assert(!isResolved() && "Expected this to be unresolved");
 
@@ -479,11 +472,6 @@ void UniquableMDNode::resolveCycles() {
       if (!N->isResolved())
         N->resolveCycles();
   }
-}
-
-MDTuple::~MDTuple() {
-  if (!isStoredDistinctInContext())
-    getContext().pImpl->MDTuples.erase(this);
 }
 
 void MDTuple::recalculateHash() {
@@ -537,8 +525,8 @@ void UniquableMDNode::handleChangedOperand(void *Ref, Metadata *New) {
     return;
   }
 
-  auto &Store = getContext().pImpl->MDTuples;
-  Store.erase(cast<MDTuple>(this));
+  // This node is uniqued.
+  eraseFromStore();
 
   Metadata *Old = getOperand(Op);
   setOperand(Op, New);
@@ -552,15 +540,10 @@ void UniquableMDNode::handleChangedOperand(void *Ref, Metadata *New) {
   }
 
   // Re-unique the node.
-  cast<MDTuple>(this)->recalculateHash();
-  MDTupleInfo::KeyTy Key(cast<MDTuple>(this));
-  auto I = Store.find_as(Key);
-  if (I == Store.end()) {
-    Store.insert(cast<MDTuple>(this));
-
+  auto *Uniqued = uniquify();
+  if (Uniqued == this) {
     if (!isResolved())
       resolveAfterOperandChange(Old, New);
-
     return;
   }
 
@@ -572,13 +555,48 @@ void UniquableMDNode::handleChangedOperand(void *Ref, Metadata *New) {
     // dropAllReferences(), but we still need the use-list).
     for (unsigned O = 0, E = getNumOperands(); O != E; ++O)
       setOperand(O, nullptr);
-    ReplaceableUses->replaceAllUsesWith(*I);
-    delete cast<MDTuple>(this);
+    ReplaceableUses->replaceAllUsesWith(Uniqued);
+    deleteAsSubclass();
     return;
   }
 
   // Store in non-uniqued form if RAUW isn't possible.
   storeDistinctInContext();
+}
+
+void UniquableMDNode::deleteAsSubclass() {
+  switch (getMetadataID()) {
+  default:
+    llvm_unreachable("Invalid subclass of UniquableMDNode");
+#define HANDLE_UNIQUABLE_LEAF(CLASS)                                           \
+  case CLASS##Kind:                                                            \
+    delete cast<CLASS>(this);                                                  \
+    break;
+#include "llvm/IR/Metadata.def"
+  }
+}
+
+UniquableMDNode *UniquableMDNode::uniquify() {
+  switch (getMetadataID()) {
+  default:
+    llvm_unreachable("Invalid subclass of UniquableMDNode");
+#define HANDLE_UNIQUABLE_LEAF(CLASS)                                           \
+  case CLASS##Kind:                                                            \
+    return cast<CLASS>(this)->uniquifyImpl();
+#include "llvm/IR/Metadata.def"
+  }
+}
+
+void UniquableMDNode::eraseFromStore() {
+  switch (getMetadataID()) {
+  default:
+    llvm_unreachable("Invalid subclass of UniquableMDNode");
+#define HANDLE_UNIQUABLE_LEAF(CLASS)                                           \
+  case CLASS##Kind:                                                            \
+    cast<CLASS>(this)->eraseFromStoreImpl();                                   \
+    break;
+#include "llvm/IR/Metadata.def"
+  }
 }
 
 MDTuple *MDTuple::getImpl(LLVMContext &Context, ArrayRef<Metadata *> MDs,
@@ -604,6 +622,21 @@ MDTuple *MDTuple::getDistinct(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
   N->storeDistinctInContext();
   return N;
 }
+
+MDTuple *MDTuple::uniquifyImpl() {
+  recalculateHash();
+  MDTupleInfo::KeyTy Key(this);
+
+  auto &Store = getContext().pImpl->MDTuples;
+  auto I = Store.find_as(Key);
+  if (I == Store.end()) {
+    Store.insert(this);
+    return this;
+  }
+  return *I;
+}
+
+void MDTuple::eraseFromStoreImpl() { getContext().pImpl->MDTuples.erase(this); }
 
 MDNodeFwdDecl *MDNode::getTemporary(LLVMContext &Context,
                                     ArrayRef<Metadata *> MDs) {

@@ -722,7 +722,7 @@ protected:
   /// resolveCycles() is called).
   UniquableMDNode(LLVMContext &C, unsigned ID, ArrayRef<Metadata *> Vals,
                   bool AllowRAUW);
-  ~UniquableMDNode();
+  ~UniquableMDNode() {}
 
   void storeDistinctInContext();
 
@@ -755,6 +755,10 @@ private:
   void resolve();
   void resolveAfterOperandChange(Metadata *Old, Metadata *New);
   void decrementUnresolvedOperandCount();
+
+  void deleteAsSubclass();
+  UniquableMDNode *uniquify();
+  void eraseFromStore();
 };
 
 /// \brief Tuple of metadata.
@@ -767,7 +771,7 @@ class MDTuple : public UniquableMDNode {
 
   MDTuple(LLVMContext &C, ArrayRef<Metadata *> Vals, bool AllowRAUW)
       : UniquableMDNode(C, MDTupleKind, Vals, AllowRAUW) {}
-  ~MDTuple();
+  ~MDTuple() { dropAllReferences(); }
 
   void setHash(unsigned Hash) { MDNodeSubclassData = Hash; }
   void recalculateHash();
@@ -794,6 +798,10 @@ public:
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTupleKind;
   }
+
+private:
+  MDTuple *uniquifyImpl();
+  void eraseFromStoreImpl();
 };
 
 MDNode *MDNode::get(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
