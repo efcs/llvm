@@ -15,13 +15,13 @@
 
 #include "ByteStreamer.h"
 #include "DwarfCompileUnit.h"
-#include "DIE.h"
 #include "DIEHash.h"
 #include "DwarfUnit.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/CodeGen/DIE.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/Constants.h"
@@ -450,8 +450,8 @@ void DwarfDebug::beginModule() {
 
   SingleCU = CU_Nodes->getNumOperands() == 1;
 
-  for (Value *N : CU_Nodes->operands()) {
-    DICompileUnit CUNode(cast<MDNode>(N));
+  for (MDNode *N : CU_Nodes->operands()) {
+    DICompileUnit CUNode(N);
     DwarfCompileUnit &CU = constructDwarfCompileUnit(CUNode);
     DIArray ImportedEntities = CUNode.getImportedEntities();
     for (unsigned i = 0, e = ImportedEntities.getNumElements(); i != e; ++i)
@@ -526,8 +526,8 @@ void DwarfDebug::collectDeadVariables() {
   const Module *M = MMI->getModule();
 
   if (NamedMDNode *CU_Nodes = M->getNamedMetadata("llvm.dbg.cu")) {
-    for (Value *N : CU_Nodes->operands()) {
-      DICompileUnit TheCU(cast<MDNode>(N));
+    for (MDNode *N : CU_Nodes->operands()) {
+      DICompileUnit TheCU(N);
       // Construct subprogram DIE and add variables DIEs.
       DwarfCompileUnit *SPCU =
           static_cast<DwarfCompileUnit *>(CUMap.lookup(TheCU));
@@ -990,7 +990,7 @@ DwarfDebug::collectVariableInfo(DwarfCompileUnit &TheCU, DISubprogram SP,
   for (unsigned i = 0, e = Variables.getNumElements(); i != e; ++i) {
     DIVariable DV(Variables.getElement(i));
     assert(DV.isVariable());
-    if (!Processed.insert(DV))
+    if (!Processed.insert(DV).second)
       continue;
     if (LexicalScope *Scope = LScopes.findLexicalScope(DV.getContext())) {
       ensureAbstractVariableIsCreatedIfScoped(DV, Scope->getScopeNode());
@@ -1026,8 +1026,10 @@ void DwarfDebug::beginInstruction(const MachineInstr *MI) {
       if (DL == PrologEndLoc) {
         Flags |= DWARF2_FLAG_PROLOGUE_END;
         PrologEndLoc = DebugLoc();
+        Flags |= DWARF2_FLAG_IS_STMT;
       }
-      if (PrologEndLoc.isUnknown())
+      if (DL.getLine() !=
+          Asm->OutStreamer.getContext().getCurrentDwarfLoc().getLine())
         Flags |= DWARF2_FLAG_IS_STMT;
 
       if (!DL.isUnknown()) {
@@ -1117,8 +1119,12 @@ static DebugLoc findPrologueEndLoc(const MachineFunction *MF) {
   for (const auto &MBB : *MF)
     for (const auto &MI : MBB)
       if (!MI.isDebugValue() && !MI.getFlag(MachineInstr::FrameSetup) &&
-          !MI.getDebugLoc().isUnknown())
+        !MI.getDebugLoc().isUnknown()) {
+        // Did the target forget to set the FrameSetup flag for CFI insns?
+        assert(!MI.isCFIInstruction() &&
+               "First non-frame-setup instruction is a CFI instruction.");
         return MI.getDebugLoc();
+      }
   return DebugLoc();
 }
 
@@ -1287,7 +1293,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
     for (unsigned i = 0, e = Variables.getNumElements(); i != e; ++i) {
       DIVariable DV(Variables.getElement(i));
       assert(DV && DV.isVariable());
-      if (!ProcessedVars.insert(DV))
+      if (!ProcessedVars.insert(DV).second)
         continue;
       ensureAbstractVariableIsCreated(DV, DV.getContext());
       assert(LScopes.getAbstractScopesList().size() == NumAbstractScopes
@@ -1478,7 +1484,7 @@ void DwarfDebug::emitAccel(DwarfAccelTable &Accel, const MCSection *Section,
   Asm->OutStreamer.EmitLabel(SectionBegin);
 
   // Emit the full data.
-  Accel.Emit(Asm, SectionBegin, &InfoHolder, DwarfStrSectionSym);
+  Accel.Emit(Asm, SectionBegin, this, DwarfStrSectionSym);
 }
 
 // Emit visible names into a hashed accelerator table section.
@@ -1722,6 +1728,18 @@ void DwarfDebug::emitDebugLocValue(ByteStreamer &Streamer,
       Streamer.EmitInt8(dwarf::DW_OP_constu, "DW_OP_constu");
       Streamer.EmitULEB128(Value.getInt());
     }
+    // The proper way to describe a constant value is 
+    // DW_OP_constu <const>, DW_OP_stack_value. 
+    // Unfortunately, DW_OP_stack_value was not available until DWARF-4,
+    // so we will continue to generate DW_OP_constu <const> for DWARF-2
+    // and DWARF-3. Technically, this is incorrect since DW_OP_const <const>
+    // actually describes a value at a constant addess, not a constant value. 
+    // However, in the past there was no better way  to describe a constant 
+    // value, so the producers and consumers started to rely on heuristics 
+    // to disambiguate the value vs. location status of the expression. 
+    // See PR21176 for more details.
+    if (getDwarfVersion() >= 4)
+      Streamer.EmitInt8(dwarf::DW_OP_stack_value, "DW_OP_stack_value");
   } else if (Value.isLocation()) {
     MachineLocation Loc = Value.getLoc();
     DIExpression Expr = Value.getExpression();

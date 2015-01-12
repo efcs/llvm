@@ -194,6 +194,7 @@ public:
     VK_ARM_TARGET1,
     VK_ARM_TARGET2,
     VK_ARM_PREL31,
+    VK_ARM_SBREL,          // symbol(sbrel)
     VK_ARM_TLSLDO,         // symbol(tlsldo)
     VK_ARM_TLSCALL,        // symbol(tlscall)
     VK_ARM_TLSDESC,        // symbol(tlsdesc)
@@ -250,6 +251,7 @@ public:
     VK_PPC_GOT_TLSLD_HI,   // symbol@got@tlsld@h
     VK_PPC_GOT_TLSLD_HA,   // symbol@got@tlsld@ha
     VK_PPC_TLSLD,          // symbol@tlsld
+    VK_PPC_LOCAL,          // symbol@local
 
     VK_Mips_GPREL,
     VK_Mips_GOT_CALL,

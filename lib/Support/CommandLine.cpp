@@ -165,7 +165,7 @@ static void GetOptionInfo(SmallVectorImpl<Option*> &PositionalOpts,
     // Handle named options.
     for (size_t i = 0, e = OptionNames.size(); i != e; ++i) {
       // Add argument to the argument map!
-      if (OptionsMap.GetOrCreateValue(OptionNames[i], O).second != O) {
+      if (!OptionsMap.insert(std::make_pair(OptionNames[i], O)).second) {
         errs() << ProgramName << ": CommandLine Error: Option '"
                << OptionNames[i] << "' registered more than once!\n";
         HadErrors = true;
@@ -323,6 +323,7 @@ static inline bool ProvideOption(Option *Handler, StringRef ArgName,
       if (i+1 >= argc)
         return Handler->error("requires a value!");
       // Steal the next argument, like for '-o filename'
+      assert(argv && "null check");
       Value = argv[++i];
     }
     break;
@@ -356,6 +357,7 @@ static inline bool ProvideOption(Option *Handler, StringRef ArgName,
   while (NumAdditionalVals > 0) {
     if (i+1 >= argc)
       return Handler->error("not enough values!");
+    assert(argv && "null check");
     Value = argv[++i];
 
     if (CommaSeparateAndAddOccurrence(Handler, i, ArgName, Value, MultiArg))
@@ -1455,7 +1457,7 @@ sortOpts(StringMap<Option*> &OptMap,
       continue;
 
     // If we've already seen this option, don't add it to the list again.
-    if (!OptionSet.insert(I->second))
+    if (!OptionSet.insert(I->second).second)
       continue;
 
     Opts.push_back(std::pair<const char *, Option*>(I->getKey().data(),

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SparcTargetMachine.h"
+#include "SparcTargetObjectFile.h"
 #include "Sparc.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/PassManager.h"
@@ -32,9 +33,12 @@ SparcTargetMachine::SparcTargetMachine(const Target &T, StringRef TT,
                                        CodeGenOpt::Level OL,
                                        bool is64bit)
   : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
+    TLOF(make_unique<SparcELFTargetObjectFile>()),
     Subtarget(TT, CPU, FS, *this, is64bit) {
   initAsmInfo();
 }
+
+SparcTargetMachine::~SparcTargetMachine() {}
 
 namespace {
 /// Sparc Code Generator Pass Configuration Options.
@@ -49,7 +53,7 @@ public:
 
   void addIRPasses() override;
   bool addInstSelector() override;
-  bool addPreEmitPass() override;
+  void addPreEmitPass() override;
 };
 } // namespace
 
@@ -68,12 +72,8 @@ bool SparcPassConfig::addInstSelector() {
   return false;
 }
 
-/// addPreEmitPass - This pass may be implemented by targets that want to run
-/// passes immediately before machine code is emitted.  This should return
-/// true if -print-machineinstrs should print out the code after the passes.
-bool SparcPassConfig::addPreEmitPass(){
+void SparcPassConfig::addPreEmitPass(){
   addPass(createSparcDelaySlotFillerPass(getSparcTargetMachine()));
-  return true;
 }
 
 void SparcV8TargetMachine::anchor() { }

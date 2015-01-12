@@ -87,6 +87,8 @@ protected:
   SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSDIVREM(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerDIVREM24(SDValue Op, SelectionDAG &DAG, bool sign) const;
+  void LowerUDIVREM64(SDValue Op, SelectionDAG &DAG,
+                                    SmallVectorImpl<SDValue> &Results) const;
   bool isHWTrueValue(SDValue Op) const;
   bool isHWFalseValue(SDValue Op) const;
 
@@ -122,6 +124,9 @@ public:
 
   bool isFPImmLegal(const APFloat &Imm, EVT VT) const override;
   bool ShouldShrinkFPConstant(EVT VT) const override;
+  bool shouldReduceLoadWidth(SDNode *Load,
+                             ISD::LoadExtType ExtType,
+                             EVT ExtVT) const override;
 
   bool isLoadBitCastBeneficial(EVT, EVT) const override;
   SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv,
@@ -140,7 +145,23 @@ public:
 
   SDValue LowerIntrinsicIABS(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerIntrinsicLRP(SDValue Op, SelectionDAG &DAG) const;
-  SDValue CombineMinMax(SDNode *N, SelectionDAG &DAG) const;
+  SDValue CombineFMinMaxLegacy(SDLoc DL,
+                               EVT VT,
+                               SDValue LHS,
+                               SDValue RHS,
+                               SDValue True,
+                               SDValue False,
+                               SDValue CC,
+                               DAGCombinerInfo &DCI) const;
+  SDValue CombineIMinMax(SDLoc DL,
+                         EVT VT,
+                         SDValue LHS,
+                         SDValue RHS,
+                         SDValue True,
+                         SDValue False,
+                         SDValue CC,
+                         SelectionDAG &DAG) const;
+
   const char* getTargetNodeName(unsigned Opcode) const override;
 
   virtual SDNode *PostISelFolding(MachineSDNode *N,
@@ -188,12 +209,18 @@ enum {
   // Denormals handled on some parts.
   COS_HW,
   SIN_HW,
-  FMAX,
+  FMAX_LEGACY,
   SMAX,
   UMAX,
-  FMIN,
+  FMIN_LEGACY,
   SMIN,
   UMIN,
+  FMAX3,
+  SMAX3,
+  UMAX3,
+  FMIN3,
+  SMIN3,
+  UMIN3,
   URECIP,
   DIV_SCALE,
   DIV_FMAS,
@@ -207,6 +234,7 @@ enum {
   RSQ_LEGACY,
   RSQ_CLAMPED,
   LDEXP,
+  FP_CLASS,
   DOT4,
   BFE_U32, // Extract range of bits with zero extension to 32-bits.
   BFE_I32, // Extract range of bits with sign extension to 32-bits.

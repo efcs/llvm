@@ -33,6 +33,7 @@ const char *Triple::getArchTypeName(ArchType Kind) {
   case ppc64le:     return "powerpc64le";
   case ppc:         return "powerpc";
   case r600:        return "r600";
+  case amdgcn:      return "amdgcn";
   case sparc:       return "sparc";
   case sparcv9:     return "sparcv9";
   case systemz:     return "s390x";
@@ -82,7 +83,8 @@ const char *Triple::getArchTypePrefix(ArchType Kind) {
 
   case hexagon:     return "hexagon";
 
-  case r600:        return "r600";
+  case amdgcn:
+  case r600:        return "amdgpu";
 
   case sparcv9:
   case sparc:       return "sparc";
@@ -157,6 +159,7 @@ const char *Triple::getOSTypeName(OSType Kind) {
   case AIX: return "aix";
   case CUDA: return "cuda";
   case NVCL: return "nvcl";
+  case AMDHSA: return "amdhsa";
   }
 
   llvm_unreachable("Invalid OSType");
@@ -198,6 +201,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("ppc", ppc)
     .Case("ppc64le", ppc64le)
     .Case("r600", r600)
+    .Case("amdgcn", amdgcn)
     .Case("hexagon", hexagon)
     .Case("sparc", sparc)
     .Case("sparcv9", sparcv9)
@@ -222,6 +226,50 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Default(UnknownArch);
 }
 
+static Triple::ArchType parseARMArch(StringRef ArchName) {
+  size_t offset = StringRef::npos;
+  Triple::ArchType arch = Triple::UnknownArch;
+  bool isThumb = ArchName.startswith("thumb");
+
+  if (ArchName.equals("arm"))
+    return Triple::arm;
+  if (ArchName.equals("armeb"))
+    return Triple::armeb;
+  if (ArchName.equals("thumb"))
+    return Triple::thumb;
+  if (ArchName.equals("thumbeb"))
+    return Triple::thumbeb;
+  if (ArchName.equals("arm64") || ArchName.equals("aarch64"))
+    return Triple::aarch64;
+  if (ArchName.equals("aarch64_be"))
+    return Triple::aarch64_be;
+
+  if (ArchName.startswith("armv")) {
+    offset = 3;
+    arch = Triple::arm;
+  } else if (ArchName.startswith("armebv")) {
+    offset = 5;
+    arch = Triple::armeb;
+  } else if (ArchName.startswith("thumbv")) {
+    offset = 5;
+    arch = Triple::thumb;
+  } else if (ArchName.startswith("thumbebv")) {
+    offset = 7;
+    arch = Triple::thumbeb;
+  }
+  return StringSwitch<Triple::ArchType>(ArchName.substr(offset))
+    .Cases("v2", "v2a", isThumb ? Triple::UnknownArch : arch)
+    .Cases("v3", "v3m", isThumb ? Triple::UnknownArch : arch)
+    .Cases("v4", "v4t", arch)
+    .Cases("v5", "v5e", "v5t", "v5te", "v5tej", arch)
+    .Cases("v6", "v6j", "v6k", "v6m", arch)
+    .Cases("v6t2", "v6z", "v6zk", arch)
+    .Cases("v7", "v7a", "v7em", "v7l", arch)
+    .Cases("v7m", "v7r", "v7s", arch)
+    .Cases("v8", "v8a", arch)
+    .Default(Triple::UnknownArch);
+}
+
 static Triple::ArchType parseArch(StringRef ArchName) {
   return StringSwitch<Triple::ArchType>(ArchName)
     .Cases("i386", "i486", "i586", "i686", Triple::x86)
@@ -231,25 +279,17 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .Case("powerpc", Triple::ppc)
     .Cases("powerpc64", "ppu", Triple::ppc64)
     .Case("powerpc64le", Triple::ppc64le)
-    .Case("aarch64", Triple::aarch64)
-    .Case("aarch64_be", Triple::aarch64_be)
-    .Case("arm64", Triple::aarch64)
-    .Cases("arm", "xscale", Triple::arm)
-    // FIXME: It would be good to replace these with explicit names for all the
-    // various suffixes supported.
-    .StartsWith("armv", Triple::arm)
-    .Case("armeb", Triple::armeb)
-    .StartsWith("armebv", Triple::armeb)
-    .Case("thumb", Triple::thumb)
-    .StartsWith("thumbv", Triple::thumb)
-    .Case("thumbeb", Triple::thumbeb)
-    .StartsWith("thumbebv", Triple::thumbeb)
+    .Case("xscale", Triple::arm)
+    .StartsWith("arm", parseARMArch(ArchName))
+    .StartsWith("thumb", parseARMArch(ArchName))
+    .StartsWith("aarch64", parseARMArch(ArchName))
     .Case("msp430", Triple::msp430)
     .Cases("mips", "mipseb", "mipsallegrex", Triple::mips)
     .Cases("mipsel", "mipsallegrexel", Triple::mipsel)
     .Cases("mips64", "mips64eb", Triple::mips64)
     .Case("mips64el", Triple::mips64el)
     .Case("r600", Triple::r600)
+    .Case("amdgcn", Triple::amdgcn)
     .Case("hexagon", Triple::hexagon)
     .Case("s390x", Triple::systemz)
     .Case("sparc", Triple::sparc)
@@ -310,6 +350,7 @@ static Triple::OSType parseOS(StringRef OSName) {
     .StartsWith("aix", Triple::AIX)
     .StartsWith("cuda", Triple::CUDA)
     .StartsWith("nvcl", Triple::NVCL)
+    .StartsWith("amdhsa", Triple::AMDHSA)
     .Default(Triple::UnknownOS);
 }
 
@@ -827,6 +868,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
 
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
+  case llvm::Triple::amdgcn:
   case llvm::Triple::le64:
   case llvm::Triple::mips64:
   case llvm::Triple::mips64el:
@@ -862,6 +904,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::UnknownArch:
   case Triple::aarch64:
   case Triple::aarch64_be:
+  case Triple::amdgcn:
   case Triple::msp430:
   case Triple::systemz:
   case Triple::ppc64le:
@@ -925,6 +968,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::aarch64_be:
   case Triple::le64:
   case Triple::amdil64:
+  case Triple::amdgcn:
   case Triple::hsail64:
   case Triple::spir64:
   case Triple::mips64:

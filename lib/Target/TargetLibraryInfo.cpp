@@ -51,6 +51,8 @@ const char* TargetLibraryInfo::StandardNames[LibFunc::NumLibFuncs] =
     "__isoc99_scanf",
     "__isoc99_sscanf",
     "__memcpy_chk",
+    "__memmove_chk",
+    "__memset_chk",
     "__sincospi_stret",
     "__sincospif_stret",
     "__sinpi",
@@ -58,7 +60,11 @@ const char* TargetLibraryInfo::StandardNames[LibFunc::NumLibFuncs] =
     "__sqrt_finite",
     "__sqrtf_finite",
     "__sqrtl_finite",
+    "__stpcpy_chk",
+    "__stpncpy_chk",
+    "__strcpy_chk",
     "__strdup",
+    "__strncpy_chk",
     "__strndup",
     "__strtok_r",
     "abs",
@@ -383,9 +389,10 @@ static void initialize(TargetLibraryInfo &TLI, const Triple &T,
   }
 #endif // !NDEBUG
 
-  // There are no library implementations of mempcy and memset for r600 and
+  // There are no library implementations of mempcy and memset for AMD gpus and
   // these can be difficult to lower in the backend.
-  if (T.getArch() == Triple::r600) {
+  if (T.getArch() == Triple::r600 ||
+      T.getArch() == Triple::amdgcn) {
     TLI.setUnavailable(LibFunc::memcpy);
     TLI.setUnavailable(LibFunc::memset);
     TLI.setUnavailable(LibFunc::memset_pattern16);

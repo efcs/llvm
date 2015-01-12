@@ -110,8 +110,7 @@ static MachineBasicBlock *getTargetMBB(const MachineInstr &Br) {
       return MO.getMBB();
   }
 
-  assert(false && "This instruction does not have an MBB operand.");
-  return nullptr;
+  llvm_unreachable("This instruction does not have an MBB operand.");
 }
 
 // Traverse the list of instructions backwards until a non-debug instruction is
@@ -237,15 +236,21 @@ void MipsLongBranch::replaceBranch(MachineBasicBlock &MBB, Iter Br,
 
   MIB.addMBB(MBBOpnd);
 
-  // Bundle the instruction in the delay slot to the newly created branch
-  // and erase the original branch.
-  assert(Br->isBundledWithSucc());
-  MachineBasicBlock::instr_iterator II(Br);
-  MIBundleBuilder(&*MIB).append((++II)->removeFromBundle());
+  if (Br->hasDelaySlot()) {
+    // Bundle the instruction in the delay slot to the newly created branch
+    // and erase the original branch.
+    assert(Br->isBundledWithSucc());
+    MachineBasicBlock::instr_iterator II(Br);
+    MIBundleBuilder(&*MIB).append((++II)->removeFromBundle());
+  }
   Br->eraseFromParent();
 }
 
 // Expand branch instructions to long branches.
+// TODO: This function has to be fixed for beqz16 and bnez16, because it
+// currently assumes that all branches have 16-bit offsets, and will produce
+// wrong code if branches whose allowed offsets are [-128, -126, ..., 126]
+// are present.
 void MipsLongBranch::expandToLongBranch(MBBInfo &I) {
   MachineBasicBlock::iterator Pos;
   MachineBasicBlock *MBB = I.Br->getParent(), *TgtMBB = getTargetMBB(*I.Br);

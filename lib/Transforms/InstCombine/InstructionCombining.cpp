@@ -39,7 +39,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/Analysis/AssumptionTracker.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
@@ -84,15 +84,18 @@ void LLVMInitializeInstCombine(LLVMPassRegistryRef R) {
 char InstCombiner::ID = 0;
 INITIALIZE_PASS_BEGIN(InstCombiner, "instcombine",
                 "Combine redundant instructions", false, false)
-INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
+INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfo)
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_END(InstCombiner, "instcombine",
                 "Combine redundant instructions", false, false)
 
 void InstCombiner::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesCFG();
-  AU.addRequired<AssumptionTracker>();
+  AU.addRequired<AssumptionCacheTracker>();
   AU.addRequired<TargetLibraryInfo>();
+  AU.addRequired<DominatorTreeWrapperPass>();
+  AU.addPreserved<DominatorTreeWrapperPass>();
 }
 
 
@@ -1316,7 +1319,7 @@ Value *InstCombiner::SimplifyVectorOp(BinaryOperator &Inst) {
 Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
   SmallVector<Value*, 8> Ops(GEP.op_begin(), GEP.op_end());
 
-  if (Value *V = SimplifyGEPInst(Ops, DL, TLI, DT, AT))
+  if (Value *V = SimplifyGEPInst(Ops, DL, TLI, DT, AC))
     return ReplaceInstUsesWith(GEP, V);
 
   Value *PtrOp = GEP.getOperand(0);
@@ -2092,7 +2095,10 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
   // the largest legal integer type. We need to be conservative here since
   // x86 generates redundant zero-extenstion instructions if the operand is
   // truncated to i8 or i16.
-  if (BitWidth > NewWidth && NewWidth >= DL->getLargestLegalIntTypeSize()) {
+  bool TruncCond = false;
+  if (DL && BitWidth > NewWidth &&
+      NewWidth >= DL->getLargestLegalIntTypeSize()) {
+    TruncCond = true;
     IntegerType *Ty = IntegerType::get(SI.getContext(), NewWidth);
     Builder->SetInsertPoint(&SI);
     Value *NewCond = Builder->CreateTrunc(SI.getCondition(), Ty, "trunc");
@@ -2111,8 +2117,12 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
         for (SwitchInst::CaseIt i = SI.case_begin(), e = SI.case_end();
              i != e; ++i) {
           ConstantInt* CaseVal = i.getCaseValue();
-          Constant* NewCaseVal = ConstantExpr::getSub(cast<Constant>(CaseVal),
-                                                      AddRHS);
+          Constant *LHS = CaseVal;
+          if (TruncCond)
+            LHS = LeadingKnownZeros
+                      ? ConstantExpr::getZExt(CaseVal, Cond->getType())
+                      : ConstantExpr::getSExt(CaseVal, Cond->getType());
+          Constant* NewCaseVal = ConstantExpr::getSub(LHS, AddRHS);
           assert(isa<ConstantInt>(NewCaseVal) &&
                  "Result of expression should be constant");
           i.setValue(cast<ConstantInt>(NewCaseVal));
@@ -2122,7 +2132,8 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
         return &SI;
       }
   }
-  return nullptr;
+
+  return TruncCond ? &SI : nullptr;
 }
 
 Instruction *InstCombiner::visitExtractValueInst(ExtractValueInst &EV) {
@@ -2341,7 +2352,7 @@ Instruction *InstCombiner::visitLandingPadInst(LandingPadInst &LI) {
 
       // If we already saw this clause, there is no point in having a second
       // copy of it.
-      if (AlreadyCaught.insert(TypeInfo)) {
+      if (AlreadyCaught.insert(TypeInfo).second) {
         // This catch clause was not already seen.
         NewClauses.push_back(CatchClause);
       } else {
@@ -2423,7 +2434,7 @@ Instruction *InstCombiner::visitLandingPadInst(LandingPadInst &LI) {
             continue;
           // There is no point in having multiple copies of the same typeinfo in
           // a filter, so only add it if we didn't already.
-          if (SeenInFilter.insert(TypeInfo))
+          if (SeenInFilter.insert(TypeInfo).second)
             NewFilterElts.push_back(cast<Constant>(Elt));
         }
         // A filter containing a catch-all cannot match anything by definition.
@@ -2675,7 +2686,8 @@ static bool AddReachableCodeToWorklist(BasicBlock *BB,
     BB = Worklist.pop_back_val();
 
     // We have now visited this block!  If we've already been here, ignore it.
-    if (!Visited.insert(BB)) continue;
+    if (!Visited.insert(BB).second)
+      continue;
 
     for (BasicBlock::iterator BBI = BB->begin(), E = BB->end(); BBI != E; ) {
       Instruction *Inst = BBI++;
@@ -2958,14 +2970,11 @@ bool InstCombiner::runOnFunction(Function &F) {
   if (skipOptnoneFunction(F))
     return false;
 
-  AT = &getAnalysis<AssumptionTracker>();
+  AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
   DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
   DL = DLP ? &DLP->getDataLayout() : nullptr;
+  DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   TLI = &getAnalysis<TargetLibraryInfo>();
-
-  DominatorTreeWrapperPass *DTWP =
-      getAnalysisIfAvailable<DominatorTreeWrapperPass>();
-  DT = DTWP ? &DTWP->getDomTree() : nullptr;
 
   // Minimizing size?
   MinimizeSize = F.getAttributes().hasAttribute(AttributeSet::FunctionIndex,
@@ -2973,9 +2982,8 @@ bool InstCombiner::runOnFunction(Function &F) {
 
   /// Builder - This is an IRBuilder that automatically inserts new
   /// instructions into the worklist when they are created.
-  IRBuilder<true, TargetFolder, InstCombineIRInserter>
-    TheBuilder(F.getContext(), TargetFolder(DL),
-               InstCombineIRInserter(Worklist, AT));
+  IRBuilder<true, TargetFolder, InstCombineIRInserter> TheBuilder(
+      F.getContext(), TargetFolder(DL), InstCombineIRInserter(Worklist, AC));
   Builder = &TheBuilder;
 
   InstCombinerLibCallSimplifier TheSimplifier(DL, TLI, this);

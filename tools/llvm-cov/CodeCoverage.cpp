@@ -27,7 +27,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/MemoryObject.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Signals.h"
@@ -462,7 +461,7 @@ int CodeCoverageTool::report(int argc, const char **argv,
     return 1;
 
   CoverageSummary Summarizer;
-  Summarizer.createSummaries(Coverage->getCoveredFunctions());
+  Summarizer.createSummaries(*Coverage);
   CoverageReport Report(ViewOpts, Summarizer);
   if (SourceFiles.empty() && Filters.empty()) {
     Report.renderFileReports(llvm::outs());

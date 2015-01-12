@@ -51,6 +51,7 @@ namespace llvm {
   class MachineFunction;
   class MachineInstr;
   class MachineJumpTableInfo;
+  class MachineLoop;
   class Mangler;
   class MCContext;
   class MCExpr;
@@ -137,10 +138,9 @@ public:
     llvm_unreachable("Invalid content kind");
   }
 
-  /// NOTE: The constructor takes ownership of TLOF.
-  explicit TargetLoweringBase(const TargetMachine &TM,
-                              const TargetLoweringObjectFile *TLOF);
-  virtual ~TargetLoweringBase();
+  /// NOTE: The TargetMachine owns TLOF.
+  explicit TargetLoweringBase(const TargetMachine &TM);
+  virtual ~TargetLoweringBase() {}
 
 protected:
   /// \brief Initialize all of the actions to default values.
@@ -149,7 +149,9 @@ protected:
 public:
   const TargetMachine &getTargetMachine() const { return TM; }
   const DataLayout *getDataLayout() const { return DL; }
-  const TargetLoweringObjectFile &getObjFileLowering() const { return TLOF; }
+  const TargetLoweringObjectFile &getObjFileLowering() const {
+    return *TM.getObjFileLowering();
+  }
 
   bool isBigEndian() const { return !IsLittleEndian; }
   bool isLittleEndian() const { return IsLittleEndian; }
@@ -248,6 +250,16 @@ public:
     return true;
   }
 
+  /// \brief Return true if it is cheap to speculate a call to intrinsic cttz.
+  virtual bool isCheapToSpeculateCttz() const {
+    return false;
+  }
+  
+  /// \brief Return true if it is cheap to speculate a call to intrinsic ctlz.
+  virtual bool isCheapToSpeculateCtlz() const {
+    return false;
+  }
+
   /// \brief Return if the target supports combining a
   /// chain like:
   /// \code
@@ -262,6 +274,11 @@ public:
   bool isMaskAndBranchFoldingLegal() const {
     return MaskAndBranchFoldingIsLegal;
   }
+
+  /// \brief Return true if the target wants to use the optimization that
+  /// turns ext(promotableInst1(...(promotableInstN(load)))) into
+  /// promotedInst1(...(promotedInstN(ext(load)))).
+  bool enableExtLdPromotion() const { return EnableExtLdPromotion; }
 
   /// Return true if the target can combine store(extractelement VectorTy,
   /// Idx).
@@ -540,18 +557,19 @@ public:
   /// Return how this load with extension should be treated: either it is legal,
   /// needs to be promoted to a larger size, needs to be expanded to some other
   /// code sequence, or the target has a custom expander for it.
-  LegalizeAction getLoadExtAction(unsigned ExtType, EVT VT) const {
-    if (VT.isExtended()) return Expand;
-    unsigned I = (unsigned) VT.getSimpleVT().SimpleTy;
-    assert(ExtType < ISD::LAST_LOADEXT_TYPE && I < MVT::LAST_VALUETYPE &&
-           "Table isn't big enough!");
-    return (LegalizeAction)LoadExtActions[I][ExtType];
+  LegalizeAction getLoadExtAction(unsigned ExtType, EVT ValVT, EVT MemVT) const {
+    if (ValVT.isExtended() || MemVT.isExtended()) return Expand;
+    unsigned ValI = (unsigned) ValVT.getSimpleVT().SimpleTy;
+    unsigned MemI = (unsigned) MemVT.getSimpleVT().SimpleTy;
+    assert(ExtType < ISD::LAST_LOADEXT_TYPE && ValI < MVT::LAST_VALUETYPE &&
+           MemI < MVT::LAST_VALUETYPE && "Table isn't big enough!");
+    return (LegalizeAction)LoadExtActions[ValI][MemI][ExtType];
   }
 
   /// Return true if the specified load with extension is legal on this target.
-  bool isLoadExtLegal(unsigned ExtType, EVT VT) const {
-    return VT.isSimple() &&
-      getLoadExtAction(ExtType, VT.getSimpleVT()) == Legal;
+  bool isLoadExtLegal(unsigned ExtType, EVT ValVT, EVT MemVT) const {
+    return ValVT.isSimple() && MemVT.isSimple() &&
+      getLoadExtAction(ExtType, ValVT, MemVT) == Legal;
   }
 
   /// Return how this store with truncation should be treated: either it is
@@ -578,7 +596,7 @@ public:
   /// sequence, or the target has a custom expander for it.
   LegalizeAction
   getIndexedLoadAction(unsigned IdxMode, MVT VT) const {
-    assert(IdxMode < ISD::LAST_INDEXED_MODE && VT < MVT::LAST_VALUETYPE &&
+    assert(IdxMode < ISD::LAST_INDEXED_MODE && VT.isValid() &&
            "Table isn't big enough!");
     unsigned Ty = (unsigned)VT.SimpleTy;
     return (LegalizeAction)((IndexedModeActions[Ty][IdxMode] & 0xf0) >> 4);
@@ -596,7 +614,7 @@ public:
   /// sequence, or the target has a custom expander for it.
   LegalizeAction
   getIndexedStoreAction(unsigned IdxMode, MVT VT) const {
-    assert(IdxMode < ISD::LAST_INDEXED_MODE && VT < MVT::LAST_VALUETYPE &&
+    assert(IdxMode < ISD::LAST_INDEXED_MODE && VT.isValid() &&
            "Table isn't big enough!");
     unsigned Ty = (unsigned)VT.SimpleTy;
     return (LegalizeAction)(IndexedModeActions[Ty][IdxMode] & 0x0f);
@@ -752,6 +770,16 @@ public:
   /// reduce runtime.
   virtual bool ShouldShrinkFPConstant(EVT) const { return true; }
 
+  // Return true if it is profitable to reduce the given load node to a smaller
+  // type.
+  //
+  // e.g. (i16 (trunc (i32 (load x))) -> i16 load x should be performed
+  virtual bool shouldReduceLoadWidth(SDNode *Load,
+                                     ISD::LoadExtType ExtTy,
+                                     EVT NewVT) const {
+    return true;
+  }
+
   /// When splitting a value of the specified type into parts, does the Lo
   /// or Hi part come first?  This usually follows the endianness, except
   /// for ppcf128, where the Hi part always comes first.
@@ -903,7 +931,7 @@ public:
   }
 
   /// Return the preferred loop alignment.
-  unsigned getPrefLoopAlignment() const {
+  virtual unsigned getPrefLoopAlignment(MachineLoop *ML = nullptr) const {
     return PrefLoopAlignment;
   }
 
@@ -1210,19 +1238,18 @@ protected:
 
   /// Indicate that the specified load with extension does not work with the
   /// specified type and indicate what to do about it.
-  void setLoadExtAction(unsigned ExtType, MVT VT,
+  void setLoadExtAction(unsigned ExtType, MVT ValVT, MVT MemVT,
                         LegalizeAction Action) {
-    assert(ExtType < ISD::LAST_LOADEXT_TYPE && VT < MVT::LAST_VALUETYPE &&
-           "Table isn't big enough!");
-    LoadExtActions[VT.SimpleTy][ExtType] = (uint8_t)Action;
+    assert(ExtType < ISD::LAST_LOADEXT_TYPE && ValVT.isValid() &&
+           MemVT.isValid() && "Table isn't big enough!");
+    LoadExtActions[ValVT.SimpleTy][MemVT.SimpleTy][ExtType] = (uint8_t)Action;
   }
 
   /// Indicate that the specified truncating store does not work with the
   /// specified type and indicate what to do about it.
   void setTruncStoreAction(MVT ValVT, MVT MemVT,
                            LegalizeAction Action) {
-    assert(ValVT < MVT::LAST_VALUETYPE && MemVT < MVT::LAST_VALUETYPE &&
-           "Table isn't big enough!");
+    assert(ValVT.isValid() && MemVT.isValid() && "Table isn't big enough!");
     TruncStoreActions[ValVT.SimpleTy][MemVT.SimpleTy] = (uint8_t)Action;
   }
 
@@ -1233,7 +1260,7 @@ protected:
   /// TargetLowering.cpp
   void setIndexedLoadAction(unsigned IdxMode, MVT VT,
                             LegalizeAction Action) {
-    assert(VT < MVT::LAST_VALUETYPE && IdxMode < ISD::LAST_INDEXED_MODE &&
+    assert(VT.isValid() && IdxMode < ISD::LAST_INDEXED_MODE &&
            (unsigned)Action < 0xf && "Table isn't big enough!");
     // Load action are kept in the upper half.
     IndexedModeActions[(unsigned)VT.SimpleTy][IdxMode] &= ~0xf0;
@@ -1247,7 +1274,7 @@ protected:
   /// TargetLowering.cpp
   void setIndexedStoreAction(unsigned IdxMode, MVT VT,
                              LegalizeAction Action) {
-    assert(VT < MVT::LAST_VALUETYPE && IdxMode < ISD::LAST_INDEXED_MODE &&
+    assert(VT.isValid() && IdxMode < ISD::LAST_INDEXED_MODE &&
            (unsigned)Action < 0xf && "Table isn't big enough!");
     // Store action are kept in the lower half.
     IndexedModeActions[(unsigned)VT.SimpleTy][IdxMode] &= ~0x0f;
@@ -1258,8 +1285,7 @@ protected:
   /// target and indicate what to do about it.
   void setCondCodeAction(ISD::CondCode CC, MVT VT,
                          LegalizeAction Action) {
-    assert(VT < MVT::LAST_VALUETYPE &&
-           (unsigned)CC < array_lengthof(CondCodeActions) &&
+    assert(VT.isValid() && (unsigned)CC < array_lengthof(CondCodeActions) &&
            "Table isn't big enough!");
     /// The lower 5 bits of the SimpleTy index into Nth 2bit set from the 32-bit
     /// value and the upper 27 bits index into the second dimension of the array
@@ -1310,7 +1336,8 @@ protected:
 
   /// Set the target's preferred loop alignment. Default alignment is zero, it
   /// means the target does not care about loop alignment.  The alignment is
-  /// specified in log2(bytes).
+  /// specified in log2(bytes). The target may also override
+  /// getPrefLoopAlignment to provide per-loop values.
   void setPrefLoopAlignment(unsigned Align) {
     PrefLoopAlignment = Align;
   }
@@ -1515,6 +1542,15 @@ public:
                                                  Type *Ty) const {
     return false;
   }
+
+  /// Return true if EXTRACT_SUBVECTOR is cheap for this result type
+  /// with this index. This is needed because EXTRACT_SUBVECTOR usually
+  /// has custom lowering that depends on the index of the first element,
+  /// and only the target knows which lowering is cheap.
+  virtual bool isExtractSubvectorCheap(EVT ResVT, unsigned Index) const {
+    return false;
+  }
+
   //===--------------------------------------------------------------------===//
   // Runtime Library hooks
   //
@@ -1554,7 +1590,6 @@ public:
 private:
   const TargetMachine &TM;
   const DataLayout *DL;
-  const TargetLoweringObjectFile &TLOF;
 
   /// True if this is a little endian target.
   bool IsLittleEndian;
@@ -1703,7 +1738,8 @@ private:
   /// For each load extension type and each value type, keep a LegalizeAction
   /// that indicates how instruction selection should deal with a load of a
   /// specific value type and extension type.
-  uint8_t LoadExtActions[MVT::LAST_VALUETYPE][ISD::LAST_LOADEXT_TYPE];
+  uint8_t LoadExtActions[MVT::LAST_VALUETYPE][MVT::LAST_VALUETYPE]
+                        [ISD::LAST_LOADEXT_TYPE];
 
   /// For each value type pair keep a LegalizeAction that indicates whether a
   /// truncating store of a specific value type and truncating type is legal.
@@ -1944,6 +1980,9 @@ protected:
   /// a mask of a single bit, a compare, and a branch into a single instruction.
   bool MaskAndBranchFoldingIsLegal;
 
+  /// \see enableExtLdPromotion.
+  bool EnableExtLdPromotion;
+
 protected:
   /// Return true if the value types that can be represented by the specified
   /// register class are all legal.
@@ -1964,9 +2003,8 @@ class TargetLowering : public TargetLoweringBase {
   void operator=(const TargetLowering&) LLVM_DELETED_FUNCTION;
 
 public:
-  /// NOTE: The constructor takes ownership of TLOF.
-  explicit TargetLowering(const TargetMachine &TM,
-                          const TargetLoweringObjectFile *TLOF);
+  /// NOTE: The TargetMachine owns TLOF.
+  explicit TargetLowering(const TargetMachine &TM);
 
   /// Returns true by value, base pointer and offset pointer and addressing mode
   /// by reference if the node's address can be legally represented as
@@ -2651,6 +2689,12 @@ public:
                                 SelectionDAG &DAG,
                                 std::vector<SDNode *> *Created) const {
     return SDValue();
+  }
+
+  /// Indicate whether this target prefers to combine the given number of FDIVs
+  /// with the same divisor.
+  virtual bool combineRepeatedFPDivisors(unsigned NumUsers) const {
+    return false;
   }
 
   /// Hooks for building estimates in place of slower divisions and square

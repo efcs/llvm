@@ -11,7 +11,6 @@ if(NOT DEFINED LLVM_DYLIB_COMPONENTS)
   set(LLVM_DYLIB_COMPONENTS
     ${LLVM_TARGETS_TO_BUILD}
     Analysis
-    AsmPrinter
     BitReader
     BitWriter
     CodeGen
@@ -24,13 +23,11 @@ if(NOT DEFINED LLVM_DYLIB_COMPONENTS)
     Instrumentation
     Interpreter
     Linker
-    MC
     MCDisassembler
     MCJIT
     ObjCARCOpts
     Object
     ScalarOpts
-    SelectionDAG
     Support
     Target
     TransformUtils
@@ -60,7 +57,7 @@ if(NOT DEFINED LLVM_EXPORTED_SYMBOL_FILE)
 
   foreach (lib ${LIB_NAMES})
     
-    set(LIB_DIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib)
+    set(LIB_DIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib${LLVM_LIBDIR_SUFFIX})
     set(LIB_NAME ${LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${lib})
     set(LIB_PATH ${LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX})
     set(LIB_EXPORTS_PATH ${LIB_NAME}.exports)

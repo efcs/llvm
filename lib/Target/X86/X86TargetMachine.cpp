@@ -13,6 +13,7 @@
 
 #include "X86TargetMachine.h"
 #include "X86.h"
+#include "X86TargetObjectFile.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/PassManager.h"
@@ -28,7 +29,23 @@ extern "C" void LLVMInitializeX86Target() {
   RegisterTargetMachine<X86TargetMachine> Y(TheX86_64Target);
 }
 
-void X86TargetMachine::anchor() { }
+static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
+  if (TT.isOSBinFormatMachO()) {
+    if (TT.getArch() == Triple::x86_64)
+      return make_unique<X86_64MachoTargetObjectFile>();
+    return make_unique<TargetLoweringObjectFileMachO>();
+  }
+
+  if (TT.isOSLinux())
+    return make_unique<X86LinuxTargetObjectFile>();
+  if (TT.isOSBinFormatELF())
+    return make_unique<TargetLoweringObjectFileELF>();
+  if (TT.isKnownWindowsMSVCEnvironment())
+    return make_unique<X86WindowsTargetObjectFile>();
+  if (TT.isOSBinFormatCOFF())
+    return make_unique<TargetLoweringObjectFileCOFF>();
+  llvm_unreachable("unknown subtarget type");
+}
 
 /// X86TargetMachine ctor - Create an X86 target.
 ///
@@ -37,6 +54,7 @@ X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
                                    Reloc::Model RM, CodeModel::Model CM,
                                    CodeGenOpt::Level OL)
     : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
+      TLOF(createTLOF(Triple(getTargetTriple()))),
       Subtarget(TT, CPU, FS, *this, Options.StackAlignmentOverride) {
   // default to hard float ABI
   if (Options.FloatABIType == FloatABI::Default)
@@ -51,6 +69,8 @@ X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
 
   initAsmInfo();
 }
+
+X86TargetMachine::~X86TargetMachine() {}
 
 const X86Subtarget *
 X86TargetMachine::getSubtargetImpl(const Function &F) const {
@@ -134,9 +154,8 @@ public:
   void addIRPasses() override;
   bool addInstSelector() override;
   bool addILPOpts() override;
-  bool addPreRegAlloc() override;
-  bool addPostRegAlloc() override;
-  bool addPreEmitPass() override;
+  void addPostRegAlloc() override;
+  void addPreEmitPass() override;
 };
 } // namespace
 
@@ -168,32 +187,19 @@ bool X86PassConfig::addILPOpts() {
   return true;
 }
 
-bool X86PassConfig::addPreRegAlloc() {
-  return false;  // -print-machineinstr shouldn't print after this.
-}
-
-bool X86PassConfig::addPostRegAlloc() {
+void X86PassConfig::addPostRegAlloc() {
   addPass(createX86FloatingPointStackifierPass());
-  return true;  // -print-machineinstr should print after this.
 }
 
-bool X86PassConfig::addPreEmitPass() {
-  bool ShouldPrint = false;
-  if (getOptLevel() != CodeGenOpt::None && getX86Subtarget().hasSSE2()) {
+void X86PassConfig::addPreEmitPass() {
+  if (getOptLevel() != CodeGenOpt::None && getX86Subtarget().hasSSE2())
     addPass(createExecutionDependencyFixPass(&X86::VR128RegClass));
-    ShouldPrint = true;
-  }
 
-  if (UseVZeroUpper) {
+  if (UseVZeroUpper)
     addPass(createX86IssueVZeroUpperPass());
-    ShouldPrint = true;
-  }
 
   if (getOptLevel() != CodeGenOpt::None) {
     addPass(createX86PadShortFunctions());
     addPass(createX86FixupLEAs());
-    ShouldPrint = true;
   }
-
-  return ShouldPrint;
 }

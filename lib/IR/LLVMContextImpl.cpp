@@ -120,22 +120,36 @@ LLVMContextImpl::~LLVMContextImpl() {
     delete &*Elem;
   }
 
-  // Destroy MDNodes.  ~MDNode can move and remove nodes between the MDNodeSet
-  // and the NonUniquedMDNodes sets, so copy the values out first.
-  SmallVector<MDNode*, 8> MDNodes;
-  MDNodes.reserve(MDNodeSet.size() + NonUniquedMDNodes.size());
-  for (FoldingSetIterator<MDNode> I = MDNodeSet.begin(), E = MDNodeSet.end();
-       I != E; ++I)
-    MDNodes.push_back(&*I);
-  MDNodes.append(NonUniquedMDNodes.begin(), NonUniquedMDNodes.end());
-  for (SmallVectorImpl<MDNode *>::iterator I = MDNodes.begin(),
-         E = MDNodes.end(); I != E; ++I)
-    (*I)->destroy();
-  assert(MDNodeSet.empty() && NonUniquedMDNodes.empty() &&
+  // Destroy MetadataAsValues.
+  {
+    SmallVector<MetadataAsValue *, 8> MDVs;
+    MDVs.reserve(MetadataAsValues.size());
+    for (auto &Pair : MetadataAsValues)
+      MDVs.push_back(Pair.second);
+    MetadataAsValues.clear();
+    for (auto *V : MDVs)
+      delete V;
+  }
+
+  // Destroy ValuesAsMetadata.
+  for (auto &Pair : ValuesAsMetadata)
+    delete Pair.second;
+
+  // Destroy MDNodes.  ~MDNode can move and remove nodes between the MDTuples
+  // and the DistinctMDNodes sets, so copy the values out first.
+  SmallVector<UniquableMDNode *, 8> Uniquables;
+  Uniquables.reserve(MDTuples.size() + DistinctMDNodes.size());
+  Uniquables.append(MDTuples.begin(), MDTuples.end());
+  Uniquables.append(DistinctMDNodes.begin(), DistinctMDNodes.end());
+  for (UniquableMDNode *I : Uniquables)
+    I->dropAllReferences();
+  for (UniquableMDNode *I : Uniquables)
+    delete cast<MDTuple>(I);
+  assert(MDTuples.empty() && DistinctMDNodes.empty() &&
          "Destroying all MDNodes didn't empty the Context's sets.");
 
   // Destroy MDStrings.
-  DeleteContainerSeconds(MDStringCache);
+  MDStringCache.clear();
 }
 
 // ConstantsContext anchors

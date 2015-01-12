@@ -109,6 +109,12 @@ public:
   int getCallFrameSetupOpcode() const { return CallFrameSetupOpcode; }
   int getCallFrameDestroyOpcode() const { return CallFrameDestroyOpcode; }
 
+  /// Returns the actual stack pointer adjustment made by an instruction
+  /// as part of a call sequence. By default, only call frame setup/destroy
+  /// instructions adjust the stack, but targets may want to override this
+  /// to enable more fine-grained adjustment, or adjust by a different value.
+  virtual int getSPAdjust(const MachineInstr *MI) const;
+
   /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
   /// extension instruction. That is, it's like a copy where it's legal for the
   /// source to overlap the destination. e.g. X86::MOVSX64rr32. If this returns
@@ -426,6 +432,26 @@ public:
   /// getTrap - Get a machine trap instruction
   virtual void getTrap(MCInst &MI) const {
     llvm_unreachable("Target didn't implement TargetInstrInfo::getTrap!");
+  }
+
+  /// getJumpInstrTableEntryBound - Get a number of bytes that suffices to hold
+  /// either the instruction returned by getUnconditionalBranch or the
+  /// instruction returned by getTrap. This only makes sense because
+  /// getUnconditionalBranch returns a single, specific instruction. This
+  /// information is needed by the jumptable construction code, since it must
+  /// decide how many bytes to use for a jumptable entry so it can generate the
+  /// right mask.
+  ///
+  /// Note that if the jumptable instruction requires alignment, then that
+  /// alignment should be factored into this required bound so that the
+  /// resulting bound gives the right alignment for the instruction.
+  virtual unsigned getJumpInstrTableEntryBound() const {
+    // This method gets called by LLVMTargetMachine always, so it can't fail
+    // just because there happens to be no implementation for this target.
+    // Any code that tries to use a jumptable annotation without defining
+    // getUnconditionalBranch on the appropriate Target will fail anyway, and
+    // the value returned here won't matter in that case.
+    return 0;
   }
 
   /// isLegalToSplitMBBAt - Return true if it's legal to split the given basic

@@ -1,6 +1,6 @@
 ; RUN: llc < %s -march=r600 -mcpu=redwood | FileCheck --check-prefix=R600-CHECK --check-prefix=FUNC %s
 ; RUN: llc < %s -march=r600 -mcpu=cayman | FileCheck --check-prefix=R600-CHECK --check-prefix=FUNC %s
-; RUN: llc < %s -march=r600 -mcpu=SI -verify-machineinstrs | FileCheck --check-prefix=SI-CHECK --check-prefix=FUNC %s
+; RUN: llc < %s -march=amdgcn -mcpu=SI -verify-machineinstrs | FileCheck --check-prefix=SI-CHECK --check-prefix=FUNC %s
 
 ;===------------------------------------------------------------------------===;
 ; GLOBAL ADDRESS SPACE
@@ -721,7 +721,7 @@ define void @load_i32_v2i32_local(<2 x i32> addrspace(1)* %out, i32 addrspace(3)
 }
 
 
-@lds = addrspace(3) global [512 x i32] zeroinitializer, align 4
+@lds = addrspace(3) global [512 x i32] undef, align 4
 
 ; On SI we need to make sure that the base offset is a register and not
 ; an immediate.

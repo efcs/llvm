@@ -111,6 +111,12 @@ private:
   bool SelectVOP3Mods0(SDValue In, SDValue &Src, SDValue &SrcMods,
                        SDValue &Clamp, SDValue &Omod) const;
 
+  bool SelectVOP3Mods0Clamp(SDValue In, SDValue &Src, SDValue &SrcMods,
+                            SDValue &Omod) const;
+  bool SelectVOP3Mods0Clamp0OMod(SDValue In, SDValue &Src, SDValue &SrcMods,
+                                 SDValue &Clamp,
+                                 SDValue &Omod) const;
+
   SDNode *SelectADD_SUB_I64(SDNode *N);
   SDNode *SelectDIV_SCALE(SDNode *N);
 
@@ -280,7 +286,7 @@ SDNode *AMDGPUDAGToDAGISel::Select(SDNode *N) {
         }
       }
       switch(NumVectorElts) {
-      case 1: RegClassID = UseVReg ? AMDGPU::VReg_32RegClassID :
+      case 1: RegClassID = UseVReg ? AMDGPU::VGPR_32RegClassID :
                                      AMDGPU::SReg_32RegClassID;
         break;
       case 2: RegClassID = UseVReg ? AMDGPU::VReg_64RegClassID :
@@ -1009,6 +1015,8 @@ bool AMDGPUDAGToDAGISel::SelectMUBUFOffset(SDValue Addr, SDValue &SRsrc,
                                            SDValue &GLC, SDValue &SLC,
                                            SDValue &TFE) const {
   SDValue Ptr, VAddr, Offen, Idxen, Addr64;
+  const SIInstrInfo *TII =
+    static_cast<const SIInstrInfo *>(Subtarget.getInstrInfo());
 
   SelectMUBUF(Addr, Ptr, VAddr, SOffset, Offset, Offen, Idxen, Addr64,
               GLC, SLC, TFE);
@@ -1016,7 +1024,7 @@ bool AMDGPUDAGToDAGISel::SelectMUBUFOffset(SDValue Addr, SDValue &SRsrc,
   if (!cast<ConstantSDNode>(Offen)->getSExtValue() &&
       !cast<ConstantSDNode>(Idxen)->getSExtValue() &&
       !cast<ConstantSDNode>(Addr64)->getSExtValue()) {
-    uint64_t Rsrc = AMDGPU::RSRC_DATA_FORMAT |
+    uint64_t Rsrc = TII->getDefaultRsrcDataFormat() |
                     APInt::getAllOnesValue(32).getZExtValue(); // Size
     SDLoc DL(Addr);
 
@@ -1078,7 +1086,9 @@ SDNode *AMDGPUDAGToDAGISel::SelectAddrSpaceCast(SDNode *N) {
   if (DestSize > SrcSize) {
     assert(SrcSize == 32 && DestSize == 64);
 
-    SDValue RC = CurDAG->getTargetConstant(AMDGPU::VSrc_64RegClassID, MVT::i32);
+    // FIXME: This is probably wrong, we should never be defining
+    // a register class with both VGPRs and SGPRs
+    SDValue RC = CurDAG->getTargetConstant(AMDGPU::VS_64RegClassID, MVT::i32);
 
     const SDValue Ops[] = {
       RC,
@@ -1126,6 +1136,23 @@ bool AMDGPUDAGToDAGISel::SelectVOP3Mods0(SDValue In, SDValue &Src,
   Clamp = CurDAG->getTargetConstant(0, MVT::i32);
   Omod = CurDAG->getTargetConstant(0, MVT::i32);
 
+  return SelectVOP3Mods(In, Src, SrcMods);
+}
+
+bool AMDGPUDAGToDAGISel::SelectVOP3Mods0Clamp(SDValue In, SDValue &Src,
+                                              SDValue &SrcMods,
+                                              SDValue &Omod) const {
+  // FIXME: Handle Omod
+  Omod = CurDAG->getTargetConstant(0, MVT::i32);
+
+  return SelectVOP3Mods(In, Src, SrcMods);
+}
+
+bool AMDGPUDAGToDAGISel::SelectVOP3Mods0Clamp0OMod(SDValue In, SDValue &Src,
+                                                   SDValue &SrcMods,
+                                                   SDValue &Clamp,
+                                                   SDValue &Omod) const {
+  Clamp = Omod = CurDAG->getTargetConstant(0, MVT::i32);
   return SelectVOP3Mods(In, Src, SrcMods);
 }
 

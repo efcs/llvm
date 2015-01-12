@@ -23,7 +23,6 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LeakDetector.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/RWMutex.h"
@@ -46,20 +45,13 @@ Argument::Argument(Type *Ty, const Twine &Name, Function *Par)
   : Value(Ty, Value::ArgumentVal) {
   Parent = nullptr;
 
-  // Make sure that we get added to a function
-  LeakDetector::addGarbageObject(this);
-
   if (Par)
     Par->getArgumentList().push_back(this);
   setName(Name);
 }
 
 void Argument::setParent(Function *parent) {
-  if (getParent())
-    LeakDetector::addGarbageObject(this);
   Parent = parent;
-  if (getParent())
-    LeakDetector::removeGarbageObject(this);
 }
 
 /// getArgNo - Return the index of this formal argument in its containing
@@ -260,9 +252,6 @@ Function::Function(FunctionType *Ty, LinkageTypes Linkage, const Twine &name,
   if (Ty->getNumParams())
     setValueSubclassData(1);   // Set the "has lazy arguments" bit.
 
-  // Make sure that we get added to a function
-  LeakDetector::addGarbageObject(this);
-
   if (ParentModule)
     ParentModule->getFunctionList().push_back(this);
 
@@ -298,7 +287,7 @@ void Function::BuildLazyArguments() const {
 
   // Clear the lazy arguments bit.
   unsigned SDC = getSubclassDataFromValue();
-  const_cast<Function*>(this)->setValueSubclassData(SDC &= ~1);
+  const_cast<Function*>(this)->setValueSubclassData(SDC &= ~(1<<0));
 }
 
 size_t Function::arg_size() const {
@@ -309,11 +298,7 @@ bool Function::arg_empty() const {
 }
 
 void Function::setParent(Module *parent) {
-  if (getParent())
-    LeakDetector::addGarbageObject(this);
   Parent = parent;
-  if (getParent())
-    LeakDetector::removeGarbageObject(this);
 }
 
 // dropAllReferences() - This function causes all the subinstructions to "let
@@ -335,8 +320,9 @@ void Function::dropAllReferences() {
   while (!BasicBlocks.empty())
     BasicBlocks.begin()->eraseFromParent();
 
-  // Prefix data is stored in a side table.
+  // Prefix and prologue data are stored in a side table.
   setPrefixData(nullptr);
+  setPrologueData(nullptr);
 }
 
 void Function::addAttribute(unsigned i, Attribute::AttrKind attr) {
@@ -416,6 +402,10 @@ void Function::copyAttributesFrom(const GlobalValue *Src) {
     setPrefixData(SrcF->getPrefixData());
   else
     setPrefixData(nullptr);
+  if (SrcF->hasPrologueData())
+    setPrologueData(SrcF->getPrologueData());
+  else
+    setPrologueData(nullptr);
 }
 
 /// getIntrinsicID - This method returns the ID number of the specified
@@ -455,6 +445,42 @@ unsigned Function::lookupIntrinsicID() const {
   return 0;
 }
 
+/// Returns a stable mangling for the type specified for use in the name
+/// mangling scheme used by 'any' types in intrinsic signatures.  The mangling
+/// of named types is simply their name.  Manglings for unnamed types consist
+/// of a prefix ('p' for pointers, 'a' for arrays, 'f_' for functions)
+/// combined with the mangling of their component types.  A vararg function
+/// type will have a suffix of 'vararg'.  Since function types can contain
+/// other function types, we close a function type mangling with suffix 'f'
+/// which can't be confused with it's prefix.  This ensures we don't have
+/// collisions between two unrelated function types. Otherwise, you might
+/// parse ffXX as f(fXX) or f(fX)X.  (X is a placeholder for any other type.)
+static std::string getMangledTypeStr(Type* Ty) {
+  std::string Result;
+  if (PointerType* PTyp = dyn_cast<PointerType>(Ty)) {
+    Result += "p" + llvm::utostr(PTyp->getAddressSpace()) +
+      getMangledTypeStr(PTyp->getElementType());
+  } else if (ArrayType* ATyp = dyn_cast<ArrayType>(Ty)) {
+    Result += "a" + llvm::utostr(ATyp->getNumElements()) +
+      getMangledTypeStr(ATyp->getElementType());
+  } else if (StructType* STyp = dyn_cast<StructType>(Ty)) {
+    if (!STyp->isLiteral())
+      Result += STyp->getName();
+    else
+      llvm_unreachable("TODO: implement literal types");
+  } else if (FunctionType* FT = dyn_cast<FunctionType>(Ty)) {
+    Result += "f_" + getMangledTypeStr(FT->getReturnType());
+    for (size_t i = 0; i < FT->getNumParams(); i++)
+      Result += getMangledTypeStr(FT->getParamType(i));
+    if (FT->isVarArg())
+      Result += "vararg";
+    // Ensure nested function types are distinguishable.
+    Result += "f"; 
+  } else if (Ty)
+    Result += EVT::getEVT(Ty).getEVTString();
+  return Result;
+}
+
 std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
   assert(id < num_intrinsics && "Invalid intrinsic ID!");
   static const char * const Table[] = {
@@ -467,12 +493,7 @@ std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
     return Table[id];
   std::string Result(Table[id]);
   for (unsigned i = 0; i < Tys.size(); ++i) {
-    if (PointerType* PTyp = dyn_cast<PointerType>(Tys[i])) {
-      Result += ".p" + llvm::utostr(PTyp->getAddressSpace()) +
-                EVT::getEVT(PTyp->getElementType()).getEVTString();
-    }
-    else if (Tys[i])
-      Result += "." + EVT::getEVT(Tys[i]).getEVTString();
+    Result += "." + getMangledTypeStr(Tys[i]);
   }
   return Result;
 }
@@ -515,7 +536,9 @@ enum IIT_Info {
   IIT_ANYPTR = 26,
   IIT_V1   = 27,
   IIT_VARARG = 28,
-  IIT_HALF_VEC_ARG = 29
+  IIT_HALF_VEC_ARG = 29,
+  IIT_SAME_VEC_WIDTH_ARG = 30,
+  IIT_PTR_TO_ARG = 31
 };
 
 
@@ -620,6 +643,18 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
   case IIT_HALF_VEC_ARG: {
     unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::HalfVecArgument,
+                                             ArgInfo));
+    return;
+  }
+  case IIT_SAME_VEC_WIDTH_ARG: {
+    unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::SameVecWidthArgument,
+                                             ArgInfo));
+    return;
+  }
+  case IIT_PTR_TO_ARG: {
+    unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::PtrToArgument,
                                              ArgInfo));
     return;
   }
@@ -730,7 +765,19 @@ static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
   case IITDescriptor::HalfVecArgument:
     return VectorType::getHalfElementsVectorType(cast<VectorType>(
                                                   Tys[D.getArgumentNumber()]));
+  case IITDescriptor::SameVecWidthArgument: {
+    Type *EltTy = DecodeFixedType(Infos, Tys, Context);
+    Type *Ty = Tys[D.getArgumentNumber()];
+    if (VectorType *VTy = dyn_cast<VectorType>(Ty)) {
+      return VectorType::get(EltTy, VTy->getNumElements());
+    }
+    llvm_unreachable("unhandled");
   }
+  case IITDescriptor::PtrToArgument: {
+    Type *Ty = Tys[D.getArgumentNumber()];
+    return PointerType::getUnqual(Ty);
+  }
+ }
   llvm_unreachable("unhandled");
 }
 
@@ -849,11 +896,40 @@ void Function::setPrefixData(Constant *PrefixData) {
       PDHolder->setOperand(0, PrefixData);
     else
       PDHolder = ReturnInst::Create(getContext(), PrefixData);
-    SCData |= 2;
+    SCData |= (1<<1);
   } else {
     delete PDHolder;
     PDMap.erase(this);
-    SCData &= ~2;
+    SCData &= ~(1<<1);
   }
   setValueSubclassData(SCData);
+}
+
+Constant *Function::getPrologueData() const {
+  assert(hasPrologueData());
+  const LLVMContextImpl::PrologueDataMapTy &SOMap =
+      getContext().pImpl->PrologueDataMap;
+  assert(SOMap.find(this) != SOMap.end());
+  return cast<Constant>(SOMap.find(this)->second->getReturnValue());
+}
+
+void Function::setPrologueData(Constant *PrologueData) {
+  if (!PrologueData && !hasPrologueData())
+    return;
+
+  unsigned PDData = getSubclassDataFromValue();
+  LLVMContextImpl::PrologueDataMapTy &PDMap = getContext().pImpl->PrologueDataMap;
+  ReturnInst *&PDHolder = PDMap[this];
+  if (PrologueData) {
+    if (PDHolder)
+      PDHolder->setOperand(0, PrologueData);
+    else
+      PDHolder = ReturnInst::Create(getContext(), PrologueData);
+    PDData |= (1<<2);
+  } else {
+    delete PDHolder;
+    PDMap.erase(this);
+    PDData &= ~(1<<2);
+  }
+  setValueSubclassData(PDData);
 }

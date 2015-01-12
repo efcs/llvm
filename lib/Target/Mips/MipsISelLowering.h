@@ -262,6 +262,8 @@ namespace llvm {
 
     void HandleByVal(CCState *, unsigned &, unsigned) const override;
 
+    unsigned getRegisterByName(const char* RegName, EVT VT) const override;
+
   protected:
     SDValue getGlobalReg(SelectionDAG &DAG, EVT Ty) const;
 
@@ -534,6 +536,9 @@ namespace llvm {
     MachineBasicBlock *emitAtomicCmpSwapPartword(MachineInstr *MI,
                                   MachineBasicBlock *BB, unsigned Size) const;
     MachineBasicBlock *emitSEL_D(MachineInstr *MI, MachineBasicBlock *BB) const;
+    MachineBasicBlock *emitPseudoSELECT(MachineInstr *MI,
+                                        MachineBasicBlock *BB, bool isFPCmp,
+                                        unsigned Opc) const;
   };
 
   /// Create MipsTargetLowering objects.

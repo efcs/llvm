@@ -14,12 +14,12 @@
 #ifndef LLVM_LIB_CODEGEN_ASMPRINTER_DWARFUNIT_H
 #define LLVM_LIB_CODEGEN_ASMPRINTER_DWARFUNIT_H
 
-#include "DIE.h"
 #include "DwarfDebug.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/CodeGen/DIE.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/MC/MCExpr.h"
@@ -253,12 +253,16 @@ public:
   /// addTemplateParams - Add template parameters in buffer.
   void addTemplateParams(DIE &Buffer, DIArray TParams);
 
-  /// addRegisterOp - Add register operand.
-  void addRegisterOpPiece(DIELoc &TheDie, unsigned Reg,
+  /// \brief Add register operand.
+  /// \returns false if the register does not exist, e.g., because it was never
+  /// materialized.
+  bool addRegisterOpPiece(DIELoc &TheDie, unsigned Reg,
                           unsigned SizeInBits = 0, unsigned OffsetInBits = 0);
 
-  /// addRegisterOffset - Add register offset.
-  void addRegisterOffset(DIELoc &TheDie, unsigned Reg, int64_t Offset);
+  /// \brief Add register offset.
+  /// \returns false if the register does not exist, e.g., because it was never
+  /// materialized.
+  bool addRegisterOffset(DIELoc &TheDie, unsigned Reg, int64_t Offset);
 
   // FIXME: Should be reformulated in terms of addComplexAddress.
   /// addBlockByrefAddress - Start with the address based on the location

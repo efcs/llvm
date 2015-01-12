@@ -414,7 +414,7 @@ static void InitLibcallNames(const char **Names, const Triple &TT) {
     Names[RTLIB::SINCOS_PPCF128] = nullptr;
   }
 
-  if (TT.getOS() != Triple::OpenBSD) {
+  if (!TT.isOSOpenBSD()) {
     Names[RTLIB::STACKPROTECTOR_CHECK_FAIL] = "__stack_chk_fail";
   } else {
     // These are generally not available.
@@ -694,10 +694,9 @@ static void InitCmpLibcallCCs(ISD::CondCode *CCs) {
   CCs[RTLIB::O_F128] = ISD::SETEQ;
 }
 
-/// NOTE: The constructor takes ownership of TLOF.
-TargetLoweringBase::TargetLoweringBase(const TargetMachine &tm,
-                                       const TargetLoweringObjectFile *tlof)
-    : TM(tm), DL(TM.getSubtargetImpl()->getDataLayout()), TLOF(*tlof) {
+/// NOTE: The TargetMachine owns TLOF.
+TargetLoweringBase::TargetLoweringBase(const TargetMachine &tm)
+    : TM(tm), DL(TM.getSubtargetImpl()->getDataLayout()) {
   initActions();
 
   // Perform these initializations only once.
@@ -715,6 +714,7 @@ TargetLoweringBase::TargetLoweringBase(const TargetMachine &tm,
   JumpIsExpensive = false;
   PredictableSelectIsExpensive = false;
   MaskAndBranchFoldingIsLegal = false;
+  EnableExtLdPromotion = false;
   HasFloatingPointExceptions = true;
   StackPointerRegisterToSaveRestore = 0;
   ExceptionPointerRegister = 0;
@@ -737,10 +737,6 @@ TargetLoweringBase::TargetLoweringBase(const TargetMachine &tm,
   InitLibcallCallingConvs(LibcallCallingConvs);
 }
 
-TargetLoweringBase::~TargetLoweringBase() {
-  delete &TLOF;
-}
-
 void TargetLoweringBase::initActions() {
   // All operations default to being supported.
   memset(OpActions, 0, sizeof(OpActions));
@@ -752,37 +748,32 @@ void TargetLoweringBase::initActions() {
   memset(TargetDAGCombineArray, 0, array_lengthof(TargetDAGCombineArray));
 
   // Set default actions for various operations.
-  for (unsigned VT = 0; VT != (unsigned)MVT::LAST_VALUETYPE; ++VT) {
+  for (MVT VT : MVT::all_valuetypes()) {
     // Default all indexed load / store to expand.
     for (unsigned IM = (unsigned)ISD::PRE_INC;
          IM != (unsigned)ISD::LAST_INDEXED_MODE; ++IM) {
-      setIndexedLoadAction(IM, (MVT::SimpleValueType)VT, Expand);
-      setIndexedStoreAction(IM, (MVT::SimpleValueType)VT, Expand);
+      setIndexedLoadAction(IM, VT, Expand);
+      setIndexedStoreAction(IM, VT, Expand);
     }
 
     // Most backends expect to see the node which just returns the value loaded.
-    setOperationAction(ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS,
-                       (MVT::SimpleValueType)VT, Expand);
+    setOperationAction(ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS, VT, Expand);
 
     // These operations default to expand.
-    setOperationAction(ISD::FGETSIGN, (MVT::SimpleValueType)VT, Expand);
-    setOperationAction(ISD::CONCAT_VECTORS, (MVT::SimpleValueType)VT, Expand);
-    setOperationAction(ISD::FMINNUM, (MVT::SimpleValueType)VT, Expand);
-    setOperationAction(ISD::FMAXNUM, (MVT::SimpleValueType)VT, Expand);
+    setOperationAction(ISD::FGETSIGN, VT, Expand);
+    setOperationAction(ISD::CONCAT_VECTORS, VT, Expand);
+    setOperationAction(ISD::FMINNUM, VT, Expand);
+    setOperationAction(ISD::FMAXNUM, VT, Expand);
 
     // These library functions default to expand.
-    setOperationAction(ISD::FROUND, (MVT::SimpleValueType)VT, Expand);
+    setOperationAction(ISD::FROUND, VT, Expand);
 
     // These operations default to expand for vector types.
-    if (VT >= MVT::FIRST_VECTOR_VALUETYPE &&
-        VT <= MVT::LAST_VECTOR_VALUETYPE) {
-      setOperationAction(ISD::FCOPYSIGN, (MVT::SimpleValueType)VT, Expand);
-      setOperationAction(ISD::ANY_EXTEND_VECTOR_INREG,
-                         (MVT::SimpleValueType)VT, Expand);
-      setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG,
-                         (MVT::SimpleValueType)VT, Expand);
-      setOperationAction(ISD::ZERO_EXTEND_VECTOR_INREG,
-                         (MVT::SimpleValueType)VT, Expand);
+    if (VT.isVector()) {
+      setOperationAction(ISD::FCOPYSIGN, VT, Expand);
+      setOperationAction(ISD::ANY_EXTEND_VECTOR_INREG, VT, Expand);
+      setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, VT, Expand);
+      setOperationAction(ISD::ZERO_EXTEND_VECTOR_INREG, VT, Expand);
     }
   }
 
@@ -997,8 +988,14 @@ TargetLoweringBase::emitPatchPoint(MachineInstr *MI,
     // Add a new memory operand for this FI.
     const MachineFrameInfo &MFI = *MF.getFrameInfo();
     assert(MFI.getObjectOffset(FI) != -1);
+
+    unsigned Flags = MachineMemOperand::MOLoad;
+    if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+      Flags |= MachineMemOperand::MOStore;
+      Flags |= MachineMemOperand::MOVolatile;
+    }
     MachineMemOperand *MMO = MF.getMachineMemOperand(
-        MachinePointerInfo::getFixedStack(FI), MachineMemOperand::MOLoad,
+        MachinePointerInfo::getFixedStack(FI), Flags,
         TM.getSubtargetImpl()->getDataLayout()->getPointerSize(),
         MFI.getObjectAlignment(FI));
     MIB->addMemOperand(MF, MMO);
@@ -1044,8 +1041,8 @@ TargetLoweringBase::findRepresentativeClass(MVT VT) const {
 /// computeRegisterProperties - Once all of the register classes are added,
 /// this allows us to compute derived properties we expose.
 void TargetLoweringBase::computeRegisterProperties() {
-  assert(MVT::LAST_VALUETYPE <= MVT::MAX_ALLOWED_VALUETYPE &&
-         "Too many value types for ValueTypeActions to hold!");
+  static_assert(MVT::LAST_VALUETYPE <= MVT::MAX_ALLOWED_VALUETYPE,
+                "Too many value types for ValueTypeActions to hold!");
 
   // Everything defaults to needing one register.
   for (unsigned i = 0; i != MVT::LAST_VALUETYPE; ++i) {

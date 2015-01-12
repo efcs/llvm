@@ -21,7 +21,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AssumptionTracker.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -188,16 +188,16 @@ static void propagateIRFlags(Value *I, ArrayRef<Value *> VL) {
 /// \returns \p I after propagating metadata from \p VL.
 static Instruction *propagateMetadata(Instruction *I, ArrayRef<Value *> VL) {
   Instruction *I0 = cast<Instruction>(VL[0]);
-  SmallVector<std::pair<unsigned, Value *>, 4> Metadata;
+  SmallVector<std::pair<unsigned, MDNode *>, 4> Metadata;
   I0->getAllMetadataOtherThanDebugLoc(Metadata);
 
   for (unsigned i = 0, n = Metadata.size(); i != n; ++i) {
     unsigned Kind = Metadata[i].first;
-    MDNode *MD = cast_or_null<MDNode>(Metadata[i].second);
+    MDNode *MD = Metadata[i].second;
 
     for (int i = 1, e = VL.size(); MD && i != e; i++) {
       Instruction *I = cast<Instruction>(VL[i]);
-      MDNode *IMD = I->getMDNode(Kind);
+      MDNode *IMD = I->getMetadata(Kind);
 
       switch (Kind) {
       default:
@@ -398,11 +398,11 @@ public:
 
   BoUpSLP(Function *Func, ScalarEvolution *Se, const DataLayout *Dl,
           TargetTransformInfo *Tti, TargetLibraryInfo *TLi, AliasAnalysis *Aa,
-          LoopInfo *Li, DominatorTree *Dt, AssumptionTracker *AT)
-      : NumLoadsWantToKeepOrder(0), NumLoadsWantToChangeOrder(0),
-        F(Func), SE(Se), DL(Dl), TTI(Tti), TLI(TLi), AA(Aa), LI(Li), DT(Dt),
+          LoopInfo *Li, DominatorTree *Dt, AssumptionCache *AC)
+      : NumLoadsWantToKeepOrder(0), NumLoadsWantToChangeOrder(0), F(Func),
+        SE(Se), DL(Dl), TTI(Tti), TLI(TLi), AA(Aa), LI(Li), DT(Dt),
         Builder(Se->getContext()) {
-    CodeMetrics::collectEphemeralValues(F, AT, EphValues);
+    CodeMetrics::collectEphemeralValues(F, AC, EphValues);
   }
 
   /// \brief Vectorize the tree that starts with the elements in \p VL.
@@ -1031,11 +1031,11 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth) {
     }
   }
 
-  // If any of the scalars appears in the table OR it is marked as a value that
-  // needs to stat scalar then we need to gather the scalars.
+  // If any of the scalars is marked as a value that needs to stay scalar then
+  // we need to gather the scalars.
   for (unsigned i = 0, e = VL.size(); i != e; ++i) {
-    if (ScalarToTreeEntry.count(VL[i]) || MustGather.count(VL[i])) {
-      DEBUG(dbgs() << "SLP: Gathering due to gathered scalar. \n");
+    if (MustGather.count(VL[i])) {
+      DEBUG(dbgs() << "SLP: Gathering due to gathered scalar.\n");
       newTreeEntry(VL, false);
       return;
     }
@@ -1724,7 +1724,7 @@ int BoUpSLP::getTreeCost() {
   for (UserList::iterator I = ExternalUses.begin(), E = ExternalUses.end();
        I != E; ++I) {
     // We only add extract cost once for the same scalar.
-    if (!ExtractCostCalculated.insert(I->Scalar))
+    if (!ExtractCostCalculated.insert(I->Scalar).second)
       continue;
 
     // Uses by ephemeral values are free (because the ephemeral value will be
@@ -1922,7 +1922,7 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
         ValueList Operands;
         BasicBlock *IBB = PH->getIncomingBlock(i);
 
-        if (!VisitedBBs.insert(IBB)) {
+        if (!VisitedBBs.insert(IBB).second) {
           NewPhi->addIncoming(NewPhi->getIncomingValueForBlock(IBB), IBB);
           continue;
         }
@@ -2833,7 +2833,7 @@ struct SLPVectorizer : public FunctionPass {
   AliasAnalysis *AA;
   LoopInfo *LI;
   DominatorTree *DT;
-  AssumptionTracker *AT;
+  AssumptionCache *AC;
 
   bool runOnFunction(Function &F) override {
     if (skipOptnoneFunction(F))
@@ -2847,7 +2847,7 @@ struct SLPVectorizer : public FunctionPass {
     AA = &getAnalysis<AliasAnalysis>();
     LI = &getAnalysis<LoopInfo>();
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-    AT = &getAnalysis<AssumptionTracker>();
+    AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
     StoreRefs.clear();
     bool Changed = false;
@@ -2870,7 +2870,7 @@ struct SLPVectorizer : public FunctionPass {
 
     // Use the bottom up slp vectorizer to construct chains that start with
     // store instructions.
-    BoUpSLP R(&F, SE, DL, TTI, TLI, AA, LI, DT, AT);
+    BoUpSLP R(&F, SE, DL, TTI, TLI, AA, LI, DT, AC);
 
     // Scan the blocks in the function in post order.
     for (po_iterator<BasicBlock*> it = po_begin(&F.getEntryBlock()),
@@ -2897,7 +2897,7 @@ struct SLPVectorizer : public FunctionPass {
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     FunctionPass::getAnalysisUsage(AU);
-    AU.addRequired<AssumptionTracker>();
+    AU.addRequired<AssumptionCacheTracker>();
     AU.addRequired<ScalarEvolution>();
     AU.addRequired<AliasAnalysis>();
     AU.addRequired<TargetTransformInfo>();
@@ -3502,11 +3502,10 @@ private:
   /// \brief Emit a horizontal reduction of the vectorized value.
   Value *emitReduction(Value *VectorizedValue, IRBuilder<> &Builder) {
     assert(VectorizedValue && "Need to have a vectorized tree node");
-    Instruction *ValToReduce = dyn_cast<Instruction>(VectorizedValue);
     assert(isPowerOf2_32(ReduxWidth) &&
            "We only handle power-of-two reductions for now");
 
-    Value *TmpVec = ValToReduce;
+    Value *TmpVec = VectorizedValue;
     for (unsigned i = ReduxWidth / 2; i != 0; i >>= 1) {
       if (IsPairwiseReduction) {
         Value *LeftMask =
@@ -3632,7 +3631,7 @@ bool SLPVectorizer::vectorizeChainsInBlock(BasicBlock *BB, BoUpSLP &R) {
 
   for (BasicBlock::iterator it = BB->begin(), e = BB->end(); it != e; it++) {
     // We may go through BB multiple times so skip the one we have checked.
-    if (!VisitedInstrs.insert(it))
+    if (!VisitedInstrs.insert(it).second)
       continue;
 
     if (isa<DbgInfoIntrinsic>(it))
@@ -3689,6 +3688,21 @@ bool SLPVectorizer::vectorizeChainsInBlock(BasicBlock *BB, BoUpSLP &R) {
           if (((HorRdx.matchAssociativeReduction(nullptr, BinOp, DL) &&
                 HorRdx.tryToReduce(R, TTI)) ||
                tryToVectorize(BinOp, R))) {
+            Changed = true;
+            it = BB->begin();
+            e = BB->end();
+            continue;
+          }
+        }
+
+    // Try to vectorize horizontal reductions feeding into a return.
+    if (ReturnInst *RI = dyn_cast<ReturnInst>(it))
+      if (RI->getNumOperands() != 0)
+        if (BinaryOperator *BinOp =
+                dyn_cast<BinaryOperator>(RI->getOperand(0))) {
+          DEBUG(dbgs() << "SLP: Found a return to vectorize.\n");
+          if (tryToVectorizePair(BinOp->getOperand(0),
+                                 BinOp->getOperand(1), R)) {
             Changed = true;
             it = BB->begin();
             e = BB->end();
@@ -3772,7 +3786,7 @@ static const char lv_name[] = "SLP Vectorizer";
 INITIALIZE_PASS_BEGIN(SLPVectorizer, SV_NAME, lv_name, false, false)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
 INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
-INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
+INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_END(SLPVectorizer, SV_NAME, lv_name, false, false)
