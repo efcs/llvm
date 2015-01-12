@@ -55,7 +55,8 @@ DIBuilder::DIBuilder(Module &m, bool AllowUnresolvedNodes)
       AllowUnresolvedNodes(AllowUnresolvedNodes) {}
 
 static bool isUnresolved(MDNode *N) {
-  return N && (isa<MDNodeFwdDecl>(N) || !cast<GenericMDNode>(N)->isResolved());
+  return N &&
+         (isa<MDNodeFwdDecl>(N) || !cast<UniquableMDNode>(N)->isResolved());
 }
 
 void DIBuilder::trackIfUnresolved(MDNode *N) {
@@ -110,7 +111,7 @@ void DIBuilder::finalize() {
   // cycles.
   for (const auto &N : UnresolvedNodes)
     if (N)
-      cast<GenericMDNode>(N)->resolveCycles();
+      cast<UniquableMDNode>(N)->resolveCycles();
   UnresolvedNodes.clear();
 
   // Can't handle unresolved nodes anymore.
@@ -328,14 +329,15 @@ DIBuilder::createPointerType(DIType PointeeTy, uint64_t SizeInBits,
   return DIDerivedType(MDNode::get(VMContext, Elts));
 }
 
-DIDerivedType DIBuilder::createMemberPointerType(DIType PointeeTy,
-                                                 DIType Base) {
+DIDerivedType
+DIBuilder::createMemberPointerType(DIType PointeeTy, DIType Base,
+                                   uint64_t SizeInBits, uint64_t AlignInBits) {
   // Pointer types are encoded in DIDerivedType format.
   Metadata *Elts[] = {HeaderBuilder::get(dwarf::DW_TAG_ptr_to_member_type)
                           .concat(StringRef())
                           .concat(0) // Line
-                          .concat(0) // Size
-                          .concat(0) // Align
+                          .concat(SizeInBits) // Size
+                          .concat(AlignInBits) // Align
                           .concat(0) // Offset
                           .concat(0) // Flags
                           .get(VMContext),
