@@ -7,10 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/Metadata.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/raw_ostream.h"
@@ -302,12 +303,12 @@ TEST_F(MDNodeTest, handleChangedOperandRecursion) {
   MDNode *N0 = MDNode::get(Context, None);
 
   // !1 = !{!3, null}
-  MDNodeFwdDecl *Temp3 = MDNode::getTemporary(Context, None);
-  Metadata *Ops1[] = {Temp3, nullptr};
+  std::unique_ptr<MDNodeFwdDecl> Temp3(MDNode::getTemporary(Context, None));
+  Metadata *Ops1[] = {Temp3.get(), nullptr};
   MDNode *N1 = MDNode::get(Context, Ops1);
 
   // !2 = !{!3, !0}
-  Metadata *Ops2[] = {Temp3, N0};
+  Metadata *Ops2[] = {Temp3.get(), N0};
   MDNode *N2 = MDNode::get(Context, Ops2);
 
   // !3 = !{!2}
@@ -358,6 +359,69 @@ TEST_F(MDNodeTest, handleChangedOperandRecursion) {
   EXPECT_EQ(N1, N4->getOperand(0));
   EXPECT_EQ(N1, N5->getOperand(0));
   EXPECT_EQ(N4, N6->getOperand(0));
+}
+
+TEST_F(MDNodeTest, replaceResolvedOperand) {
+  // Check code for replacing one resolved operand with another.  If doing this
+  // directly (via replaceOperandWith()) becomes illegal, change the operand to
+  // a global value that gets RAUW'ed.
+  //
+  // Use a temporary node to keep N from being resolved.
+  std::unique_ptr<MDNodeFwdDecl> Temp(MDNodeFwdDecl::get(Context, None));
+  Metadata *Ops[] = {nullptr, Temp.get()};
+
+  MDNode *Empty = MDTuple::get(Context, ArrayRef<Metadata *>());
+  MDNode *N = MDTuple::get(Context, Ops);
+  EXPECT_EQ(nullptr, N->getOperand(0));
+  ASSERT_FALSE(N->isResolved());
+
+  // Check code for replacing resolved nodes.
+  N->replaceOperandWith(0, Empty);
+  EXPECT_EQ(Empty, N->getOperand(0));
+
+  // Check code for adding another unresolved operand.
+  N->replaceOperandWith(0, Temp.get());
+  EXPECT_EQ(Temp.get(), N->getOperand(0));
+
+  // Remove the references to Temp; required for teardown.
+  Temp->replaceAllUsesWith(nullptr);
+}
+
+typedef MetadataTest MDLocationTest;
+
+TEST_F(MDLocationTest, Overflow) {
+  MDNode *N = MDNode::get(Context, None);
+  {
+    MDLocation *L = MDLocation::get(Context, 2, 7, N);
+    EXPECT_EQ(2u, L->getLine());
+    EXPECT_EQ(7u, L->getColumn());
+  }
+  unsigned U24 = 1u << 24;
+  unsigned U8 = 1u << 8;
+  {
+    MDLocation *L = MDLocation::get(Context, U24 - 1, U8 - 1, N);
+    EXPECT_EQ(U24 - 1, L->getLine());
+    EXPECT_EQ(U8 - 1, L->getColumn());
+  }
+  {
+    MDLocation *L = MDLocation::get(Context, U24, U8, N);
+    EXPECT_EQ(0u, L->getLine());
+    EXPECT_EQ(0u, L->getColumn());
+  }
+  {
+    MDLocation *L = MDLocation::get(Context, U24 + 1, U8 + 1, N);
+    EXPECT_EQ(0u, L->getLine());
+    EXPECT_EQ(0u, L->getColumn());
+  }
+}
+
+TEST_F(MDLocationTest, getDistinct) {
+  MDNode *N = MDNode::get(Context, None);
+  MDLocation *L0 = MDLocation::getDistinct(Context, 2, 7, N);
+  EXPECT_TRUE(L0->isDistinct());
+  MDLocation *L1 = MDLocation::get(Context, 2, 7, N);
+  EXPECT_FALSE(L1->isDistinct());
+  EXPECT_EQ(L1, MDLocation::get(Context, 2, 7, N));
 }
 
 typedef MetadataTest MetadataAsValueTest;
@@ -418,6 +482,34 @@ TEST_F(ValueAsMetadataTest, UpdatesOnRAUW) {
       new GlobalVariable(Ty, false, GlobalValue::ExternalLinkage));
   GV0->replaceAllUsesWith(GV1.get());
   EXPECT_TRUE(MD->getValue() == GV1.get());
+}
+
+TEST_F(ValueAsMetadataTest, CollidingDoubleUpdates) {
+  // Create a constant.
+  ConstantAsMetadata *CI = ConstantAsMetadata::get(
+      ConstantInt::get(getGlobalContext(), APInt(8, 0)));
+
+  // Create a temporary to prevent nodes from resolving.
+  std::unique_ptr<MDNodeFwdDecl> Temp(MDNode::getTemporary(Context, None));
+
+  // When the first operand of N1 gets reset to nullptr, it'll collide with N2.
+  Metadata *Ops1[] = {CI, CI, Temp.get()};
+  Metadata *Ops2[] = {nullptr, CI, Temp.get()};
+
+  auto *N1 = MDTuple::get(Context, Ops1);
+  auto *N2 = MDTuple::get(Context, Ops2);
+  ASSERT_NE(N1, N2);
+
+  // Tell metadata that the constant is getting deleted.
+  //
+  // After this, N1 will be invalid, so don't touch it.
+  ValueAsMetadata::handleDeletion(CI->getValue());
+  EXPECT_EQ(nullptr, N2->getOperand(0));
+  EXPECT_EQ(nullptr, N2->getOperand(1));
+  EXPECT_EQ(Temp.get(), N2->getOperand(2));
+
+  // Clean up Temp for teardown.
+  Temp->replaceAllUsesWith(nullptr);
 }
 
 typedef MetadataTest TrackingMDRefTest;

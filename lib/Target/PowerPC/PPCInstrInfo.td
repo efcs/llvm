@@ -681,7 +681,7 @@ def IsPPC4xx  : Predicate<"PPCSubTarget->isPPC4xx()">;
 def IsPPC6xx  : Predicate<"PPCSubTarget->isPPC6xx()">;
 def IsE500  : Predicate<"PPCSubTarget->isE500()">;
 def HasSPE  : Predicate<"PPCSubTarget->HasSPE()">;
-
+def HasICBT : Predicate<"PPCSubTarget->hasICBT()">;
 //===----------------------------------------------------------------------===//
 // PowerPC Multiclass Definitions.
 
@@ -1016,7 +1016,7 @@ def RESTORE_CRBIT : Pseudo<(outs crbitrc:$cond), (ins memri:$F),
 let isTerminator = 1, isBarrier = 1, PPC970_Unit = 7 in {
   let isReturn = 1, Uses = [LR, RM] in
     def BLR : XLForm_2_ext<19, 16, 20, 0, 0, (outs), (ins), "blr", IIC_BrB,
-                           [(retflag)]>;
+                           [(retflag)]>, Requires<[In32BitMode]>;
   let isBranch = 1, isIndirectBranch = 1, Uses = [CTR] in {
     def BCTR : XLForm_2_ext<19, 528, 20, 0, 0, (outs), (ins), "bctr", IIC_BrB,
                             []>;
@@ -1319,14 +1319,14 @@ def DCBZL  : DCB_Form<1014, 1, (outs), (ins memrr:$dst), "dcbzl $dst",
                       PPC970_DGroup_Single;
 
 def ICBT  : XForm_icbt<31, 22, (outs), (ins u4imm:$CT, memrr:$src),
-                       "icbt $CT, $src", IIC_LdStLoad>, Requires<[IsBookE]>;
+                       "icbt $CT, $src", IIC_LdStLoad>, Requires<[HasICBT]>;
 
 def : Pat<(prefetch xoaddr:$dst, (i32 0), imm, (i32 1)),
           (DCBT xoaddr:$dst)>;   // data prefetch for loads
 def : Pat<(prefetch xoaddr:$dst, (i32 1), imm, (i32 1)),
           (DCBTST xoaddr:$dst)>; // data prefetch for stores
 def : Pat<(prefetch xoaddr:$dst, (i32 0), imm, (i32 0)),
-          (ICBT 0, xoaddr:$dst)>; // inst prefetch (for read)
+          (ICBT 0, xoaddr:$dst)>, Requires<[HasICBT]>; // inst prefetch (for read)
 
 // Atomic operations
 let usesCustomInserter = 1 in {

@@ -159,6 +159,18 @@ def as_i64imm: SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(N->getSExtValue(), MVT::i64);
 }]>;
 
+// Copied from the AArch64 backend:
+def bitcast_fpimm_to_i32 : SDNodeXForm<fpimm, [{
+return CurDAG->getTargetConstant(
+  N->getValueAPF().bitcastToAPInt().getZExtValue(), MVT::i32);
+}]>;
+
+// Copied from the AArch64 backend:
+def bitcast_fpimm_to_i64 : SDNodeXForm<fpimm, [{
+return CurDAG->getTargetConstant(
+  N->getValueAPF().bitcastToAPInt().getZExtValue(), MVT::i64);
+}]>;
+
 def IMM8bit : PatLeaf <(imm),
   [{return isUInt<8>(N->getZExtValue());}]
 >;
@@ -1751,6 +1763,7 @@ multiclass MUBUF_Load_Helper_vi <bits<7> op, string asm, RegisterClass regClass,
 multiclass MUBUF_Store_Helper <bits<7> op, string name, RegisterClass vdataClass,
                           ValueType store_vt, SDPatternOperator st> {
 
+  let mayLoad = 0, mayStore = 1 in {
   let addr64 = 0 in {
 
     def "" : MUBUF_si <
@@ -1808,6 +1821,7 @@ multiclass MUBUF_Store_Helper <bits<7> op, string name, RegisterClass vdataClass
       let tfe = 0;
       let soffset = 128; // ZERO
    }
+   } // End mayLoad = 0, mayStore = 1
 }
 
 class FLAT_Load_Helper <bits<7> op, string asm, RegisterClass regClass> :
