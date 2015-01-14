@@ -15,8 +15,8 @@
 #define LLVM_LIB_TARGET_POWERPC_PPCSUBTARGET_H
 
 #include "PPCFrameLowering.h"
-#include "PPCInstrInfo.h"
 #include "PPCISelLowering.h"
+#include "PPCInstrInfo.h"
 #include "PPCSelectionDAGInfo.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/DataLayout.h"
@@ -113,6 +113,7 @@ protected:
   bool DeprecatedDST;
   bool HasLazyResolverStubs;
   bool IsLittleEndian;
+  bool HasICBT;
 
   enum {
     PPC_ABI_UNKNOWN,
@@ -230,6 +231,7 @@ public:
   bool isE500() const { return IsE500; }
   bool isDeprecatedMFTB() const { return DeprecatedMFTB; }
   bool isDeprecatedDST() const { return DeprecatedDST; }
+  bool hasICBT() const { return HasICBT; }
 
   const Triple &getTargetTriple() const { return TargetTriple; }
 

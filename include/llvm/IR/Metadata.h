@@ -57,6 +57,7 @@ protected:
 public:
   enum MetadataKind {
     MDTupleKind,
+    MDLocationKind,
     MDNodeFwdDeclKind,
     ConstantAsMetadataKind,
     LocalAsMetadataKind,
@@ -585,8 +586,6 @@ protected:
   unsigned MDNodeSubclassData;
 
   void *operator new(size_t Size, unsigned NumOps);
-
-  /// \brief Required by std, but never called.
   void operator delete(void *Mem);
 
   /// \brief Required by std, but never called.
@@ -672,6 +671,7 @@ public:
   /// \brief Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTupleKind ||
+           MD->getMetadataID() == MDLocationKind ||
            MD->getMetadataID() == MDNodeFwdDeclKind;
   }
 
@@ -722,13 +722,14 @@ protected:
   /// resolveCycles() is called).
   UniquableMDNode(LLVMContext &C, unsigned ID, ArrayRef<Metadata *> Vals,
                   bool AllowRAUW);
-  ~UniquableMDNode();
+  ~UniquableMDNode() {}
 
   void storeDistinctInContext();
 
 public:
   static bool classof(const Metadata *MD) {
-    return MD->getMetadataID() == MDTupleKind;
+    return MD->getMetadataID() == MDTupleKind ||
+           MD->getMetadataID() == MDLocationKind;
   }
 
   /// \brief Check whether any operands are forward declarations.
@@ -755,6 +756,10 @@ private:
   void resolve();
   void resolveAfterOperandChange(Metadata *Old, Metadata *New);
   void decrementUnresolvedOperandCount();
+
+  void deleteAsSubclass();
+  UniquableMDNode *uniquify();
+  void eraseFromStore();
 };
 
 /// \brief Tuple of metadata.
@@ -767,7 +772,7 @@ class MDTuple : public UniquableMDNode {
 
   MDTuple(LLVMContext &C, ArrayRef<Metadata *> Vals, bool AllowRAUW)
       : UniquableMDNode(C, MDTupleKind, Vals, AllowRAUW) {}
-  ~MDTuple();
+  ~MDTuple() { dropAllReferences(); }
 
   void setHash(unsigned Hash) { MDNodeSubclassData = Hash; }
   void recalculateHash();
@@ -794,6 +799,10 @@ public:
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTupleKind;
   }
+
+private:
+  MDTuple *uniquifyImpl();
+  void eraseFromStoreImpl();
 };
 
 MDNode *MDNode::get(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
@@ -805,6 +814,62 @@ MDNode *MDNode::getIfExists(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
 MDNode *MDNode::getDistinct(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
   return MDTuple::getDistinct(Context, MDs);
 }
+
+/// \brief Debug location.
+///
+/// A debug location in source code, used for debug info and otherwise.
+class MDLocation : public UniquableMDNode {
+  friend class LLVMContextImpl;
+  friend class UniquableMDNode;
+
+  MDLocation(LLVMContext &C, unsigned Line, unsigned Column,
+             ArrayRef<Metadata *> MDs, bool AllowRAUW);
+  ~MDLocation() { dropAllReferences(); }
+
+  static MDLocation *constructHelper(LLVMContext &Context, unsigned Line,
+                                     unsigned Column, Metadata *Scope,
+                                     Metadata *InlinedAt, bool AllowRAUW);
+
+  static MDLocation *getImpl(LLVMContext &Context, unsigned Line,
+                             unsigned Column, Metadata *Scope,
+                             Metadata *InlinedAt, bool ShouldCreate);
+
+  // Disallow replacing operands.
+  void replaceOperandWith(unsigned I, Metadata *New) LLVM_DELETED_FUNCTION;
+
+public:
+  static MDLocation *get(LLVMContext &Context, unsigned Line, unsigned Column,
+                         Metadata *Scope, Metadata *InlinedAt = nullptr) {
+    return getImpl(Context, Line, Column, Scope, InlinedAt,
+                   /* ShouldCreate */ true);
+  }
+  static MDLocation *getIfExists(LLVMContext &Context, unsigned Line,
+                                 unsigned Column, Metadata *Scope,
+                                 Metadata *InlinedAt = nullptr) {
+    return getImpl(Context, Line, Column, Scope, InlinedAt,
+                   /* ShouldCreate */ false);
+  }
+  static MDLocation *getDistinct(LLVMContext &Context, unsigned Line,
+                                 unsigned Column, Metadata *Scope,
+                                 Metadata *InlinedAt = nullptr);
+
+  unsigned getLine() const { return MDNodeSubclassData; }
+  unsigned getColumn() const { return SubclassData16; }
+  Metadata *getScope() const { return getOperand(0); }
+  Metadata *getInlinedAt() const {
+    if (getNumOperands() == 2)
+      return getOperand(1);
+    return nullptr;
+  }
+
+  static bool classof(const Metadata *MD) {
+    return MD->getMetadataID() == MDLocationKind;
+  }
+
+private:
+  MDLocation *uniquifyImpl();
+  void eraseFromStoreImpl();
+};
 
 /// \brief Forward declaration of metadata.
 ///
@@ -820,7 +885,9 @@ class MDNodeFwdDecl : public MDNode, ReplaceableMetadataImpl {
 
 public:
   ~MDNodeFwdDecl() { dropAllReferences(); }
-  using MDNode::operator delete;
+
+  // MSVC doesn't seem to see the alternaive: "using MDNode::operator delete".
+  void operator delete(void *Mem) { MDNode::operator delete(Mem); }
 
   static MDNodeFwdDecl *get(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
     return new (MDs.size()) MDNodeFwdDecl(Context, MDs);
