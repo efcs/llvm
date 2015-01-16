@@ -1281,7 +1281,8 @@ struct LoopVectorize : public FunctionPass {
     TTI = &getAnalysis<TargetTransformInfo>();
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
     BFI = &getAnalysis<BlockFrequencyInfo>();
-    TLI = getAnalysisIfAvailable<TargetLibraryInfo>();
+    auto *TLIP = getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
+    TLI = TLIP ? &TLIP->getTLI() : nullptr;
     AA = &getAnalysis<AliasAnalysis>();
     AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
@@ -3548,7 +3549,7 @@ bool LoopVectorizationLegality::canVectorize() {
   }
 
   // We can only vectorize innermost loops.
-  if (TheLoop->getSubLoopsVector().size()) {
+  if (!TheLoop->getSubLoopsVector().empty()) {
     emitAnalysis(Report() << "loop is not the innermost loop");
     return false;
   }
@@ -4010,7 +4011,7 @@ void LoopVectorizationLegality::collectLoopUniforms() {
       if (I->getType()->isPointerTy() && isConsecutivePtr(I))
         Worklist.insert(Worklist.end(), I->op_begin(), I->op_end());
 
-  while (Worklist.size()) {
+  while (!Worklist.empty()) {
     Instruction *I = dyn_cast<Instruction>(Worklist.back());
     Worklist.pop_back();
 

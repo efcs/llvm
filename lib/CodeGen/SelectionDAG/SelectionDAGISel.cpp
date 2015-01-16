@@ -19,6 +19,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
@@ -49,7 +50,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetIntrinsicInfo.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
@@ -351,7 +351,8 @@ SelectionDAGISel::SelectionDAGISel(TargetMachine &tm,
     initializeGCModuleInfoPass(*PassRegistry::getPassRegistry());
     initializeAliasAnalysisAnalysisGroup(*PassRegistry::getPassRegistry());
     initializeBranchProbabilityInfoPass(*PassRegistry::getPassRegistry());
-    initializeTargetLibraryInfoPass(*PassRegistry::getPassRegistry());
+    initializeTargetLibraryInfoWrapperPassPass(
+        *PassRegistry::getPassRegistry());
   }
 
 SelectionDAGISel::~SelectionDAGISel() {
@@ -365,7 +366,7 @@ void SelectionDAGISel::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreserved<AliasAnalysis>();
   AU.addRequired<GCModuleInfo>();
   AU.addPreserved<GCModuleInfo>();
-  AU.addRequired<TargetLibraryInfo>();
+  AU.addRequired<TargetLibraryInfoWrapperPass>();
   if (UseMBPI && OptLevel != CodeGenOpt::None)
     AU.addRequired<BranchProbabilityInfo>();
   MachineFunctionPass::getAnalysisUsage(AU);
@@ -435,7 +436,7 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
   TLI = MF->getSubtarget().getTargetLowering();
   RegInfo = &MF->getRegInfo();
   AA = &getAnalysis<AliasAnalysis>();
-  LibInfo = &getAnalysis<TargetLibraryInfo>();
+  LibInfo = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   GFI = Fn.hasGC() ? &getAnalysis<GCModuleInfo>().getFunctionInfo(Fn) : nullptr;
 
   DEBUG(dbgs() << "\n\n\n=== " << Fn.getName() << "\n");
@@ -658,7 +659,7 @@ void SelectionDAGISel::CodeGenAndEmitDAG() {
   (void)BlockNumber;
   bool MatchFilterBB = false; (void)MatchFilterBB;
 #ifndef NDEBUG
-  MatchFilterBB = (!FilterDAGBasicBlockName.empty() &&
+  MatchFilterBB = (FilterDAGBasicBlockName.empty() ||
                    FilterDAGBasicBlockName ==
                        FuncInfo->MBB->getBasicBlock()->getName().str());
 #endif

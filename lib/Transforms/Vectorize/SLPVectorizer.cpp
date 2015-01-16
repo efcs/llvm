@@ -1760,7 +1760,7 @@ int BoUpSLP::getTreeCost() {
 
   // We only vectorize tiny trees if it is fully vectorizable.
   if (VectorizableTree.size() < 3 && !isFullyVectorizableTinyTree()) {
-    if (!VectorizableTree.size()) {
+    if (VectorizableTree.empty()) {
       assert(!ExternalUses.size() && "We should not have any external users");
     }
     return INT_MAX;
@@ -2890,7 +2890,8 @@ struct SLPVectorizer : public FunctionPass {
     DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
     DL = DLP ? &DLP->getDataLayout() : nullptr;
     TTI = &getAnalysis<TargetTransformInfo>();
-    TLI = getAnalysisIfAvailable<TargetLibraryInfo>();
+    auto *TLIP = getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
+    TLI = TLIP ? &TLIP->getTLI() : nullptr;
     AA = &getAnalysis<AliasAnalysis>();
     LI = &getAnalysis<LoopInfo>();
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
