@@ -19,11 +19,11 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/GCMetadata.h"
-#include "llvm/CodeGen/GCStrategy.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -35,6 +35,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GCStrategy.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -49,7 +50,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetIntrinsicInfo.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
@@ -351,7 +351,8 @@ SelectionDAGISel::SelectionDAGISel(TargetMachine &tm,
     initializeGCModuleInfoPass(*PassRegistry::getPassRegistry());
     initializeAliasAnalysisAnalysisGroup(*PassRegistry::getPassRegistry());
     initializeBranchProbabilityInfoPass(*PassRegistry::getPassRegistry());
-    initializeTargetLibraryInfoPass(*PassRegistry::getPassRegistry());
+    initializeTargetLibraryInfoWrapperPassPass(
+        *PassRegistry::getPassRegistry());
   }
 
 SelectionDAGISel::~SelectionDAGISel() {
@@ -365,7 +366,7 @@ void SelectionDAGISel::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreserved<AliasAnalysis>();
   AU.addRequired<GCModuleInfo>();
   AU.addPreserved<GCModuleInfo>();
-  AU.addRequired<TargetLibraryInfo>();
+  AU.addRequired<TargetLibraryInfoWrapperPass>();
   if (UseMBPI && OptLevel != CodeGenOpt::None)
     AU.addRequired<BranchProbabilityInfo>();
   MachineFunctionPass::getAnalysisUsage(AU);
@@ -378,7 +379,7 @@ void SelectionDAGISel::getAnalysisUsage(AnalysisUsage &AU) const {
 ///
 /// This is required for correctness, so it must be done at -O0.
 ///
-static void SplitCriticalSideEffectEdges(Function &Fn, Pass *SDISel) {
+static void SplitCriticalSideEffectEdges(Function &Fn, AliasAnalysis *AA) {
   // Loop for blocks with phi nodes.
   for (Function::iterator BB = Fn.begin(), E = Fn.end(); BB != E; ++BB) {
     PHINode *PN = dyn_cast<PHINode>(BB->begin());
@@ -402,8 +403,9 @@ static void SplitCriticalSideEffectEdges(Function &Fn, Pass *SDISel) {
           continue;
 
         // Okay, we have to split this edge.
-        SplitCriticalEdge(Pred->getTerminator(),
-                          GetSuccessorNumber(Pred, BB), SDISel, true);
+        SplitCriticalEdge(
+            Pred->getTerminator(), GetSuccessorNumber(Pred, BB),
+            CriticalEdgeSplittingOptions(AA).setMergeIdenticalEdges());
         goto ReprocessBlock;
       }
   }
@@ -435,12 +437,12 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
   TLI = MF->getSubtarget().getTargetLowering();
   RegInfo = &MF->getRegInfo();
   AA = &getAnalysis<AliasAnalysis>();
-  LibInfo = &getAnalysis<TargetLibraryInfo>();
+  LibInfo = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   GFI = Fn.hasGC() ? &getAnalysis<GCModuleInfo>().getFunctionInfo(Fn) : nullptr;
 
   DEBUG(dbgs() << "\n\n\n=== " << Fn.getName() << "\n");
 
-  SplitCriticalSideEffectEdges(const_cast<Function&>(Fn), this);
+  SplitCriticalSideEffectEdges(const_cast<Function&>(Fn), AA);
 
   CurDAG->init(*MF);
   FuncInfo->set(Fn, *MF, CurDAG);
@@ -658,7 +660,7 @@ void SelectionDAGISel::CodeGenAndEmitDAG() {
   (void)BlockNumber;
   bool MatchFilterBB = false; (void)MatchFilterBB;
 #ifndef NDEBUG
-  MatchFilterBB = (!FilterDAGBasicBlockName.empty() &&
+  MatchFilterBB = (FilterDAGBasicBlockName.empty() ||
                    FilterDAGBasicBlockName ==
                        FuncInfo->MBB->getBasicBlock()->getName().str());
 #endif

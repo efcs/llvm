@@ -11,6 +11,7 @@
 #include "BitcodeReader.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Bitcode/LLVMBitCodes.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/Constants.h"
@@ -541,9 +542,8 @@ void BitcodeReaderMDValueList::AssignValue(Metadata *MD, unsigned Idx) {
   }
 
   // If there was a forward reference to this value, replace it.
-  MDNodeFwdDecl *PrevMD = cast<MDNodeFwdDecl>(OldMD.get());
+  TempMDTuple PrevMD(cast<MDTuple>(OldMD.get()));
   PrevMD->replaceAllUsesWith(MD);
-  MDNode::deleteTemporary(PrevMD);
   --NumFwdRefs;
 }
 
@@ -557,7 +557,7 @@ Metadata *BitcodeReaderMDValueList::getValueFwdRef(unsigned Idx) {
   // Create and return a placeholder, which will later be RAUW'd.
   AnyFwdRefs = true;
   ++NumFwdRefs;
-  Metadata *MD = MDNode::getTemporary(Context, None);
+  Metadata *MD = MDNode::getTemporary(Context, None).release();
   MDValuePtrs[Idx].reset(MD);
   return MD;
 }
@@ -573,9 +573,12 @@ void BitcodeReaderMDValueList::tryToResolveCycles() {
 
   // Resolve any cycles.
   for (auto &MD : MDValuePtrs) {
-    assert(!(MD && isa<MDNodeFwdDecl>(MD)) && "Unexpected forward reference");
-    if (auto *N = dyn_cast_or_null<UniquableMDNode>(MD))
-      N->resolveCycles();
+    auto *N = dyn_cast_or_null<MDNode>(MD);
+    if (!N)
+      continue;
+
+    assert(!N->isTemporary() && "Unexpected forward reference");
+    N->resolveCycles();
   }
 }
 
@@ -1104,6 +1107,8 @@ std::error_code BitcodeReader::ParseValueSymbolTable() {
 
   SmallVector<uint64_t, 64> Record;
 
+  Triple TT(TheModule->getTargetTriple());
+
   // Read all the records for this value table.
   SmallString<128> ValueName;
   while (1) {
@@ -1135,8 +1140,12 @@ std::error_code BitcodeReader::ParseValueSymbolTable() {
 
       V->setName(StringRef(ValueName.data(), ValueName.size()));
       if (auto *GO = dyn_cast<GlobalObject>(V)) {
-        if (GO->getComdat() == reinterpret_cast<Comdat *>(1))
-          GO->setComdat(TheModule->getOrInsertComdat(V->getName()));
+        if (GO->getComdat() == reinterpret_cast<Comdat *>(1)) {
+          if (TT.isOSBinFormatMachO())
+            GO->setComdat(nullptr);
+          else
+            GO->setComdat(TheModule->getOrInsertComdat(V->getName()));
+        }
       }
       ValueName.clear();
       break;

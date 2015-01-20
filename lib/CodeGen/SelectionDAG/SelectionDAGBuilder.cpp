@@ -20,12 +20,12 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/GCMetadata.h"
-#include "llvm/CodeGen/GCStrategy.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -40,6 +40,7 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GCStrategy.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
@@ -57,7 +58,6 @@
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetIntrinsicInfo.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetSelectionDAGInfo.h"
@@ -2397,17 +2397,8 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
                                                   CaseRecVector& WorkList,
                                                   const Value* SV,
                                                   MachineBasicBlock* SwitchBB) {
-  // Get the MachineFunction which holds the current MBB.  This is used when
-  // inserting any additional MBBs necessary to represent the switch.
-  MachineFunction *CurMF = FuncInfo.MF;
-
-  // Figure out which block is immediately after the current one.
-  MachineFunction::iterator BBI = CR.CaseBB;
-  ++BBI;
-
   Case& FrontCase = *CR.Range.first;
   Case& BackCase  = *(CR.Range.second-1);
-  const BasicBlock *LLVMBB = CR.CaseBB->getBasicBlock();
 
   // Size is the number of Cases represented by this range.
   unsigned Size = CR.Range.second - CR.Range.first;
@@ -2439,12 +2430,10 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
     // Use volatile double here to avoid excess precision issues on some hosts,
     // e.g. that use 80-bit X87 registers.
     volatile double LDensity =
-       (double)LSize.roundToDouble() /
-                           (LEnd - First + 1ULL).roundToDouble();
+        LSize.roundToDouble() / (LEnd - First + 1ULL).roundToDouble();
     volatile double RDensity =
-      (double)RSize.roundToDouble() /
-                           (Last - RBegin + 1ULL).roundToDouble();
-    volatile double Metric = Range.logBase2()*(LDensity+RDensity);
+        RSize.roundToDouble() / (Last - RBegin + 1ULL).roundToDouble();
+    volatile double Metric = Range.logBase2() * (LDensity + RDensity);
     // Should always split in some non-trivial place
     DEBUG(dbgs() <<"=>Step\n"
                  << "LEnd: " << LEnd << ", RBegin: " << RBegin << '\n'
@@ -2468,6 +2457,23 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
   } else {
     Pivot = CR.Range.first + Size/2;
   }
+  splitSwitchCase(CR, Pivot, WorkList, SV, SwitchBB);
+  return true;
+}
+
+void SelectionDAGBuilder::splitSwitchCase(CaseRec &CR, CaseItr Pivot,
+                                          CaseRecVector &WorkList,
+                                          const Value *SV,
+                                          MachineBasicBlock *SwitchBB) {
+  // Get the MachineFunction which holds the current MBB.  This is used when
+  // inserting any additional MBBs necessary to represent the switch.
+  MachineFunction *CurMF = FuncInfo.MF;
+
+  // Figure out which block is immediately after the current one.
+  MachineFunction::iterator BBI = CR.CaseBB;
+  ++BBI;
+
+  const BasicBlock *LLVMBB = CR.CaseBB->getBasicBlock();
 
   CaseRange LHSR(CR.Range.first, Pivot);
   CaseRange RHSR(Pivot, CR.Range.second);
@@ -2480,10 +2486,9 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
   // LHS's Case Value, and that Case Value is exactly one less than the
   // Pivot's Value, then we can branch directly to the LHS's Target,
   // rather than creating a leaf node for it.
-  if ((LHSR.second - LHSR.first) == 1 &&
-      LHSR.first->High == CR.GE &&
+  if ((LHSR.second - LHSR.first) == 1 && LHSR.first->High == CR.GE &&
       cast<ConstantInt>(C)->getValue() ==
-      (cast<ConstantInt>(CR.GE)->getValue() + 1LL)) {
+          (cast<ConstantInt>(CR.GE)->getValue() + 1LL)) {
     TrueBB = LHSR.first->BB;
   } else {
     TrueBB = CurMF->CreateMachineBasicBlock(LLVMBB);
@@ -2500,12 +2505,12 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
   // the current Case Value, rather than emitting a RHS leaf node for it.
   if ((RHSR.second - RHSR.first) == 1 && CR.LT &&
       cast<ConstantInt>(RHSR.first->Low)->getValue() ==
-      (cast<ConstantInt>(CR.LT)->getValue() - 1LL)) {
+          (cast<ConstantInt>(CR.LT)->getValue() - 1LL)) {
     FalseBB = RHSR.first->BB;
   } else {
     FalseBB = CurMF->CreateMachineBasicBlock(LLVMBB);
     CurMF->insert(BBI, FalseBB);
-    WorkList.push_back(CaseRec(FalseBB,CR.LT,C,RHSR));
+    WorkList.push_back(CaseRec(FalseBB, CR.LT, C, RHSR));
 
     // Put SV in a virtual register to make it available from the new blocks.
     ExportFromCurrentBlock(SV);
@@ -2520,8 +2525,6 @@ bool SelectionDAGBuilder::handleBTSplitSwitchCase(CaseRec& CR,
     visitSwitchCase(CB, SwitchBB);
   else
     SwitchCases.push_back(CB);
-
-  return true;
 }
 
 /// handleBitTestsSwitchCase - if current case range has few destination and

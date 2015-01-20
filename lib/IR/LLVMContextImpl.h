@@ -41,6 +41,7 @@ class ConstantFP;
 class DiagnosticInfoOptimizationRemark;
 class DiagnosticInfoOptimizationRemarkMissed;
 class DiagnosticInfoOptimizationRemarkAnalysis;
+class GCStrategy;
 class LLVMContext;
 class Type;
 class Value;
@@ -166,35 +167,64 @@ struct FunctionTypeKeyInfo {
   }
 };
 
+/// \brief Structure for hashing arbitrary MDNode operands.
+class MDNodeOpsKey {
+  ArrayRef<Metadata *> RawOps;
+  ArrayRef<MDOperand> Ops;
+
+  unsigned Hash;
+
+protected:
+  MDNodeOpsKey(ArrayRef<Metadata *> Ops)
+      : RawOps(Ops), Hash(calculateHash(Ops)) {}
+
+  template <class NodeTy>
+  MDNodeOpsKey(NodeTy *N, unsigned Offset = 0)
+      : Ops(N->op_begin() + Offset, N->op_end()), Hash(N->getHash()) {}
+
+  template <class NodeTy>
+  bool compareOps(const NodeTy *RHS, unsigned Offset = 0) const {
+    if (getHash() != RHS->getHash())
+      return false;
+
+    assert((RawOps.empty() || Ops.empty()) && "Two sets of operands?");
+    return RawOps.empty() ? compareOps(Ops, RHS, Offset)
+                          : compareOps(RawOps, RHS, Offset);
+  }
+
+  static unsigned calculateHash(MDNode *N, unsigned Offset = 0);
+
+private:
+  template <class T>
+  static bool compareOps(ArrayRef<T> Ops, const MDNode *RHS, unsigned Offset) {
+    if (Ops.size() != RHS->getNumOperands() - Offset)
+      return false;
+    return std::equal(Ops.begin(), Ops.end(), RHS->op_begin() + Offset);
+  }
+
+  static unsigned calculateHash(ArrayRef<Metadata *> Ops);
+
+public:
+  unsigned getHash() const { return Hash; }
+};
+
 /// \brief DenseMapInfo for MDTuple.
 ///
 /// Note that we don't need the is-function-local bit, since that's implicit in
 /// the operands.
 struct MDTupleInfo {
-  struct KeyTy {
-    ArrayRef<Metadata *> RawOps;
-    ArrayRef<MDOperand> Ops;
-    unsigned Hash;
-
-    KeyTy(ArrayRef<Metadata *> Ops)
-        : RawOps(Ops), Hash(hash_combine_range(Ops.begin(), Ops.end())) {}
-
-    KeyTy(MDTuple *N)
-        : Ops(N->op_begin(), N->op_end()), Hash(N->getHash()) {}
+  struct KeyTy : MDNodeOpsKey {
+    KeyTy(ArrayRef<Metadata *> Ops) : MDNodeOpsKey(Ops) {}
+    KeyTy(MDTuple *N) : MDNodeOpsKey(N) {}
 
     bool operator==(const MDTuple *RHS) const {
       if (RHS == getEmptyKey() || RHS == getTombstoneKey())
         return false;
-      if (Hash != RHS->getHash())
-        return false;
-      assert((RawOps.empty() || Ops.empty()) && "Two sets of operands?");
-      return RawOps.empty() ? compareOps(Ops, RHS) : compareOps(RawOps, RHS);
+      return compareOps(RHS);
     }
-    template <class T>
-    static bool compareOps(ArrayRef<T> Ops, const MDTuple *RHS) {
-      if (Ops.size() != RHS->getNumOperands())
-        return false;
-      return std::equal(Ops.begin(), Ops.end(), RHS->op_begin());
+
+    static unsigned calculateHash(MDTuple *N) {
+      return MDNodeOpsKey::calculateHash(N);
     }
   };
   static inline MDTuple *getEmptyKey() {
@@ -203,10 +233,8 @@ struct MDTupleInfo {
   static inline MDTuple *getTombstoneKey() {
     return DenseMapInfo<MDTuple *>::getTombstoneKey();
   }
-  static unsigned getHashValue(const KeyTy &Key) { return Key.Hash; }
-  static unsigned getHashValue(const MDTuple *U) {
-    return U->getHash();
-  }
+  static unsigned getHashValue(const KeyTy &Key) { return Key.getHash(); }
+  static unsigned getHashValue(const MDTuple *U) { return U->getHash(); }
   static bool isEqual(const KeyTy &LHS, const MDTuple *RHS) {
     return LHS == RHS;
   }
@@ -257,6 +285,48 @@ struct MDLocationInfo {
   }
 };
 
+/// \brief DenseMapInfo for GenericDwarfNode.
+struct GenericDwarfNodeInfo {
+  struct KeyTy : MDNodeOpsKey {
+    unsigned Tag;
+    MDString *Header;
+    KeyTy(unsigned Tag, MDString *Header, ArrayRef<Metadata *> DwarfOps)
+        : MDNodeOpsKey(DwarfOps), Tag(Tag), Header(Header) {}
+    KeyTy(GenericDwarfNode *N)
+        : MDNodeOpsKey(N, 1), Tag(N->getTag()), Header(N->getHeader()) {}
+
+    bool operator==(const GenericDwarfNode *RHS) const {
+      if (RHS == getEmptyKey() || RHS == getTombstoneKey())
+        return false;
+      return Tag == RHS->getTag() && Header == RHS->getHeader() &&
+             compareOps(RHS, 1);
+    }
+
+    static unsigned calculateHash(GenericDwarfNode *N) {
+      return MDNodeOpsKey::calculateHash(N, 1);
+    }
+  };
+  static inline GenericDwarfNode *getEmptyKey() {
+    return DenseMapInfo<GenericDwarfNode *>::getEmptyKey();
+  }
+  static inline GenericDwarfNode *getTombstoneKey() {
+    return DenseMapInfo<GenericDwarfNode *>::getTombstoneKey();
+  }
+  static unsigned getHashValue(const KeyTy &Key) {
+    return hash_combine(Key.getHash(), Key.Tag, Key.Header);
+  }
+  static unsigned getHashValue(const GenericDwarfNode *U) {
+    return hash_combine(U->getHash(), U->getTag(), U->getHeader());
+  }
+  static bool isEqual(const KeyTy &LHS, const GenericDwarfNode *RHS) {
+    return LHS == RHS;
+  }
+  static bool isEqual(const GenericDwarfNode *LHS,
+                      const GenericDwarfNode *RHS) {
+    return LHS == RHS;
+  }
+};
+
 class LLVMContextImpl {
 public:
   /// OwnedModules - The set of modules instantiated in this context, and which
@@ -289,12 +359,13 @@ public:
 
   DenseSet<MDTuple *, MDTupleInfo> MDTuples;
   DenseSet<MDLocation *, MDLocationInfo> MDLocations;
+  DenseSet<GenericDwarfNode *, GenericDwarfNodeInfo> GenericDwarfNodes;
 
   // MDNodes may be uniqued or not uniqued.  When they're not uniqued, they
   // aren't in the MDNodeSet, but they're still shared between objects, so no
   // one object can destroy them.  This set allows us to at least destroy them
   // on Context destruction.
-  SmallPtrSet<UniquableMDNode *, 1> DistinctMDNodes;
+  SmallPtrSet<MDNode *, 1> DistinctMDNodes;
 
   DenseMap<Type*, ConstantAggregateZero*> CAZConstants;
 
@@ -389,6 +460,17 @@ public:
 
   int getOrAddScopeRecordIdxEntry(MDNode *N, int ExistingIdx);
   int getOrAddScopeInlinedAtIdxEntry(MDNode *Scope, MDNode *IA,int ExistingIdx);
+
+  /// An owning list of all GCStrategies which have been created
+  SmallVector<std::unique_ptr<GCStrategy>, 1> GCStrategyList;
+  /// A helper map to speedup lookups into the above list
+  StringMap<GCStrategy*> GCStrategyMap;
+
+  /// Lookup the GCStrategy object associated with the given gc name.  If one
+  /// can't be found, returns nullptr.  The lifetime of the returned objects
+  /// is dictated by the lifetime of the associated context.  No caller should
+  /// attempt to delete the returned objects.
+  GCStrategy *getGCStrategy(const StringRef Name);
   
   LLVMContextImpl(LLVMContext &C);
   ~LLVMContextImpl();
