@@ -222,15 +222,13 @@ void ReplaceableMetadataImpl::resolveAllUses(bool ResolveUsers) {
     if (Owner.is<MetadataAsValue *>())
       continue;
 
-    // Resolve GenericMDNodes that point at this.
-    auto *OwnerMD = dyn_cast<GenericMDNode>(Owner.get<Metadata *>());
+    // Resolve UniquableMDNodes that point at this.
+    auto *OwnerMD = dyn_cast<UniquableMDNode>(Owner.get<Metadata *>());
     if (!OwnerMD)
       continue;
     if (OwnerMD->isResolved())
       continue;
-    OwnerMD->decrementUnresolvedOperands();
-    if (!OwnerMD->hasUnresolvedOperands())
-      OwnerMD->resolve();
+    OwnerMD->decrementUnresolvedOperandCount();
   }
 }
 
@@ -402,7 +400,7 @@ MDNode::MDNode(LLVMContext &Context, unsigned ID, ArrayRef<Metadata *> MDs)
 bool MDNode::isResolved() const {
   if (isa<MDNodeFwdDecl>(this))
     return false;
-  return cast<GenericMDNode>(this)->isResolved();
+  return cast<UniquableMDNode>(this)->isResolved();
 }
 
 static bool isOperandUnresolved(Metadata *Op) {
@@ -411,31 +409,32 @@ static bool isOperandUnresolved(Metadata *Op) {
   return false;
 }
 
-GenericMDNode::GenericMDNode(LLVMContext &C, ArrayRef<Metadata *> Vals,
-                             bool AllowRAUW)
-    : MDNode(C, GenericMDNodeKind, Vals) {
+UniquableMDNode::UniquableMDNode(LLVMContext &C, unsigned ID,
+                                 ArrayRef<Metadata *> Vals, bool AllowRAUW)
+    : MDNode(C, ID, Vals) {
   if (!AllowRAUW)
     return;
 
   // Check whether any operands are unresolved, requiring re-uniquing.
+  unsigned NumUnresolved = 0;
   for (const auto &Op : operands())
-    if (isOperandUnresolved(Op))
-      incrementUnresolvedOperands();
+    NumUnresolved += unsigned(isOperandUnresolved(Op));
 
-  if (hasUnresolvedOperands())
-    ReplaceableUses.reset(new ReplaceableMetadataImpl);
+  if (!NumUnresolved)
+    return;
+
+  ReplaceableUses.reset(new ReplaceableMetadataImpl);
+  SubclassData32 = NumUnresolved;
 }
 
-GenericMDNode::~GenericMDNode() {
-  LLVMContextImpl *pImpl = getContext().pImpl;
+UniquableMDNode::~UniquableMDNode() {
   if (isStoredDistinctInContext())
-    pImpl->NonUniquedMDNodes.erase(this);
-  else
-    pImpl->MDNodeSet.erase(this);
+    getContext().pImpl->DistinctMDNodes.erase(this);
+
   dropAllReferences();
 }
 
-void GenericMDNode::resolve() {
+void UniquableMDNode::resolve() {
   assert(!isResolved() && "Expected this to be unresolved");
 
   // Move the map, so that this immediately looks resolved.
@@ -447,7 +446,23 @@ void GenericMDNode::resolve() {
   Uses->resolveAllUses();
 }
 
-void GenericMDNode::resolveCycles() {
+void UniquableMDNode::resolveAfterOperandChange(Metadata *Old, Metadata *New) {
+  assert(SubclassData32 != 0 && "Expected unresolved operands");
+
+  // Check if an operand was resolved.
+  if (!isOperandUnresolved(Old))
+    assert(isOperandUnresolved(New) && "Operand just became unresolved");
+  else if (!isOperandUnresolved(New))
+    decrementUnresolvedOperandCount();
+}
+
+void UniquableMDNode::decrementUnresolvedOperandCount() {
+  if (!--SubclassData32)
+    // Last unresolved operand has just been resolved.
+    resolve();
+}
+
+void UniquableMDNode::resolveCycles() {
   if (isResolved())
     return;
 
@@ -460,19 +475,36 @@ void GenericMDNode::resolveCycles() {
       continue;
     assert(!isa<MDNodeFwdDecl>(Op) &&
            "Expected all forward declarations to be resolved");
-    if (auto *N = dyn_cast<GenericMDNode>(Op))
+    if (auto *N = dyn_cast<UniquableMDNode>(Op))
       if (!N->isResolved())
         N->resolveCycles();
   }
 }
 
+MDTuple::~MDTuple() {
+  if (!isStoredDistinctInContext())
+    getContext().pImpl->MDTuples.erase(this);
+}
+
+void MDTuple::recalculateHash() {
+  setHash(hash_combine_range(op_begin(), op_end()));
+#ifndef NDEBUG
+  {
+    SmallVector<Metadata *, 8> MDs(op_begin(), op_end());
+    unsigned RawHash = hash_combine_range(MDs.begin(), MDs.end());
+    assert(getHash() == RawHash &&
+           "Expected hash of MDOperand to equal hash of Metadata*");
+  }
+#endif
+}
+
 void MDNode::dropAllReferences() {
   for (unsigned I = 0, E = NumOperands; I != E; ++I)
     setOperand(I, nullptr);
-  if (auto *G = dyn_cast<GenericMDNode>(this))
-    if (!G->isResolved()) {
-      G->ReplaceableUses->resolveAllUses(/* ResolveUsers */ false);
-      G->ReplaceableUses.reset();
+  if (auto *N = dyn_cast<UniquableMDNode>(this))
+    if (!N->isResolved()) {
+      N->ReplaceableUses->resolveAllUses(/* ResolveUsers */ false);
+      N->ReplaceableUses.reset();
     }
 }
 
@@ -493,7 +525,7 @@ namespace llvm {
 static const Metadata *get_hashable_data(const MDOperand &X) { return X.get(); }
 }
 
-void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
+void UniquableMDNode::handleChangedOperand(void *Ref, Metadata *New) {
   unsigned Op = static_cast<MDOperand *>(Ref) - op_begin();
   assert(Op < getNumOperands() && "Expected valid operand");
 
@@ -504,17 +536,9 @@ void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
     setOperand(Op, New);
     return;
   }
-  if (InRAUW) {
-    // We just hit a recursion due to RAUW.  Set the operand and move on, since
-    // we're about to be deleted.
-    //
-    // FIXME: Can this cycle really happen?
-    setOperand(Op, New);
-    return;
-  }
 
-  auto &Store = getContext().pImpl->MDNodeSet;
-  Store.erase(this);
+  auto &Store = getContext().pImpl->MDTuples;
+  Store.erase(cast<MDTuple>(this));
 
   Metadata *Old = getOperand(Op);
   setOperand(Op, New);
@@ -522,39 +546,20 @@ void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
   // Drop uniquing for self-reference cycles.
   if (New == this) {
     storeDistinctInContext();
-    setHash(0);
     if (!isResolved())
       resolve();
     return;
   }
 
-  // Re-calculate the hash.
-  setHash(hash_combine_range(op_begin(), op_end()));
-#ifndef NDEBUG
-  {
-    SmallVector<Metadata *, 8> MDs(op_begin(), op_end());
-    unsigned RawHash = hash_combine_range(MDs.begin(), MDs.end());
-    assert(getHash() == RawHash &&
-           "Expected hash of MDOperand to equal hash of Metadata*");
-  }
-#endif
-
   // Re-unique the node.
-  GenericMDNodeInfo::KeyTy Key(this);
+  cast<MDTuple>(this)->recalculateHash();
+  MDTupleInfo::KeyTy Key(cast<MDTuple>(this));
   auto I = Store.find_as(Key);
   if (I == Store.end()) {
-    Store.insert(this);
+    Store.insert(cast<MDTuple>(this));
 
-    if (!isResolved()) {
-      // Check if the last unresolved operand has just been resolved; if so,
-      // resolve this as well.
-      if (isOperandUnresolved(Old))
-        decrementUnresolvedOperands();
-      if (isOperandUnresolved(New))
-        incrementUnresolvedOperands();
-      if (!hasUnresolvedOperands())
-        resolve();
-    }
+    if (!isResolved())
+      resolveAfterOperandChange(Old, New);
 
     return;
   }
@@ -562,72 +567,69 @@ void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
   // Collision.
   if (!isResolved()) {
     // Still unresolved, so RAUW.
-    InRAUW = true;
+    //
+    // First, clear out all operands to prevent any recursion (similar to
+    // dropAllReferences(), but we still need the use-list).
+    for (unsigned O = 0, E = getNumOperands(); O != E; ++O)
+      setOperand(O, nullptr);
     ReplaceableUses->replaceAllUsesWith(*I);
-    delete this;
+    delete cast<MDTuple>(this);
     return;
   }
 
-  // Store in non-uniqued form if this node has already been resolved.
-  setHash(0);
+  // Store in non-uniqued form if RAUW isn't possible.
   storeDistinctInContext();
 }
 
-MDNode *MDNode::getMDNode(LLVMContext &Context, ArrayRef<Metadata *> MDs,
-                          bool Insert) {
-  auto &Store = Context.pImpl->MDNodeSet;
+MDTuple *MDTuple::getImpl(LLVMContext &Context, ArrayRef<Metadata *> MDs,
+                          bool ShouldCreate) {
+  MDTupleInfo::KeyTy Key(MDs);
 
-  GenericMDNodeInfo::KeyTy Key(MDs);
+  auto &Store = Context.pImpl->MDTuples;
   auto I = Store.find_as(Key);
   if (I != Store.end())
     return *I;
-  if (!Insert)
+  if (!ShouldCreate)
     return nullptr;
 
   // Coallocate space for the node and Operands together, then placement new.
-  auto *N = new (MDs.size()) GenericMDNode(Context, MDs, /* AllowRAUW */ true);
+  auto *N = new (MDs.size()) MDTuple(Context, MDs, /* AllowRAUW */ true);
   N->setHash(Key.Hash);
   Store.insert(N);
   return N;
 }
 
-MDNode *MDNode::getDistinct(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
-  auto *N = new (MDs.size()) GenericMDNode(Context, MDs, /* AllowRAUW */ false);
+MDTuple *MDTuple::getDistinct(LLVMContext &Context, ArrayRef<Metadata *> MDs) {
+  auto *N = new (MDs.size()) MDTuple(Context, MDs, /* AllowRAUW */ false);
   N->storeDistinctInContext();
   return N;
 }
 
 MDNodeFwdDecl *MDNode::getTemporary(LLVMContext &Context,
                                     ArrayRef<Metadata *> MDs) {
-  MDNodeFwdDecl *N = new (MDs.size()) MDNodeFwdDecl(Context, MDs);
-  return N;
+  return MDNodeFwdDecl::get(Context, MDs);
 }
 
-void MDNode::deleteTemporary(MDNode *N) {
-  assert(isa<MDNodeFwdDecl>(N) && "Expected forward declaration");
-  delete cast<MDNodeFwdDecl>(N);
-}
+void MDNode::deleteTemporary(MDNode *N) { delete cast<MDNodeFwdDecl>(N); }
 
-void MDNode::storeDistinctInContext() {
+void UniquableMDNode::storeDistinctInContext() {
   assert(!IsDistinctInContext && "Expected newly distinct metadata");
   IsDistinctInContext = true;
-  auto *G = cast<GenericMDNode>(this);
-  G->setHash(0);
-  getContext().pImpl->NonUniquedMDNodes.insert(G);
+  auto *T = cast<MDTuple>(this);
+  T->setHash(0);
+  getContext().pImpl->DistinctMDNodes.insert(T);
 }
 
-// Replace value from this node's operand list.
 void MDNode::replaceOperandWith(unsigned I, Metadata *New) {
   if (getOperand(I) == New)
     return;
 
-  if (auto *N = dyn_cast<GenericMDNode>(this)) {
-    N->handleChangedOperand(mutable_begin() + I, New);
+  if (isDistinct()) {
+    setOperand(I, New);
     return;
   }
 
-  assert(isa<MDNodeFwdDecl>(this) && "Expected an MDNode");
-  setOperand(I, New);
+  cast<UniquableMDNode>(this)->handleChangedOperand(mutable_begin() + I, New);
 }
 
 void MDNode::setOperand(unsigned I, Metadata *New) {
