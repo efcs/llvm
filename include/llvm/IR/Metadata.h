@@ -48,7 +48,7 @@ class Metadata {
 
 protected:
   /// \brief Active type of storage.
-  enum StorageType { Uniqued, Distinct, Temporary };
+  enum StorageType : unsigned char { Uniqued, Distinct, Temporary };
 
   /// \brief Storage flag for non-uniqued, otherwise unowned, metadata.
   StorageType Storage : 2;
