@@ -1513,9 +1513,10 @@ SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
     return getUNDEF(VT);
 
   // If Identity shuffle return that node.
-  bool Identity = true;
+  bool Identity = true, AllSame = true;
   for (unsigned i = 0; i != NElts; ++i) {
     if (MaskVec[i] >= 0 && MaskVec[i] != (int)i) Identity = false;
+    if (MaskVec[i] != MaskVec[0]) AllSame = false;
   }
   if (Identity && NElts)
     return N1;
@@ -1548,6 +1549,26 @@ SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
         if (auto *C = dyn_cast<ConstantSDNode>(Splat))
           if (C->isNullValue())
             return N1;
+      }
+
+      // If the shuffle itself creates a constant splat, build the vector
+      // directly.
+      if (AllSame) {
+         const SDValue &Splatted = BV->getOperand(MaskVec[0]);
+         if (isa<ConstantSDNode>(Splatted) || isa<ConstantFPSDNode>(Splatted)) {
+           SmallVector<SDValue, 8> Ops;
+           for (unsigned i = 0; i != NElts; ++i) {
+             Ops.push_back(Splatted);
+           }
+           SDValue NewBV = getNode(ISD::BUILD_VECTOR, dl,
+             BV->getValueType(0), Ops);
+
+           // We may have jumped through bitcasts, so the type of the
+           // BUILD_VECTOR may not match the type of the shuffle.
+           if (BV->getValueType(0) != VT)
+             NewBV = getNode(ISD::BITCAST, dl, VT, NewBV);
+           return NewBV;
+         }
       }
     }
   }
@@ -4924,15 +4945,15 @@ SelectionDAG::getIndexedStore(SDValue OrigStore, SDLoc dl, SDValue Base,
 
 SDValue
 SelectionDAG::getMaskedLoad(EVT VT, SDLoc dl, SDValue Chain,
-                            SDValue Ptr, SDValue Mask, SDValue Src0,
-                            MachineMemOperand *MMO) {
+                            SDValue Ptr, SDValue Mask, SDValue Src0, EVT MemVT,
+                            MachineMemOperand *MMO, ISD::LoadExtType ExtTy) {
 
   SDVTList VTs = getVTList(VT, MVT::Other);
   SDValue Ops[] = { Chain, Ptr, Mask, Src0 };
   FoldingSetNodeID ID;
   AddNodeIDNode(ID, ISD::MLOAD, VTs, Ops);
   ID.AddInteger(VT.getRawBits());
-  ID.AddInteger(encodeMemSDNodeFlags(ISD::NON_EXTLOAD, ISD::UNINDEXED,
+  ID.AddInteger(encodeMemSDNodeFlags(ExtTy, ISD::UNINDEXED,
                                      MMO->isVolatile(),
                                      MMO->isNonTemporal(),
                                      MMO->isInvariant()));
@@ -4944,14 +4965,15 @@ SelectionDAG::getMaskedLoad(EVT VT, SDLoc dl, SDValue Chain,
   }
   SDNode *N = new (NodeAllocator) MaskedLoadSDNode(dl.getIROrder(),
                                              dl.getDebugLoc(), Ops, 4, VTs,
-                                             VT, MMO);
+                                             ExtTy, MemVT, MMO);
   CSEMap.InsertNode(N, IP);
   InsertNode(N);
   return SDValue(N, 0);
 }
 
 SDValue SelectionDAG::getMaskedStore(SDValue Chain, SDLoc dl, SDValue Val,
-                               SDValue Ptr, SDValue Mask, MachineMemOperand *MMO) {
+                                     SDValue Ptr, SDValue Mask, EVT MemVT,
+                                     MachineMemOperand *MMO, bool isTrunc) {
   assert(Chain.getValueType() == MVT::Other &&
         "Invalid chain type");
   EVT VT = Val.getValueType();
@@ -4970,7 +4992,7 @@ SDValue SelectionDAG::getMaskedStore(SDValue Chain, SDLoc dl, SDValue Val,
   }
   SDNode *N = new (NodeAllocator) MaskedStoreSDNode(dl.getIROrder(),
                                                     dl.getDebugLoc(), Ops, 4,
-                                                    VTs, VT, MMO);
+                                                    VTs, isTrunc, MemVT, MMO);
   CSEMap.InsertNode(N, IP);
   InsertNode(N);
   return SDValue(N, 0);

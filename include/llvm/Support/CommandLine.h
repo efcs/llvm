@@ -1169,6 +1169,10 @@ class opt : public Option,
     Parser.initialize(*this);
   }
 
+  // Command line options should not be copyable
+  opt(const opt &) LLVM_DELETED_FUNCTION;
+  opt &operator=(const opt &) LLVM_DELETED_FUNCTION;
+
 public:
   // setInitialValue - Used by the cl::init modifier...
   void setInitialValue(const DataType &V) { this->setValue(V, true); }
@@ -1363,6 +1367,10 @@ class list : public Option, public list_storage<DataType, Storage> {
     addArgument();
     Parser.initialize(*this);
   }
+
+  // Command line options should not be copyable
+  list(const list &) LLVM_DELETED_FUNCTION;
+  list &operator=(const list &) LLVM_DELETED_FUNCTION;
 
 public:
   ParserClass &getParser() { return Parser; }
@@ -1584,6 +1592,10 @@ class bits : public Option, public bits_storage<DataType, Storage> {
     Parser.initialize(*this);
   }
 
+  // Command line options should not be copyable
+  bits(const bits &) LLVM_DELETED_FUNCTION;
+  bits &operator=(const bits &) LLVM_DELETED_FUNCTION;
+
 public:
   ParserClass &getParser() { return Parser; }
 
@@ -1717,6 +1729,10 @@ class alias : public Option {
       error("cl::alias must have an cl::aliasopt(option) specified!");
     addArgument();
   }
+
+  // Command line options should not be copyable
+  alias(const alias &) LLVM_DELETED_FUNCTION;
+  alias &operator=(const alias &) LLVM_DELETED_FUNCTION;
 
 public:
   void setAliasFor(Option &O) {
@@ -1888,6 +1904,15 @@ typedef void (*TokenizerCallback)(StringRef Source, StringSaver &Saver,
 bool ExpandResponseFiles(StringSaver &Saver, TokenizerCallback Tokenizer,
                          SmallVectorImpl<const char *> &Argv,
                          bool MarkEOLs = false);
+
+/// \brief Mark all options not part of this category as cl::ReallyHidden.
+///
+/// \param Category the category of options to keep displaying
+///
+/// Some tools (like clang-format) like to be able to hide all options that are
+/// not specific to the tool. This function allows a tool to specify a single
+/// option category to display in the -help output.
+void HideUnrelatedOptions(cl::OptionCategory &Category);
 
 } // End namespace cl
 
