@@ -97,8 +97,7 @@ LLVMContextImpl::~LLVMContextImpl() {
     delete I;
 #include "llvm/IR/Metadata.def"
 
-  // Free the constants.  This is important to do here to ensure that they are
-  // freed before the LeakDetector is torn down.
+  // Free the constants.
   std::for_each(ExprConstants.map_begin(), ExprConstants.map_end(),
                 DropFirst());
   std::for_each(ArrayConstants.map_begin(), ArrayConstants.map_end(),
@@ -161,6 +160,28 @@ LLVMContextImpl::~LLVMContextImpl() {
 
   // Destroy MDStrings.
   MDStringCache.clear();
+}
+
+void LLVMContextImpl::dropTriviallyDeadConstantArrays() {
+  bool Changed;
+  do {
+    Changed = false;
+
+    for (auto I = ArrayConstants.map_begin(), E = ArrayConstants.map_end();
+         I != E; ) {
+      auto *C = I->first;
+      I++;
+      if (C->use_empty()) {
+        Changed = true;
+        C->destroyConstant();
+      }
+    }
+
+  } while (Changed);
+}
+
+void Module::dropTriviallyDeadConstantArrays() {
+  Context.pImpl->dropTriviallyDeadConstantArrays();
 }
 
 namespace llvm {
