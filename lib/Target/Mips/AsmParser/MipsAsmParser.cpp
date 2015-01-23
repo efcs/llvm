@@ -1734,12 +1734,10 @@ MipsAsmParser::expandLoadAddressSym(MCInst &Inst, SMLoc IDLoc,
   }
 }
 
-bool MipsAsmParser::
-expandUncondBranchMMPseudo(MCInst &Inst, SMLoc IDLoc,
-                           SmallVectorImpl<MCInst> &Instructions) {
-  const MCInstrDesc &MCID = getInstDesc(Inst.getOpcode());
-
-  assert(MCID.getNumOperands() == 1 && "unexpected number of operands");
+bool MipsAsmParser::expandUncondBranchMMPseudo(
+    MCInst &Inst, SMLoc IDLoc, SmallVectorImpl<MCInst> &Instructions) {
+  assert(getInstDesc(Inst.getOpcode()).getNumOperands() == 1 &&
+         "unexpected number of operands");
 
   MCOperand Offset = Inst.getOperand(0);
   if (Offset.isExpr()) {

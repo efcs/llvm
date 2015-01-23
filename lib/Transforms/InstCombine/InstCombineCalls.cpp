@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "InstCombine.h"
+#include "InstCombineInternal.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/CallSite.h"
@@ -1380,6 +1380,10 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   Function *Callee =
     dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
   if (!Callee)
+    return false;
+  // The prototype of thunks are a lie, don't try to directly call such
+  // functions.
+  if (Callee->hasFnAttribute("thunk"))
     return false;
   Instruction *Caller = CS.getInstruction();
   const AttributeSet &CallerPAL = CS.getAttributes();
