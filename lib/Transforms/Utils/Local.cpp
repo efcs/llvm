@@ -110,11 +110,17 @@ bool llvm::ConstantFoldTerminator(BasicBlock *BB, bool DeleteDeadConditions,
   }
 
   if (SwitchInst *SI = dyn_cast<SwitchInst>(T)) {
-    // If we are switching on a constant, we can convert the switch into a
-    // single branch instruction!
+    // If we are switching on a constant, we can convert the switch to an
+    // unconditional branch.
     ConstantInt *CI = dyn_cast<ConstantInt>(SI->getCondition());
-    BasicBlock *TheOnlyDest = SI->getDefaultDest();
-    BasicBlock *DefaultDest = TheOnlyDest;
+    BasicBlock *DefaultDest = SI->getDefaultDest();
+    BasicBlock *TheOnlyDest = DefaultDest;
+
+    // If the default is unreachable, ignore it when searching for TheOnlyDest.
+    if (isa<UnreachableInst>(DefaultDest->getFirstNonPHIOrDbg()) &&
+        SI->getNumCases() > 0) {
+      TheOnlyDest = SI->case_begin().getCaseSuccessor();
+    }
 
     // Figure out which case it goes to.
     for (SwitchInst::CaseIt i = SI->case_begin(), e = SI->case_end();
@@ -489,7 +495,7 @@ void llvm::RemovePredecessorAndSimplify(BasicBlock *BB, BasicBlock *Pred,
 /// between them, moving the instructions in the predecessor into DestBB and
 /// deleting the predecessor block.
 ///
-void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB, Pass *P) {
+void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB, DominatorTree *DT) {
   // If BB has single-entry PHI nodes, fold them.
   while (PHINode *PN = dyn_cast<PHINode>(DestBB->begin())) {
     Value *NewVal = PN->getIncomingValue(0);
@@ -525,14 +531,10 @@ void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB, Pass *P) {
   if (PredBB == &DestBB->getParent()->getEntryBlock())
     DestBB->moveAfter(PredBB);
 
-  if (P) {
-    if (DominatorTreeWrapperPass *DTWP =
-            P->getAnalysisIfAvailable<DominatorTreeWrapperPass>()) {
-      DominatorTree &DT = DTWP->getDomTree();
-      BasicBlock *PredBBIDom = DT.getNode(PredBB)->getIDom()->getBlock();
-      DT.changeImmediateDominator(DestBB, PredBBIDom);
-      DT.eraseNode(PredBB);
-    }
+  if (DT) {
+    BasicBlock *PredBBIDom = DT->getNode(PredBB)->getIDom()->getBlock();
+    DT->changeImmediateDominator(DestBB, PredBBIDom);
+    DT->eraseNode(PredBB);
   }
   // Nuke BB.
   PredBB->eraseFromParent();

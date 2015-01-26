@@ -46,6 +46,7 @@ public:
   /// \brief Take the given call instruction and return a more
   /// optimal value to replace the instruction with or 0 if a more
   /// optimal form can't be found.
+  /// The call must not be an indirect call.
   Value *optimizeCall(CallInst *CI);
 
 private:
@@ -70,12 +71,21 @@ private:
   const DataLayout *DL;
   const TargetLibraryInfo *TLI;
   bool UnsafeFPShrink;
+  function_ref<void(Instruction *, Value *)> Replacer;
 
-protected:
-  ~LibCallSimplifier() {}
+  /// \brief Internal wrapper for RAUW that is the default implementation.
+  ///
+  /// Other users may provide an alternate function with this signature instead
+  /// of this one.
+  static void replaceAllUsesWithDefault(Instruction *I, Value *With);
+
+  /// \brief Replace an instruction's uses with a value using our replacer.
+  void replaceAllUsesWith(Instruction *I, Value *With);
 
 public:
-  LibCallSimplifier(const DataLayout *TD, const TargetLibraryInfo *TLI);
+  LibCallSimplifier(const DataLayout *TD, const TargetLibraryInfo *TLI,
+                    function_ref<void(Instruction *, Value *)> Replacer =
+                        &replaceAllUsesWithDefault);
 
   /// optimizeCall - Take the given call instruction and return a more
   /// optimal value to replace the instruction with or 0 if a more
@@ -83,12 +93,8 @@ public:
   /// be equal to the instruction being optimized.  In this case all
   /// other instructions that use the given instruction were modified
   /// and the given instruction is dead.
+  /// The call must not be an indirect call.
   Value *optimizeCall(CallInst *CI);
-
-  /// replaceAllUsesWith - This method is used when the library call
-  /// simplifier needs to replace instructions other than the library
-  /// call being modified.
-  virtual void replaceAllUsesWith(Instruction *I, Value *With) const;
 
 private:
   // String and Memory Library Call Optimizations

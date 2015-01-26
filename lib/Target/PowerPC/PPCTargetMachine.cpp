@@ -12,8 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "PPCTargetMachine.h"
-#include "PPCTargetObjectFile.h"
 #include "PPC.h"
+#include "PPCTargetObjectFile.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCStreamer.h"
@@ -45,6 +45,40 @@ extern "C" void LLVMInitializePowerPCTarget() {
   RegisterTargetMachine<PPC64TargetMachine> C(ThePPC64LETarget);
 }
 
+/// Return the datalayout string of a subtarget.
+static std::string getDataLayoutString(const Triple &T) {
+  bool is64Bit = T.getArch() == Triple::ppc64 || T.getArch() == Triple::ppc64le;
+  std::string Ret;
+
+  // Most PPC* platforms are big endian, PPC64LE is little endian.
+  if (T.getArch() == Triple::ppc64le)
+    Ret = "e";
+  else
+    Ret = "E";
+
+  Ret += DataLayout::getManglingComponent(T);
+
+  // PPC32 has 32 bit pointers. The PS3 (OS Lv2) is a PPC64 machine with 32 bit
+  // pointers.
+  if (!is64Bit || T.getOS() == Triple::Lv2)
+    Ret += "-p:32:32";
+
+  // Note, the alignment values for f64 and i64 on ppc64 in Darwin
+  // documentation are wrong; these are correct (i.e. "what gcc does").
+  if (is64Bit || !T.isOSDarwin())
+    Ret += "-i64:64";
+  else
+    Ret += "-f64:32:64";
+
+  // PPC64 has 32 and 64 bit registers, PPC32 has only 32 bit ones.
+  if (is64Bit)
+    Ret += "-n32:64";
+  else
+    Ret += "-n32";
+
+  return Ret;
+}
+
 static std::string computeFSAdditions(StringRef FS, CodeGenOpt::Level OL, StringRef TT) {
   std::string FullFS = FS;
   Triple TargetTriple(TT);
@@ -64,6 +98,14 @@ static std::string computeFSAdditions(StringRef FS, CodeGenOpt::Level OL, String
     else
       FullFS = "+crbits";
   }
+
+  if (OL != CodeGenOpt::None) {
+     if (!FullFS.empty())
+      FullFS = "+invariant-function-descriptors," + FullFS;
+    else
+      FullFS = "+invariant-function-descriptors";
+  }
+
   return FullFS;
 }
 
@@ -87,7 +129,7 @@ PPCTargetMachine::PPCTargetMachine(const Target &T, StringRef TT, StringRef CPU,
     : LLVMTargetMachine(T, TT, CPU, computeFSAdditions(FS, OL, TT), Options, RM,
                         CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
-      Subtarget(TT, CPU, TargetFS, *this) {
+      DL(getDataLayoutString(Triple(TT))), Subtarget(TT, CPU, TargetFS, *this) {
   initAsmInfo();
 }
 
@@ -243,4 +285,3 @@ void PPCTargetMachine::addAnalysisPasses(PassManagerBase &PM) {
   PM.add(createBasicTargetTransformInfoPass(this));
   PM.add(createPPCTargetTransformInfoPass(this));
 }
-

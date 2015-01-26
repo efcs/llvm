@@ -30,7 +30,7 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Target/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 
 using namespace llvm;
@@ -1966,7 +1966,8 @@ Value *LibCallSimplifier::optimizeCall(CallInst *CI) {
   // Also try to simplify calls to fortified library functions.
   if (Value *SimplifiedFortifiedCI = FortifiedSimplifier.optimizeCall(CI)) {
     // Try to further simplify the result.
-    if (CallInst *SimplifiedCI = dyn_cast<CallInst>(SimplifiedFortifiedCI))
+    CallInst *SimplifiedCI = dyn_cast<CallInst>(SimplifiedFortifiedCI);
+    if (SimplifiedCI && SimplifiedCI->getCalledFunction())
       if (Value *V = optimizeStringMemoryLibCall(SimplifiedCI, Builder))
         return V;
     return SimplifiedFortifiedCI;
@@ -2083,15 +2084,19 @@ Value *LibCallSimplifier::optimizeCall(CallInst *CI) {
   return nullptr;
 }
 
-LibCallSimplifier::LibCallSimplifier(const DataLayout *DL,
-                                     const TargetLibraryInfo *TLI) :
-                                     FortifiedSimplifier(DL, TLI),
-                                     DL(DL),
-                                     TLI(TLI),
-                                     UnsafeFPShrink(false) {
+LibCallSimplifier::LibCallSimplifier(
+    const DataLayout *DL, const TargetLibraryInfo *TLI,
+    function_ref<void(Instruction *, Value *)> Replacer)
+    : FortifiedSimplifier(DL, TLI), DL(DL), TLI(TLI), UnsafeFPShrink(false),
+      Replacer(Replacer) {}
+
+void LibCallSimplifier::replaceAllUsesWith(Instruction *I, Value *With) {
+  // Indirect through the replacer used in this instance.
+  Replacer(I, With);
 }
 
-void LibCallSimplifier::replaceAllUsesWith(Instruction *I, Value *With) const {
+/*static*/ void LibCallSimplifier::replaceAllUsesWithDefault(Instruction *I,
+                                                             Value *With) {
   I->replaceAllUsesWith(With);
   I->eraseFromParent();
 }

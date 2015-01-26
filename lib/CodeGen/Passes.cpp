@@ -14,7 +14,6 @@
 
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/Analysis/Passes.h"
-#include "llvm/CodeGen/GCStrategy.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/IR/IRPrintingPasses.h"
@@ -448,10 +447,9 @@ void TargetPassConfig::addPassesToHandleExceptions() {
     // FALLTHROUGH
   case ExceptionHandling::DwarfCFI:
   case ExceptionHandling::ARM:
-  case ExceptionHandling::ItaniumWinEH:
+  case ExceptionHandling::WinEH:
     addPass(createDwarfEHPass(TM));
     break;
-  case ExceptionHandling::MSVC: // FIXME: Add preparation.
   case ExceptionHandling::None:
     addPass(createLowerInvokePass());
 

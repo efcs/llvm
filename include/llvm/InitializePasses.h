@@ -40,7 +40,7 @@ void initializeObjCARCOpts(PassRegistry&);
 void initializeVectorization(PassRegistry&);
 
 /// initializeInstCombine - Initialize all passes linked into the
-/// ScalarOpts library.
+/// InstCombine library.
 void initializeInstCombine(PassRegistry&);
 
 /// initializeIPO - Initialize all passes linked into the IPO library.
@@ -142,9 +142,10 @@ void initializeIPCPPass(PassRegistry&);
 void initializeIPSCCPPass(PassRegistry&);
 void initializeIVUsersPass(PassRegistry&);
 void initializeIfConverterPass(PassRegistry&);
+void initializeInductiveRangeCheckEliminationPass(PassRegistry&);
 void initializeIndVarSimplifyPass(PassRegistry&);
 void initializeInlineCostAnalysisPass(PassRegistry&);
-void initializeInstCombinerPass(PassRegistry&);
+void initializeInstructionCombiningPassPass(PassRegistry&);
 void initializeInstCountPass(PassRegistry&);
 void initializeInstNamerPass(PassRegistry&);
 void initializeInternalizePassPass(PassRegistry&);
@@ -166,7 +167,7 @@ void initializeLoaderPassPass(PassRegistry&);
 void initializeLocalStackSlotPassPass(PassRegistry&);
 void initializeLoopDeletionPass(PassRegistry&);
 void initializeLoopExtractorPass(PassRegistry&);
-void initializeLoopInfoPass(PassRegistry&);
+void initializeLoopInfoWrapperPassPass(PassRegistry&);
 void initializeLoopInstSimplifyPass(PassRegistry&);
 void initializeLoopRotatePass(PassRegistry&);
 void initializeLoopSimplifyPass(PassRegistry&);
@@ -265,7 +266,7 @@ void initializeDataLayoutPassPass(PassRegistry &);
 void initializeTargetTransformInfoAnalysisGroup(PassRegistry&);
 void initializeFunctionTargetTransformInfoPass(PassRegistry &);
 void initializeNoTTIPass(PassRegistry&);
-void initializeTargetLibraryInfoPass(PassRegistry&);
+void initializeTargetLibraryInfoWrapperPassPass(PassRegistry &);
 void initializeAssumptionCacheTrackerPass(PassRegistry &);
 void initializeTwoAddressInstructionPassPass(PassRegistry&);
 void initializeTypeBasedAliasAnalysisPass(PassRegistry&);

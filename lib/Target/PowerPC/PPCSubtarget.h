@@ -15,8 +15,8 @@
 #define LLVM_LIB_TARGET_POWERPC_PPCSUBTARGET_H
 
 #include "PPCFrameLowering.h"
-#include "PPCInstrInfo.h"
 #include "PPCISelLowering.h"
+#include "PPCInstrInfo.h"
 #include "PPCSelectionDAGInfo.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/DataLayout.h"
@@ -68,9 +68,6 @@ protected:
   /// TargetTriple - What processor and OS we're targeting.
   Triple TargetTriple;
 
-  // Calculates type size & alignment
-  const DataLayout DL;
-
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
   unsigned StackAlignment;
@@ -113,6 +110,8 @@ protected:
   bool DeprecatedDST;
   bool HasLazyResolverStubs;
   bool IsLittleEndian;
+  bool HasICBT;
+  bool HasInvariantFunctionDescriptors;
 
   enum {
     PPC_ABI_UNKNOWN,
@@ -154,7 +153,6 @@ public:
   const PPCFrameLowering *getFrameLowering() const override {
     return &FrameLowering;
   }
-  const DataLayout *getDataLayout() const override { return &DL; }
   const PPCInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const PPCTargetLowering *getTargetLowering() const override {
     return &TLInfo;
@@ -230,6 +228,10 @@ public:
   bool isE500() const { return IsE500; }
   bool isDeprecatedMFTB() const { return DeprecatedMFTB; }
   bool isDeprecatedDST() const { return DeprecatedDST; }
+  bool hasICBT() const { return HasICBT; }
+  bool hasInvariantFunctionDescriptors() const {
+    return HasInvariantFunctionDescriptors;
+  }
 
   const Triple &getTargetTriple() const { return TargetTriple; }
 
