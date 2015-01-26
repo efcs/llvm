@@ -12871,6 +12871,8 @@ X86TargetLowering::ExtractBitFromMaskVector(SDValue Op, SelectionDAG &DAG) const
   MVT EltVT = Op.getSimpleValueType();
 
   assert((EltVT == MVT::i1) && "Unexpected operands in ExtractBitFromMaskVector");
+  assert((VecVT.getVectorNumElements() <= 16 || Subtarget->hasBWI()) &&
+         "Unexpected vector type in ExtractBitFromMaskVector");
 
   // variable index can't be handled in mask registers,
   // extend vector to VR512
@@ -12884,6 +12886,8 @@ X86TargetLowering::ExtractBitFromMaskVector(SDValue Op, SelectionDAG &DAG) const
 
   unsigned IdxVal = cast<ConstantSDNode>(Idx)->getZExtValue();
   const TargetRegisterClass* rc = getRegClassFor(VecVT);
+  if (!Subtarget->hasDQI() && (VecVT.getVectorNumElements() <= 8))
+    rc = getRegClassFor(MVT::v16i1);
   unsigned MaxSift = rc->getSize()*8 - 1;
   Vec = DAG.getNode(X86ISD::VSHLI, dl, VecVT, Vec,
                     DAG.getConstant(MaxSift - IdxVal, MVT::i8));
@@ -24757,6 +24761,8 @@ static SDValue PerformLOADCombine(SDNode *N, SelectionDAG &DAG,
   LoadSDNode *Ld = cast<LoadSDNode>(N);
   EVT RegVT = Ld->getValueType(0);
   EVT MemVT = Ld->getMemoryVT();
+  SDValue Ptr   = Ld->getBasePtr();
+  SDValue Chain = Ld->getChain();
   SDLoc dl(Ld);
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
 
@@ -24795,6 +24801,33 @@ static SDValue PerformLOADCombine(SDNode *N, SelectionDAG &DAG,
     return DCI.CombineTo(N, NewVec, TF, true);
   }
 
+  // Conversion from x86mmx/i64 to v2i64 types is often done via stack
+  // store/load. Under certain conditions we can bypass the memory access and
+  // combine this load to use a scalar_to_vector instead. This leads to
+  // a reduction in the stack use, redundant emission of shuffles and create
+  // isel matching candidates for movq2dq instructions.
+  if (RegVT == MVT::v2i64 && Subtarget->hasSSE2() && Ext == ISD::EXTLOAD &&
+      !Ld->isVolatile() && ISD::isNON_TRUNCStore(Chain.getNode())) {
+
+    // If this load is directly stored, get the original source value.
+    StoreSDNode *PrevST = cast<StoreSDNode>(Chain);
+    EVT SrcTy = PrevST->getValue().getValueType();
+    if (PrevST->getBasePtr() != Ptr ||
+        !(SrcTy == MVT::i64 || SrcTy == MVT::x86mmx))
+      return SDValue();
+    SDValue SrcVal = Chain.getOperand(1);
+
+    // On 32bit systems, we can't store 64bit integers, use f64 instead.
+    bool Usef64 = TLI.isTypeLegal(MVT::f64) && !Subtarget->is64Bit();
+    if (Usef64)
+      SrcVal = DAG.getNode(ISD::BITCAST, dl, MVT::f64, SrcVal);
+    SrcVal = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, Usef64 ? MVT::v2f64 : RegVT,
+                              SrcVal);
+
+    return DCI.CombineTo(N, Usef64 ?
+        DAG.getNode(ISD::BITCAST, dl, RegVT, SrcVal) : SrcVal, Chain);
+  }
+
   return SDValue();
 }
 
@@ -24807,7 +24840,6 @@ static SDValue PerformMLOADCombine(SDNode *N, SelectionDAG &DAG,
     return SDValue();
 
   EVT VT = Mld->getValueType(0);
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   unsigned NumElems = VT.getVectorNumElements();
   EVT LdVT = Mld->getMemoryVT();
   SDLoc dl(Mld);
@@ -24835,8 +24867,8 @@ static SDValue PerformMLOADCombine(SDNode *N, SelectionDAG &DAG,
       ShuffleVec[i] = i * SizeRatio;
 
     // Can't shuffle using an illegal type.
-    assert (TLI.isTypeLegal(WideVecVT) && "WideVecVT should be legal");
-    (void)TLI;
+    assert (DAG.getTargetLoweringInfo().isTypeLegal(WideVecVT)
+	    && "WideVecVT should be legal");
     WideSrc0 = DAG.getVectorShuffle(WideVecVT, dl, WideSrc0,
                                     DAG.getUNDEF(WideVecVT), &ShuffleVec[0]);
   }
@@ -24888,7 +24920,6 @@ static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
     return SDValue();
 
   EVT VT = Mst->getValue().getValueType();
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   unsigned NumElems = VT.getVectorNumElements();
   EVT StVT = Mst->getMemoryVT();
   SDLoc dl(Mst);
@@ -24920,8 +24951,8 @@ static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
     ShuffleVec[i] = i * SizeRatio;
 
   // Can't shuffle using an illegal type.
-  assert (TLI.isTypeLegal(WideVecVT) && "WideVecVT should be legal");
-  (void)TLI;
+  assert (DAG.getTargetLoweringInfo().isTypeLegal(WideVecVT)
+	  && "WideVecVT should be legal");
 
   SDValue TruncatedVal = DAG.getVectorShuffle(WideVecVT, dl, WideVec,
                                         DAG.getUNDEF(WideVecVT),
