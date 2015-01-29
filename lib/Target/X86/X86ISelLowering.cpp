@@ -7937,11 +7937,11 @@ static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
       if (Mask[i] == -1)
         continue; // Valid anywhere but doesn't tell us anything.
       if (i % Scale != 0) {
-        // Each of the extend elements needs to be zeroable.
+        // Each of the extended elements need to be zeroable.
         if (!Zeroable[i])
           return SDValue();
 
-        // We no lorger are in the anyext case.
+        // We no longer are in the anyext case.
         AnyExt = false;
         continue;
       }
@@ -7955,7 +7955,7 @@ static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
         return SDValue(); // Flip-flopping inputs.
 
       if (Mask[i] % NumElements != i / Scale)
-        return SDValue(); // Non-consecutive strided elemenst.
+        return SDValue(); // Non-consecutive strided elements.
     }
 
     // If we fail to find an input, we have a zero-shuffle which should always
@@ -7977,7 +7977,7 @@ static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
   // many elements.
   for (; NumExtElements < NumElements; NumExtElements *= 2) {
     assert(NumElements % NumExtElements == 0 &&
-           "The input vector size must be divisble by the extended size.");
+           "The input vector size must be divisible by the extended size.");
     if (SDValue V = Lower(NumElements / NumExtElements))
       return V;
   }
@@ -13197,27 +13197,28 @@ static SDValue LowerEXTRACT_SUBVECTOR(SDValue Op, const X86Subtarget *Subtarget,
 // the upper bits of a vector.
 static SDValue LowerINSERT_SUBVECTOR(SDValue Op, const X86Subtarget *Subtarget,
                                      SelectionDAG &DAG) {
-  if (Subtarget->hasFp256()) {
-    SDLoc dl(Op.getNode());
-    SDValue Vec = Op.getNode()->getOperand(0);
-    SDValue SubVec = Op.getNode()->getOperand(1);
-    SDValue Idx = Op.getNode()->getOperand(2);
-
-    if ((Op.getNode()->getSimpleValueType(0).is256BitVector() ||
-         Op.getNode()->getSimpleValueType(0).is512BitVector()) &&
-        SubVec.getNode()->getSimpleValueType(0).is128BitVector() &&
-        isa<ConstantSDNode>(Idx)) {
-      unsigned IdxVal = cast<ConstantSDNode>(Idx)->getZExtValue();
-      return Insert128BitVector(Vec, SubVec, IdxVal, DAG, dl);
-    }
-
-    if (Op.getNode()->getSimpleValueType(0).is512BitVector() &&
-        SubVec.getNode()->getSimpleValueType(0).is256BitVector() &&
-        isa<ConstantSDNode>(Idx)) {
-      unsigned IdxVal = cast<ConstantSDNode>(Idx)->getZExtValue();
-      return Insert256BitVector(Vec, SubVec, IdxVal, DAG, dl);
-    }
+  if (!Subtarget->hasAVX())
+    return SDValue();
+  
+  SDLoc dl(Op);
+  SDValue Vec = Op.getOperand(0);
+  SDValue SubVec = Op.getOperand(1);
+  SDValue Idx = Op.getOperand(2);
+  MVT OpVT = Op.getSimpleValueType();
+  MVT SubVecVT = SubVec.getSimpleValueType();
+    
+  if ((OpVT.is256BitVector() || OpVT.is512BitVector()) &&
+      SubVecVT.is128BitVector() && isa<ConstantSDNode>(Idx)) {
+    unsigned IdxVal = cast<ConstantSDNode>(Idx)->getZExtValue();
+    return Insert128BitVector(Vec, SubVec, IdxVal, DAG, dl);
   }
+
+  if (OpVT.is512BitVector() &&
+      SubVecVT.is256BitVector() && isa<ConstantSDNode>(Idx)) {
+    unsigned IdxVal = cast<ConstantSDNode>(Idx)->getZExtValue();
+    return Insert256BitVector(Vec, SubVec, IdxVal, DAG, dl);
+  }
+
   return SDValue();
 }
 

@@ -245,6 +245,7 @@ void initializeSROA_SSAUpPass(PassRegistry&);
 void initializeScalarEvolutionAliasAnalysisPass(PassRegistry&);
 void initializeScalarEvolutionPass(PassRegistry&);
 void initializeSimpleInlinerPass(PassRegistry&);
+void initializeShadowStackGCLoweringPass(PassRegistry&);  
 void initializeRegisterCoalescerPass(PassRegistry&);
 void initializeSingleLoopExtractorPass(PassRegistry&);
 void initializeSinkingPass(PassRegistry&);
@@ -288,6 +289,7 @@ void initializeStackMapLivenessPass(PassRegistry&);
 void initializeMachineCombinerPass(PassRegistry &);
 void initializeLoadCombinePass(PassRegistry&);
 void initializeRewriteSymbolsPass(PassRegistry&);
+void initializeWinEHPreparePass(PassRegistry&);
 }
 
 #endif

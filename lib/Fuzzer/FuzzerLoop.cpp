@@ -41,12 +41,12 @@ void Fuzzer::AlarmCallback() {
       duration_cast<seconds>(system_clock::now() - UnitStartTime).count();
   std::cerr << "ALARM: working on the last Unit for " << Seconds << " seconds"
             << std::endl;
-  if (Seconds > 60) {
+  if (Seconds >= 3) {
     Print(CurrentUnit, "\n");
     PrintASCII(CurrentUnit, "\n");
     WriteToCrash(CurrentUnit, "timeout-");
   }
-  abort();
+  exit(1);
 }
 
 void Fuzzer::ShuffleAndMinimize() {
@@ -96,7 +96,7 @@ size_t Fuzzer::RunOne(const Unit &U) {
 
 void Fuzzer::WriteToOutputCorpus(const Unit &U) {
   if (Options.OutputCorpus.empty()) return;
-  std::string Path = Options.OutputCorpus + "/" + Hash(U);
+  std::string Path = DirPlusFile(Options.OutputCorpus, Hash(U));
   WriteToFile(U, Path);
   if (Options.Verbosity >= 2)
     std::cerr << "Written to " << Path << std::endl;
@@ -106,6 +106,15 @@ void Fuzzer::WriteToCrash(const Unit &U, const char *Prefix) {
   std::string Path = Prefix + Hash(U);
   WriteToFile(U, Path);
   std::cerr << "CRASHED; file written to " << Path << std::endl;
+}
+
+void Fuzzer::SaveCorpus() {
+  if (Options.OutputCorpus.empty()) return;
+  for (const auto &U : Corpus)
+    WriteToFile(U, DirPlusFile(Options.OutputCorpus, Hash(U)));
+  if (Options.Verbosity)
+    std::cerr << "Written corpus of " << Corpus.size() << " files to "
+              << Options.OutputCorpus << "\n";
 }
 
 size_t Fuzzer::MutateAndTestOne(Unit *U) {
