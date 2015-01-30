@@ -15,6 +15,7 @@
 #include "X86ISelLowering.h"
 #include "Utils/X86ShuffleDecode.h"
 #include "X86CallingConv.h"
+#include "X86FrameLowering.h"
 #include "X86InstrBuilder.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86TargetMachine.h"
@@ -6055,7 +6056,7 @@ LowerAsSplatVectorLoad(SDValue SrcOp, MVT VT, SDLoc dl, SelectionDAG &DAG) {
 /// FIXME: we'd also like to handle the case where the last elements are zero
 /// rather than undef via VZEXT_LOAD, but we do not detect that case today.
 /// There's even a handy isZeroNode for that purpose.
-static SDValue EltsFromConsecutiveLoads(EVT VT, SmallVectorImpl<SDValue> &Elts,
+static SDValue EltsFromConsecutiveLoads(EVT VT, ArrayRef<SDValue> Elts,
                                         SDLoc &DL, SelectionDAG &DAG,
                                         bool isAfterLegalize) {
   EVT EltVT = VT.getVectorElementType();
@@ -21057,52 +21058,11 @@ X86TargetLowering::EmitLoweredSegAlloca(MachineInstr *MI,
 MachineBasicBlock *
 X86TargetLowering::EmitLoweredWinAlloca(MachineInstr *MI,
                                         MachineBasicBlock *BB) const {
-  const TargetInstrInfo *TII = BB->getParent()->getSubtarget().getInstrInfo();
   DebugLoc DL = MI->getDebugLoc();
 
   assert(!Subtarget->isTargetMachO());
 
-  // The lowering is pretty easy: we're just emitting the call to _alloca.  The
-  // non-trivial part is impdef of ESP.
-
-  if (Subtarget->isTargetWin64()) {
-    if (Subtarget->isTargetCygMing()) {
-      // ___chkstk(Mingw64):
-      // Clobbers R10, R11, RAX and EFLAGS.
-      // Updates RSP.
-      BuildMI(*BB, MI, DL, TII->get(X86::W64ALLOCA))
-        .addExternalSymbol("___chkstk")
-        .addReg(X86::RAX, RegState::Implicit)
-        .addReg(X86::RSP, RegState::Implicit)
-        .addReg(X86::RAX, RegState::Define | RegState::Implicit)
-        .addReg(X86::RSP, RegState::Define | RegState::Implicit)
-        .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
-    } else {
-      // __chkstk(MSVCRT): does not update stack pointer.
-      // Clobbers R10, R11 and EFLAGS.
-      BuildMI(*BB, MI, DL, TII->get(X86::W64ALLOCA))
-        .addExternalSymbol("__chkstk")
-        .addReg(X86::RAX, RegState::Implicit)
-        .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
-      // RAX has the offset to be subtracted from RSP.
-      BuildMI(*BB, MI, DL, TII->get(X86::SUB64rr), X86::RSP)
-        .addReg(X86::RSP)
-        .addReg(X86::RAX);
-    }
-  } else {
-    const char *StackProbeSymbol = (Subtarget->isTargetKnownWindowsMSVC() ||
-                                    Subtarget->isTargetWindowsItanium())
-                                       ? "_chkstk"
-                                       : "_alloca";
-
-    BuildMI(*BB, MI, DL, TII->get(X86::CALLpcrel32))
-      .addExternalSymbol(StackProbeSymbol)
-      .addReg(X86::EAX, RegState::Implicit)
-      .addReg(X86::ESP, RegState::Implicit)
-      .addReg(X86::EAX, RegState::Define | RegState::Implicit)
-      .addReg(X86::ESP, RegState::Define | RegState::Implicit)
-      .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
-  }
+  X86FrameLowering::emitStackProbeCall(*BB->getParent(), *BB, MI, DL);
 
   MI->eraseFromParent();   // The pseudo instruction is gone now.
   return BB;

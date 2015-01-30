@@ -42,6 +42,21 @@ def: T_RR_pat<C4_nbitsset,  int_hexagon_C4_nbitsset>;
 def: T_RR_pat<C4_nbitsclr,  int_hexagon_C4_nbitsclr>;
 def: T_RI_pat<C4_nbitsclri, int_hexagon_C4_nbitsclri>;
 
+def : T_RR_pat<A4_cmpbeq,   int_hexagon_A4_cmpbeq>;
+def : T_RR_pat<A4_cmpbgt,   int_hexagon_A4_cmpbgt>;
+def : T_RR_pat<A4_cmpbgtu,  int_hexagon_A4_cmpbgtu>;
+def : T_RR_pat<A4_cmpheq,   int_hexagon_A4_cmpheq>;
+def : T_RR_pat<A4_cmphgt,   int_hexagon_A4_cmphgt>;
+def : T_RR_pat<A4_cmphgtu,  int_hexagon_A4_cmphgtu>;
+
+def : T_RI_pat<A4_cmpbeqi,  int_hexagon_A4_cmpbeqi>;
+def : T_RI_pat<A4_cmpbgti,  int_hexagon_A4_cmpbgti>;
+def : T_RI_pat<A4_cmpbgtui, int_hexagon_A4_cmpbgtui>;
+
+def : T_RI_pat<A4_cmpheqi,  int_hexagon_A4_cmpheqi>;
+def : T_RI_pat<A4_cmphgti,  int_hexagon_A4_cmphgti>;
+def : T_RI_pat<A4_cmphgtui, int_hexagon_A4_cmphgtui>;
+
 def : T_RP_pat <A4_boundscheck, int_hexagon_A4_boundscheck>;
 
 def : T_PR_pat<A4_tlbmatch, int_hexagon_A4_tlbmatch>;
@@ -116,11 +131,37 @@ def: T_IR_pat<A4_combineir, int_hexagon_A4_combineir, s8ExtPred>;
 *            ALU32/PRED                                             *
 *********************************************************************/
 
+// Compare
+def : T_RI_pat<C4_cmpneqi, int_hexagon_C4_cmpneqi, s10ExtPred>;
+def : T_RI_pat<C4_cmpltei, int_hexagon_C4_cmpltei, s10ExtPred>;
+def : T_RI_pat<C4_cmplteui, int_hexagon_C4_cmplteui, u9ExtPred>;
+
 def: T_RR_pat<A4_rcmpeq,  int_hexagon_A4_rcmpeq>;
 def: T_RR_pat<A4_rcmpneq, int_hexagon_A4_rcmpneq>;
 
 def: T_RI_pat<A4_rcmpeqi,  int_hexagon_A4_rcmpeqi>;
 def: T_RI_pat<A4_rcmpneqi, int_hexagon_A4_rcmpneqi>;
+
+/********************************************************************
+*            CR                                                     *
+*********************************************************************/
+
+// CR / Logical Operations On Predicates.
+
+class qi_CRInst_qiqiqi_pat<Intrinsic IntID, InstHexagon Inst> :
+  Pat<(i32 (IntID IntRegs:$Rs, IntRegs:$Rt, IntRegs:$Ru)),
+      (i32 (C2_tfrpr (Inst (C2_tfrrp IntRegs:$Rs),
+                           (C2_tfrrp IntRegs:$Rt),
+                           (C2_tfrrp IntRegs:$Ru))))>;
+
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_and_and,   C4_and_and>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_and_andn,  C4_and_andn>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_and_or,    C4_and_or>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_and_orn,   C4_and_orn>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_or_and,    C4_or_and>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_or_andn,   C4_or_andn>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_or_or,     C4_or_or>;
+def: qi_CRInst_qiqiqi_pat<int_hexagon_C4_or_orn,    C4_or_orn>;
 
 /********************************************************************
 *            XTYPE/ALU                                              *
@@ -165,103 +206,3 @@ def : T_RI_pat <A4_round_ri_sat, int_hexagon_A4_round_ri_sat>;
 def : T_RR_pat <A4_round_rr_sat, int_hexagon_A4_round_rr_sat>;
 
 def : T_P_pat <A2_roundsat, int_hexagon_A2_roundsat>;
-
-class qi_neg_ALU32_sisi<string opc, Intrinsic IntID>
-  : ALU32_rr<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             !strconcat("$dst = !", !strconcat(opc , "($src1, $src2)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2))]>;
-
-class qi_neg_ALU32_sis10<string opc, Intrinsic IntID>
-  : ALU32_rr<(outs PredRegs:$dst), (ins IntRegs:$src1, s10Imm:$src2),
-             !strconcat("$dst = !", !strconcat(opc , "($src1, #$src2)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, imm:$src2))]>;
-
-class qi_neg_ALU32_siu9<string opc, Intrinsic IntID>
-  : ALU32_rr<(outs PredRegs:$dst), (ins IntRegs:$src1, u9Imm:$src2),
-             !strconcat("$dst = !", !strconcat(opc , "($src1, #$src2)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, imm:$src2))]>;
-
-//
-// SInst Classes.
-//
-class qi_neg_SInst_qiqi<string opc, Intrinsic IntID>
-  : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2),
-             !strconcat("$dst = !", !strconcat(opc , "($src1, $src2)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2))]>;
-
-class qi_SInst_qi_andqiqi_neg<string opc, Intrinsic IntID>
-  : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2,
-                                     IntRegs:$src3),
-             !strconcat("$dst = ", !strconcat(opc ,
-                                              "($src1, and($src2, !$src3)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2,
-                                         IntRegs:$src3))]>;
-
-class qi_SInst_qi_andqiqi<string opc, Intrinsic IntID>
-  : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2,
-                                     IntRegs:$src3),
-             !strconcat("$dst = ", !strconcat(opc ,
-                                              "($src1, and($src2, $src3)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2,
-                                         IntRegs:$src3))]>;
-
-class qi_SInst_qi_orqiqi_neg<string opc, Intrinsic IntID>
-  : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2,
-                                     IntRegs:$src3),
-             !strconcat("$dst = ", !strconcat(opc ,
-                                              "($src1, or($src2, !$src3)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2,
-                                         IntRegs:$src3))]>;
-
-class qi_SInst_qi_orqiqi<string opc, Intrinsic IntID>
-  : SInst<(outs PredRegs:$dst), (ins IntRegs:$src1, IntRegs:$src2,
-                                     IntRegs:$src3),
-             !strconcat("$dst = ", !strconcat(opc ,
-                                              "($src1, or($src2, $src3)")),
-             [(set PredRegs:$dst, (IntID IntRegs:$src1, IntRegs:$src2,
-                                         IntRegs:$src3))]>;
-
-/********************************************************************
-*            ALU32/PRED                                             *
-*********************************************************************/
-
-// ALU32 / PRED / Conditional Shift Halfword.
-// ALU32 / PRED / Conditional Sign Extend.
-// ALU32 / PRED / Conditional Zero Extend.
-// ALU32 / PRED / Compare.
-def Hexagon_C4_cmpltei : qi_neg_ALU32_sis10 <"cmp.gt", int_hexagon_C4_cmpltei>;
-def Hexagon_C4_cmplte  : qi_neg_ALU32_sisi  <"cmp.gt", int_hexagon_C4_cmplte>;
-def Hexagon_C4_cmplteu : qi_neg_ALU32_sisi  <"cmp.gtu",int_hexagon_C4_cmplteu>;
-
-def: T_RI_pat<C4_cmpneqi, int_hexagon_C4_cmpneqi>;
-def: T_RI_pat<C4_cmpltei, int_hexagon_C4_cmpltei>;
-def: T_RI_pat<C4_cmplteui, int_hexagon_C4_cmplteui>;
-
-
-/********************************************************************
-*            CR                                                     *
-*********************************************************************/
-
-// CR / Corner Detection Acceleration.
-def Hexagon_C4_fastcorner9:
-  qi_SInst_qiqi<"fastcorner9", int_hexagon_C4_fastcorner9>;
-def Hexagon_C4_fastcorner9_not:
-  qi_neg_SInst_qiqi<"fastcorner9",int_hexagon_C4_fastcorner9_not>;
-
-// CR / Logical Operations On Predicates.
-def Hexagon_C4_and_andn:
-  qi_SInst_qi_andqiqi_neg         <"and",      int_hexagon_C4_and_andn>;
-def Hexagon_C4_and_and:
-  qi_SInst_qi_andqiqi             <"and",      int_hexagon_C4_and_and>;
-def Hexagon_C4_and_orn:
-  qi_SInst_qi_orqiqi_neg          <"and",      int_hexagon_C4_and_orn>;
-def Hexagon_C4_and_or:
-  qi_SInst_qi_orqiqi              <"and",      int_hexagon_C4_and_or>;
-def Hexagon_C4_or_andn:
-  qi_SInst_qi_andqiqi_neg         <"or",       int_hexagon_C4_or_andn>;
-def Hexagon_C4_or_and:
-  qi_SInst_qi_andqiqi             <"or",       int_hexagon_C4_or_and>;
-def Hexagon_C4_or_orn:
-  qi_SInst_qi_orqiqi_neg          <"or",       int_hexagon_C4_or_orn>;
-def Hexagon_C4_or_or:
-  qi_SInst_qi_orqiqi              <"or",       int_hexagon_C4_or_or>;
