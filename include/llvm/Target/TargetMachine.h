@@ -40,8 +40,6 @@ class TargetPassConfig;
 class TargetRegisterInfo;
 class TargetSelectionDAGInfo;
 class TargetSubtargetInfo;
-class ScalarTargetTransformInfo;
-class VectorTargetTransformInfo;
 class formatted_raw_ostream;
 class raw_ostream;
 class TargetLoweringObjectFile;
@@ -115,6 +113,12 @@ public:
   }
   template <typename STC> const STC &getSubtarget(const Function *) const {
     return *static_cast<const STC*>(getSubtargetImpl());
+  }
+
+  /// getDataLayout - This method returns a pointer to the DataLayout for
+  /// the target. It should be unchanging for every subtarget.
+  virtual const DataLayout *getDataLayout() const {
+    return nullptr;
   }
 
   /// \brief Reset the target options based on the function's attributes.

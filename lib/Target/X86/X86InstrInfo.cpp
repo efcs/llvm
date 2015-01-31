@@ -353,6 +353,7 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::SETSr,       X86::SETSm,         TB_FOLDED_STORE },
     { X86::TAILJMPr,    X86::TAILJMPm,      TB_FOLDED_LOAD },
     { X86::TAILJMPr64,  X86::TAILJMPm64,    TB_FOLDED_LOAD },
+    { X86::TAILJMPr64_REX, X86::TAILJMPm64_REX, TB_FOLDED_LOAD },
     { X86::TEST16ri,    X86::TEST16mi,      TB_FOLDED_LOAD },
     { X86::TEST32ri,    X86::TEST32mi,      TB_FOLDED_LOAD },
     { X86::TEST64ri32,  X86::TEST64mi32,    TB_FOLDED_LOAD },
@@ -2686,6 +2687,45 @@ X86InstrInfo::commuteInstruction(MachineInstr *MI, bool NewMI) const {
     MI->getOperand(3).setImm(Mask ^ Imm);
     return TargetInstrInfo::commuteInstruction(MI, NewMI);
   }
+  case X86::PCLMULQDQrr:
+  case X86::VPCLMULQDQrr:{
+    // SRC1 64bits = Imm[0] ? SRC1[127:64] : SRC1[63:0]
+    // SRC2 64bits = Imm[4] ? SRC2[127:64] : SRC2[63:0]
+    unsigned Imm = MI->getOperand(3).getImm();
+    unsigned Src1Hi = Imm & 0x01;
+    unsigned Src2Hi = Imm & 0x10;
+    if (NewMI) {
+      MachineFunction &MF = *MI->getParent()->getParent();
+      MI = MF.CloneMachineInstr(MI);
+      NewMI = false;
+    }
+    MI->getOperand(3).setImm((Src1Hi << 4) | (Src2Hi >> 4));
+    return TargetInstrInfo::commuteInstruction(MI, NewMI);
+  }
+  case X86::CMPPDrri:
+  case X86::CMPPSrri:
+  case X86::VCMPPDrri:
+  case X86::VCMPPSrri:
+  case X86::VCMPPDYrri:
+  case X86::VCMPPSYrri: {
+    // Float comparison can be safely commuted for
+    // Ordered/Unordered/Equal/NotEqual tests
+    unsigned Imm = MI->getOperand(3).getImm() & 0x7;
+    switch (Imm) {
+    case 0x00: // EQUAL
+    case 0x03: // UNORDERED
+    case 0x04: // NOT EQUAL
+    case 0x07: // ORDERED
+      if (NewMI) {
+        MachineFunction &MF = *MI->getParent()->getParent();
+        MI = MF.CloneMachineInstr(MI);
+        NewMI = false;
+      }
+      return TargetInstrInfo::commuteInstruction(MI, NewMI);
+    default:
+      return nullptr;
+    }
+  }
   case X86::CMOVB16rr:  case X86::CMOVB32rr:  case X86::CMOVB64rr:
   case X86::CMOVAE16rr: case X86::CMOVAE32rr: case X86::CMOVAE64rr:
   case X86::CMOVE16rr:  case X86::CMOVE32rr:  case X86::CMOVE64rr:
@@ -2784,6 +2824,26 @@ bool X86InstrInfo::findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
       SrcOpIdx1 = 1;
       SrcOpIdx2 = 2;
       return true;
+    case X86::CMPPDrri:
+    case X86::CMPPSrri:
+    case X86::VCMPPDrri:
+    case X86::VCMPPSrri:
+    case X86::VCMPPDYrri:
+    case X86::VCMPPSYrri: {
+      // Float comparison can be safely commuted for
+      // Ordered/Unordered/Equal/NotEqual tests
+      unsigned Imm = MI->getOperand(3).getImm() & 0x7;
+      switch (Imm) {
+      case 0x00: // EQUAL
+      case 0x03: // UNORDERED
+      case 0x04: // NOT EQUAL
+      case 0x07: // ORDERED
+        SrcOpIdx1 = 1;
+        SrcOpIdx2 = 2;
+        return true;
+      }
+      return false;
+    }
     case X86::VFMADDPDr231r:
     case X86::VFMADDPSr231r:
     case X86::VFMADDSDr231r:
