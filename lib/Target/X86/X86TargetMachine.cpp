@@ -14,6 +14,7 @@
 #include "X86TargetMachine.h"
 #include "X86.h"
 #include "X86TargetObjectFile.h"
+#include "X86TargetTransformInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/PassManager.h"
@@ -161,15 +162,12 @@ UseVZeroUpper("x86-use-vzeroupper", cl::Hidden,
   cl::init(true));
 
 //===----------------------------------------------------------------------===//
-// X86 Analysis Pass Setup
+// X86 TTI query.
 //===----------------------------------------------------------------------===//
 
-void X86TargetMachine::addAnalysisPasses(PassManagerBase &PM) {
-  // Add first the target-independent BasicTTI pass, then our X86 pass. This
-  // allows the X86 pass to delegate to the target independent layer when
-  // appropriate.
-  PM.add(createBasicTargetTransformInfoPass(this));
-  PM.add(createX86TargetTransformInfoPass(this));
+TargetIRAnalysis X86TargetMachine::getTargetIRAnalysis() {
+  return TargetIRAnalysis(
+      [this](Function &F) { return TargetTransformInfo(X86TTIImpl(this, F)); });
 }
 
 
@@ -195,6 +193,7 @@ public:
   void addIRPasses() override;
   bool addInstSelector() override;
   bool addILPOpts() override;
+  void addPreRegAlloc() override;
   void addPostRegAlloc() override;
   void addPreEmitPass() override;
 };
@@ -226,6 +225,10 @@ bool X86PassConfig::addInstSelector() {
 bool X86PassConfig::addILPOpts() {
   addPass(&EarlyIfConverterID);
   return true;
+}
+
+void X86PassConfig::addPreRegAlloc() {
+  addPass(createX86CallFrameOptimization());
 }
 
 void X86PassConfig::addPostRegAlloc() {

@@ -1232,7 +1232,7 @@ void CallAnalyzer::dump() {
 
 INITIALIZE_PASS_BEGIN(InlineCostAnalysis, "inline-cost", "Inline Cost Analysis",
                       true, true)
-INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_END(InlineCostAnalysis, "inline-cost", "Inline Cost Analysis",
                     true, true)
@@ -1246,12 +1246,12 @@ InlineCostAnalysis::~InlineCostAnalysis() {}
 void InlineCostAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<AssumptionCacheTracker>();
-  AU.addRequired<TargetTransformInfo>();
+  AU.addRequired<TargetTransformInfoWrapperPass>();
   CallGraphSCCPass::getAnalysisUsage(AU);
 }
 
 bool InlineCostAnalysis::runOnSCC(CallGraphSCC &SCC) {
-  TTI = &getAnalysis<TargetTransformInfo>();
+  TTIWP = &getAnalysis<TargetTransformInfoWrapperPass>();
   ACT = &getAnalysis<AssumptionCacheTracker>();
   return false;
 }
@@ -1309,7 +1309,7 @@ InlineCost InlineCostAnalysis::getInlineCost(CallSite CS, Function *Callee,
   DEBUG(llvm::dbgs() << "      Analyzing call of " << Callee->getName()
         << "...\n");
 
-  CallAnalyzer CA(Callee->getDataLayout(), *TTI,
+  CallAnalyzer CA(Callee->getDataLayout(), TTIWP->getTTI(*Callee),
                   ACT->getAssumptionCache(*Callee), *Callee, Threshold);
   bool ShouldInline = CA.analyzeCall(CS);
 

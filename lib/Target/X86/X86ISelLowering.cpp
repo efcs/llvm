@@ -202,33 +202,12 @@ static SDValue Concat256BitVectors(SDValue V1, SDValue V2, EVT VT,
   return Insert256BitVector(V, V2, NumElems/2, DAG, dl);
 }
 
-// FIXME: This should stop caching the target machine as soon as
-// we can remove resetOperationActions et al.
 X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM)
     : TargetLowering(TM) {
   Subtarget = &TM.getSubtarget<X86Subtarget>();
   X86ScalarSSEf64 = Subtarget->hasSSE2();
   X86ScalarSSEf32 = Subtarget->hasSSE1();
   TD = getDataLayout();
-
-  resetOperationActions();
-}
-
-void X86TargetLowering::resetOperationActions() {
-  const TargetMachine &TM = getTargetMachine();
-  static bool FirstTimeThrough = true;
-
-  // If none of the target options have changed, then we don't need to reset the
-  // operation actions.
-  if (!FirstTimeThrough && TO == TM.Options) return;
-
-  if (!FirstTimeThrough) {
-    // Reinitialize the actions.
-    initActions();
-    FirstTimeThrough = false;
-  }
-
-  TO = TM.Options;
 
   // Set up the TargetLowering object.
   static const MVT IntVTs[] = { MVT::i8, MVT::i16, MVT::i32, MVT::i64 };
@@ -5517,16 +5496,9 @@ static bool getTargetShuffleMask(SDNode *N, MVT VT,
     IsUnary = true;
     break;
   case X86ISD::MOVSS:
-  case X86ISD::MOVSD: {
-    // The index 0 always comes from the first element of the second source,
-    // this is why MOVSS and MOVSD are used in the first place. The other
-    // elements come from the other positions of the first source vector
-    Mask.push_back(NumElems);
-    for (unsigned i = 1; i != NumElems; ++i) {
-      Mask.push_back(i);
-    }
+  case X86ISD::MOVSD:
+    DecodeScalarMoveMask(VT, /* IsLoad */ false, Mask);
     break;
-  }
   case X86ISD::VPERM2X128:
     ImmN = N->getOperand(N->getNumOperands()-1);
     DecodeVPERM2X128Mask(VT, cast<ConstantSDNode>(ImmN)->getZExtValue(), Mask);
@@ -5958,19 +5930,18 @@ static SDValue LowerBuildVectorv4x32(SDValue Op, SelectionDAG &DAG,
   return DAG.getNode(ISD::BITCAST, SDLoc(Op), VT, Result);
 }
 
-/// getVShift - Return a vector logical shift node.
-///
+/// Return a vector logical shift node.
 static SDValue getVShift(bool isLeft, EVT VT, SDValue SrcOp,
                          unsigned NumBits, SelectionDAG &DAG,
                          const TargetLowering &TLI, SDLoc dl) {
   assert(VT.is128BitVector() && "Unknown type for VShift");
-  EVT ShVT = MVT::v2i64;
+  MVT ShVT = MVT::v2i64;
   unsigned Opc = isLeft ? X86ISD::VSHLDQ : X86ISD::VSRLDQ;
   SrcOp = DAG.getNode(ISD::BITCAST, dl, ShVT, SrcOp);
+  MVT ScalarShiftTy = TLI.getScalarShiftAmountTy(SrcOp.getValueType());
+  SDValue ShiftVal = DAG.getConstant(NumBits, ScalarShiftTy);
   return DAG.getNode(ISD::BITCAST, dl, VT,
-                     DAG.getNode(Opc, dl, ShVT, SrcOp,
-                             DAG.getConstant(NumBits,
-                                  TLI.getScalarShiftAmountTy(SrcOp.getValueType()))));
+                     DAG.getNode(Opc, dl, ShVT, SrcOp, ShiftVal));
 }
 
 static SDValue
@@ -20059,6 +20030,9 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::COMPRESS:           return "X86ISD::COMPRESS";
   case X86ISD::EXPAND:             return "X86ISD::EXPAND";
   case X86ISD::SELECT:             return "X86ISD::SELECT";
+  case X86ISD::ADDSUB:             return "X86ISD::ADDSUB";
+  case X86ISD::RCP28:              return "X86ISD::RCP28";
+  case X86ISD::RSQRT28:            return "X86ISD::RSQRT28";
   }
 }
 
@@ -21442,6 +21416,9 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   case X86::TAILJMPd64:
   case X86::TAILJMPr64:
   case X86::TAILJMPm64:
+  case X86::TAILJMPd64_REX:
+  case X86::TAILJMPr64_REX:
+  case X86::TAILJMPm64_REX:
     llvm_unreachable("TAILJMP64 would not be touched here.");
   case X86::TCRETURNdi64:
   case X86::TCRETURNri64:
@@ -24759,7 +24736,7 @@ static SDValue PerformMLOADCombine(SDNode *N, SelectionDAG &DAG,
 
     NewMask = DAG.getNode(ISD::CONCAT_VECTORS, dl, NewMaskVT, Ops);
   }
-  
+
   SDValue WideLd = DAG.getMaskedLoad(WideVecVT, dl, Mld->getChain(),
                                      Mld->getBasePtr(), NewMask, WideSrc0,
                                      Mld->getMemoryVT(), Mld->getMemOperand(),
@@ -24789,7 +24766,7 @@ static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
     "Unexpected size for truncating masked store");
   // We are going to use the original vector elt for storing.
   // Accumulated smaller vector elements must be a multiple of the store size.
-  assert (((NumElems * FromSz) % ToSz) == 0 && 
+  assert (((NumElems * FromSz) % ToSz) == 0 &&
           "Unexpected ratio for truncating masked store");
 
   unsigned SizeRatio  = FromSz / ToSz;

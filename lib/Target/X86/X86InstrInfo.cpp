@@ -353,6 +353,7 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::SETSr,       X86::SETSm,         TB_FOLDED_STORE },
     { X86::TAILJMPr,    X86::TAILJMPm,      TB_FOLDED_LOAD },
     { X86::TAILJMPr64,  X86::TAILJMPm64,    TB_FOLDED_LOAD },
+    { X86::TAILJMPr64_REX, X86::TAILJMPm64_REX, TB_FOLDED_LOAD },
     { X86::TEST16ri,    X86::TEST16mi,      TB_FOLDED_LOAD },
     { X86::TEST32ri,    X86::TEST32mi,      TB_FOLDED_LOAD },
     { X86::TEST64ri32,  X86::TEST64mi32,    TB_FOLDED_LOAD },
@@ -1803,6 +1804,58 @@ X86InstrInfo::isCoalescableExtInstr(const MachineInstr &MI,
   return false;
 }
 
+int X86InstrInfo::getSPAdjust(const MachineInstr *MI) const {
+  const MachineFunction *MF = MI->getParent()->getParent();
+  const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
+
+  if (MI->getOpcode() == getCallFrameSetupOpcode() ||
+      MI->getOpcode() == getCallFrameDestroyOpcode()) {
+    unsigned StackAlign = TFI->getStackAlignment();
+    int SPAdj = (MI->getOperand(0).getImm() + StackAlign - 1) / StackAlign * 
+                 StackAlign;
+
+    SPAdj -= MI->getOperand(1).getImm();
+
+    if (MI->getOpcode() == getCallFrameSetupOpcode())
+      return SPAdj;
+    else
+      return -SPAdj;
+  }
+  
+  // To know whether a call adjusts the stack, we need information 
+  // that is bound to the following ADJCALLSTACKUP pseudo.
+  // Look for the next ADJCALLSTACKUP that follows the call.
+  if (MI->isCall()) {
+    const MachineBasicBlock* MBB = MI->getParent();
+    auto I = ++MachineBasicBlock::const_iterator(MI);
+    for (auto E = MBB->end(); I != E; ++I) {
+      if (I->getOpcode() == getCallFrameDestroyOpcode() ||
+          I->isCall())
+        break;
+    }
+
+    // If we could not find a frame destroy opcode, then it has already
+    // been simplified, so we don't care.
+    if (I->getOpcode() != getCallFrameDestroyOpcode())
+      return 0;
+
+    return -(I->getOperand(1).getImm());
+  }
+
+  // Currently handle only PUSHes we can reasonably expect to see
+  // in call sequences
+  switch (MI->getOpcode()) {
+  default: 
+    return 0;
+  case X86::PUSH32i8:
+  case X86::PUSH32r:
+  case X86::PUSH32rmm:
+  case X86::PUSH32rmr:
+  case X86::PUSHi32:
+    return 4;
+  }
+}
+
 /// isFrameOperand - Return true and the FrameIndex if the specified
 /// operand and follow operands form a reference to the stack frame.
 bool X86InstrInfo::isFrameOperand(const MachineInstr *MI, unsigned int Op,
@@ -2809,20 +2862,6 @@ X86InstrInfo::commuteInstruction(MachineInstr *MI, bool NewMI) const {
 bool X86InstrInfo::findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
                                          unsigned &SrcOpIdx2) const {
   switch (MI->getOpcode()) {
-    case X86::BLENDPDrri:
-    case X86::BLENDPSrri:
-    case X86::PBLENDWrri:
-    case X86::VBLENDPDrri:
-    case X86::VBLENDPSrri:
-    case X86::VBLENDPDYrri:
-    case X86::VBLENDPSYrri:
-    case X86::VPBLENDDrri:
-    case X86::VPBLENDDYrri:
-    case X86::VPBLENDWrri:
-    case X86::VPBLENDWYrri:
-      SrcOpIdx1 = 1;
-      SrcOpIdx2 = 2;
-      return true;
     case X86::CMPPDrri:
     case X86::CMPPSrri:
     case X86::VCMPPDrri:
