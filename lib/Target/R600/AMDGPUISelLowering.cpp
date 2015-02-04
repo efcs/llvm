@@ -102,11 +102,9 @@ EVT AMDGPUTargetLowering::getEquivalentLoadRegType(LLVMContext &Ctx, EVT VT) {
   return EVT::getVectorVT(Ctx, MVT::i32, StoreSize / 32);
 }
 
-AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
-  TargetLowering(TM) {
-
-  Subtarget = &TM.getSubtarget<AMDGPUSubtarget>();
-
+AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM,
+                                           const AMDGPUSubtarget &STI)
+    : TargetLowering(TM), Subtarget(&STI) {
   setOperationAction(ISD::Constant, MVT::i32, Legal);
   setOperationAction(ISD::Constant, MVT::i64, Legal);
   setOperationAction(ISD::ConstantFP, MVT::f32, Legal);
@@ -188,9 +186,6 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
 
   setOperationAction(ISD::LOAD, MVT::v2f32, Promote);
   AddPromotedToType(ISD::LOAD, MVT::v2f32, MVT::v2i32);
-
-  setOperationAction(ISD::LOAD, MVT::i64, Promote);
-  AddPromotedToType(ISD::LOAD, MVT::i64, MVT::v2i32);
 
   setOperationAction(ISD::LOAD, MVT::v4f32, Promote);
   AddPromotedToType(ISD::LOAD, MVT::v4f32, MVT::v4i32);
@@ -672,7 +667,7 @@ SDValue AMDGPUTargetLowering::LowerConstantInitializer(const Constant* Init,
                                                        const SDValue &InitPtr,
                                                        SDValue Chain,
                                                        SelectionDAG &DAG) const {
-  const DataLayout *TD = getTargetMachine().getSubtargetImpl()->getDataLayout();
+  const DataLayout *TD = getDataLayout();
   SDLoc DL(InitPtr);
   Type *InitTy = Init->getType();
 
@@ -760,7 +755,7 @@ SDValue AMDGPUTargetLowering::LowerGlobalAddress(AMDGPUMachineFunction* MFI,
                                                  SDValue Op,
                                                  SelectionDAG &DAG) const {
 
-  const DataLayout *TD = getTargetMachine().getSubtargetImpl()->getDataLayout();
+  const DataLayout *TD = getDataLayout();
   GlobalAddressSDNode *G = cast<GlobalAddressSDNode>(Op);
   const GlobalValue *GV = G->getGlobal();
 
@@ -863,8 +858,7 @@ SDValue AMDGPUTargetLowering::LowerFrameIndex(SDValue Op,
                                               SelectionDAG &DAG) const {
 
   MachineFunction &MF = DAG.getMachineFunction();
-  const AMDGPUFrameLowering *TFL = static_cast<const AMDGPUFrameLowering *>(
-      getTargetMachine().getSubtargetImpl()->getFrameLowering());
+  const AMDGPUFrameLowering *TFL = Subtarget->getFrameLowering();
 
   FrameIndexSDNode *FIN = cast<FrameIndexSDNode>(Op);
 
@@ -1661,12 +1655,26 @@ void AMDGPUTargetLowering::LowerUDIVREM64(SDValue Op,
   SDValue RHS_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, RHS, zero);
   SDValue RHS_Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, RHS, one);
 
+  if (VT == MVT::i64 &&
+    DAG.MaskedValueIsZero(RHS, APInt::getHighBitsSet(64, 32)) &&
+    DAG.MaskedValueIsZero(LHS, APInt::getHighBitsSet(64, 32))) {
+
+    SDValue Res = DAG.getNode(ISD::UDIVREM, DL, DAG.getVTList(HalfVT, HalfVT),
+                              LHS_Lo, RHS_Lo);
+
+    SDValue DIV = DAG.getNode(ISD::BUILD_PAIR, DL, VT, Res.getValue(0), zero);
+    SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, Res.getValue(1), zero);
+    Results.push_back(DIV);
+    Results.push_back(REM);
+    return;
+  }
+
   // Get Speculative values
   SDValue DIV_Part = DAG.getNode(ISD::UDIV, DL, HalfVT, LHS_Hi, RHS_Lo);
   SDValue REM_Part = DAG.getNode(ISD::UREM, DL, HalfVT, LHS_Hi, RHS_Lo);
 
-  SDValue REM_Hi = zero;
   SDValue REM_Lo = DAG.getSelectCC(DL, RHS_Hi, zero, REM_Part, LHS_Hi, ISD::SETEQ);
+  SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, REM_Lo, zero);
 
   SDValue DIV_Hi = DAG.getSelectCC(DL, RHS_Hi, zero, DIV_Part, zero, ISD::SETEQ);
   SDValue DIV_Lo = zero;
@@ -1674,8 +1682,10 @@ void AMDGPUTargetLowering::LowerUDIVREM64(SDValue Op,
   const unsigned halfBitWidth = HalfVT.getSizeInBits();
 
   for (unsigned i = 0; i < halfBitWidth; ++i) {
-    SDValue POS = DAG.getConstant(halfBitWidth - i - 1, HalfVT);
-    // Get Value of high bit
+    const unsigned bitPos = halfBitWidth - i - 1;
+    SDValue POS = DAG.getConstant(bitPos, HalfVT);
+    // Get value of high bit
+    // TODO: Remove the BFE part when the optimization is fixed
     SDValue HBit;
     if (halfBitWidth == 32 && Subtarget->hasBFE()) {
       HBit = DAG.getNode(AMDGPUISD::BFE_U32, DL, HalfVT, LHS_Lo, POS, one);
@@ -1683,33 +1693,23 @@ void AMDGPUTargetLowering::LowerUDIVREM64(SDValue Op,
       HBit = DAG.getNode(ISD::SRL, DL, HalfVT, LHS_Lo, POS);
       HBit = DAG.getNode(ISD::AND, DL, HalfVT, HBit, one);
     }
+    HBit = DAG.getNode(ISD::ZERO_EXTEND, DL, VT, HBit);
 
-    SDValue Carry = DAG.getNode(ISD::SRL, DL, HalfVT, REM_Lo,
-      DAG.getConstant(halfBitWidth - 1, HalfVT));
-    REM_Hi = DAG.getNode(ISD::SHL, DL, HalfVT, REM_Hi, one);
-    REM_Hi = DAG.getNode(ISD::OR, DL, HalfVT, REM_Hi, Carry);
+    // Shift
+    REM = DAG.getNode(ISD::SHL, DL, VT, REM, DAG.getConstant(1, VT));
+    // Add LHS high bit
+    REM = DAG.getNode(ISD::OR, DL, VT, REM, HBit);
 
-    REM_Lo = DAG.getNode(ISD::SHL, DL, HalfVT, REM_Lo, one);
-    REM_Lo = DAG.getNode(ISD::OR, DL, HalfVT, REM_Lo, HBit);
-
-
-    SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, REM_Lo, REM_Hi);
-
-    SDValue BIT = DAG.getConstant(1 << (halfBitWidth - i - 1), HalfVT);
+    SDValue BIT = DAG.getConstant(1 << bitPos, HalfVT);
     SDValue realBIT = DAG.getSelectCC(DL, REM, RHS, BIT, zero, ISD::SETUGE);
 
     DIV_Lo = DAG.getNode(ISD::OR, DL, HalfVT, DIV_Lo, realBIT);
 
     // Update REM
-
     SDValue REM_sub = DAG.getNode(ISD::SUB, DL, VT, REM, RHS);
-
     REM = DAG.getSelectCC(DL, REM, RHS, REM_sub, REM, ISD::SETUGE);
-    REM_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, REM, zero);
-    REM_Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, REM, one);
   }
 
-  SDValue REM = DAG.getNode(ISD::BUILD_PAIR, DL, VT, REM_Lo, REM_Hi);
   SDValue DIV = DAG.getNode(ISD::BUILD_PAIR, DL, VT, DIV_Lo, DIV_Hi);
   Results.push_back(DIV);
   Results.push_back(REM);
@@ -1730,8 +1730,8 @@ SDValue AMDGPUTargetLowering::LowerUDIVREM(SDValue Op,
   SDValue Den = Op.getOperand(1);
 
   if (VT == MVT::i32) {
-    if (DAG.MaskedValueIsZero(Op.getOperand(0), APInt(32, 0xff << 24)) &&
-        DAG.MaskedValueIsZero(Op.getOperand(1), APInt(32, 0xff << 24))) {
+    if (DAG.MaskedValueIsZero(Num, APInt::getHighBitsSet(32, 8)) &&
+        DAG.MaskedValueIsZero(Den, APInt::getHighBitsSet(32, 8))) {
       // TODO: We technically could do this for i64, but shouldn't that just be
       // handled by something generally reducing 64-bit division on 32-bit
       // values to 32-bit?
@@ -1843,18 +1843,30 @@ SDValue AMDGPUTargetLowering::LowerSDIVREM(SDValue Op,
   SDValue LHS = Op.getOperand(0);
   SDValue RHS = Op.getOperand(1);
 
-  if (VT == MVT::i32) {
-    if (DAG.ComputeNumSignBits(Op.getOperand(0)) > 8 &&
-        DAG.ComputeNumSignBits(Op.getOperand(1)) > 8) {
-      // TODO: We technically could do this for i64, but shouldn't that just be
-      // handled by something generally reducing 64-bit division on 32-bit
-      // values to 32-bit?
-      return LowerDIVREM24(Op, DAG, true);
-    }
-  }
-
   SDValue Zero = DAG.getConstant(0, VT);
   SDValue NegOne = DAG.getConstant(-1, VT);
+
+  if (VT == MVT::i32 &&
+      DAG.ComputeNumSignBits(LHS) > 8 &&
+      DAG.ComputeNumSignBits(RHS) > 8) {
+    return LowerDIVREM24(Op, DAG, true);
+  }
+  if (VT == MVT::i64 &&
+      DAG.ComputeNumSignBits(LHS) > 32 &&
+      DAG.ComputeNumSignBits(RHS) > 32) {
+    EVT HalfVT = VT.getHalfSizedIntegerVT(*DAG.getContext());
+
+    //HiLo split
+    SDValue LHS_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, LHS, Zero);
+    SDValue RHS_Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, HalfVT, RHS, Zero);
+    SDValue DIVREM = DAG.getNode(ISD::SDIVREM, DL, DAG.getVTList(HalfVT, HalfVT),
+                                 LHS_Lo, RHS_Lo);
+    SDValue Res[2] = {
+      DAG.getNode(ISD::SIGN_EXTEND, DL, VT, DIVREM.getValue(0)),
+      DAG.getNode(ISD::SIGN_EXTEND, DL, VT, DIVREM.getValue(1))
+    };
+    return DAG.getMergeValues(Res, DL);
+  }
 
   SDValue LHSign = DAG.getSelectCC(DL, LHS, Zero, NegOne, Zero, ISD::SETLT);
   SDValue RHSign = DAG.getSelectCC(DL, RHS, Zero, NegOne, Zero, ISD::SETLT);

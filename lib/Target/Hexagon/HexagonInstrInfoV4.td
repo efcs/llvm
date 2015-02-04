@@ -335,21 +335,118 @@ def A4_combineii: ALU32Inst<(outs DoubleRegs:$Rdd), (ins s8Imm:$s8, u6Ext:$U6),
 //===----------------------------------------------------------------------===//
 // Template class for load instructions with Absolute set addressing mode.
 //===----------------------------------------------------------------------===//
-let isExtended = 1, opExtendable = 2, hasSideEffects = 0,
-validSubTargets = HasV4SubT, addrMode = AbsoluteSet in
-class T_LD_abs_set<string mnemonic, RegisterClass RC>:
-            LDInst2<(outs RC:$dst1, IntRegs:$dst2),
-            (ins u0AlwaysExt:$addr),
-            "$dst1 = "#mnemonic#"($dst2=##$addr)",
-            []>,
-            Requires<[HasV4T]>;
+let isExtended = 1, opExtendable = 2, opExtentBits = 6, addrMode = AbsoluteSet,
+    hasSideEffects = 0 in
+class T_LD_abs_set<string mnemonic, RegisterClass RC, bits<4>MajOp>:
+            LDInst<(outs RC:$dst1, IntRegs:$dst2),
+            (ins u6Ext:$addr),
+            "$dst1 = "#mnemonic#"($dst2 = #$addr)",
+            []> {
+  bits<7> name;
+  bits<5> dst1;
+  bits<5> dst2;
+  bits<6> addr;
 
-def LDrid_abs_set_V4  : T_LD_abs_set <"memd", DoubleRegs>;
-def LDrib_abs_set_V4  : T_LD_abs_set <"memb", IntRegs>;
-def LDriub_abs_set_V4 : T_LD_abs_set <"memub", IntRegs>;
-def LDrih_abs_set_V4  : T_LD_abs_set <"memh", IntRegs>;
-def LDriw_abs_set_V4  : T_LD_abs_set <"memw", IntRegs>;
-def LDriuh_abs_set_V4 : T_LD_abs_set <"memuh", IntRegs>;
+  let IClass = 0b1001;
+  let Inst{27-25} = 0b101;
+  let Inst{24-21} = MajOp;
+  let Inst{13-12} = 0b01;
+  let Inst{4-0}   = dst1;
+  let Inst{20-16} = dst2;
+  let Inst{11-8}  = addr{5-2};
+  let Inst{6-5}   = addr{1-0};
+}
+
+let accessSize = ByteAccess, hasNewValue = 1, isCodeGenOnly = 0 in {
+  def L4_loadrb_ap   : T_LD_abs_set <"memb",   IntRegs, 0b1000>;
+  def L4_loadrub_ap  : T_LD_abs_set <"memub",  IntRegs, 0b1001>;
+}
+
+let accessSize = HalfWordAccess, hasNewValue = 1, isCodeGenOnly = 0 in {
+  def L4_loadrh_ap  : T_LD_abs_set <"memh",  IntRegs, 0b1010>;
+  def L4_loadruh_ap : T_LD_abs_set <"memuh", IntRegs, 0b1011>;
+}
+
+let accessSize = WordAccess, hasNewValue = 1, isCodeGenOnly = 0 in
+  def L4_loadri_ap : T_LD_abs_set <"memw", IntRegs, 0b1100>;
+
+let accessSize = DoubleWordAccess, isCodeGenOnly = 0 in
+def L4_loadrd_ap : T_LD_abs_set <"memd", DoubleRegs, 0b1110>;
+// Load - Indirect with long offset
+let InputType = "imm", addrMode = BaseLongOffset, isExtended = 1,
+opExtentBits = 6, opExtendable = 3 in
+class T_LoadAbsReg <string mnemonic, string CextOp, RegisterClass RC,
+                    bits<4> MajOp>
+  : LDInst <(outs RC:$dst), (ins IntRegs:$src1, u2Imm:$src2, u6Ext:$src3),
+  "$dst = "#mnemonic#"($src1<<#$src2 + #$src3)",
+  [] >, ImmRegShl {
+    bits<5> dst;
+    bits<5> src1;
+    bits<2> src2;
+    bits<6> src3;
+    let CextOpcode = CextOp;
+    let hasNewValue = !if (!eq(!cast<string>(RC), "DoubleRegs"), 0, 1);
+
+    let IClass = 0b1001;
+    let Inst{27-25} = 0b110;
+    let Inst{24-21} = MajOp;
+    let Inst{20-16} = src1;
+    let Inst{13}    = src2{1};
+    let Inst{12}    = 0b1;
+    let Inst{11-8}  = src3{5-2};
+    let Inst{7}     = src2{0};
+    let Inst{6-5}   = src3{1-0};
+    let Inst{4-0}   = dst;
+  }
+
+let accessSize = ByteAccess, isCodeGenOnly = 0 in {
+  def L4_loadrb_ur  : T_LoadAbsReg<"memb",  "LDrib", IntRegs, 0b1000>;
+  def L4_loadrub_ur : T_LoadAbsReg<"memub", "LDriub", IntRegs, 0b1001>;
+  def L4_loadalignb_ur : T_LoadAbsReg<"memb_fifo", "LDrib_fifo",
+                                      DoubleRegs, 0b0100>;
+}
+
+let accessSize = HalfWordAccess, isCodeGenOnly = 0 in {
+  def L4_loadrh_ur   : T_LoadAbsReg<"memh",   "LDrih",    IntRegs, 0b1010>;
+  def L4_loadruh_ur  : T_LoadAbsReg<"memuh",  "LDriuh",   IntRegs, 0b1011>;
+  def L4_loadbsw2_ur : T_LoadAbsReg<"membh",  "LDribh2",  IntRegs, 0b0001>;
+  def L4_loadbzw2_ur : T_LoadAbsReg<"memubh", "LDriubh2", IntRegs, 0b0011>;
+  def L4_loadalignh_ur : T_LoadAbsReg<"memh_fifo", "LDrih_fifo",
+                                      DoubleRegs, 0b0010>;
+}
+
+let accessSize = WordAccess, isCodeGenOnly = 0 in {
+  def L4_loadri_ur   : T_LoadAbsReg<"memw", "LDriw", IntRegs, 0b1100>;
+  def L4_loadbsw4_ur : T_LoadAbsReg<"membh", "LDribh4", DoubleRegs, 0b0111>;
+  def L4_loadbzw4_ur : T_LoadAbsReg<"memubh", "LDriubh4", DoubleRegs, 0b0101>;
+}
+
+let accessSize = DoubleWordAccess, isCodeGenOnly = 0 in
+def L4_loadrd_ur  : T_LoadAbsReg<"memd", "LDrid", DoubleRegs, 0b1110>;
+
+
+multiclass T_LoadAbsReg_Pat <PatFrag ldOp, InstHexagon MI, ValueType VT = i32> {
+  def  : Pat <(VT (ldOp (add (shl IntRegs:$src1, u2ImmPred:$src2),
+                             (HexagonCONST32 tglobaladdr:$src3)))),
+              (MI IntRegs:$src1, u2ImmPred:$src2, tglobaladdr:$src3)>;
+
+  def  : Pat <(VT (ldOp (add IntRegs:$src1,
+                             (HexagonCONST32 tglobaladdr:$src2)))),
+              (MI IntRegs:$src1, 0, tglobaladdr:$src2)>;
+}
+
+let AddedComplexity  = 60 in {
+defm : T_LoadAbsReg_Pat <sextloadi8, L4_loadrb_ur>;
+defm : T_LoadAbsReg_Pat <zextloadi8, L4_loadrub_ur>;
+defm : T_LoadAbsReg_Pat <extloadi8,  L4_loadrub_ur>;
+
+defm : T_LoadAbsReg_Pat <sextloadi16, L4_loadrh_ur>;
+defm : T_LoadAbsReg_Pat <zextloadi16, L4_loadruh_ur>;
+defm : T_LoadAbsReg_Pat <extloadi16,  L4_loadruh_ur>;
+
+defm : T_LoadAbsReg_Pat <load, L4_loadri_ur>;
+defm : T_LoadAbsReg_Pat <load, L4_loadrd_ur, i64>;
+}
 
 //===----------------------------------------------------------------------===//
 // Template classes for the non-predicated load instructions with
@@ -451,54 +548,20 @@ defm loadrd  : ld_idxd_shl<"memd", "LDrid", DoubleRegs, 0b110>;
 // 'def pats' for load instructions with base + register offset and non-zero
 // immediate value. Immediate value is used to left-shift the second
 // register operand.
+class Loadxs_pat<PatFrag Load, ValueType VT, InstHexagon MI>
+  : Pat<(VT (Load (add (i32 IntRegs:$Rs),
+                       (i32 (shl (i32 IntRegs:$Rt), u2ImmPred:$u2))))),
+        (VT (MI IntRegs:$Rs, IntRegs:$Rt, imm:$u2))>;
+
 let AddedComplexity = 40 in {
-def : Pat <(i32 (sextloadi8 (add IntRegs:$src1,
-                                 (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadrb_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (zextloadi8 (add IntRegs:$src1,
-                                 (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadrub_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (extloadi8 (add IntRegs:$src1,
-                                (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadrub_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (sextloadi16 (add IntRegs:$src1,
-                                  (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadrh_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (zextloadi16 (add IntRegs:$src1,
-                                  (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadruh_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (extloadi16 (add IntRegs:$src1,
-                                 (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadruh_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i32 (load (add IntRegs:$src1,
-                           (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadri_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
-
-def : Pat <(i64 (load (add IntRegs:$src1,
-                           (shl IntRegs:$src2, u2ImmPred:$offset)))),
-           (L4_loadrd_rr IntRegs:$src1,
-            IntRegs:$src2, u2ImmPred:$offset)>,
-            Requires<[HasV4T]>;
+  def: Loadxs_pat<extloadi8,   i32, L4_loadrub_rr>;
+  def: Loadxs_pat<zextloadi8,  i32, L4_loadrub_rr>;
+  def: Loadxs_pat<sextloadi8,  i32, L4_loadrb_rr>;
+  def: Loadxs_pat<extloadi16,  i32, L4_loadruh_rr>;
+  def: Loadxs_pat<zextloadi16, i32, L4_loadruh_rr>;
+  def: Loadxs_pat<sextloadi16, i32, L4_loadrh_rr>;
+  def: Loadxs_pat<load,        i32, L4_loadri_rr>;
+  def: Loadxs_pat<load,        i64, L4_loadrd_rr>;
 }
 
 // 'def pats' for load instruction base + register offset and
@@ -610,19 +673,167 @@ def:  Pat <(i64 (extloadi32 (i32 (add IntRegs:$src1, s11_2ExtPred:$offset)))),
 //===----------------------------------------------------------------------===//
 // Template class for store instructions with Absolute set addressing mode.
 //===----------------------------------------------------------------------===//
-let isExtended = 1, opExtendable = 2, validSubTargets = HasV4SubT,
-addrMode = AbsoluteSet in
-class T_ST_abs_set<string mnemonic, RegisterClass RC>:
-            STInst2<(outs IntRegs:$dst1),
-            (ins RC:$src1, u0AlwaysExt:$src2),
-            mnemonic#"($dst1=##$src2) = $src1",
-            []>,
-            Requires<[HasV4T]>;
+let isExtended = 1, opExtendable = 1, opExtentBits = 6,
+    addrMode = AbsoluteSet, isNVStorable = 1 in
+class T_ST_absset <string mnemonic, string BaseOp, RegisterClass RC,
+                   bits<3> MajOp, MemAccessSize AccessSz, bit isHalf = 0>
+  : STInst<(outs IntRegs:$dst),
+           (ins u6Ext:$addr, RC:$src),
+    mnemonic#"($dst = #$addr) = $src"#!if(isHalf, ".h","")>, NewValueRel {
+    bits<5> dst;
+    bits<6> addr;
+    bits<5> src;
+    let accessSize = AccessSz;
+    let BaseOpcode = BaseOp#"_AbsSet";
 
-def STrid_abs_set_V4 : T_ST_abs_set <"memd", DoubleRegs>;
-def STrib_abs_set_V4 : T_ST_abs_set <"memb", IntRegs>;
-def STrih_abs_set_V4 : T_ST_abs_set <"memh", IntRegs>;
-def STriw_abs_set_V4 : T_ST_abs_set <"memw", IntRegs>;
+    let IClass = 0b1010;
+
+    let Inst{27-24} = 0b1011;
+    let Inst{23-21} = MajOp;
+    let Inst{20-16} = dst;
+    let Inst{13}    = 0b0;
+    let Inst{12-8}  = src;
+    let Inst{7}     = 0b1;
+    let Inst{5-0}   = addr;
+  }
+
+def S4_storerb_ap : T_ST_absset <"memb", "STrib", IntRegs, 0b000, ByteAccess>;
+def S4_storerh_ap : T_ST_absset <"memh", "STrih", IntRegs, 0b010,
+                                 HalfWordAccess>;
+def S4_storeri_ap : T_ST_absset <"memw", "STriw", IntRegs, 0b100, WordAccess>;
+
+let isNVStorable = 0 in {
+  def S4_storerf_ap : T_ST_absset <"memh", "STrif", IntRegs,
+                                   0b011, HalfWordAccess, 1>;
+  def S4_storerd_ap : T_ST_absset <"memd", "STrid", DoubleRegs,
+                                   0b110, DoubleWordAccess>;
+}
+
+let opExtendable = 1, isNewValue = 1, isNVStore = 1, opNewValue = 2,
+isExtended = 1, opExtentBits= 6 in
+class T_ST_absset_nv <string mnemonic, string BaseOp, bits<2> MajOp,
+                      MemAccessSize AccessSz >
+  : NVInst <(outs IntRegs:$dst),
+            (ins u6Ext:$addr, IntRegs:$src),
+    mnemonic#"($dst = #$addr) = $src.new">, NewValueRel {
+    bits<5> dst;
+    bits<6> addr;
+    bits<3> src;
+    let accessSize = AccessSz;
+    let BaseOpcode = BaseOp#"_AbsSet";
+
+    let IClass = 0b1010;
+
+    let Inst{27-21} = 0b1011101;
+    let Inst{20-16} = dst;
+    let Inst{13-11} = 0b000;
+    let Inst{12-11} = MajOp;
+    let Inst{10-8}  = src;
+    let Inst{7}     = 0b1;
+    let Inst{5-0}   = addr;
+  }
+
+let mayStore = 1, addrMode = AbsoluteSet, isCodeGenOnly = 0 in {
+  def S4_storerbnew_ap : T_ST_absset_nv <"memb", "STrib", 0b00, ByteAccess>;
+  def S4_storerhnew_ap : T_ST_absset_nv <"memh", "STrih", 0b01, HalfWordAccess>;
+  def S4_storerinew_ap : T_ST_absset_nv <"memw", "STriw", 0b10, WordAccess>;
+}
+
+let isExtended = 1, opExtendable = 2, opExtentBits = 6, InputType = "imm",
+addrMode = BaseLongOffset, AddedComplexity = 40 in
+class T_StoreAbsReg <string mnemonic, string CextOp, RegisterClass RC,
+                     bits<3> MajOp, MemAccessSize AccessSz, bit isHalf = 0>
+  : STInst<(outs),
+           (ins IntRegs:$src1, u2Imm:$src2, u6Ext:$src3, RC:$src4),
+   mnemonic#"($src1<<#$src2 + #$src3) = $src4"#!if(isHalf, ".h",""),
+   []>, ImmRegShl, NewValueRel {
+
+    bits<5> src1;
+    bits<2> src2;
+    bits<6> src3;
+    bits<5> src4;
+
+    let accessSize = AccessSz;
+    let CextOpcode = CextOp;
+    let BaseOpcode = CextOp#"_shl";
+    let IClass = 0b1010;
+
+    let Inst{27-24} =0b1101;
+    let Inst{23-21} = MajOp;
+    let Inst{20-16} = src1;
+    let Inst{13}    = src2{1};
+    let Inst{12-8}  = src4;
+    let Inst{7}     = 0b1;
+    let Inst{6}     = src2{0};
+    let Inst{5-0}   = src3;
+}
+
+let isCodeGenOnly = 0 in {
+def S4_storerb_ur : T_StoreAbsReg <"memb", "STrib", IntRegs, 0b000, ByteAccess>;
+def S4_storerh_ur : T_StoreAbsReg <"memh", "STrih", IntRegs, 0b010,
+                                   HalfWordAccess>;
+def S4_storerf_ur : T_StoreAbsReg <"memh", "STrif", IntRegs, 0b011,
+                                   HalfWordAccess, 1>;
+def S4_storeri_ur : T_StoreAbsReg <"memw", "STriw", IntRegs, 0b100, WordAccess>;
+def S4_storerd_ur : T_StoreAbsReg <"memd", "STrid", DoubleRegs, 0b110,
+                                   DoubleWordAccess>;
+}
+
+let AddedComplexity = 40 in
+multiclass T_StoreAbsReg_Pats <InstHexagon MI, RegisterClass RC, ValueType VT,
+                           PatFrag stOp> {
+ def : Pat<(stOp (VT RC:$src4),
+                 (add (shl (i32 IntRegs:$src1), u2ImmPred:$src2),
+                      u0AlwaysExtPred:$src3)),
+          (MI IntRegs:$src1, u2ImmPred:$src2, u0AlwaysExtPred:$src3, RC:$src4)>;
+
+ def : Pat<(stOp (VT RC:$src4),
+                 (add (shl IntRegs:$src1, u2ImmPred:$src2),
+                      (HexagonCONST32 tglobaladdr:$src3))),
+           (MI IntRegs:$src1, u2ImmPred:$src2, tglobaladdr:$src3, RC:$src4)>;
+
+ def : Pat<(stOp (VT RC:$src4),
+                 (add IntRegs:$src1, (HexagonCONST32 tglobaladdr:$src3))),
+           (MI IntRegs:$src1, 0, tglobaladdr:$src3, RC:$src4)>;
+}
+
+defm : T_StoreAbsReg_Pats <S4_storerd_ur, DoubleRegs, i64, store>;
+defm : T_StoreAbsReg_Pats <S4_storeri_ur, IntRegs, i32, store>;
+defm : T_StoreAbsReg_Pats <S4_storerb_ur, IntRegs, i32, truncstorei8>;
+defm : T_StoreAbsReg_Pats <S4_storerh_ur, IntRegs, i32, truncstorei16>;
+
+let mayStore = 1, isNVStore = 1, isExtended = 1, addrMode = BaseLongOffset,
+    opExtentBits = 6, isNewValue = 1, opNewValue = 3, opExtendable = 2 in
+class T_StoreAbsRegNV <string mnemonic, string CextOp, bits<2> MajOp,
+                       MemAccessSize AccessSz>
+  : NVInst <(outs ),
+            (ins IntRegs:$src1, u2Imm:$src2, u6Ext:$src3, IntRegs:$src4),
+  mnemonic#"($src1<<#$src2 + #$src3) = $src4.new">, NewValueRel {
+    bits<5> src1;
+    bits<2> src2;
+    bits<6> src3;
+    bits<3> src4;
+
+    let CextOpcode  = CextOp;
+    let BaseOpcode  = CextOp#"_shl";
+    let IClass      = 0b1010;
+
+    let Inst{27-21} = 0b1101101;
+    let Inst{12-11} = 0b00;
+    let Inst{7}     = 0b1;
+    let Inst{20-16} = src1;
+    let Inst{13}    = src2{1};
+    let Inst{12-11} = MajOp;
+    let Inst{10-8}  = src4;
+    let Inst{6}     = src2{0};
+    let Inst{5-0}   = src3;
+  }
+
+let isCodeGenOnly = 0 in {
+def S4_storerbnew_ur : T_StoreAbsRegNV <"memb", "STrib", 0b00, ByteAccess>;
+def S4_storerhnew_ur : T_StoreAbsRegNV <"memh", "STrih", 0b01, HalfWordAccess>;
+def S4_storerinew_ur : T_StoreAbsRegNV <"memw", "STriw", 0b10, WordAccess>;
+}
 
 //===----------------------------------------------------------------------===//
 // Template classes for the non-predicated store instructions with
@@ -807,82 +1018,17 @@ let addrMode = BaseRegOffset, InputType = "reg", hasSideEffects = 0,
   defm storerf: ST_Idxd_shl<"memh", "STrif", IntRegs, 0b011, 1>;
 }
 
-let Predicates = [HasV4T], AddedComplexity = 10 in {
-def : Pat<(truncstorei8 (i32 IntRegs:$src4),
-                       (add IntRegs:$src1, (shl IntRegs:$src2,
-                                                u2ImmPred:$src3))),
-          (S4_storerb_rr IntRegs:$src1, IntRegs:$src2,
-                                u2ImmPred:$src3, IntRegs:$src4)>;
+class Storexs_pat<PatFrag Store, PatFrag Value, InstHexagon MI>
+  : Pat<(Store Value:$Ru, (add (i32 IntRegs:$Rs),
+                               (i32 (shl (i32 IntRegs:$Rt), u2ImmPred:$u2)))),
+        (MI IntRegs:$Rs, IntRegs:$Rt, imm:$u2, Value:$Ru)>;
 
-def : Pat<(truncstorei16 (i32 IntRegs:$src4),
-                        (add IntRegs:$src1, (shl IntRegs:$src2,
-                                                 u2ImmPred:$src3))),
-          (S4_storerh_rr IntRegs:$src1, IntRegs:$src2,
-                                u2ImmPred:$src3, IntRegs:$src4)>;
-
-def : Pat<(store (i32 IntRegs:$src4),
-                 (add IntRegs:$src1, (shl IntRegs:$src2, u2ImmPred:$src3))),
-          (S4_storeri_rr IntRegs:$src1, IntRegs:$src2,
-                                u2ImmPred:$src3, IntRegs:$src4)>;
-
-def : Pat<(store (i64 DoubleRegs:$src4),
-                (add IntRegs:$src1, (shl IntRegs:$src2, u2ImmPred:$src3))),
-          (S4_storerd_rr IntRegs:$src1, IntRegs:$src2,
-                                u2ImmPred:$src3, DoubleRegs:$src4)>;
+let AddedComplexity = 40 in {
+  def: Storexs_pat<truncstorei8,  I32, S4_storerb_rr>;
+  def: Storexs_pat<truncstorei16, I32, S4_storerh_rr>;
+  def: Storexs_pat<store,         I32, S4_storeri_rr>;
+  def: Storexs_pat<store,         I64, S4_storerd_rr>;
 }
-
-let isExtended = 1, opExtendable = 2 in
-class T_ST_LongOff <string mnemonic, PatFrag stOp, RegisterClass RC, ValueType VT> :
-            STInst<(outs),
-            (ins IntRegs:$src1, u2Imm:$src2, u0AlwaysExt:$src3, RC:$src4),
-            mnemonic#"($src1<<#$src2+##$src3) = $src4",
-            [(stOp (VT RC:$src4),
-                    (add (shl (i32 IntRegs:$src1), u2ImmPred:$src2),
-                         u0AlwaysExtPred:$src3))]>,
-            Requires<[HasV4T]>;
-
-let isExtended = 1, opExtendable = 2, mayStore = 1, isNVStore = 1 in
-class T_ST_LongOff_nv <string mnemonic> :
-            NVInst_V4<(outs),
-            (ins IntRegs:$src1, u2Imm:$src2, u0AlwaysExt:$src3, IntRegs:$src4),
-            mnemonic#"($src1<<#$src2+##$src3) = $src4.new",
-            []>,
-            Requires<[HasV4T]>;
-
-multiclass ST_LongOff <string mnemonic, string BaseOp, PatFrag stOp> {
-  let  BaseOpcode = BaseOp#"_shl" in {
-    let isNVStorable = 1 in
-    def NAME#_V4 : T_ST_LongOff<mnemonic, stOp, IntRegs, i32>;
-
-    def NAME#_nv_V4 : T_ST_LongOff_nv<mnemonic>;
-  }
-}
-
-let AddedComplexity = 10, validSubTargets = HasV4SubT in {
-  def STrid_shl_V4 : T_ST_LongOff<"memd", store, DoubleRegs, i64>;
-  defm STrib_shl   : ST_LongOff <"memb", "STrib", truncstorei8>, NewValueRel;
-  defm STrih_shl   : ST_LongOff <"memh", "Strih", truncstorei16>, NewValueRel;
-  defm STriw_shl   : ST_LongOff <"memw", "STriw", store>, NewValueRel;
-}
-
-let AddedComplexity = 40 in
-multiclass T_ST_LOff_Pats <InstHexagon I, RegisterClass RC, ValueType VT,
-                           PatFrag stOp> {
- def : Pat<(stOp (VT RC:$src4),
-           (add (shl IntRegs:$src1, u2ImmPred:$src2),
-               (NumUsesBelowThresCONST32 tglobaladdr:$src3))),
-           (I IntRegs:$src1, u2ImmPred:$src2, tglobaladdr:$src3, RC:$src4)>;
-
- def : Pat<(stOp (VT RC:$src4),
-           (add IntRegs:$src1,
-               (NumUsesBelowThresCONST32 tglobaladdr:$src3))),
-           (I IntRegs:$src1, 0, tglobaladdr:$src3, RC:$src4)>;
-}
-
-defm : T_ST_LOff_Pats<STrid_shl_V4, DoubleRegs, i64, store>;
-defm : T_ST_LOff_Pats<STriw_shl_V4, IntRegs, i32, store>;
-defm : T_ST_LOff_Pats<STrib_shl_V4, IntRegs, i32, truncstorei8>;
-defm : T_ST_LOff_Pats<STrih_shl_V4, IntRegs, i32, truncstorei16>;
 
 // memd(Rx++#s4:3)=Rtt
 // memd(Rx++#s4:3:circ(Mu))=Rtt
@@ -1198,6 +1344,16 @@ let addrMode = BaseImmOffset, InputType = "imm", isCodeGenOnly = 0 in {
   defm storeri: ST_Idxd_nv<"memw", "STriw", IntRegs, s11_2Ext,
                            u6_2Ext, 0b10>, AddrModeRel;
 }
+
+//===----------------------------------------------------------------------===//
+// Post increment loads with register offset.
+//===----------------------------------------------------------------------===//
+
+let hasNewValue = 1, isCodeGenOnly = 0 in
+def L2_loadbsw2_pr : T_load_pr <"membh", IntRegs, 0b0001, HalfWordAccess>;
+
+let isCodeGenOnly = 0 in
+def L2_loadbsw4_pr : T_load_pr <"membh", DoubleRegs, 0b0111, WordAccess>;
 
 //===----------------------------------------------------------------------===//
 // Template class for non-predicated post increment .new stores
@@ -1569,7 +1725,7 @@ def J4_hintjumpr: JRInst <
 // PC-relative add
 let hasNewValue = 1, isExtendable = 1, opExtendable = 1,
     isExtentSigned = 0, opExtentBits = 6, hasSideEffects = 0,
-    Uses = [PC], validSubTargets = HasV4SubT in
+    Uses = [PC], validSubTargets = HasV4SubT, isCodeGenOnly = 0 in
 def C4_addipc : CRInst <(outs IntRegs:$Rd), (ins u6Ext:$u6),
   "$Rd = add(pc, #$u6)", [], "", CR_tc_2_SLOT3 > {
     bits<5> Rd;
@@ -1709,6 +1865,19 @@ let hasNewValue = 1, isCodeGenOnly = 0 in {
   def S4_extract    : T_S2op_extract <"extract",  0b1101, IntRegs, u5Imm>;
 }
 
+// Complex add/sub halfwords/words
+let Defs = [USR_OVF], isCodeGenOnly = 0 in {
+  def S4_vxaddsubh : T_S3op_64 < "vxaddsubh", 0b01, 0b100, 0, 1>;
+  def S4_vxaddsubw : T_S3op_64 < "vxaddsubw", 0b01, 0b000, 0, 1>;
+  def S4_vxsubaddh : T_S3op_64 < "vxsubaddh", 0b01, 0b110, 0, 1>;
+  def S4_vxsubaddw : T_S3op_64 < "vxsubaddw", 0b01, 0b010, 0, 1>;
+}
+
+let Defs = [USR_OVF], isCodeGenOnly = 0 in {
+  def S4_vxaddsubhr : T_S3op_64 < "vxaddsubh", 0b11, 0b000, 0, 1, 1, 1>;
+  def S4_vxsubaddhr : T_S3op_64 < "vxsubaddh", 0b11, 0b010, 0, 1, 1, 1>;
+}
+
 let Itinerary = M_tc_3x_SLOT23, Defs = [USR_OVF], isCodeGenOnly = 0 in {
   def M4_mac_up_s1_sat: T_MType_acc_rr<"+= mpy", 0b011, 0b000, 0, [], 0, 1, 1>;
   def M4_nac_up_s1_sat: T_MType_acc_rr<"-= mpy", 0b011, 0b001, 0, [], 0, 1, 1>;
@@ -1736,7 +1905,76 @@ def M4_xor_xacc
     let Inst{12-8}  = Rtt;
     let Inst{4-0}   = Rxx;
   }
-  
+
+// Rotate and reduce bytes
+// Rdd=vrcrotate(Rss,Rt,#u2)
+let hasSideEffects = 0, isCodeGenOnly = 0 in
+def S4_vrcrotate
+  : SInst <(outs DoubleRegs:$Rdd),
+           (ins DoubleRegs:$Rss, IntRegs:$Rt, u2Imm:$u2),
+  "$Rdd = vrcrotate($Rss, $Rt, #$u2)",
+  [], "", S_3op_tc_3x_SLOT23> {
+    bits<5> Rdd;
+    bits<5> Rss;
+    bits<5> Rt;
+    bits<2> u2;
+
+    let IClass = 0b1100;
+
+    let Inst{27-22} = 0b001111;
+    let Inst{20-16} = Rss;
+    let Inst{13}    = u2{1};
+    let Inst{12-8}  = Rt;
+    let Inst{7-6}   = 0b11;
+    let Inst{5}     = u2{0};
+    let Inst{4-0}   = Rdd;
+  }
+
+// Rotate and reduce bytes with accumulation
+// Rxx+=vrcrotate(Rss,Rt,#u2)
+let hasSideEffects = 0, isCodeGenOnly = 0 in
+def S4_vrcrotate_acc
+  : SInst <(outs DoubleRegs:$Rxx),
+           (ins DoubleRegs:$dst2, DoubleRegs:$Rss, IntRegs:$Rt, u2Imm:$u2),
+  "$Rxx += vrcrotate($Rss, $Rt, #$u2)", [],
+  "$dst2 = $Rxx", S_3op_tc_3x_SLOT23> {
+    bits<5> Rxx;
+    bits<5> Rss;
+    bits<5> Rt;
+    bits<2> u2;
+
+    let IClass = 0b1100;
+
+    let Inst{27-21} = 0b1011101;
+    let Inst{20-16} = Rss;
+    let Inst{13}    = u2{1};
+    let Inst{12-8}  = Rt;
+    let Inst{5}     = u2{0};
+    let Inst{4-0}   = Rxx;
+  }
+
+
+// Vector reduce conditional negate halfwords
+let hasSideEffects = 0, isCodeGenOnly = 0 in
+def S2_vrcnegh
+  : SInst <(outs DoubleRegs:$Rxx),
+           (ins DoubleRegs:$dst2, DoubleRegs:$Rss, IntRegs:$Rt),
+  "$Rxx += vrcnegh($Rss, $Rt)", [],
+  "$dst2 = $Rxx", S_3op_tc_3x_SLOT23> {
+    bits<5> Rxx;
+    bits<5> Rss;
+    bits<5> Rt;
+
+    let IClass = 0b1100;
+
+    let Inst{27-21} = 0b1011001;
+    let Inst{20-16} = Rss;
+    let Inst{13}    = 0b1;
+    let Inst{12-8}  = Rt;
+    let Inst{7-5}   = 0b111;
+    let Inst{4-0}   = Rxx;
+  }
+
 // Split bitfield
 let isCodeGenOnly = 0 in
 def A4_bitspliti : T_S2op_2_di <"bitsplit", 0b110, 0b100>;
@@ -2123,39 +2361,124 @@ def : Pat <(add (mul (i32 IntRegs:$src2), (i32 IntRegs:$src3)),
            (i32 (M4_mpyrr_addi tglobaladdr:$src1, IntRegs:$src2,
                                IntRegs:$src3))>;
 
-// Polynomial multiply words
-// Rdd=pmpyw(Rs,Rt)
-// Rxx^=pmpyw(Rs,Rt)
-
 // Vector reduce multiply word by signed half (32x16)
-// Rdd=vrmpyweh(Rss,Rtt)[:<<1]
-// Rdd=vrmpywoh(Rss,Rtt)[:<<1]
-// Rxx+=vrmpyweh(Rss,Rtt)[:<<1]
-// Rxx+=vrmpywoh(Rss,Rtt)[:<<1]
+//Rdd=vrmpyweh(Rss,Rtt)[:<<1]
+let isCodeGenOnly = 0 in {
+def M4_vrmpyeh_s0 : T_M2_vmpy<"vrmpyweh", 0b010, 0b100, 0, 0, 0>;
+def M4_vrmpyeh_s1 : T_M2_vmpy<"vrmpyweh", 0b110, 0b100, 1, 0, 0>;
+}
 
-// Multiply and use upper result
-// Rd=mpy(Rs,Rt.H):<<1:sat
-// Rd=mpy(Rs,Rt.L):<<1:sat
-// Rd=mpy(Rs,Rt):<<1
-// Rd=mpy(Rs,Rt):<<1:sat
-// Rd=mpysu(Rs,Rt)
-// Rx+=mpy(Rs,Rt):<<1:sat
-// Rx-=mpy(Rs,Rt):<<1:sat
+//Rdd=vrmpywoh(Rss,Rtt)[:<<1]
+let isCodeGenOnly = 0 in {
+def M4_vrmpyoh_s0 : T_M2_vmpy<"vrmpywoh", 0b001, 0b010, 0, 0, 0>;
+def M4_vrmpyoh_s1 : T_M2_vmpy<"vrmpywoh", 0b101, 0b010, 1, 0, 0>;
+}
+//Rdd+=vrmpyweh(Rss,Rtt)[:<<1]
+let isCodeGenOnly = 0 in {
+def M4_vrmpyeh_acc_s0: T_M2_vmpy_acc<"vrmpyweh", 0b001, 0b110, 0, 0>;
+def M4_vrmpyeh_acc_s1: T_M2_vmpy_acc<"vrmpyweh", 0b101, 0b110, 1, 0>;
+}
 
-// Vector multiply bytes
-// Rdd=vmpybsu(Rs,Rt)
-// Rdd=vmpybu(Rs,Rt)
-// Rxx+=vmpybsu(Rs,Rt)
-// Rxx+=vmpybu(Rs,Rt)
+//Rdd=vrmpywoh(Rss,Rtt)[:<<1]
+let isCodeGenOnly = 0 in {
+def M4_vrmpyoh_acc_s0: T_M2_vmpy_acc<"vrmpywoh", 0b011, 0b110, 0, 0>;
+def M4_vrmpyoh_acc_s1: T_M2_vmpy_acc<"vrmpywoh", 0b111, 0b110, 1, 0>;
+}
+
+// Vector multiply halfwords, signed by unsigned
+// Rdd=vmpyhsu(Rs,Rt)[:<<]:sat
+let isCodeGenOnly = 0 in {
+def M2_vmpy2su_s0 : T_XTYPE_mpy64 < "vmpyhsu", 0b000, 0b111, 1, 0, 0>;
+def M2_vmpy2su_s1 : T_XTYPE_mpy64 < "vmpyhsu", 0b100, 0b111, 1, 1, 0>;
+}
+
+// Rxx+=vmpyhsu(Rs,Rt)[:<<1]:sat
+let isCodeGenOnly = 0 in {
+def M2_vmac2su_s0 : T_XTYPE_mpy64_acc < "vmpyhsu", "+", 0b011, 0b101, 1, 0, 0>;
+def M2_vmac2su_s1 : T_XTYPE_mpy64_acc < "vmpyhsu", "+", 0b111, 0b101, 1, 1, 0>;
+}
 
 // Vector polynomial multiply halfwords
 // Rdd=vpmpyh(Rs,Rt)
+let isCodeGenOnly = 0 in
+def M4_vpmpyh : T_XTYPE_mpy64 < "vpmpyh", 0b110, 0b111, 0, 0, 0>;
+
 // Rxx^=vpmpyh(Rs,Rt)
+let isCodeGenOnly = 0 in
+def M4_vpmpyh_acc : T_XTYPE_mpy64_acc < "vpmpyh", "^", 0b101, 0b111, 0, 0, 0>;
+
+// Polynomial multiply words
+// Rdd=pmpyw(Rs,Rt)
+let isCodeGenOnly = 0 in
+def M4_pmpyw : T_XTYPE_mpy64 < "pmpyw", 0b010, 0b111, 0, 0, 0>;
+
+// Rxx^=pmpyw(Rs,Rt)
+let isCodeGenOnly = 0 in
+def M4_pmpyw_acc  : T_XTYPE_mpy64_acc < "pmpyw", "^", 0b001, 0b111, 0, 0, 0>;
 
 //===----------------------------------------------------------------------===//
 // XTYPE/MPY -
 //===----------------------------------------------------------------------===//
 
+
+//===----------------------------------------------------------------------===//
+// ALU64/Vector compare
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+// Template class for vector compare
+//===----------------------------------------------------------------------===//
+
+let hasSideEffects = 0 in
+class T_vcmpImm <string Str, bits<2> cmpOp, bits<2> minOp, Operand ImmOprnd>
+  : ALU64_rr <(outs PredRegs:$Pd),
+              (ins DoubleRegs:$Rss, ImmOprnd:$Imm),
+  "$Pd = "#Str#"($Rss, #$Imm)",
+  [], "", ALU64_tc_2early_SLOT23> {
+    bits<2> Pd;
+    bits<5> Rss;
+    bits<32> Imm;
+    bits<8> ImmBits;
+    let ImmBits{6-0} = Imm{6-0};
+    let ImmBits{7} = !if (!eq(cmpOp,0b10), 0b0, Imm{7}); // 0 for vcmp[bhw].gtu
+
+    let IClass = 0b1101;
+
+    let Inst{27-24} = 0b1100;
+    let Inst{22-21} = cmpOp;
+    let Inst{20-16} = Rss;
+    let Inst{12-5} = ImmBits;
+    let Inst{4-3} = minOp;
+    let Inst{1-0} = Pd;
+  }
+
+// Vector compare bytes
+let isCodeGenOnly = 0 in
+def A4_vcmpbgt   : T_vcmp <"vcmpb.gt", 0b1010>;
+def: T_vcmp_pat<A4_vcmpbgt, setgt, v8i8>;
+
+let AsmString = "$Pd = any8(vcmpb.eq($Rss, $Rtt))" in
+let isCodeGenOnly = 0 in
+def A4_vcmpbeq_any : T_vcmp <"any8(vcmpb.gt", 0b1000>;
+
+let isCodeGenOnly = 0 in {
+def A4_vcmpbeqi  : T_vcmpImm <"vcmpb.eq",  0b00, 0b00, u8Imm>;
+def A4_vcmpbgti  : T_vcmpImm <"vcmpb.gt",  0b01, 0b00, s8Imm>;
+def A4_vcmpbgtui : T_vcmpImm <"vcmpb.gtu", 0b10, 0b00, u7Imm>;
+}
+
+// Vector compare halfwords
+let isCodeGenOnly = 0 in {
+def A4_vcmpheqi  : T_vcmpImm <"vcmph.eq",  0b00, 0b01, s8Imm>;
+def A4_vcmphgti  : T_vcmpImm <"vcmph.gt",  0b01, 0b01, s8Imm>;
+def A4_vcmphgtui : T_vcmpImm <"vcmph.gtu", 0b10, 0b01, u7Imm>;
+}
+
+// Vector compare words
+let isCodeGenOnly = 0 in {
+def A4_vcmpweqi  : T_vcmpImm <"vcmpw.eq",  0b00, 0b10, s8Imm>;
+def A4_vcmpwgti  : T_vcmpImm <"vcmpw.gt",  0b01, 0b10, s8Imm>;
+def A4_vcmpwgtui : T_vcmpImm <"vcmpw.gtu", 0b10, 0b10, u7Imm>;
+}
 
 //===----------------------------------------------------------------------===//
 // XTYPE/SHIFT +
@@ -2209,6 +2532,10 @@ defm S4_ori  : T_ShiftOperate<"or",  or,  0b01, ALU64_tc_1_SLOT23>;
 let isCodeGenOnly = 0 in
 defm S4_subi : T_ShiftOperate<"sub", sub, 0b11, ALU64_tc_1_SLOT23>;
 
+// Vector conditional negate
+// Rdd=vcnegh(Rss,Rt)
+let Defs = [USR_OVF], Itinerary = S_3op_tc_2_SLOT23, isCodeGenOnly = 0 in
+def S2_vcnegh   : T_S3op_shiftVect < "vcnegh",   0b11, 0b01>;
 
 // Rd=[cround|round](Rs,Rt)
 let hasNewValue = 1, Itinerary = S_3op_tc_2_SLOT23, isCodeGenOnly = 0 in {
@@ -2220,6 +2547,12 @@ let hasNewValue = 1, Itinerary = S_3op_tc_2_SLOT23, isCodeGenOnly = 0 in {
 let hasNewValue = 1, Defs = [USR_OVF], Itinerary = S_3op_tc_2_SLOT23,
     isCodeGenOnly = 0 in
 def A4_round_rr_sat : T_S3op_3 < "round", IntRegs, 0b11, 0b11, 1>;
+
+// Rd=[cmpyiwh|cmpyrwh](Rss,Rt):<<1:rnd:sat
+let Defs = [USR_OVF], Itinerary = S_3op_tc_3x_SLOT23, isCodeGenOnly = 0 in {
+  def M4_cmpyi_wh     : T_S3op_8<"cmpyiwh", 0b100, 1, 1, 1>;
+  def M4_cmpyr_wh     : T_S3op_8<"cmpyrwh", 0b110, 1, 1, 1>;
+}
 
 // Rdd=[add|sub](Rss,Rtt,Px):carry
 let isPredicateLate = 1, hasSideEffects = 0 in
@@ -2246,6 +2579,52 @@ class T_S3op_carry <string mnemonic, bits<3> MajOp>
 let isCodeGenOnly = 0 in {
 def A4_addp_c : T_S3op_carry < "add", 0b110 >;
 def A4_subp_c : T_S3op_carry < "sub", 0b111 >;
+}
+
+let Itinerary = S_3op_tc_3_SLOT23, hasSideEffects = 0 in
+class T_S3op_6 <string mnemonic, bits<3> MinOp, bit isUnsigned>
+  : SInst <(outs DoubleRegs:$Rxx),
+           (ins DoubleRegs:$dst2, DoubleRegs:$Rss, IntRegs:$Ru),
+  "$Rxx = "#mnemonic#"($Rss, $Ru)" ,
+  [] , "$dst2 = $Rxx"> {
+    bits<5> Rxx;
+    bits<5> Rss;
+    bits<5> Ru;
+
+    let IClass = 0b1100;
+
+    let Inst{27-21} = 0b1011001;
+    let Inst{20-16} = Rss;
+    let Inst{13}    = isUnsigned;
+    let Inst{12-8}  = Rxx;
+    let Inst{7-5}   = MinOp;
+    let Inst{4-0}   = Ru;
+  }
+
+// Vector reduce maximum halfwords
+// Rxx=vrmax[u]h(Rss,Ru)
+let isCodeGenOnly = 0 in {
+def A4_vrmaxh  : T_S3op_6 < "vrmaxh",  0b001, 0>;
+def A4_vrmaxuh : T_S3op_6 < "vrmaxuh", 0b001, 1>;
+}
+// Vector reduce maximum words
+// Rxx=vrmax[u]w(Rss,Ru)
+let isCodeGenOnly = 0 in {
+def A4_vrmaxw  : T_S3op_6 < "vrmaxw",  0b010, 0>;
+def A4_vrmaxuw : T_S3op_6 < "vrmaxuw", 0b010, 1>;
+}
+// Vector reduce minimum halfwords
+// Rxx=vrmin[u]h(Rss,Ru)
+let isCodeGenOnly = 0 in {
+def A4_vrminh  : T_S3op_6 < "vrminh",  0b101, 0>;
+def A4_vrminuh : T_S3op_6 < "vrminuh", 0b101, 1>;
+}
+
+// Vector reduce minimum words
+// Rxx=vrmin[u]w(Rss,Ru)
+let isCodeGenOnly = 0 in {
+def A4_vrminw  : T_S3op_6 < "vrminw",  0b110, 0>;
+def A4_vrminuw : T_S3op_6 < "vrminuw", 0b110, 1>;
 }
 
 // Shift an immediate left by register amount.
@@ -2658,45 +3037,30 @@ let Predicates = [HasV4T, UseMEMOP] in {
 // incorrect code for negative numbers.
 // Pd=cmpb.eq(Rs,#u8)
 
-let isCompare = 1, isExtendable = 1, opExtendable = 2, hasSideEffects = 0,
-    validSubTargets = HasV4SubT in
-class CMP_NOT_REG_IMM<string OpName, bits<2> op, Operand ImmOp,
-                      list<dag> Pattern>
-  : ALU32Inst <(outs PredRegs:$dst), (ins IntRegs:$src1, ImmOp:$src2),
-    "$dst = !cmp."#OpName#"($src1, #$src2)",
-    Pattern,
-    "", ALU32_2op_tc_2early_SLOT0123> {
-    bits<2> dst;
-    bits<5> src1;
-    bits<10> src2;
-
-    let IClass = 0b0111;
-    let Inst{27-24} = 0b0101;
-    let Inst{23-22} = op;
-    let Inst{20-16} = src1;
-    let Inst{21} = !if (!eq(OpName, "gtu"), 0b0, src2{9});
-    let Inst{13-5} = src2{8-0};
-    let Inst{4-2} = 0b100;
-    let Inst{1-0} = dst;
+// p=!cmp.eq(r1,#s10)
+let isCodeGenOnly = 0 in {
+def C4_cmpneqi  : T_CMP <"cmp.eq",  0b00, 1, s10Ext>;
+def C4_cmpltei  : T_CMP <"cmp.gt",  0b01, 1, s10Ext>;
+def C4_cmplteui : T_CMP <"cmp.gtu", 0b10, 1, u9Ext>;
 }
 
-let opExtentBits = 10, isExtentSigned = 1 in {
-def C4_cmpneqi : CMP_NOT_REG_IMM <"eq", 0b00, s10Ext, [(set (i1 PredRegs:$dst),
-                 (setne (i32 IntRegs:$src1), s10ExtPred:$src2))]>;
+def : T_CMP_pat <C4_cmpneqi,  setne,  s10ExtPred>;
+def : T_CMP_pat <C4_cmpltei,  setle,  s10ExtPred>;
+def : T_CMP_pat <C4_cmplteui, setule, u9ImmPred>;
 
-def C4_cmpltei : CMP_NOT_REG_IMM <"gt", 0b01, s10Ext, [(set (i1 PredRegs:$dst),
-                 (not (setgt (i32 IntRegs:$src1), s10ExtPred:$src2)))]>;
+// rs <= rt -> !(rs > rt).
+/*
+def: Pat<(i1 (setle (i32 IntRegs:$src1), s10ExtPred:$src2)),
+         (C2_not (C2_cmpgti IntRegs:$src1, s10ExtPred:$src2))>;
+//         (C4_cmpltei IntRegs:$src1, s10ExtPred:$src2)>;
+*/
+// Map cmplt(Rs, Imm) -> !cmpgt(Rs, Imm-1).
+def: Pat<(i1 (setlt (i32 IntRegs:$src1), s8ExtPred:$src2)),
+         (C4_cmpltei IntRegs:$src1, (DEC_CONST_SIGNED s8ExtPred:$src2))>;
 
-}
-let opExtentBits = 9 in
-def C4_cmplteui : CMP_NOT_REG_IMM <"gtu", 0b10, u9Ext, [(set (i1 PredRegs:$dst),
-                  (not (setugt (i32 IntRegs:$src1), u9ExtPred:$src2)))]>;
-
-def : Pat <(brcond (i1 (setne (and (i32 IntRegs:$src1), 255), u8ImmPred:$src2)),
-                       bb:$offset),
-      (J2_jumpf (A4_cmpbeqi (i32 IntRegs:$src1), u8ImmPred:$src2),
-                bb:$offset)>,
-      Requires<[HasV4T]>;
+// rs != rt -> !(rs == rt).
+def: Pat<(i1 (setne (i32 IntRegs:$src1), s10ExtPred:$src2)),
+         (C4_cmpneqi IntRegs:$src1, s10ExtPred:$src2)>;
 
 // SDNode for converting immediate C to C-1.
 def DEC_CONST_BYTE : SDNodeXForm<imm, [{
@@ -2965,7 +3329,7 @@ defm L4_return: LD_MISC_L4_RETURN <"dealloc_return">, PredNewRel;
 
 // Restore registers and dealloc return function call.
 let isCall = 1, isBarrier = 1, isReturn = 1, isTerminator = 1,
-  Defs = [R29, R30, R31, PC] in {
+  Defs = [R29, R30, R31, PC], isAsmParserOnly = 1 in {
 let validSubTargets = HasV4SubT in
   def RESTORE_DEALLOC_RET_JMP_V4 : JInst<(outs),
                                    (ins calltarget:$dst),
@@ -2975,7 +3339,7 @@ let validSubTargets = HasV4SubT in
 }
 
 // Restore registers and dealloc frame before a tail call.
-let isCall = 1, isBarrier = 1,
+let isCall = 1, isBarrier = 1, isAsmParserOnly = 1,
   Defs = [R29, R30, R31, PC] in {
 let validSubTargets = HasV4SubT in
   def RESTORE_DEALLOC_BEFORE_TAILCALL_V4 : JInst<(outs),
@@ -2986,7 +3350,7 @@ let validSubTargets = HasV4SubT in
 }
 
 // Save registers function call.
-let isCall = 1, isBarrier = 1,
+let isCall = 1, isBarrier = 1, isAsmParserOnly = 1,
   Uses = [R29, R31] in {
   def SAVE_REGISTERS_CALL_V4 : JInst<(outs),
                                (ins calltarget:$dst),
@@ -3228,7 +3592,7 @@ defm storerf : ST_Abs <"memh", "STrif", IntRegs, u16_1Imm, 0b01, 1>;
 // if ([!]Pv[.new]) mem[bhwd](##global)=Rt
 //===----------------------------------------------------------------------===//
 
-let validSubTargets = HasV4SubT in
+let validSubTargets = HasV4SubT, isAsmParserOnly = 1 in
 class T_StoreGP <string mnemonic, string BaseOp, RegisterClass RC,
                  Operand ImmOp, bits<2> MajOp, bit isHalf = 0>
   : T_StoreAbsGP <mnemonic, RC, ImmOp, MajOp, globaladdress, 0, isHalf> {
@@ -3238,7 +3602,7 @@ class T_StoreGP <string mnemonic, string BaseOp, RegisterClass RC,
     let BaseOpcode = BaseOp#_abs;
   }
 
-let validSubTargets = HasV4SubT in
+let validSubTargets = HasV4SubT, isAsmParserOnly = 1 in
 multiclass ST_GP <string mnemonic, string BaseOp, Operand ImmOp,
                   bits<2> MajOp, bit isHalf = 0> {
   // Set BaseOpcode same as absolute addressing instructions so that
@@ -3458,6 +3822,7 @@ defm loadrd  : LD_Abs<"memd",  "LDrid", DoubleRegs, u16_3Imm, 0b110>;
 // if ([!]Pv[.new]) Rx=mem[bhwd](##global)
 //===----------------------------------------------------------------------===//
 
+let isAsmParserOnly = 1 in
 class T_LoadGP <string mnemonic, string BaseOp, RegisterClass RC, Operand ImmOp,
                 bits<3> MajOp>
   : T_LoadAbsGP <mnemonic, RC, ImmOp, MajOp, globaladdress, 0>, PredNewRel {
@@ -3620,52 +3985,6 @@ def : Pat<(HexagonCONST32_GP tglobaladdr:$src1),
            (TFRI_V4 tglobaladdr:$src1)>,
            Requires<[HasV4T]>;
 
-
-// Load - Indirect with long offset: These instructions take global address
-// as an operand
-let isExtended = 1, opExtendable = 3, AddedComplexity = 40,
-validSubTargets = HasV4SubT in
-def LDrid_ind_lo_V4 : LDInst<(outs DoubleRegs:$dst),
-            (ins IntRegs:$src1, u2Imm:$src2, globaladdressExt:$offset),
-            "$dst=memd($src1<<#$src2+##$offset)",
-            [(set (i64 DoubleRegs:$dst),
-                  (load (add (shl IntRegs:$src1, u2ImmPred:$src2),
-                        (HexagonCONST32 tglobaladdr:$offset))))]>,
-            Requires<[HasV4T]>;
-
-let AddedComplexity = 40 in
-multiclass LD_indirect_lo<string OpcStr, PatFrag OpNode> {
-let isExtended = 1, opExtendable = 3, validSubTargets = HasV4SubT in
-  def _lo_V4 : LDInst<(outs IntRegs:$dst),
-            (ins IntRegs:$src1, u2Imm:$src2, globaladdressExt:$offset),
-            !strconcat("$dst = ",
-            !strconcat(OpcStr, "($src1<<#$src2+##$offset)")),
-            [(set IntRegs:$dst,
-                  (i32 (OpNode (add (shl IntRegs:$src1, u2ImmPred:$src2),
-                          (HexagonCONST32 tglobaladdr:$offset)))))]>,
-            Requires<[HasV4T]>;
-}
-
-defm LDrib_ind : LD_indirect_lo<"memb", sextloadi8>;
-defm LDriub_ind : LD_indirect_lo<"memub", zextloadi8>;
-defm LDriub_ind_anyext : LD_indirect_lo<"memub", extloadi8>;
-defm LDrih_ind : LD_indirect_lo<"memh", sextloadi16>;
-defm LDriuh_ind : LD_indirect_lo<"memuh", zextloadi16>;
-defm LDriuh_ind_anyext : LD_indirect_lo<"memuh", extloadi16>;
-defm LDriw_ind : LD_indirect_lo<"memw", load>;
-
-let AddedComplexity = 40 in
-def : Pat <(i32 (sextloadi8 (add IntRegs:$src1,
-                                 (NumUsesBelowThresCONST32 tglobaladdr:$offset)))),
-           (i32 (LDrib_ind_lo_V4 IntRegs:$src1, 0, tglobaladdr:$offset))>,
-           Requires<[HasV4T]>;
-
-let AddedComplexity = 40 in
-def : Pat <(i32 (zextloadi8 (add IntRegs:$src1,
-                                 (NumUsesBelowThresCONST32 tglobaladdr:$offset)))),
-           (i32 (LDriub_ind_lo_V4 IntRegs:$src1, 0, tglobaladdr:$offset))>,
-           Requires<[HasV4T]>;
-
 let Predicates = [HasV4T], AddedComplexity  = 30 in {
 def : Pat<(truncstorei8 (i32 IntRegs:$src1), u0AlwaysExtPred:$src2),
           (S2_storerbabs u0AlwaysExtPred:$src2, IntRegs: $src1)>;
@@ -3680,18 +3999,6 @@ def : Pat<(store (i32 IntRegs:$src1), u0AlwaysExtPred:$src2),
 let Predicates = [HasV4T], AddedComplexity  = 30 in {
 def : Pat<(i32 (load u0AlwaysExtPred:$src)),
           (L4_loadri_abs u0AlwaysExtPred:$src)>;
-
-def : Pat<(i32 (sextloadi8 u0AlwaysExtPred:$src)),
-          (L4_loadrb_abs u0AlwaysExtPred:$src)>;
-
-def : Pat<(i32 (zextloadi8 u0AlwaysExtPred:$src)),
-          (L4_loadrub_abs u0AlwaysExtPred:$src)>;
-
-def : Pat<(i32 (sextloadi16 u0AlwaysExtPred:$src)),
-          (L4_loadrh_abs u0AlwaysExtPred:$src)>;
-
-def : Pat<(i32 (zextloadi16 u0AlwaysExtPred:$src)),
-          (L4_loadruh_abs u0AlwaysExtPred:$src)>;
 }
 
 // Indexed store word - global address.
@@ -3951,7 +4258,7 @@ def A4_boundscheck_hi: ALU64Inst <
     let Inst{12-8} = Rtt;
   }
 
-let hasSideEffects = 0 in
+let hasSideEffects = 0, isAsmParserOnly = 1 in
 def A4_boundscheck : MInst <
   (outs PredRegs:$Pd), (ins IntRegs:$Rs, DoubleRegs:$Rtt),
   "$Pd=boundscheck($Rs,$Rtt)">;

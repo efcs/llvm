@@ -101,6 +101,7 @@ namespace {
                        const MachineInstr &MI);
     void LowerPATCHPOINT(MCStreamer &OutStreamer, StackMaps &SM,
                          const MachineInstr &MI);
+    void EmitTlsCall(const MachineInstr *MI, MCSymbolRefExpr::VariantKind VK);
   };
 
   /// PPCLinuxAsmPrinter - PowerPC assembly printer, customized for Linux
@@ -160,7 +161,7 @@ static const char *stripRegisterPrefix(const char *RegName) {
 
 void PPCAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
                                  raw_ostream &O) {
-  const DataLayout *DL = TM.getSubtargetImpl()->getDataLayout();
+  const DataLayout *DL = TM.getDataLayout();
   const MachineOperand &MO = MI->getOperand(OpNo);
   
   switch (MO.getType()) {
@@ -315,7 +316,7 @@ bool PPCAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
 /// exists for it.  If not, create one.  Then return a symbol that references
 /// the TOC entry.
 MCSymbol *PPCAsmPrinter::lookUpOrCreateTOCEntry(MCSymbol *Sym) {
-  const DataLayout *DL = TM.getSubtargetImpl()->getDataLayout();
+  const DataLayout *DL = TM.getDataLayout();
   MCSymbol *&TOCEntry = TOC[Sym];
 
   // To avoid name clash check if the name already exists.
@@ -402,6 +403,39 @@ void PPCAsmPrinter::LowerPATCHPOINT(MCStreamer &OutStreamer, StackMaps &SM,
          "Invalid number of NOP bytes requested!");
   for (unsigned i = EncodedBytes; i < NumBytes; i += 4)
     EmitToStreamer(OutStreamer, MCInstBuilder(PPC::NOP));
+}
+
+/// EmitTlsCall -- Given a GETtls[ld]ADDR[32] instruction, print a
+/// call to __tls_get_addr to the current output stream.
+void PPCAsmPrinter::EmitTlsCall(const MachineInstr *MI,
+                                MCSymbolRefExpr::VariantKind VK) {
+  StringRef Name = "__tls_get_addr";
+  MCSymbol *TlsGetAddr = OutContext.GetOrCreateSymbol(Name);
+  MCSymbolRefExpr::VariantKind Kind = MCSymbolRefExpr::VK_None;
+
+  assert(MI->getOperand(0).isReg() &&
+         ((Subtarget.isPPC64() && MI->getOperand(0).getReg() == PPC::X3) ||
+          (!Subtarget.isPPC64() && MI->getOperand(0).getReg() == PPC::R3)) &&
+         "GETtls[ld]ADDR[32] must define GPR3");
+  assert(MI->getOperand(1).isReg() &&
+         ((Subtarget.isPPC64() && MI->getOperand(1).getReg() == PPC::X3) ||
+          (!Subtarget.isPPC64() && MI->getOperand(1).getReg() == PPC::R3)) &&
+         "GETtls[ld]ADDR[32] must read GPR3");
+
+  if (!Subtarget.isPPC64() && !Subtarget.isDarwin() &&
+      TM.getRelocationModel() == Reloc::PIC_)
+    Kind = MCSymbolRefExpr::VK_PLT;
+  const MCSymbolRefExpr *TlsRef =
+    MCSymbolRefExpr::Create(TlsGetAddr, Kind, OutContext);
+  const MachineOperand &MO = MI->getOperand(2);
+  const GlobalValue *GValue = MO.getGlobal();
+  MCSymbol *MOSymbol = getSymbol(GValue);
+  const MCExpr *SymVar = MCSymbolRefExpr::Create(MOSymbol, VK, OutContext);
+  EmitToStreamer(OutStreamer,
+                 MCInstBuilder(Subtarget.isPPC64() ?
+                               PPC::BL8_NOP_TLS : PPC::BL_TLS)
+                 .addExpr(TlsRef)
+                 .addExpr(SymVar));
 }
 
 /// EmitInstruction -- Print out a single PowerPC MI in Darwin syntax to
@@ -807,6 +841,15 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
                    .addExpr(SymGotTlsGD));
     return;
   }
+  case PPC::GETtlsADDR:
+    // Transform: %X3 = GETtlsADDR %X3, <ga:@sym>
+    // Into: BL8_NOP_TLS __tls_get_addr(sym@tlsgd)
+  case PPC::GETtlsADDR32: {
+    // Transform: %R3 = GETtlsADDR32 %R3, <ga:@sym>
+    // Into: BL_TLS __tls_get_addr(sym@tlsgd)@PLT
+    EmitTlsCall(MI, MCSymbolRefExpr::VK_PPC_TLSGD);
+    return;
+  }
   case PPC::ADDIStlsldHA: {
     // Transform: %Xd = ADDIStlsldHA %X2, <ga:@sym>
     // Into:      %Xd = ADDIS8 %X2, sym@got@tlsld@ha
@@ -842,6 +885,15 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
                    .addReg(MI->getOperand(0).getReg())
                    .addReg(MI->getOperand(1).getReg())
                    .addExpr(SymGotTlsLD));
+    return;
+  }
+  case PPC::GETtlsldADDR:
+    // Transform: %X3 = GETtlsldADDR %X3, <ga:@sym>
+    // Into: BL8_NOP_TLS __tls_get_addr(sym@tlsld)
+  case PPC::GETtlsldADDR32: {
+    // Transform: %R3 = GETtlsldADDR32 %R3, <ga:@sym>
+    // Into: BL_TLS __tls_get_addr(sym@tlsld)@PLT
+    EmitTlsCall(MI, MCSymbolRefExpr::VK_PPC_TLSLD);
     return;
   }
   case PPC::ADDISdtprelHA:
@@ -953,9 +1005,8 @@ void PPCLinuxAsmPrinter::EmitStartOfAsmFile(Module &M) {
   if (M.getPICLevel() == PICLevel::Small)
     return AsmPrinter::EmitStartOfAsmFile(M);
 
-  OutStreamer.SwitchSection(OutContext.getELFSection(".got2",
-         ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC,
-         SectionKind::getReadOnly()));
+  OutStreamer.SwitchSection(OutContext.getELFSection(
+      ".got2", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC));
 
   MCSymbol *TOCSym = OutContext.GetOrCreateSymbol(Twine(".LTOC"));
   MCSymbol *CurrentPos = OutContext.CreateTempSymbol();
@@ -1007,9 +1058,8 @@ void PPCLinuxAsmPrinter::EmitFunctionEntryLabel() {
 
   // Emit an official procedure descriptor.
   MCSectionSubPair Current = OutStreamer.getCurrentSection();
-  const MCSectionELF *Section = OutStreamer.getContext().getELFSection(".opd",
-      ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC,
-      SectionKind::getReadOnly());
+  const MCSectionELF *Section = OutStreamer.getContext().getELFSection(
+      ".opd", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
   OutStreamer.SwitchSection(Section);
   OutStreamer.EmitLabel(CurrentFnSym);
   OutStreamer.EmitValueToAlignment(8);
@@ -1036,7 +1086,7 @@ void PPCLinuxAsmPrinter::EmitFunctionEntryLabel() {
 
 
 bool PPCLinuxAsmPrinter::doFinalization(Module &M) {
-  const DataLayout *TD = TM.getSubtargetImpl()->getDataLayout();
+  const DataLayout *TD = TM.getDataLayout();
 
   bool isPPC64 = TD->getPointerSizeInBits() == 64;
 
@@ -1047,13 +1097,11 @@ bool PPCLinuxAsmPrinter::doFinalization(Module &M) {
     const MCSectionELF *Section;
     
     if (isPPC64)
-      Section = OutStreamer.getContext().getELFSection(".toc",
-        ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC,
-        SectionKind::getReadOnly());
-	else
-      Section = OutStreamer.getContext().getELFSection(".got2",
-        ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC,
-        SectionKind::getReadOnly());
+      Section = OutStreamer.getContext().getELFSection(
+          ".toc", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
+        else
+          Section = OutStreamer.getContext().getELFSection(
+              ".got2", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
     OutStreamer.SwitchSection(Section);
 
     for (MapVector<MCSymbol*, MCSymbol*>::iterator I = TOC.begin(),
@@ -1242,8 +1290,7 @@ static MCSymbol *GetAnonSym(MCSymbol *Sym, MCContext &Ctx) {
 
 void PPCDarwinAsmPrinter::
 EmitFunctionStubs(const MachineModuleInfoMachO::SymbolListTy &Stubs) {
-  bool isPPC64 =
-      TM.getSubtargetImpl()->getDataLayout()->getPointerSizeInBits() == 64;
+  bool isPPC64 = TM.getDataLayout()->getPointerSizeInBits() == 64;
   bool isDarwin = Subtarget.isDarwin();
   
   const TargetLoweringObjectFileMachO &TLOFMacho = 
@@ -1379,8 +1426,7 @@ EmitFunctionStubs(const MachineModuleInfoMachO::SymbolListTy &Stubs) {
 
 
 bool PPCDarwinAsmPrinter::doFinalization(Module &M) {
-  bool isPPC64 =
-      TM.getSubtargetImpl()->getDataLayout()->getPointerSizeInBits() == 64;
+  bool isPPC64 = TM.getDataLayout()->getPointerSizeInBits() == 64;
 
   // Darwin/PPC always uses mach-o.
   const TargetLoweringObjectFileMachO &TLOFMacho = 

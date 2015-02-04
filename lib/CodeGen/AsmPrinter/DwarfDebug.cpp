@@ -1119,7 +1119,7 @@ static DebugLoc findPrologueEndLoc(const MachineFunction *MF) {
   for (const auto &MBB : *MF)
     for (const auto &MI : MBB)
       if (!MI.isDebugValue() && !MI.getFlag(MachineInstr::FrameSetup) &&
-        !MI.getDebugLoc().isUnknown()) {
+          !MI.getDebugLoc().isUnknown()) {
         // Did the target forget to set the FrameSetup flag for CFI insns?
         assert(!MI.isCFIInstruction() &&
                "First non-frame-setup instruction is a CFI instruction.");
@@ -1223,12 +1223,12 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
   if (!PrologEndLoc.isUnknown()) {
     DebugLoc FnStartDL =
         PrologEndLoc.getFnDebugLoc(MF->getFunction()->getContext());
-    recordSourceLine(
-        FnStartDL.getLine(), FnStartDL.getCol(),
-        FnStartDL.getScope(MF->getFunction()->getContext()),
-        // We'd like to list the prologue as "not statements" but GDB behaves
-        // poorly if we do that. Revisit this with caution/GDB (7.5+) testing.
-        DWARF2_FLAG_IS_STMT);
+
+    // We'd like to list the prologue as "not statements" but GDB behaves
+    // poorly if we do that. Revisit this with caution/GDB (7.5+) testing.
+    recordSourceLine(FnStartDL.getLine(), FnStartDL.getCol(),
+                     FnStartDL.getScope(MF->getFunction()->getContext()),
+                     DWARF2_FLAG_IS_STMT);
   }
 }
 
@@ -1834,6 +1834,19 @@ void DwarfDebug::emitDebugARanges() {
     if (List.size() < 2)
       continue;
 
+    // If we have no section (e.g. common), just write out
+    // individual spans for each symbol.
+    if (!Section) {
+      for (const SymbolCU &Cur : List) {
+        ArangeSpan Span;
+        Span.Start = Cur.Sym;
+        Span.End = nullptr;
+        if (Cur.CU)
+          Spans[Cur.CU].push_back(Span);
+      }
+      continue;
+    }
+
     // Sort the symbols by offset within the section.
     std::sort(List.begin(), List.end(),
               [&](const SymbolCU &A, const SymbolCU &B) {
@@ -1849,31 +1862,19 @@ void DwarfDebug::emitDebugARanges() {
       return IA < IB;
     });
 
-    // If we have no section (e.g. common), just write out
-    // individual spans for each symbol.
-    if (!Section) {
-      for (const SymbolCU &Cur : List) {
-        ArangeSpan Span;
-        Span.Start = Cur.Sym;
-        Span.End = nullptr;
-        if (Cur.CU)
-          Spans[Cur.CU].push_back(Span);
-      }
-    } else {
-      // Build spans between each label.
-      const MCSymbol *StartSym = List[0].Sym;
-      for (size_t n = 1, e = List.size(); n < e; n++) {
-        const SymbolCU &Prev = List[n - 1];
-        const SymbolCU &Cur = List[n];
+    // Build spans between each label.
+    const MCSymbol *StartSym = List[0].Sym;
+    for (size_t n = 1, e = List.size(); n < e; n++) {
+      const SymbolCU &Prev = List[n - 1];
+      const SymbolCU &Cur = List[n];
 
-        // Try and build the longest span we can within the same CU.
-        if (Cur.CU != Prev.CU) {
-          ArangeSpan Span;
-          Span.Start = StartSym;
-          Span.End = Cur.Sym;
-          Spans[Prev.CU].push_back(Span);
-          StartSym = Cur.Sym;
-        }
+      // Try and build the longest span we can within the same CU.
+      if (Cur.CU != Prev.CU) {
+        ArangeSpan Span;
+        Span.Start = StartSym;
+        Span.End = Cur.Sym;
+        Spans[Prev.CU].push_back(Span);
+        StartSym = Cur.Sym;
       }
     }
   }

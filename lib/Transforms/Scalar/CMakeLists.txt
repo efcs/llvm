@@ -23,9 +23,11 @@ add_llvm_library(LLVMScalarOpts
   LoopUnrollPass.cpp
   LoopUnswitch.cpp
   LowerAtomic.cpp
+  LowerExpectIntrinsic.cpp
   MemCpyOptimizer.cpp
   MergedLoadStoreMotion.cpp
   PartiallyInlineLibCalls.cpp
+  PlaceSafepoints.cpp
   Reassociate.cpp
   Reg2Mem.cpp
   SCCP.cpp
@@ -37,6 +39,7 @@ add_llvm_library(LLVMScalarOpts
   SeparateConstOffsetFromGEP.cpp
   SimplifyCFGPass.cpp
   Sink.cpp
+  StraightLineStrengthReduce.cpp
   StructurizeCFG.cpp
   TailRecursionElimination.cpp
   )
