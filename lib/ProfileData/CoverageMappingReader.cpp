@@ -173,15 +173,12 @@ std::error_code RawCoverageMappingReader::readMappingRegionsSubArray(
     }
 
     // Read the source range.
-    uint64_t LineStartDelta, CodeBeforeColumnStart, NumLines, ColumnEnd;
+    uint64_t LineStartDelta, ColumnStart, NumLines, ColumnEnd;
     if (auto Err =
             readIntMax(LineStartDelta, std::numeric_limits<unsigned>::max()))
       return Err;
-    if (auto Err = readULEB128(CodeBeforeColumnStart))
+    if (auto Err = readULEB128(ColumnStart))
       return Err;
-    bool HasCodeBefore = CodeBeforeColumnStart & 1;
-    uint64_t ColumnStart = CodeBeforeColumnStart >>
-                           CounterMappingRegion::EncodingHasCodeBeforeBits;
     if (ColumnStart > std::numeric_limits<unsigned>::max())
       return error(instrprof_error::malformed);
     if (auto Err = readIntMax(NumLines, std::numeric_limits<unsigned>::max()))
@@ -214,9 +211,8 @@ std::error_code RawCoverageMappingReader::readMappingRegionsSubArray(
     });
 
     MappingRegions.push_back(CounterMappingRegion(
-        C, InferredFileID, LineStart, ColumnStart, LineStart + NumLines,
-        ColumnEnd, HasCodeBefore, Kind));
-    MappingRegions.back().ExpandedFileID = ExpandedFileID;
+        C, InferredFileID, ExpandedFileID, LineStart, ColumnStart,
+        LineStart + NumLines, ColumnEnd, Kind));
   }
   return success();
 }
