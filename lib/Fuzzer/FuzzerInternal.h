@@ -9,6 +9,7 @@
 // Define the main class fuzzer::Fuzzer and most functions.
 //===----------------------------------------------------------------------===//
 #include <cassert>
+#include <climits>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -46,6 +47,8 @@ class Fuzzer {
     int  MutateDepth = 5;
     bool ExitOnFirst = false;
     bool UseFullCoverageSet  = false;
+    int PreferSmallDuringInitialShuffle = -1;
+    size_t MaxNumberOfRuns = ULONG_MAX;
     std::string OutputCorpus;
   };
   Fuzzer(FuzzingOptions Options) : Options(Options) {
@@ -60,6 +63,13 @@ class Fuzzer {
   }
   // Save the current corpus to OutputCorpus.
   void SaveCorpus();
+
+  size_t secondsSinceProcessStartUp() {
+    return duration_cast<seconds>(system_clock::now() - ProcessStartTime)
+        .count();
+  }
+
+  size_t getTotalNumberOfRuns() { return TotalNumberOfRuns; }
 
   static void AlarmCallback();
 
