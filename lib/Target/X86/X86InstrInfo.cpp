@@ -617,7 +617,6 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VTESTPSrr,       X86::VTESTPSrm,           0 },
     { X86::VUCOMISDrr,      X86::VUCOMISDrm,          0 },
     { X86::VUCOMISSrr,      X86::VUCOMISSrm,          0 },
-    { X86::VBROADCASTSSrr,  X86::VBROADCASTSSrm,      TB_NO_REVERSE },
 
     // AVX 256-bit foldable instructions
     { X86::VCVTDQ2PDYrr,    X86::VCVTDQ2PDYrm,        0 },
@@ -638,6 +637,7 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VMOVUPSYrr,      X86::VMOVUPSYrm,          0 },
     { X86::VPERMILPDYri,    X86::VPERMILPDYmi,        0 },
     { X86::VPERMILPSYri,    X86::VPERMILPSYmi,        0 },
+    { X86::VPTESTYrr,       X86::VPTESTYrm,           0 },
     { X86::VRCPPSYr,        X86::VRCPPSYm,            0 },
     { X86::VRCPPSYr_Int,    X86::VRCPPSYm_Int,        0 },
     { X86::VROUNDYPDr,      X86::VROUNDYPDm,          0 },
@@ -648,10 +648,11 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VSQRTPSYr,       X86::VSQRTPSYm,           0 },
     { X86::VTESTPDYrr,      X86::VTESTPDYrm,          0 },
     { X86::VTESTPSYrr,      X86::VTESTPSYrm,          0 },
-    { X86::VBROADCASTSSYrr, X86::VBROADCASTSSYrm,     TB_NO_REVERSE },
-    { X86::VBROADCASTSDYrr, X86::VBROADCASTSDYrm,     TB_NO_REVERSE },
 
     // AVX2 foldable instructions
+    { X86::VBROADCASTSSrr,  X86::VBROADCASTSSrm,      TB_NO_REVERSE },
+    { X86::VBROADCASTSSYrr, X86::VBROADCASTSSYrm,     TB_NO_REVERSE },
+    { X86::VBROADCASTSDYrr, X86::VBROADCASTSDYrm,     TB_NO_REVERSE },
     { X86::VPABSBrr256,     X86::VPABSBrm256,         0 },
     { X86::VPABSDrr256,     X86::VPABSDrm256,         0 },
     { X86::VPABSWrr256,     X86::VPABSWrm256,         0 },
@@ -4493,12 +4494,11 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   bool isCallRegIndirect = Subtarget.callRegIndirect();
   bool isTwoAddrFold = false;
 
-  // Atom favors register form of call. So, we do not fold loads into calls
-  // when X86Subtarget is Atom.
+  // For CPUs that favor the register form of a call,
+  // do not fold loads into calls.
   if (isCallRegIndirect &&
-    (MI->getOpcode() == X86::CALL32r || MI->getOpcode() == X86::CALL64r)) {
+    (MI->getOpcode() == X86::CALL32r || MI->getOpcode() == X86::CALL64r))
     return nullptr;
-  }
 
   unsigned NumOps = MI->getDesc().getNumOperands();
   bool isTwoAddr = NumOps > 1 &&

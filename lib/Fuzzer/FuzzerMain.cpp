@@ -11,20 +11,12 @@
 
 #include "FuzzerInternal.h"
 
-#include <climits>
 #include <cstring>
 #include <unistd.h>
 #include <iostream>
 #include <thread>
 #include <atomic>
 #include <mutex>
-
-// ASAN options:
-//   * don't dump the coverage to disk.
-//   * enable coverage by default.
-extern "C" const char *__asan_default_options() {
-  return "coverage_pcs=0:coverage=1";
-}
 
 // Program arguments.
 struct FlagDescription {
@@ -164,6 +156,10 @@ int main(int argc, char **argv) {
   Options.MutateDepth = Flags.mutate_depth;
   Options.ExitOnFirst = Flags.exit_on_first;
   Options.UseFullCoverageSet = Flags.use_full_coverage_set;
+  Options.PreferSmallDuringInitialShuffle =
+      Flags.prefer_small_during_initial_shuffle;
+  if (Flags.runs >= 0)
+    Options.MaxNumberOfRuns = Flags.runs;
   if (!inputs.empty())
     Options.OutputCorpus = inputs[0];
   Fuzzer F(Options);
@@ -190,6 +186,8 @@ int main(int argc, char **argv) {
     F.SaveCorpus();
   F.Loop(Flags.iterations < 0 ? INT_MAX : Flags.iterations);
   if (Flags.verbosity)
-    std::cerr << "Done\n";
+    std::cerr << "Done " << F.getTotalNumberOfRuns()
+              << " runs in " << F.secondsSinceProcessStartUp()
+              << " seconds\n";
   return 0;
 }
