@@ -1286,10 +1286,46 @@ raw_ostream &operator<<(raw_ostream &OS, FieldSeparator &FS) {
 }
 } // end namespace
 
-static void writeGenericDebugNode(raw_ostream &, const GenericDebugNode *,
-                                  TypePrinting *, SlotTracker *,
-                                  const Module *) {
-  llvm_unreachable("Unimplemented write");
+static void writeMetadataAsOperand(raw_ostream &Out, const Metadata *MD,
+                                   TypePrinting *TypePrinter,
+                                   SlotTracker *Machine,
+                                   const Module *Context) {
+  if (!MD) {
+    Out << "null";
+    return;
+  }
+  WriteAsOperandInternal(Out, MD, TypePrinter, Machine, Context);
+}
+
+static void writeTag(raw_ostream &Out, FieldSeparator &FS, const DebugNode *N) {
+  Out << FS << "tag: ";
+  if (const char *Tag = dwarf::TagString(N->getTag()))
+    Out << Tag;
+  else
+    Out << N->getTag();
+}
+
+static void writeGenericDebugNode(raw_ostream &Out, const GenericDebugNode *N,
+                                  TypePrinting *TypePrinter,
+                                  SlotTracker *Machine, const Module *Context) {
+  Out << "!GenericDebugNode(";
+  FieldSeparator FS;
+  writeTag(Out, FS, N);
+  if (!N->getHeader().empty()) {
+    Out << FS << "header: \"";
+    PrintEscapedString(N->getHeader(), Out);
+    Out << "\"";
+  }
+  if (N->getNumDwarfOperands()) {
+    Out << FS << "operands: {";
+    FieldSeparator IFS;
+    for (auto &I : N->dwarf_operands()) {
+      Out << IFS;
+      writeMetadataAsOperand(Out, I, TypePrinter, Machine, Context);
+    }
+    Out << "}";
+  }
+  Out << ")";
 }
 
 static void writeMDLocation(raw_ostream &Out, const MDLocation *DL,

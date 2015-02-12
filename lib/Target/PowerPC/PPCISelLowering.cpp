@@ -88,11 +88,15 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   setIndexedLoadAction(ISD::PRE_INC, MVT::i16, Legal);
   setIndexedLoadAction(ISD::PRE_INC, MVT::i32, Legal);
   setIndexedLoadAction(ISD::PRE_INC, MVT::i64, Legal);
+  setIndexedLoadAction(ISD::PRE_INC, MVT::f32, Legal);
+  setIndexedLoadAction(ISD::PRE_INC, MVT::f64, Legal);
   setIndexedStoreAction(ISD::PRE_INC, MVT::i1, Legal);
   setIndexedStoreAction(ISD::PRE_INC, MVT::i8, Legal);
   setIndexedStoreAction(ISD::PRE_INC, MVT::i16, Legal);
   setIndexedStoreAction(ISD::PRE_INC, MVT::i32, Legal);
   setIndexedStoreAction(ISD::PRE_INC, MVT::i64, Legal);
+  setIndexedStoreAction(ISD::PRE_INC, MVT::f32, Legal);
+  setIndexedStoreAction(ISD::PRE_INC, MVT::f64, Legal);
 
   if (Subtarget.useCRBits()) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
@@ -401,6 +405,16 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
       setOperationAction(ISD::ADD , VT, Legal);
       setOperationAction(ISD::SUB , VT, Legal);
 
+      // Vector instructions introduced in P8
+      if (Subtarget.hasP8Altivec()) {
+        setOperationAction(ISD::CTPOP, VT, Legal);
+        setOperationAction(ISD::CTLZ, VT, Legal);
+      }
+      else {
+        setOperationAction(ISD::CTPOP, VT, Expand);
+        setOperationAction(ISD::CTLZ, VT, Expand);
+      }
+
       // We promote all shuffles to v16i8.
       setOperationAction(ISD::VECTOR_SHUFFLE, VT, Promote);
       AddPromotedToType (ISD::VECTOR_SHUFFLE, VT, MVT::v16i8);
@@ -455,8 +469,6 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
       setOperationAction(ISD::SCALAR_TO_VECTOR, VT, Expand);
       setOperationAction(ISD::FPOW, VT, Expand);
       setOperationAction(ISD::BSWAP, VT, Expand);
-      setOperationAction(ISD::CTPOP, VT, Expand);
-      setOperationAction(ISD::CTLZ, VT, Expand);
       setOperationAction(ISD::CTLZ_ZERO_UNDEF, VT, Expand);
       setOperationAction(ISD::CTTZ, VT, Expand);
       setOperationAction(ISD::CTTZ_ZERO_UNDEF, VT, Expand);
@@ -593,6 +605,9 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
 
       addRegisterClass(MVT::v2i64, &PPC::VSRCRegClass);
     }
+
+    if (Subtarget.hasP8Altivec()) 
+      addRegisterClass(MVT::v2i64, &PPC::VRRCRegClass);
   }
 
   if (Subtarget.has64BitSupport())
@@ -1590,6 +1605,15 @@ static SDValue LowerLabelRef(SDValue HiPart, SDValue LoPart, bool isPIC,
   return DAG.getNode(ISD::ADD, DL, PtrVT, Hi, Lo);
 }
 
+static void setUsesTOCBasePtr(MachineFunction &MF) {
+  PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
+  FuncInfo->setUsesTOCBasePtr();
+}
+
+static void setUsesTOCBasePtr(SelectionDAG &DAG) {
+  setUsesTOCBasePtr(DAG.getMachineFunction());
+}
+
 SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
                                              SelectionDAG &DAG) const {
   EVT PtrVT = Op.getValueType();
@@ -1599,6 +1623,7 @@ SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
   // 64-bit SVR4 ABI code is always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
   if (Subtarget.isSVR4ABI() && Subtarget.isPPC64()) {
+    setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetConstantPool(C, PtrVT, CP->getAlignment(), 0);
     return DAG.getNode(PPCISD::TOC_ENTRY, SDLoc(CP), MVT::i64, GA,
                        DAG.getRegister(PPC::X2, MVT::i64));
@@ -1630,6 +1655,7 @@ SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
   // 64-bit SVR4 ABI code is always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
   if (Subtarget.isSVR4ABI() && Subtarget.isPPC64()) {
+    setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetJumpTable(JT->getIndex(), PtrVT);
     return DAG.getNode(PPCISD::TOC_ENTRY, SDLoc(JT), MVT::i64, GA,
                        DAG.getRegister(PPC::X2, MVT::i64));
@@ -1661,6 +1687,7 @@ SDValue PPCTargetLowering::LowerBlockAddress(SDValue Op,
   // 64-bit SVR4 ABI code is always position-independent.
   // The actual BlockAddress is stored in the TOC.
   if (Subtarget.isSVR4ABI() && Subtarget.isPPC64()) {
+    setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetBlockAddress(BA, PtrVT, BASDN->getOffset());
     return DAG.getNode(PPCISD::TOC_ENTRY, SDLoc(BASDN), MVT::i64, GA,
                        DAG.getRegister(PPC::X2, MVT::i64));
@@ -1729,6 +1756,7 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
                                                 PPCII::MO_TLS);
     SDValue GOTPtr;
     if (is64bit) {
+      setUsesTOCBasePtr(DAG);
       SDValue GOTReg = DAG.getRegister(PPC::X2, MVT::i64);
       GOTPtr = DAG.getNode(PPCISD::ADDIS_GOT_TPREL_HA, dl,
                            PtrVT, GOTReg, TGA);
@@ -1744,6 +1772,7 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
                                              PPCII::MO_TLSGD);
     SDValue GOTPtr;
     if (is64bit) {
+      setUsesTOCBasePtr(DAG);
       SDValue GOTReg = DAG.getRegister(PPC::X2, MVT::i64);
       GOTPtr = DAG.getNode(PPCISD::ADDIS_TLSGD_HA, dl, PtrVT,
                                    GOTReg, TGA);
@@ -1764,6 +1793,7 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
                                              PPCII::MO_TLSLD);
     SDValue GOTPtr;
     if (is64bit) {
+      setUsesTOCBasePtr(DAG);
       SDValue GOTReg = DAG.getRegister(PPC::X2, MVT::i64);
       GOTPtr = DAG.getNode(PPCISD::ADDIS_TLSLD_HA, dl, PtrVT,
                            GOTReg, TGA);
@@ -1796,6 +1826,7 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
   // 64-bit SVR4 ABI code is always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
   if (Subtarget.isSVR4ABI() && Subtarget.isPPC64()) {
+    setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GSDN->getOffset());
     return DAG.getNode(PPCISD::TOC_ENTRY, DL, MVT::i64, GA,
                        DAG.getRegister(PPC::X2, MVT::i64));
@@ -3763,6 +3794,7 @@ unsigned PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag,
                                    MPI.getWithOffset(8), false, false,
                                    LoadsInv, 8);
 
+      setUsesTOCBasePtr(DAG);
       SDValue TOCVal = DAG.getCopyToReg(Chain, dl, PPC::X2, TOCPtr,
                                         InFlag);
       Chain = TOCVal.getValue(0);
@@ -3831,8 +3863,10 @@ unsigned PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag,
 
   // All calls, in both the ELF V1 and V2 ABIs, need the TOC register live
   // into the call.
-  if (isSVR4ABI && isPPC64 && !IsPatchPoint)
+  if (isSVR4ABI && isPPC64 && !IsPatchPoint) {
+    setUsesTOCBasePtr(DAG);
     Ops.push_back(DAG.getRegister(PPC::X2, PtrVT));
+  }
 
   return CallOpc;
 }
@@ -4794,6 +4828,7 @@ PPCTargetLowering::LowerCall_64SVR4(SDValue Chain, SDValue Callee,
       !isFunctionGlobalAddress(Callee) &&
       !isa<ExternalSymbolSDNode>(Callee)) {
     // Load r2 into a virtual register and store it to the TOC save area.
+    setUsesTOCBasePtr(DAG);
     SDValue Val = DAG.getCopyFromReg(Chain, dl, PPC::X2, MVT::i64);
     // TOC save area offset.
     unsigned TOCSaveOffset = PPCFrameLowering::getTOCSaveOffset(isELFv2ABI);
@@ -7190,6 +7225,7 @@ PPCTargetLowering::emitEHSjLjSetJmp(MachineInstr *MI,
   unsigned BufReg = MI->getOperand(1).getReg();
 
   if (Subtarget.isPPC64() && Subtarget.isSVR4ABI()) {
+    setUsesTOCBasePtr(*MBB->getParent());
     MIB = BuildMI(*thisMBB, MI, DL, TII->get(PPC::STD))
             .addReg(PPC::X2)
             .addImm(TOCOffset)
@@ -7353,6 +7389,7 @@ PPCTargetLowering::emitEHSjLjLongJmp(MachineInstr *MI,
 
   // Reload TOC
   if (PVT == MVT::i64 && Subtarget.isSVR4ABI()) {
+    setUsesTOCBasePtr(*MBB->getParent());
     MIB = BuildMI(*MBB, MI, DL, TII->get(PPC::LD), PPC::X2)
             .addImm(TOCOffset)
             .addReg(BufReg);
@@ -7381,6 +7418,7 @@ PPCTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
       // way to mark the dependence as implicit there, and so the stackmap code
       // will confuse it with a regular operand. Instead, add the dependence
       // here.
+      setUsesTOCBasePtr(*BB->getParent());
       MI->addOperand(MachineOperand::CreateReg(PPC::X2, false, true));
     }
 
@@ -9769,7 +9807,7 @@ unsigned PPCTargetLowering::getRegisterByName(const char* RegName,
   bool is64Bit = isPPC64 && VT == MVT::i64;
   unsigned Reg = StringSwitch<unsigned>(RegName)
                    .Case("r1", is64Bit ? PPC::X1 : PPC::R1)
-                   .Case("r2", isDarwinABI ? 0 : (is64Bit ? PPC::X2 : PPC::R2))
+                   .Case("r2", (isDarwinABI || isPPC64) ? 0 : PPC::R2)
                    .Case("r13", (!isPPC64 && isDarwinABI) ? 0 :
                                   (is64Bit ? PPC::X13 : PPC::R13))
                    .Default(0);
