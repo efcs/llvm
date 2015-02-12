@@ -108,9 +108,9 @@ namespace llvm {
     // Type resolution handling data structures.  The location is set when we
     // have processed a use of the type but not a definition yet.
     StringMap<std::pair<Type*, LocTy> > NamedTypes;
-    std::vector<std::pair<Type*, LocTy> > NumberedTypes;
+    std::map<unsigned, std::pair<Type*, LocTy> > NumberedTypes;
 
-    std::vector<TrackingMDNodeRef> NumberedMetadata;
+    std::map<unsigned, TrackingMDNodeRef> NumberedMetadata;
     std::map<unsigned, std::pair<TempMDTuple, LocTy>> ForwardRefMDNodes;
 
     // Global Value reference information.
@@ -401,8 +401,10 @@ namespace llvm {
     template <class ParserTy>
     bool ParseMDFieldsImpl(ParserTy parseField, LocTy &ClosingLoc);
     bool ParseSpecializedMDNode(MDNode *&N, bool IsDistinct = false);
-    bool ParseMDLocation(MDNode *&Result, bool IsDistinct);
-    bool ParseGenericDebugNode(MDNode *&Result, bool IsDistinct);
+
+#define HANDLE_SPECIALIZED_MDNODE_LEAF(CLASS)                                  \
+  bool Parse##CLASS(MDNode *&Result, bool IsDistinct);
+#include "llvm/IR/Metadata.def"
 
     // Function Parsing.
     struct ArgInfo {

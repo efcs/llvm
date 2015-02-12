@@ -1,4 +1,4 @@
-//===- llvm-pdbdump.h - Common includes for llvm-pdbdump --------*- C++ -*-===//
+//===- DIASupport.h - Common header includes for DIA ------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -6,14 +6,15 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-// Common defines and header includes for all llvm-pdbdump.  The definitions
-// here configure the necessary #defines and include system headers in the
-// proper order for using DIA.
+// Common defines and header includes for all LLVMDebugInfoPDBDIA.  The
+// definitions here configure the necessary #defines and include system headers
+// in the proper order for using DIA.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_TOOLS_LLVMPDBDUMP_LLVMPDBDUMP_H
-#define LLVM_TOOLS_LLVMPDBDUMP_LLVMPDBDUMP_H
+#ifndef LLVM_DEBUGINFO_PDB_DIA_DIASUPPORT_H
+#define LLVM_DEBUGINFO_PDB_DIA_DIASUPPORT_H
 
+// Require at least Vista
 #define NTDDI_VERSION NTDDI_VISTA
 #define _WIN32_WINNT _WIN32_WINNT_VISTA
 #define WINVER _WIN32_WINNT_VISTA
@@ -29,4 +30,4 @@
 #include <cvconst.h>
 #include <dia2.h>
 
-#endif
+#endif // LLVM_DEBUGINFO_PDB_DIA_DIASUPPORT_H

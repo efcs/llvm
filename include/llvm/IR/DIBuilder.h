@@ -440,10 +440,11 @@ namespace llvm {
                                       StringRef UniqueIdentifier = StringRef());
 
     /// \brief Create a temporary forward-declared type.
-    DICompositeType createReplaceableForwardDecl(
+    DICompositeType createReplaceableCompositeType(
         unsigned Tag, StringRef Name, DIDescriptor Scope, DIFile F,
         unsigned Line, unsigned RuntimeLang = 0, uint64_t SizeInBits = 0,
-        uint64_t AlignInBits = 0, StringRef UniqueIdentifier = StringRef());
+        uint64_t AlignInBits = 0, unsigned Flags = DIDescriptor::FlagFwdDecl,
+        StringRef UniqueIdentifier = StringRef());
 
     /// retainType - Retain DIType in a module even if it is not referenced
     /// through debug info anchors.
@@ -514,15 +515,16 @@ namespace llvm {
     /// createExpression - Create a new descriptor for the specified
     /// variable which has a complex address expression for its address.
     /// @param Addr        An array of complex address operations.
-    DIExpression createExpression(ArrayRef<int64_t> Addr = None);
+    DIExpression createExpression(ArrayRef<uint64_t> Addr = None);
+    DIExpression createExpression(ArrayRef<int64_t> Addr);
 
-    /// createPieceExpression - Create a descriptor to describe one part
+    /// createBitPieceExpression - Create a descriptor to describe one part
     /// of aggregate variable that is fragmented across multiple Values.
     ///
-    /// @param OffsetInBytes Offset of the piece in bytes.
-    /// @param SizeInBytes   Size of the piece in bytes.
-    DIExpression createPieceExpression(unsigned OffsetInBytes,
-                                       unsigned SizeInBytes);
+    /// @param OffsetInBits Offset of the piece in bits.
+    /// @param SizeInBits   Size of the piece in bits.
+    DIExpression createBitPieceExpression(unsigned OffsetInBits,
+                                          unsigned SizeInBits);
 
     /// createFunction - Create a new descriptor for the specified subprogram.
     /// See comments in DISubprogram for descriptions of these fields.
