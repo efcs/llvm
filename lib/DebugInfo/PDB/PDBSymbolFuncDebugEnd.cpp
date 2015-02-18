@@ -7,10 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbolFuncDebugEnd.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolFuncDebugEnd.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -18,4 +19,5 @@ PDBSymbolFuncDebugEnd::PDBSymbolFuncDebugEnd(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolFuncDebugEnd::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolFuncDebugEnd::dump(raw_ostream &OS, int Indent,
+                                 PDB_DumpLevel Level, PDB_DumpFlags Flags) const {}

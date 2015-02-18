@@ -7,10 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
-
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeArray.h"
+
+#include "llvm/DebugInfo/PDB/IPDBSession.h"
+#include "llvm/DebugInfo/PDB/PDBSymbol.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -18,4 +20,12 @@ PDBSymbolTypeArray::PDBSymbolTypeArray(const IPDBSession &PDBSession,
                                        std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeArray::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolTypeArray::dump(raw_ostream &OS, int Indent,
+                              PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
+  OS << stream_indent(Indent);
+  if (auto ElementType = Session.getSymbolById(getTypeId()))
+    ElementType->dump(OS, 0, PDB_DumpLevel::Compact, PDB_DF_Children);
+  else
+    OS << "<unknown-element-type>";
+  OS << "[" << getLength() << "]";
+}

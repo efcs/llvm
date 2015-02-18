@@ -63,7 +63,7 @@ class MDLocation : public MDNode {
   }
 
   // Disallow replacing operands.
-  void replaceOperandWith(unsigned I, Metadata *New) LLVM_DELETED_FUNCTION;
+  void replaceOperandWith(unsigned I, Metadata *New) = delete;
 
 public:
   DEFINE_MDNODE_GET(MDLocation,
@@ -309,6 +309,8 @@ public:
   int64_t getValue() const { return Value; }
   StringRef getName() const { return getStringOperand(0); }
 
+  MDString *getRawName() const { return getOperandAs<MDString>(0); }
+
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDEnumeratorKind;
   }
@@ -378,6 +380,8 @@ public:
 
   Metadata *getScope() const { return getOperand(1); }
   StringRef getName() const { return getStringOperand(2); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(2); }
 
   static bool classof(const Metadata *MD) {
     switch (MD->getMetadataID()) {
@@ -729,14 +733,21 @@ public:
   MDTuple *getFileNode() const { return cast<MDTuple>(getOperand(0)); }
 
   StringRef getFilename() const {
-    if (auto *S = cast_or_null<MDString>(getFileNode()->getOperand(0)))
+    if (auto *S = getRawFilename())
       return S->getString();
     return StringRef();
   }
   StringRef getDirectory() const {
-    if (auto *S = cast_or_null<MDString>(getFileNode()->getOperand(1)))
+    if (auto *S = getRawDirectory())
       return S->getString();
     return StringRef();
+  }
+
+  MDString *getRawFilename() const {
+    return cast_or_null<MDString>(getFileNode()->getOperand(0));
+  }
+  MDString *getRawDirectory() const {
+    return cast_or_null<MDString>(getFileNode()->getOperand(1));
   }
 
   static bool classof(const Metadata *MD) {
@@ -832,6 +843,12 @@ public:
   Metadata *getSubprograms() const { return getOperand(6); }
   Metadata *getGlobalVariables() const { return getOperand(7); }
   Metadata *getImportedEntities() const { return getOperand(8); }
+
+  MDString *getRawProducer() const { return getOperandAs<MDString>(1); }
+  MDString *getRawFlags() const { return getOperandAs<MDString>(2); }
+  MDString *getRawSplitDebugFilename() const {
+    return getOperandAs<MDString>(3);
+  }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDCompileUnitKind;
@@ -939,6 +956,9 @@ public:
   StringRef getName() const { return getStringOperand(2); }
   StringRef getDisplayName() const { return getStringOperand(3); }
   StringRef getLinkageName() const { return getStringOperand(4); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(2); }
+  MDString *getRawLinkageName() const { return getOperandAs<MDString>(4); }
 
   Metadata *getType() const { return getOperand(5); }
   Metadata *getContainingType() const { return getOperand(6); }
@@ -1084,6 +1104,8 @@ public:
   Metadata *getScope() const { return getOperand(1); }
   StringRef getName() const { return getStringOperand(2); }
 
+  MDString *getRawName() const { return getOperandAs<MDString>(2); }
+
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDNamespaceKind;
   }
@@ -1106,6 +1128,8 @@ public:
   Metadata *getScope() const { return getOperand(0); }
   StringRef getName() const { return getStringOperand(1); }
   Metadata *getType() const { return getOperand(2); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(1); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTemplateTypeParameterKind ||
@@ -1193,6 +1217,8 @@ public:
                      Metadata *Type, Metadata *Value),
                     (Tag, Scope, Name, Type, Value))
 
+  TempMDTemplateValueParameter clone() const { return cloneImpl(); }
+
   Metadata *getValue() const { return getOperand(3); }
 
   static bool classof(const Metadata *MD) {
@@ -1218,6 +1244,8 @@ public:
   StringRef getName() const { return getStringOperand(1); }
   Metadata *getFile() const { return getOperand(2); }
   Metadata *getType() const { return getOperand(3); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(1); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDLocalVariableKind ||
@@ -1284,12 +1312,16 @@ public:
                     (Scope, Name, LinkageName, File, Line, Type, IsLocalToUnit,
                      IsDefinition, Variable, StaticDataMemberDeclaration))
 
+  TempMDGlobalVariable clone() const { return cloneImpl(); }
+
   bool isLocalToUnit() const { return IsLocalToUnit; }
   bool isDefinition() const { return IsDefinition; }
   StringRef getDisplayName() const { return getStringOperand(4); }
   StringRef getLinkageName() const { return getStringOperand(5); }
   Metadata *getVariable() const { return getOperand(6); }
   Metadata *getStaticDataMemberDeclaration() const { return getOperand(7); }
+
+  MDString *getRawLinkageName() const { return getOperandAs<MDString>(5); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDGlobalVariableKind;
@@ -1352,6 +1384,8 @@ public:
                      Metadata *InlinedAt = nullptr),
                     (Tag, Scope, Name, File, Line, Type, Arg, Flags, InlinedAt))
 
+  TempMDLocalVariable clone() const { return cloneImpl(); }
+
   unsigned getArg() const { return Arg; }
   unsigned getFlags() const { return Flags; }
   Metadata *getInlinedAt() const { return getOperand(4); }
@@ -1389,6 +1423,8 @@ class MDExpression : public DebugNode {
 public:
   DEFINE_MDNODE_GET(MDExpression, (ArrayRef<uint64_t> Elements), (Elements))
 
+  TempMDExpression clone() const { return cloneImpl(); }
+
   ArrayRef<uint64_t> getElements() const { return Elements; }
 
   unsigned getNumElements() const { return Elements.size(); }
@@ -1400,6 +1436,85 @@ public:
   typedef ArrayRef<uint64_t>::iterator element_iterator;
   element_iterator elements_begin() const { return getElements().begin(); }
   element_iterator elements_end() const { return getElements().end(); }
+
+  /// \brief A lightweight wrapper around an expression operand.
+  ///
+  /// TODO: Store arguments directly and change \a MDExpression to store a
+  /// range of these.
+  class ExprOperand {
+    const uint64_t *Op;
+
+  public:
+    explicit ExprOperand(const uint64_t *Op) : Op(Op) {}
+
+    const uint64_t *get() const { return Op; }
+
+    /// \brief Get the operand code.
+    uint64_t getOp() const { return *Op; }
+
+    /// \brief Get an argument to the operand.
+    ///
+    /// Never returns the operand itself.
+    uint64_t getArg(unsigned I) const { return Op[I + 1]; }
+
+    unsigned getNumArgs() const { return getSize() - 1; }
+
+    /// \brief Return the size of the operand.
+    ///
+    /// Return the number of elements in the operand (1 + args).
+    unsigned getSize() const;
+  };
+
+  /// \brief An iterator for expression operands.
+  class expr_op_iterator
+      : public std::iterator<std::input_iterator_tag, ExprOperand> {
+    ExprOperand Op;
+
+  public:
+    explicit expr_op_iterator(element_iterator I) : Op(I) {}
+
+    element_iterator getBase() const { return Op.get(); }
+    const ExprOperand &operator*() const { return Op; }
+    const ExprOperand *operator->() const { return &Op; }
+
+    expr_op_iterator &operator++() {
+      increment();
+      return *this;
+    }
+    expr_op_iterator operator++(int) {
+      expr_op_iterator T(*this);
+      increment();
+      return T;
+    }
+
+    bool operator==(const expr_op_iterator &X) const {
+      return getBase() == X.getBase();
+    }
+    bool operator!=(const expr_op_iterator &X) const {
+      return getBase() != X.getBase();
+    }
+
+  private:
+    void increment() { Op = ExprOperand(getBase() + Op.getSize()); }
+  };
+
+  /// \brief Visit the elements via ExprOperand wrappers.
+  ///
+  /// These range iterators visit elements through \a ExprOperand wrappers.
+  /// This is not guaranteed to be a valid range unless \a isValid() gives \c
+  /// true.
+  ///
+  /// \pre \a isValid() gives \c true.
+  /// @{
+  expr_op_iterator expr_op_begin() const {
+    return expr_op_iterator(elements_begin());
+  }
+  expr_op_iterator expr_op_end() const {
+    return expr_op_iterator(elements_end());
+  }
+  /// @}
+
+  bool isValid() const;
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDExpressionKind;
@@ -1455,6 +1570,8 @@ public:
                     (Name, File, Line, GetterName, SetterName, Attributes,
                      Type))
 
+  TempMDObjCProperty clone() const { return cloneImpl(); }
+
   unsigned getLine() const { return Line; }
   unsigned getAttributes() const { return Attributes; }
   StringRef getName() const { return getStringOperand(0); }
@@ -1462,6 +1579,10 @@ public:
   StringRef getGetterName() const { return getStringOperand(2); }
   StringRef getSetterName() const { return getStringOperand(3); }
   Metadata *getType() const { return getOperand(4); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(0); }
+  MDString *getRawGetterName() const { return getOperandAs<MDString>(2); }
+  MDString *getRawSetterName() const { return getOperandAs<MDString>(3); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDObjCPropertyKind;
@@ -1514,6 +1635,8 @@ public:
   Metadata *getScope() const { return getOperand(0); }
   Metadata *getEntity() const { return getOperand(1); }
   StringRef getName() const { return getStringOperand(2); }
+
+  MDString *getRawName() const { return getOperandAs<MDString>(2); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDImportedEntityKind;

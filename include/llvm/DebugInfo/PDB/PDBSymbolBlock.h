@@ -9,10 +9,9 @@
 #ifndef LLVM_DEBUGINFO_PDB_PDBSYMBOLBLOCK_H
 #define LLVM_DEBUGINFO_PDB_PDBSYMBOLBLOCK_H
 
-#include <string>
-
 #include "PDBSymbol.h"
 #include "PDBTypes.h"
+#include <string>
 
 namespace llvm {
 
@@ -23,7 +22,9 @@ public:
   PDBSymbolBlock(const IPDBSession &PDBSession,
                  std::unique_ptr<IPDBRawSymbol> Symbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Block)
+
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
 
   FORWARD_SYMBOL_METHOD(getAddressOffset)
   FORWARD_SYMBOL_METHOD(getAddressSection)
@@ -34,10 +35,6 @@ public:
   FORWARD_SYMBOL_METHOD(getRelativeVirtualAddress)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
   FORWARD_SYMBOL_METHOD(getVirtualAddress)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Block;
-  }
 };
 }
 

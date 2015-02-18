@@ -74,9 +74,7 @@ namespace {
   public:
     explicit PPCAsmPrinter(TargetMachine &TM,
                            std::unique_ptr<MCStreamer> Streamer)
-        : AsmPrinter(TM, std::move(Streamer)),
-          Subtarget(&TM.getSubtarget<PPCSubtarget>()), TOCLabelID(0),
-          SM(*this) {}
+        : AsmPrinter(TM, std::move(Streamer)), TOCLabelID(0), SM(*this) {}
 
     const char *getPassName() const override {
       return "PowerPC Assembly Printer";
@@ -101,6 +99,11 @@ namespace {
                        const MachineInstr &MI);
     void LowerPATCHPOINT(MCStreamer &OutStreamer, StackMaps &SM,
                          const MachineInstr &MI);
+    void EmitTlsCall(const MachineInstr *MI, MCSymbolRefExpr::VariantKind VK);
+    bool runOnMachineFunction(MachineFunction &MF) override {
+      Subtarget = &MF.getSubtarget<PPCSubtarget>();
+      return AsmPrinter::runOnMachineFunction(MF);
+    }
   };
 
   /// PPCLinuxAsmPrinter - PowerPC assembly printer, customized for Linux
@@ -404,6 +407,39 @@ void PPCAsmPrinter::LowerPATCHPOINT(MCStreamer &OutStreamer, StackMaps &SM,
          "Invalid number of NOP bytes requested!");
   for (unsigned i = EncodedBytes; i < NumBytes; i += 4)
     EmitToStreamer(OutStreamer, MCInstBuilder(PPC::NOP));
+}
+
+/// EmitTlsCall -- Given a GETtls[ld]ADDR[32] instruction, print a
+/// call to __tls_get_addr to the current output stream.
+void PPCAsmPrinter::EmitTlsCall(const MachineInstr *MI,
+                                MCSymbolRefExpr::VariantKind VK) {
+  StringRef Name = "__tls_get_addr";
+  MCSymbol *TlsGetAddr = OutContext.GetOrCreateSymbol(Name);
+  MCSymbolRefExpr::VariantKind Kind = MCSymbolRefExpr::VK_None;
+
+  assert(MI->getOperand(0).isReg() &&
+         ((Subtarget->isPPC64() && MI->getOperand(0).getReg() == PPC::X3) ||
+          (!Subtarget->isPPC64() && MI->getOperand(0).getReg() == PPC::R3)) &&
+         "GETtls[ld]ADDR[32] must define GPR3");
+  assert(MI->getOperand(1).isReg() &&
+         ((Subtarget->isPPC64() && MI->getOperand(1).getReg() == PPC::X3) ||
+          (!Subtarget->isPPC64() && MI->getOperand(1).getReg() == PPC::R3)) &&
+         "GETtls[ld]ADDR[32] must read GPR3");
+
+  if (!Subtarget->isPPC64() && !Subtarget->isDarwin() &&
+      TM.getRelocationModel() == Reloc::PIC_)
+    Kind = MCSymbolRefExpr::VK_PLT;
+  const MCSymbolRefExpr *TlsRef =
+    MCSymbolRefExpr::Create(TlsGetAddr, Kind, OutContext);
+  const MachineOperand &MO = MI->getOperand(2);
+  const GlobalValue *GValue = MO.getGlobal();
+  MCSymbol *MOSymbol = getSymbol(GValue);
+  const MCExpr *SymVar = MCSymbolRefExpr::Create(MOSymbol, VK, OutContext);
+  EmitToStreamer(OutStreamer,
+                 MCInstBuilder(Subtarget->isPPC64() ?
+                               PPC::BL8_NOP_TLS : PPC::BL_TLS)
+                 .addExpr(TlsRef)
+                 .addExpr(SymVar));
 }
 
 /// EmitInstruction -- Print out a single PowerPC MI in Darwin syntax to
@@ -808,6 +844,15 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
                    .addExpr(SymGotTlsGD));
     return;
   }
+  case PPC::GETtlsADDR:
+    // Transform: %X3 = GETtlsADDR %X3, <ga:@sym>
+    // Into: BL8_NOP_TLS __tls_get_addr(sym at tlsgd)
+  case PPC::GETtlsADDR32: {
+    // Transform: %R3 = GETtlsADDR32 %R3, <ga:@sym>
+    // Into: BL_TLS __tls_get_addr(sym at tlsgd)@PLT
+    EmitTlsCall(MI, MCSymbolRefExpr::VK_PPC_TLSGD);
+    return;
+  }
   case PPC::ADDIStlsldHA: {
     // Transform: %Xd = ADDIStlsldHA %X2, <ga:@sym>
     // Into:      %Xd = ADDIS8 %X2, sym@got@tlsld@ha
@@ -842,6 +887,15 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
                        .addReg(MI->getOperand(0).getReg())
                        .addReg(MI->getOperand(1).getReg())
                        .addExpr(SymGotTlsLD));
+    return;
+  }
+  case PPC::GETtlsldADDR:
+    // Transform: %X3 = GETtlsldADDR %X3, <ga:@sym>
+    // Into: BL8_NOP_TLS __tls_get_addr(sym at tlsld)
+  case PPC::GETtlsldADDR32: {
+    // Transform: %R3 = GETtlsldADDR32 %R3, <ga:@sym>
+    // Into: BL_TLS __tls_get_addr(sym at tlsld)@PLT
+    EmitTlsCall(MI, MCSymbolRefExpr::VK_PPC_TLSLD);
     return;
   }
   case PPC::ADDISdtprelHA:
@@ -940,7 +994,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
 }
 
 void PPCLinuxAsmPrinter::EmitStartOfAsmFile(Module &M) {
-  if (Subtarget->isELFv2ABI()) {
+  if (static_cast<const PPCTargetMachine &>(TM).isELFv2ABI()) {
     PPCTargetStreamer *TS =
       static_cast<PPCTargetStreamer *>(OutStreamer.getTargetStreamer());
 
@@ -948,7 +1002,8 @@ void PPCLinuxAsmPrinter::EmitStartOfAsmFile(Module &M) {
       TS->emitAbiVersion(2);
   }
 
-  if (Subtarget->isPPC64() || TM.getRelocationModel() != Reloc::PIC_)
+  if (static_cast<const PPCTargetMachine &>(TM).isPPC64() ||
+      TM.getRelocationModel() != Reloc::PIC_)
     return AsmPrinter::EmitStartOfAsmFile(M);
 
   if (M.getPICLevel() == PICLevel::Small)
@@ -1190,13 +1245,21 @@ void PPCDarwinAsmPrinter::EmitStartOfAsmFile(Module &M) {
     "ppc64le"
   };
 
-  unsigned Directive = Subtarget->getDarwinDirective();
-  if (Subtarget->hasMFOCRF() && Directive < PPC::DIR_970)
-    Directive = PPC::DIR_970;
-  if (Subtarget->hasAltivec() && Directive < PPC::DIR_7400)
-    Directive = PPC::DIR_7400;
-  if (Subtarget->isPPC64() && Directive < PPC::DIR_64)
-    Directive = PPC::DIR_64;
+  // Get the numerically largest directive.
+  // FIXME: How should we merge darwin directives?
+  unsigned Directive = PPC::DIR_NONE;
+  for (const Function &F : M) {
+    const PPCSubtarget &STI = TM.getSubtarget<PPCSubtarget>(&F);
+    unsigned FDir = STI.getDarwinDirective();
+    Directive = Directive > FDir ? FDir : STI.getDarwinDirective();
+    if (STI.hasMFOCRF() && Directive < PPC::DIR_970)
+      Directive = PPC::DIR_970;
+    if (STI.hasAltivec() && Directive < PPC::DIR_7400)
+      Directive = PPC::DIR_7400;
+    if (STI.isPPC64() && Directive < PPC::DIR_64)
+      Directive = PPC::DIR_64;
+  }
+
   assert(Directive <= PPC::DIR_64 && "Directive out of range.");
 
   assert(Directive < array_lengthof(CPUDirectives) &&
@@ -1473,9 +1536,7 @@ bool PPCDarwinAsmPrinter::doFinalization(Module &M) {
 static AsmPrinter *
 createPPCAsmPrinterPass(TargetMachine &tm,
                         std::unique_ptr<MCStreamer> &&Streamer) {
-  const PPCSubtarget *Subtarget = &tm.getSubtarget<PPCSubtarget>();
-
-  if (Subtarget->isDarwin())
+  if (Triple(tm.getTargetTriple()).isMacOSX())
     return new PPCDarwinAsmPrinter(tm, std::move(Streamer));
   return new PPCLinuxAsmPrinter(tm, std::move(Streamer));
 }

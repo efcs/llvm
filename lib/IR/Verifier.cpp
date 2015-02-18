@@ -518,8 +518,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
       continue;
 
     if (const User *U = dyn_cast<User>(V)) {
-      for (unsigned I = 0, N = U->getNumOperands(); I != N; ++I)
-        WorkStack.push_back(U->getOperand(I));
+      WorkStack.append(U->op_begin(), U->op_end());
     }
 
     if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(V)) {
@@ -780,6 +779,7 @@ void Verifier::visitMDLocalVariable(const MDLocalVariable &N) {
 
 void Verifier::visitMDExpression(const MDExpression &N) {
   Assert1(N.getTag() == dwarf::DW_TAG_expression, "invalid tag", &N);
+  Assert1(N.isValid(), "invalid expression", &N);
 }
 
 void Verifier::visitMDObjCProperty(const MDObjCProperty &N) {
@@ -818,7 +818,7 @@ void Verifier::visitModuleIdents(const Module &M) {
     const MDNode *N = Idents->getOperand(i);
     Assert1(N->getNumOperands() == 1,
             "incorrect number of operands in llvm.ident metadata", N);
-    Assert1(isa<MDString>(N->getOperand(0)),
+    Assert1(dyn_cast_or_null<MDString>(N->getOperand(0)),
             ("invalid value for llvm.ident metadata entry operand"
              "(the operand should be a string)"),
             N->getOperand(0));
@@ -869,14 +869,14 @@ Verifier::visitModuleFlag(const MDNode *Op,
   Module::ModFlagBehavior MFB;
   if (!Module::isValidModFlagBehavior(Op->getOperand(0), MFB)) {
     Assert1(
-        mdconst::dyn_extract<ConstantInt>(Op->getOperand(0)),
+        mdconst::dyn_extract_or_null<ConstantInt>(Op->getOperand(0)),
         "invalid behavior operand in module flag (expected constant integer)",
         Op->getOperand(0));
     Assert1(false,
             "invalid behavior operand in module flag (unexpected constant)",
             Op->getOperand(0));
   }
-  MDString *ID = dyn_cast<MDString>(Op->getOperand(1));
+  MDString *ID = dyn_cast_or_null<MDString>(Op->getOperand(1));
   Assert1(ID,
           "invalid ID operand in module flag (expected metadata string)",
           Op->getOperand(1));

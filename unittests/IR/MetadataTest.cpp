@@ -518,6 +518,44 @@ TEST_F(MDNodeTest, replaceWithDistinct) {
   }
 }
 
+TEST_F(MDNodeTest, replaceWithPermanent) {
+  Metadata *Ops[] = {nullptr};
+  auto Temp = MDTuple::getTemporary(Context, Ops);
+  auto *T = Temp.get();
+
+  // U is a normal, uniqued node that references T.
+  auto *U = MDTuple::get(Context, T);
+  EXPECT_TRUE(U->isUniqued());
+
+  // Make Temp self-referencing.
+  Temp->replaceOperandWith(0, T);
+
+  // Try to uniquify Temp.  This should, despite the name in the API, give a
+  // 'distinct' node, since self-references aren't allowed to be uniqued.
+  //
+  // Since it's distinct, N should have the same address as when it was a
+  // temporary (i.e., be equal to T not U).
+  auto *N = MDNode::replaceWithPermanent(std::move(Temp));
+  EXPECT_EQ(N, T);
+  EXPECT_TRUE(N->isDistinct());
+
+  // U should be the canonical unique node with N as the argument.
+  EXPECT_EQ(U, MDTuple::get(Context, N));
+  EXPECT_TRUE(U->isUniqued());
+
+  // This temporary should collide with U when replaced, but it should still be
+  // uniqued.
+  EXPECT_EQ(U, MDNode::replaceWithPermanent(MDTuple::getTemporary(Context, N)));
+  EXPECT_TRUE(U->isUniqued());
+
+  // This temporary should become a new uniqued node.
+  auto Temp2 = MDTuple::getTemporary(Context, U);
+  auto *V = Temp2.get();
+  EXPECT_EQ(V, MDNode::replaceWithPermanent(std::move(Temp2)));
+  EXPECT_TRUE(V->isUniqued());
+  EXPECT_EQ(U, V->getOperand(0));
+}
+
 TEST_F(MDNodeTest, deleteTemporaryWithTrackingRef) {
   TrackingMDRef Ref;
   EXPECT_EQ(nullptr, Ref.get());
@@ -605,6 +643,9 @@ TEST_F(GenericDebugNodeTest, get) {
   EXPECT_EQ(Empty, N->getDwarfOperand(0));
   ASSERT_TRUE(N->isUniqued());
   EXPECT_EQ(N, GenericDebugNode::get(Context, 15, Header, Ops1));
+
+  TempGenericDebugNode Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 TEST_F(GenericDebugNodeTest, getEmptyHeader) {
@@ -623,6 +664,9 @@ TEST_F(MDSubrangeTest, get) {
   EXPECT_EQ(7, N->getLo());
   EXPECT_EQ(N, MDSubrange::get(Context, 5, 7));
   EXPECT_EQ(MDSubrange::get(Context, 5, 0), MDSubrange::get(Context, 5));
+
+  TempMDSubrange Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDEnumeratorTest;
@@ -636,6 +680,9 @@ TEST_F(MDEnumeratorTest, get) {
 
   EXPECT_NE(N, MDEnumerator::get(Context, 8, "name"));
   EXPECT_NE(N, MDEnumerator::get(Context, 7, "nam"));
+
+  TempMDEnumerator Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDBasicTypeTest;
@@ -662,6 +709,9 @@ TEST_F(MDBasicTypeTest, get) {
                                 25, 7));
   EXPECT_NE(N, MDBasicType::get(Context, dwarf::DW_TAG_base_type, "special", 33,
                                 26, 6));
+
+  TempMDBasicType Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDDerivedTypeTest;
@@ -722,6 +772,9 @@ TEST_F(MDDerivedTypeTest, get) {
   EXPECT_NE(N,
             MDDerivedType::get(Context, dwarf::DW_TAG_pointer_type, "something",
                                File, 1, Scope, BaseType, 2, 3, 4, 5, File));
+
+  TempMDDerivedType Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDCompositeTypeTest;
@@ -838,6 +891,9 @@ TEST_F(MDCompositeTypeTest, get) {
                    Context, Tag, Name, File, Line, Scope, BaseType, SizeInBits,
                    AlignInBits, OffsetInBits, Flags, Elements, RuntimeLang,
                    VTableHolder, TemplateParams)->getRawIdentifier());
+
+  TempMDCompositeType Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDSubroutineTypeTest;
@@ -855,6 +911,9 @@ TEST_F(MDSubroutineTypeTest, get) {
   EXPECT_NE(N, MDSubroutineType::get(Context, Flags + 1, TypeArray));
   EXPECT_NE(N, MDSubroutineType::get(Context, Flags,
                                      MDTuple::getDistinct(Context, None)));
+
+  TempMDSubroutineType Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDFileTest;
@@ -871,6 +930,9 @@ TEST_F(MDFileTest, get) {
 
   EXPECT_NE(N, MDFile::get(Context, "other", Directory));
   EXPECT_NE(N, MDFile::get(Context, Filename, "other"));
+
+  TempMDFile Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDCompileUnitTest;
@@ -975,6 +1037,9 @@ TEST_F(MDCompileUnitTest, get) {
                    Context, SourceLanguage, File, Producer, IsOptimized, Flags,
                    RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
                    RetainedTypes, Subprograms, GlobalVariables, File));
+
+  TempMDCompileUnit Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDSubprogramTest;
@@ -1119,6 +1184,9 @@ TEST_F(MDSubprogramTest, get) {
                                  ContainingType, Virtuality, VirtualIndex,
                                  Flags, IsOptimized, Function, TemplateParams,
                                  Declaration, Type));
+
+  TempMDSubprogram Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDLexicalBlockTest;
@@ -1142,6 +1210,9 @@ TEST_F(MDLexicalBlockTest, get) {
   EXPECT_NE(N, MDLexicalBlock::get(Context, Scope, Scope, Line, Column));
   EXPECT_NE(N, MDLexicalBlock::get(Context, Scope, File, Line + 1, Column));
   EXPECT_NE(N, MDLexicalBlock::get(Context, Scope, File, Line, Column + 1));
+
+  TempMDLexicalBlock Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDLexicalBlockFileTest;
@@ -1163,6 +1234,9 @@ TEST_F(MDLexicalBlockFileTest, get) {
   EXPECT_NE(N, MDLexicalBlockFile::get(Context, Scope, Scope, Discriminator));
   EXPECT_NE(N,
             MDLexicalBlockFile::get(Context, Scope, File, Discriminator + 1));
+
+  TempMDLexicalBlockFile Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDNamespaceTest;
@@ -1186,6 +1260,9 @@ TEST_F(MDNamespaceTest, get) {
   EXPECT_NE(N, MDNamespace::get(Context, Scope, Scope, Name, Line));
   EXPECT_NE(N, MDNamespace::get(Context, Scope, File, "other", Line));
   EXPECT_NE(N, MDNamespace::get(Context, Scope, File, Name, Line + 1));
+
+  TempMDNamespace Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDTemplateTypeParameterTest;
@@ -1206,6 +1283,9 @@ TEST_F(MDTemplateTypeParameterTest, get) {
   EXPECT_NE(N, MDTemplateTypeParameter::get(Context, Type, Name, Type));
   EXPECT_NE(N, MDTemplateTypeParameter::get(Context, Scope, "other", Type));
   EXPECT_NE(N, MDTemplateTypeParameter::get(Context, Scope, Name, Scope));
+
+  TempMDTemplateTypeParameter Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDTemplateValueParameterTest;
@@ -1238,6 +1318,9 @@ TEST_F(MDTemplateValueParameterTest, get) {
                                              Value));
   EXPECT_NE(
       N, MDTemplateValueParameter::get(Context, Tag, Scope, Name, Type, Scope));
+
+  TempMDTemplateValueParameter Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDGlobalVariableTest;
@@ -1303,6 +1386,9 @@ TEST_F(MDGlobalVariableTest, get) {
   EXPECT_NE(N, MDGlobalVariable::get(Context, Scope, Name, LinkageName, File,
                                      Line, Type, IsLocalToUnit, IsDefinition,
                                      Variable, Type));
+
+  TempMDGlobalVariable Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDLocalVariableTest;
@@ -1351,6 +1437,9 @@ TEST_F(MDLocalVariableTest, get) {
                                     Arg, ~Flags, InlinedAt));
   EXPECT_NE(N, MDLocalVariable::get(Context, Tag, Scope, Name, File, Line, Type,
                                     Arg, Flags, Scope));
+
+  TempMDLocalVariable Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDExpressionTest;
@@ -1367,6 +1456,45 @@ TEST_F(MDExpressionTest, get) {
   EXPECT_EQ(9u, N->getElement(2));
   EXPECT_EQ(78u, N->getElement(3));
   EXPECT_EQ(0u, N->getElement(4));
+
+  TempMDExpression Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
+}
+
+TEST_F(MDExpressionTest, isValid) {
+#define EXPECT_VALID(...)                                                      \
+  do {                                                                         \
+    uint64_t Elements[] = {__VA_ARGS__};                                       \
+    EXPECT_TRUE(MDExpression::get(Context, Elements)->isValid());              \
+  } while (false)
+#define EXPECT_INVALID(...)                                                    \
+  do {                                                                         \
+    uint64_t Elements[] = {__VA_ARGS__};                                       \
+    EXPECT_FALSE(MDExpression::get(Context, Elements)->isValid());             \
+  } while (false)
+
+  // Empty expression should be valid.
+  EXPECT_TRUE(MDExpression::get(Context, None));
+
+  // Valid constructions.
+  EXPECT_VALID(dwarf::DW_OP_plus, 6);
+  EXPECT_VALID(dwarf::DW_OP_deref);
+  EXPECT_VALID(dwarf::DW_OP_bit_piece, 3, 7);
+  EXPECT_VALID(dwarf::DW_OP_plus, 6, dwarf::DW_OP_deref);
+  EXPECT_VALID(dwarf::DW_OP_deref, dwarf::DW_OP_plus, 6);
+  EXPECT_VALID(dwarf::DW_OP_deref, dwarf::DW_OP_bit_piece, 3, 7);
+  EXPECT_VALID(dwarf::DW_OP_deref, dwarf::DW_OP_plus, 6, dwarf::DW_OP_bit_piece, 3, 7);
+
+  // Invalid constructions.
+  EXPECT_INVALID(~0u);
+  EXPECT_INVALID(dwarf::DW_OP_plus);
+  EXPECT_INVALID(dwarf::DW_OP_bit_piece);
+  EXPECT_INVALID(dwarf::DW_OP_bit_piece, 3);
+  EXPECT_INVALID(dwarf::DW_OP_bit_piece, 3, 7, dwarf::DW_OP_plus, 3);
+  EXPECT_INVALID(dwarf::DW_OP_bit_piece, 3, 7, dwarf::DW_OP_deref);
+
+#undef EXPECT_VALID
+#undef EXPECT_INVALID
 }
 
 typedef MetadataTest MDObjCPropertyTest;
@@ -1408,6 +1536,9 @@ TEST_F(MDObjCPropertyTest, get) {
                                    SetterName, Attributes + 1, Type));
   EXPECT_NE(N, MDObjCProperty::get(Context, Name, File, Line, GetterName,
                                    SetterName, Attributes, File));
+
+  TempMDObjCProperty Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MDImportedEntityTest;
@@ -1437,6 +1568,9 @@ TEST_F(MDImportedEntityTest, get) {
             MDImportedEntity::get(Context, Tag, Scope, Entity, Line + 1, Name));
   EXPECT_NE(N,
             MDImportedEntity::get(Context, Tag, Scope, Entity, Line, "other"));
+
+  TempMDImportedEntity Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 typedef MetadataTest MetadataAsValueTest;

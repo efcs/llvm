@@ -654,14 +654,13 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
   // pointer, calls, or dynamic alloca then we do not need to adjust the
   // stack pointer (we fit in the Red Zone). We also check that we don't
   // push and pop from the stack.
-  if (Is64Bit && !Fn->getAttributes().hasAttribute(AttributeSet::FunctionIndex,
-                                                   Attribute::NoRedZone) &&
+  if (Is64Bit && !Fn->hasFnAttribute(Attribute::NoRedZone) &&
       !RegInfo->needsStackRealignment(MF) &&
-      !MFI->hasVarSizedObjects() &&                     // No dynamic alloca.
-      !MFI->adjustsStack() &&                           // No calls.
-      !IsWin64 &&                                       // Win64 has no Red Zone
-      !usesTheStack(MF) &&                              // Don't push and pop.
-      !MF.shouldSplitStack()) {                         // Regular stack
+      !MFI->hasVarSizedObjects() && // No dynamic alloca.
+      !MFI->adjustsStack() &&       // No calls.
+      !IsWin64 &&                   // Win64 has no Red Zone
+      !usesTheStack(MF) &&          // Don't push and pop.
+      !MF.shouldSplitStack()) {     // Regular stack
     uint64_t MinSize = X86FI->getCalleeSavedFrameSize();
     if (HasFP) MinSize += SlotSize;
     StackSize = std::max(MinSize, StackSize > 128 ? StackSize - 128 : 0);
@@ -909,29 +908,29 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
           .setMIFlag(MachineInstr::FrameSetup);
   }
 
-  // Skip the rest of register spilling code
-  while (MBBI != MBB.end() && MBBI->getFlag(MachineInstr::FrameSetup))
+  while (MBBI != MBB.end() && MBBI->getFlag(MachineInstr::FrameSetup)) {
+    const MachineInstr *FrameInstr = &*MBBI;
     ++MBBI;
 
-  if (NeedsWinEH) {
-    for (const CalleeSavedInfo &Info : MFI->getCalleeSavedInfo()) {
-      unsigned Reg = Info.getReg();
-      if (X86::GR64RegClass.contains(Reg) || X86::GR32RegClass.contains(Reg))
-        continue;
-      assert(X86::FR64RegClass.contains(Reg) && "Unexpected register class");
+    if (NeedsWinEH) {
+      int FI;
+      if (unsigned Reg = TII.isStoreToStackSlot(FrameInstr, FI)) {
+        if (X86::FR64RegClass.contains(Reg)) {
+          int Offset = getFrameIndexOffset(MF, FI);
+          Offset += SEHFrameOffset;
 
-      int Offset = getFrameIndexOffset(MF, Info.getFrameIdx());
-      Offset += SEHFrameOffset;
-
-      BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_SaveXMM))
-          .addImm(Reg)
-          .addImm(Offset)
-          .setMIFlag(MachineInstr::FrameSetup);
+          BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_SaveXMM))
+              .addImm(Reg)
+              .addImm(Offset)
+              .setMIFlag(MachineInstr::FrameSetup);
+        }
+      }
     }
+  }
 
+  if (NeedsWinEH)
     BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_EndPrologue))
         .setMIFlag(MachineInstr::FrameSetup);
-  }
 
   // Realign stack after we spilled callee-saved registers (so that we'll be
   // able to calculate their offsets from the frame pointer).
@@ -1242,6 +1241,9 @@ int X86FrameLowering::getFrameIndexOffset(const MachineFunction &MF,
       NumBytes = FrameSize - CSSize;
     }
     uint64_t SEHFrameOffset = calculateSetFPREG(NumBytes);
+    if (FI && FI == X86FI->getFAIndex())
+      return -SEHFrameOffset;
+
     // FPDelta is the offset from the "traditional" FP location of the old base
     // pointer followed by return address and the location required by the
     // restricted Win64 prologue.
@@ -1468,8 +1470,7 @@ bool X86FrameLowering::spillCalleeSavedRegisters(
   // It can be done by spilling XMMs to stack frame.
   for (unsigned i = CSI.size(); i != 0; --i) {
     unsigned Reg = CSI[i-1].getReg();
-    if (X86::GR64RegClass.contains(Reg) ||
-        X86::GR32RegClass.contains(Reg))
+    if (X86::GR64RegClass.contains(Reg) || X86::GR32RegClass.contains(Reg))
       continue;
     // Add the callee-saved register as live-in. It's killed at the spill.
     MBB.addLiveIn(Reg);

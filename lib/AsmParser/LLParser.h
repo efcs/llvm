@@ -108,9 +108,9 @@ namespace llvm {
     // Type resolution handling data structures.  The location is set when we
     // have processed a use of the type but not a definition yet.
     StringMap<std::pair<Type*, LocTy> > NamedTypes;
-    std::vector<std::pair<Type*, LocTy> > NumberedTypes;
+    std::map<unsigned, std::pair<Type*, LocTy> > NumberedTypes;
 
-    std::vector<TrackingMDNodeRef> NumberedMetadata;
+    std::map<unsigned, TrackingMDNodeRef> NumberedMetadata;
     std::map<unsigned, std::pair<TempMDTuple, LocTy>> ForwardRefMDNodes;
 
     // Global Value reference information.
@@ -385,7 +385,8 @@ namespace llvm {
     bool ParseGlobalValueVector(SmallVectorImpl<Constant *> &Elts);
     bool parseOptionalComdat(StringRef GlobalName, Comdat *&C);
     bool ParseMetadataAsValue(Value *&V, PerFunctionState &PFS);
-    bool ParseValueAsMetadata(Metadata *&MD, PerFunctionState *PFS);
+    bool ParseValueAsMetadata(Metadata *&MD, const Twine &TypeMsg,
+                              PerFunctionState *PFS);
     bool ParseMetadata(Metadata *&MD, PerFunctionState *PFS);
     bool ParseMDTuple(MDNode *&MD, bool IsDistinct = false);
     bool ParseMDNode(MDNode *&MD);

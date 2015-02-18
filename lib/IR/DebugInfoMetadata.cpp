@@ -336,6 +336,12 @@ MDLocalVariable *MDLocalVariable::getImpl(
     LLVMContext &Context, unsigned Tag, Metadata *Scope, MDString *Name,
     Metadata *File, unsigned Line, Metadata *Type, unsigned Arg, unsigned Flags,
     Metadata *InlinedAt, StorageType Storage, bool ShouldCreate) {
+  // Truncate Arg to 8 bits.
+  //
+  // FIXME: This is gross (and should be changed to an assert or removed), but
+  // it matches historical behaviour for now.
+  Arg &= (1u << 8) - 1;
+
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(MDLocalVariable, (Tag, Scope, getString(Name), File,
                                           Line, Type, Arg, Flags, InlinedAt));
@@ -348,6 +354,38 @@ MDExpression *MDExpression::getImpl(LLVMContext &Context,
                                     StorageType Storage, bool ShouldCreate) {
   DEFINE_GETIMPL_LOOKUP(MDExpression, (Elements));
   DEFINE_GETIMPL_STORE_NO_OPS(MDExpression, (Elements));
+}
+
+unsigned MDExpression::ExprOperand::getSize() const {
+  switch (getOp()) {
+  case dwarf::DW_OP_bit_piece:
+    return 3;
+  case dwarf::DW_OP_plus:
+    return 2;
+  default:
+    return 1;
+  }
+}
+
+bool MDExpression::isValid() const {
+  for (auto I = expr_op_begin(), E = expr_op_end(); I != E; ++I) {
+    // Check that there's space for the operand.
+    if (I->get() + I->getSize() > E->get())
+      return false;
+
+    // Check that the operand is valid.
+    switch (I->getOp()) {
+    default:
+      return false;
+    case dwarf::DW_OP_bit_piece:
+      // Piece expressions must be at the end.
+      return I->get() + I->getSize() == E->get();
+    case dwarf::DW_OP_plus:
+    case dwarf::DW_OP_deref:
+      break;
+    }
+  }
+  return true;
 }
 
 MDObjCProperty *MDObjCProperty::getImpl(
