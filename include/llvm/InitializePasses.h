@@ -65,6 +65,7 @@ void initializeTarget(PassRegistry&);
 void initializeAAEvalPass(PassRegistry&);
 void initializeAddDiscriminatorsPass(PassRegistry&);
 void initializeADCEPass(PassRegistry&);
+void initializeBDCEPass(PassRegistry&);
 void initializeAliasAnalysisAnalysisGroup(PassRegistry&);
 void initializeAliasAnalysisCounterPass(PassRegistry&);
 void initializeAliasDebuggerPass(PassRegistry&);
@@ -280,6 +281,7 @@ void initializeVirtRegRewriterPass(PassRegistry&);
 void initializeInstSimplifierPass(PassRegistry&);
 void initializeUnpackMachineBundlesPass(PassRegistry&);
 void initializeFinalizeMachineBundlesPass(PassRegistry&);
+void initializeLoopAccessAnalysisPass(PassRegistry&);
 void initializeLoopVectorizePass(PassRegistry&);
 void initializeSLPVectorizerPass(PassRegistry&);
 void initializeBBVectorizePass(PassRegistry&);
@@ -291,6 +293,7 @@ void initializeRewriteSymbolsPass(PassRegistry&);
 void initializeWinEHPreparePass(PassRegistry&);
 void initializePlaceBackedgeSafepointsImplPass(PassRegistry&);
 void initializePlaceSafepointsPass(PassRegistry&);
+void initializeDwarfEHPreparePass(PassRegistry&);
 }
 
 #endif

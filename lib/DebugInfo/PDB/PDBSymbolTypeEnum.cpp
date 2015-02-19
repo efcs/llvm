@@ -7,10 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
-
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeEnum.h"
+
+#include "llvm/DebugInfo/PDB/IPDBSession.h"
+#include "llvm/DebugInfo/PDB/PDBSymbol.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -18,4 +20,18 @@ PDBSymbolTypeEnum::PDBSymbolTypeEnum(const IPDBSession &PDBSession,
                                      std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeEnum::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolTypeEnum::dump(raw_ostream &OS, int Indent,
+                             PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
+  OS << stream_indent(Indent);
+  if (Level >= PDB_DumpLevel::Normal)
+    OS << "enum ";
+
+  uint32_t ClassId = getClassParentId();
+  if (ClassId != 0) {
+    if (auto ClassParent = Session.getSymbolById(ClassId)) {
+      ClassParent->dump(OS, 0, Level, PDB_DF_Children);
+      OS << "::";
+    }
+  }
+  OS << getName();
+}

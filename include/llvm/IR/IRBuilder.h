@@ -198,8 +198,8 @@ public:
     BasicBlock::iterator Point;
     DebugLoc DbgLoc;
 
-    InsertPointGuard(const InsertPointGuard &) LLVM_DELETED_FUNCTION;
-    InsertPointGuard &operator=(const InsertPointGuard &) LLVM_DELETED_FUNCTION;
+    InsertPointGuard(const InsertPointGuard &) = delete;
+    InsertPointGuard &operator=(const InsertPointGuard &) = delete;
 
   public:
     InsertPointGuard(IRBuilderBase &B)
@@ -219,9 +219,9 @@ public:
     FastMathFlags FMF;
     MDNode *FPMathTag;
 
-    FastMathFlagGuard(const FastMathFlagGuard &) LLVM_DELETED_FUNCTION;
+    FastMathFlagGuard(const FastMathFlagGuard &) = delete;
     FastMathFlagGuard &operator=(
-        const FastMathFlagGuard &) LLVM_DELETED_FUNCTION;
+        const FastMathFlagGuard &) = delete;
 
   public:
     FastMathFlagGuard(IRBuilderBase &B)
@@ -442,9 +442,9 @@ public:
   /// \brief Create a call to the experimental.gc.statepoint intrinsic to
   /// start a new statepoint sequence.
   CallInst *CreateGCStatepoint(Value *ActualCallee,
-                               ArrayRef<Value*> CallArgs,
-                               ArrayRef<Value*> DeoptArgs,
-                               ArrayRef<Value*> GCArgs,
+                               ArrayRef<Value *> CallArgs,
+                               ArrayRef<Value *> DeoptArgs,
+                               ArrayRef<Value *> GCArgs,
                                const Twine &Name = "");
 
   /// \brief Create a call to the experimental.gc.result intrinsic to extract
@@ -1295,7 +1295,7 @@ private:
   // \brief Provided to resolve 'CreateIntCast(Ptr, Ptr, "...")', giving a
   // compile time error, instead of converting the string to bool for the
   // isSigned parameter.
-  Value *CreateIntCast(Value *, Type *, const char *) LLVM_DELETED_FUNCTION;
+  Value *CreateIntCast(Value *, Type *, const char *) = delete;
 public:
   Value *CreateFPCast(Value *V, Type *DestTy, const Twine &Name = "") {
     if (V->getType() == DestTy)

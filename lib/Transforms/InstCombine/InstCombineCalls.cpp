@@ -1081,19 +1081,12 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
           cast<Constant>(RHS)->isNullValue()) {
         LoadInst* LI = cast<LoadInst>(LHS);
         if (isValidAssumeForContext(II, LI, DL, DT)) {
-          // assume( load (call|invoke) != null ) -> add 'nonnull' return
-          // attribute
-          Value *LIOperand = LI->getOperand(0);
-          if (CallInst *I = dyn_cast<CallInst>(LIOperand))
-            I->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
-          else if (InvokeInst *I = dyn_cast<InvokeInst>(LIOperand))
-            I->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
-
           MDNode *MD = MDNode::get(II->getContext(), None);
           LI->setMetadata(LLVMContext::MD_nonnull, MD);
           return EraseInstFromFunction(*II);
         }
       }
+      // TODO: apply nonnull return attributes to calls and invokes
       // TODO: apply range metadata for range check patterns?
     }
     // If there is a dominating assume with the same condition as this one,
@@ -1134,11 +1127,17 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     if (isKnownNonNull(DerivedPtr))
       II->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
 
-    // TODO: dereferenceable -> deref attribute
+    // isDereferenceablePointer -> deref attribute
+    if (DerivedPtr->isDereferenceablePointer(DL)) {
+      if (Argument *A = dyn_cast<Argument>(DerivedPtr)) {
+        uint64_t Bytes = A->getDereferenceableBytes();
+        II->addDereferenceableAttr(AttributeSet::ReturnIndex, Bytes);
+      }
+    }
 
     // TODO: bitcast(relocate(p)) -> relocate(bitcast(p))
     // Canonicalize on the type from the uses to the defs
-    
+
     // TODO: relocate((gep p, C, C2, ...)) -> gep(relocate(p), C, C2, ...)
   }
   }

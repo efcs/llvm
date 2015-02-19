@@ -186,7 +186,7 @@ public:
   // FIXME: This operator bool isn't actually protecting anything at the
   // moment due to the conversion operator above making DIDescriptor nodes
   // implicitly convertable to bool.
-  LLVM_EXPLICIT operator bool() const { return DbgNode != nullptr; }
+  explicit operator bool() const { return DbgNode != nullptr; }
 
   bool operator==(DIDescriptor Other) const { return DbgNode == Other.DbgNode; }
   bool operator!=(DIDescriptor Other) const { return !operator==(Other); }
@@ -294,6 +294,7 @@ public:
 };
 
 template <typename T> class DIRef;
+typedef DIRef<DIDescriptor> DIDescriptorRef;
 typedef DIRef<DIScope> DIScopeRef;
 typedef DIRef<DIType> DITypeRef;
 typedef DITypedArray<DITypeRef> DITypeArray;
@@ -382,6 +383,12 @@ template <typename T> StringRef DIRef<T>::getName() const {
   const MDString *MS = cast<MDString>(Val);
   return MS->getString();
 }
+
+/// \brief Handle fields that are references to DIDescriptors.
+template <>
+DIDescriptorRef DIDescriptor::getFieldAs<DIDescriptorRef>(unsigned Elt) const;
+/// \brief Specialize DIRef constructor for DIDescriptorRef.
+template <> DIRef<DIDescriptor>::DIRef(const Metadata *V);
 
 /// \brief Handle fields that are references to DIScopes.
 template <> DIScopeRef DIDescriptor::getFieldAs<DIScopeRef>(unsigned Elt) const;
@@ -691,6 +698,8 @@ class DILexicalBlockFile : public DIScope {
 public:
   explicit DILexicalBlockFile(const MDNode *N = nullptr) : DIScope(N) {}
   DIScope getContext() const {
+    // FIXME: This logic is horrible.  getScope() returns a DILexicalBlock, but
+    // then we check if it's a subprogram?  WHAT?!?
     if (getScope().isSubprogram())
       return getScope();
     return getScope().getContext();
@@ -722,15 +731,8 @@ public:
       : DIDescriptor(N) {}
 
   StringRef getName() const { return getHeaderField(1); }
-  unsigned getLineNumber() const { return getHeaderFieldAs<unsigned>(2); }
-  unsigned getColumnNumber() const { return getHeaderFieldAs<unsigned>(3); }
 
-  DIScopeRef getContext() const { return getFieldAs<DIScopeRef>(1); }
   DITypeRef getType() const { return getFieldAs<DITypeRef>(2); }
-  StringRef getFilename() const { return getFieldAs<DIFile>(3).getFilename(); }
-  StringRef getDirectory() const {
-    return getFieldAs<DIFile>(3).getDirectory();
-  }
   bool Verify() const;
 };
 
@@ -741,16 +743,9 @@ public:
       : DIDescriptor(N) {}
 
   StringRef getName() const { return getHeaderField(1); }
-  unsigned getLineNumber() const { return getHeaderFieldAs<unsigned>(2); }
-  unsigned getColumnNumber() const { return getHeaderFieldAs<unsigned>(3); }
 
-  DIScopeRef getContext() const { return getFieldAs<DIScopeRef>(1); }
   DITypeRef getType() const { return getFieldAs<DITypeRef>(2); }
   Metadata *getValue() const;
-  StringRef getFilename() const { return getFieldAs<DIFile>(4).getFilename(); }
-  StringRef getDirectory() const {
-    return getFieldAs<DIFile>(4).getDirectory();
-  }
   bool Verify() const;
 };
 
@@ -861,11 +856,11 @@ public:
   uint64_t getElement(unsigned Idx) const;
 
   /// \brief Return whether this is a piece of an aggregate variable.
-  bool isVariablePiece() const;
-  /// \brief Return the offset of this piece in bytes.
-  uint64_t getPieceOffset() const;
-  /// \brief Return the size of this piece in bytes.
-  uint64_t getPieceSize() const;
+  bool isBitPiece() const;
+  /// \brief Return the offset of this piece in bits.
+  uint64_t getBitPieceOffset() const;
+  /// \brief Return the size of this piece in bits.
+  uint64_t getBitPieceSize() const;
 
   class iterator;
   /// \brief A lightweight wrapper around an element of a DIExpression.
@@ -916,9 +911,9 @@ public:
   private:
     void increment() {
       switch (**this) {
-      case dwarf::DW_OP_piece: std::advance(I, 3); break;
-      case dwarf::DW_OP_plus:  std::advance(I, 2); break;
-      case dwarf::DW_OP_deref: std::advance(I, 1); break;
+      case dwarf::DW_OP_bit_piece: std::advance(I, 3); break;
+      case dwarf::DW_OP_plus:      std::advance(I, 2); break;
+      case dwarf::DW_OP_deref:     std::advance(I, 1); break;
       default:
         llvm_unreachable("unsupported operand");
       }
@@ -1039,7 +1034,7 @@ class DIImportedEntity : public DIDescriptor {
 public:
   explicit DIImportedEntity(const MDNode *N) : DIDescriptor(N) {}
   DIScope getContext() const { return getFieldAs<DIScope>(1); }
-  DIScopeRef getEntity() const { return getFieldAs<DIScopeRef>(2); }
+  DIDescriptorRef getEntity() const { return getFieldAs<DIDescriptorRef>(2); }
   unsigned getLineNumber() const { return getHeaderFieldAs<unsigned>(1); }
   StringRef getName() const { return getHeaderField(2); }
   bool Verify() const;
