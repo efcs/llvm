@@ -146,6 +146,8 @@ static bool isLiveGCReferenceAt(Value &V, Instruction *loc, DominatorTree &DT,
   // Given assumption that V dominates loc, this may be live
   return true;
 }
+
+#ifndef NDEBUG
 static bool isAggWhichContainsGCPtrType(Type *Ty) {
   if (VectorType *VT = dyn_cast<VectorType>(Ty))
     return isGCPointerType(VT->getScalarType());
@@ -155,11 +157,13 @@ static bool isAggWhichContainsGCPtrType(Type *Ty) {
   } else if (StructType *ST = dyn_cast<StructType>(Ty)) {
     bool UnsupportedType = false;
     for (Type *SubType : ST->subtypes())
-      UnsupportedType |= isGCPointerType(SubType) || isAggWhichContainsGCPtrType(SubType);
+      UnsupportedType |=
+          isGCPointerType(SubType) || isAggWhichContainsGCPtrType(SubType);
     return UnsupportedType;
   } else
     return false;
 }
+#endif
 
 // Conservatively identifies any definitions which might be live at the
 // given instruction. The  analysis is performed immediately before the
@@ -389,6 +393,7 @@ static Value *findBaseDefiningValue(Value *I) {
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     if (LI->getType()->isPointerTy()) {
       Value *Op = LI->getOperand(0);
+      (void)Op;
       // Has to be a pointer to an gc object, or possibly an array of such?
       assert(Op->getType()->isPointerTy());
       return LI; // The value loaded is an gc base itself
@@ -1104,6 +1109,7 @@ VerifySafepointBounds(const std::pair<Instruction *, Instruction *> &bounds) {
   } else {
     // This is an invoke safepoint
     InvokeInst *invoke = dyn_cast<InvokeInst>(bounds.first);
+    (void)invoke;
     assert(invoke && "only continues over invokes!");
     assert(invoke->getNormalDest() == bounds.second->getParent() &&
            "safepoint should continue into normal exit block");
@@ -1221,6 +1227,7 @@ makeStatepointExplicitImpl(const CallSite &CS, /* to replace */
   Function *F = BB->getParent();
   assert(F && "must be set");
   Module *M = F->getParent();
+  (void)M;
   assert(M && "must be set");
 
   // We're not changing the function signature of the statepoint since the gc
@@ -1887,10 +1894,12 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
   }
   unique_unsorted(live);
 
+#ifndef NDEBUG
   // sanity check
   for (auto ptr : live) {
     assert(isGCPointerType(ptr->getType()) && "must be a gc pointer type");
   }
+#endif
 
   relocationViaAlloca(F, DT, live, records);
   return !records.empty();
