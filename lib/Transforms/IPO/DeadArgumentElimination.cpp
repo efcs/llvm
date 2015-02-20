@@ -146,7 +146,7 @@ namespace {
   private:
     Liveness MarkIfNotLive(RetOrArg Use, UseVector &MaybeLiveUses);
     Liveness SurveyUse(const Use *U, UseVector &MaybeLiveUses,
-                       unsigned RetValNum = 0);
+                       unsigned RetValNum = -1U);
     Liveness SurveyUses(const Value *V, UseVector &MaybeLiveUses);
 
     void SurveyFunction(const Function &F);
@@ -443,9 +443,24 @@ DAE::Liveness DAE::SurveyUse(const Use *U,
       // function's return value is live. We use RetValNum here, for the case
       // that U is really a use of an insertvalue instruction that uses the
       // original Use.
-      RetOrArg Use = CreateRet(RI->getParent()->getParent(), RetValNum);
-      // We might be live, depending on the liveness of Use.
-      return MarkIfNotLive(Use, MaybeLiveUses);
+      const Function *F = RI->getParent()->getParent();
+      if (RetValNum != -1U) {
+        RetOrArg Use = CreateRet(F, RetValNum);
+        // We might be live, depending on the liveness of Use.
+        return MarkIfNotLive(Use, MaybeLiveUses);
+      } else {
+        DAE::Liveness Result = MaybeLive;
+        for (unsigned i = 0; i < NumRetVals(F); ++i) {
+          RetOrArg Use = CreateRet(F, i);
+          // We might be live, depending on the liveness of Use. If any
+          // sub-value is live, then the entire value is considered live. This
+          // is a conservative choice, and better tracking is possible.
+          DAE::Liveness SubResult = MarkIfNotLive(Use, MaybeLiveUses);
+          if (Result != Live)
+            Result = SubResult;
+        }
+        return Result;
+      }
     }
     if (const InsertValueInst *IV = dyn_cast<InsertValueInst>(V)) {
       if (U->getOperandNo() != InsertValueInst::getAggregateOperandIndex()

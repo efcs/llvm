@@ -992,18 +992,24 @@ bool ARMDAGToDAGISel::SelectAddrMode6(SDNode *Parent, SDValue N, SDValue &Addr,
   Addr = N;
 
   unsigned Alignment = 0;
-  if (LSBaseSDNode *LSN = dyn_cast<LSBaseSDNode>(Parent)) {
+
+  MemSDNode *MemN = cast<MemSDNode>(Parent);
+
+  if (isa<LSBaseSDNode>(MemN) ||
+      ((MemN->getOpcode() == ARMISD::VST1_UPD ||
+        MemN->getOpcode() == ARMISD::VLD1_UPD) &&
+       MemN->getConstantOperandVal(MemN->getNumOperands() - 1) == 1)) {
     // This case occurs only for VLD1-lane/dup and VST1-lane instructions.
     // The maximum alignment is equal to the memory size being referenced.
-    unsigned LSNAlign = LSN->getAlignment();
-    unsigned MemSize = LSN->getMemoryVT().getSizeInBits() / 8;
-    if (LSNAlign >= MemSize && MemSize > 1)
+    unsigned MMOAlign = MemN->getAlignment();
+    unsigned MemSize = MemN->getMemoryVT().getSizeInBits() / 8;
+    if (MMOAlign >= MemSize && MemSize > 1)
       Alignment = MemSize;
   } else {
     // All other uses of addrmode6 are for intrinsics.  For now just record
     // the raw alignment value; it will be refined later based on the legal
     // alignment operands for the intrinsic.
-    Alignment = cast<MemIntrinsicSDNode>(Parent)->getAlignment();
+    Alignment = MemN->getAlignment();
   }
 
   Align = CurDAG->getTargetConstant(Alignment, MVT::i32);
@@ -2292,7 +2298,7 @@ SDNode *ARMDAGToDAGISel::SelectV6T2BitfieldExtractOp(SDNode *N,
         assert(Srl_imm > 0 && Srl_imm < 32 && "bad amount in shift node!");
 
         // Note: The width operand is encoded as width-1.
-        unsigned Width = CountTrailingOnes_32(And_imm) - 1;
+        unsigned Width = countTrailingOnes(And_imm) - 1;
         unsigned LSB = Srl_imm;
 
         SDValue Reg0 = CurDAG->getRegister(0, MVT::i32);

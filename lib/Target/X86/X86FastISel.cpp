@@ -37,6 +37,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetOptions.h"
 using namespace llvm;
@@ -123,8 +124,12 @@ private:
 
   bool X86SelectTrunc(const Instruction *I);
 
+  bool X86SelectFPExtOrFPTrunc(const Instruction *I, unsigned Opc,
+                               const TargetRegisterClass *RC);
+
   bool X86SelectFPExt(const Instruction *I);
   bool X86SelectFPTrunc(const Instruction *I);
+  bool X86SelectSIToFP(const Instruction *I);
 
   const X86InstrInfo *getInstrInfo() const {
     return Subtarget->getInstrInfo();
@@ -2001,41 +2006,91 @@ bool X86FastISel::X86SelectSelect(const Instruction *I) {
   return false;
 }
 
+bool X86FastISel::X86SelectSIToFP(const Instruction *I) {
+  if (!I->getOperand(0)->getType()->isIntegerTy(32))
+    return false;
+
+  // Select integer to float/double conversion.
+  unsigned OpReg = getRegForValue(I->getOperand(0));
+  if (OpReg == 0)
+    return false;
+
+  bool HasAVX = Subtarget->hasAVX();
+  const TargetRegisterClass *RC = nullptr;
+  unsigned Opcode;
+
+  if (I->getType()->isDoubleTy() && X86ScalarSSEf64) {
+    // sitofp int -> double
+    Opcode = HasAVX ? X86::VCVTSI2SDrr : X86::CVTSI2SDrr;
+    RC = &X86::FR64RegClass;
+  } else if (I->getType()->isFloatTy() && X86ScalarSSEf32) {
+    // sitofp int -> float
+    Opcode = HasAVX ? X86::VCVTSI2SSrr : X86::CVTSI2SSrr;
+    RC = &X86::FR32RegClass;
+  } else
+    return false;
+
+
+  unsigned ImplicitDefReg = 0;
+  if (HasAVX) {
+    ImplicitDefReg = createResultReg(RC);
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+            TII.get(TargetOpcode::IMPLICIT_DEF), ImplicitDefReg);
+  }
+
+  const MCInstrDesc &II = TII.get(Opcode);
+  OpReg = constrainOperandRegClass(II, OpReg, (HasAVX ? 2 : 1));
+  
+  unsigned ResultReg = createResultReg(RC);
+  MachineInstrBuilder MIB;
+  MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II, ResultReg);
+  if (ImplicitDefReg)
+    MIB.addReg(ImplicitDefReg, RegState::Kill);
+  MIB.addReg(OpReg);
+  updateValueMap(I, ResultReg);
+  return true;
+}
+
+// Helper method used by X86SelectFPExt and X86SelectFPTrunc.
+bool X86FastISel::X86SelectFPExtOrFPTrunc(const Instruction *I,
+                                          unsigned TargetOpc,
+                                          const TargetRegisterClass *RC) {
+  assert((I->getOpcode() == Instruction::FPExt ||
+          I->getOpcode() == Instruction::FPTrunc) &&
+         "Instruction must be an FPExt or FPTrunc!");
+
+  unsigned OpReg = getRegForValue(I->getOperand(0));
+  if (OpReg == 0)
+    return false;
+
+  unsigned ResultReg = createResultReg(RC);
+  MachineInstrBuilder MIB;
+  MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(TargetOpc),
+                ResultReg);
+  if (Subtarget->hasAVX())
+    MIB.addReg(OpReg);
+  MIB.addReg(OpReg);
+  updateValueMap(I, ResultReg);
+  return true;
+}
+
 bool X86FastISel::X86SelectFPExt(const Instruction *I) {
-  // fpext from float to double.
-  if (X86ScalarSSEf64 &&
-      I->getType()->isDoubleTy()) {
-    const Value *V = I->getOperand(0);
-    if (V->getType()->isFloatTy()) {
-      unsigned OpReg = getRegForValue(V);
-      if (OpReg == 0) return false;
-      unsigned ResultReg = createResultReg(&X86::FR64RegClass);
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-              TII.get(X86::CVTSS2SDrr), ResultReg)
-        .addReg(OpReg);
-      updateValueMap(I, ResultReg);
-      return true;
-    }
+  if (X86ScalarSSEf64 && I->getType()->isDoubleTy() &&
+      I->getOperand(0)->getType()->isFloatTy()) {
+    // fpext from float to double.
+    unsigned Opc = Subtarget->hasAVX() ? X86::VCVTSS2SDrr : X86::CVTSS2SDrr;
+    return X86SelectFPExtOrFPTrunc(I, Opc, &X86::FR64RegClass);
   }
 
   return false;
 }
 
 bool X86FastISel::X86SelectFPTrunc(const Instruction *I) {
-  if (X86ScalarSSEf64) {
-    if (I->getType()->isFloatTy()) {
-      const Value *V = I->getOperand(0);
-      if (V->getType()->isDoubleTy()) {
-        unsigned OpReg = getRegForValue(V);
-        if (OpReg == 0) return false;
-        unsigned ResultReg = createResultReg(&X86::FR32RegClass);
-        BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-                TII.get(X86::CVTSD2SSrr), ResultReg)
-          .addReg(OpReg);
-        updateValueMap(I, ResultReg);
-        return true;
-      }
-    }
+  if (X86ScalarSSEf64 && I->getType()->isFloatTy() &&
+      I->getOperand(0)->getType()->isDoubleTy()) {
+    // fptrunc from double to float.
+    unsigned Opc = Subtarget->hasAVX() ? X86::VCVTSD2SSrr : X86::CVTSD2SSrr;
+    return X86SelectFPExtOrFPTrunc(I, Opc, &X86::FR32RegClass);
   }
 
   return false;
@@ -2128,6 +2183,10 @@ bool X86FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
   switch (II->getIntrinsicID()) {
   default: return false;
   case Intrinsic::frameaddress: {
+    MachineFunction *MF = FuncInfo.MF;
+    if (MF->getTarget().getMCAsmInfo()->usesWindowsCFI())
+      return false;
+
     Type *RetTy = II->getCalledFunction()->getReturnType();
 
     MVT VT;
@@ -2145,11 +2204,11 @@ bool X86FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
 
     // This needs to be set before we call getPtrSizedFrameRegister, otherwise
     // we get the wrong frame register.
-    MachineFrameInfo *MFI = FuncInfo.MF->getFrameInfo();
+    MachineFrameInfo *MFI = MF->getFrameInfo();
     MFI->setFrameAddressIsTaken(true);
 
     const X86RegisterInfo *RegInfo = Subtarget->getRegisterInfo();
-    unsigned FrameReg = RegInfo->getPtrSizedFrameRegister(*(FuncInfo.MF));
+    unsigned FrameReg = RegInfo->getPtrSizedFrameRegister(*MF);
     assert(((FrameReg == X86::RBP && VT == MVT::i64) ||
             (FrameReg == X86::EBP && VT == MVT::i32)) &&
            "Invalid Frame Register!");
@@ -3042,6 +3101,8 @@ X86FastISel::fastSelectInstruction(const Instruction *I)  {
     return X86SelectFPExt(I);
   case Instruction::FPTrunc:
     return X86SelectFPTrunc(I);
+  case Instruction::SIToFP:
+    return X86SelectSIToFP(I);
   case Instruction::IntToPtr: // Deliberate fall-through.
   case Instruction::PtrToInt: {
     EVT SrcVT = TLI.getValueType(I->getOperand(0)->getType());

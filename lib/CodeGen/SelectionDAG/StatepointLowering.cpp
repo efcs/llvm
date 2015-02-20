@@ -16,8 +16,8 @@
 #include "SelectionDAGBuilder.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/CodeGen/GCMetadata.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
+#include "llvm/CodeGen/GCMetadata.h"
 #include "llvm/CodeGen/GCStrategy.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/StackMaps.h"
@@ -607,13 +607,9 @@ void SelectionDAGBuilder::visitStatepoint(const CallInst &CI) {
   if (Glue.getNode())
     Ops.push_back(Glue);
 
-  // Compute return values
-  SmallVector<EVT, 21> ValueVTs;
-  ValueVTs.push_back(MVT::Other);
-  ValueVTs.push_back(MVT::Glue); // provide a glue output since we consume one
-  // as input.  This allows someone else to chain
-  // off us as needed.
-  SDVTList NodeTys = DAG.getVTList(ValueVTs);
+  // Compute return values.  Provide a glue output since we consume one as
+  // input.  This allows someone else to chain off us as needed.
+  SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
 
   SDNode *StatepointMCNode = DAG.getMachineNode(TargetOpcode::STATEPOINT,
                                                 getCurSDLoc(), NodeTys, Ops);
