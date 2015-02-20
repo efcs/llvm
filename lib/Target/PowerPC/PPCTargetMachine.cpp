@@ -17,8 +17,8 @@
 #include "PPCTargetTransformInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -42,6 +42,11 @@ static cl::opt<bool>
 EnableGEPOpt("ppc-gep-opt", cl::Hidden,
              cl::desc("Enable optimizations on complex GEPs"),
              cl::init(true));
+
+static cl::opt<bool>
+EnablePrefetch("enable-ppc-prefetching",
+                  cl::desc("disable software prefetching on PPC"),
+                  cl::init(false), cl::Hidden);
 
 extern "C" void LLVMInitializePowerPCTarget() {
   // Register the targets
@@ -123,6 +128,30 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
   return make_unique<PPC64LinuxTargetObjectFile>();
 }
 
+static PPCTargetMachine::PPCABI computeTargetABI(const Triple &TT,
+                                                 const TargetOptions &Options) {
+  if (Options.MCOptions.getABIName().startswith("elfv1"))
+    return PPCTargetMachine::PPC_ABI_ELFv1;
+  else if (Options.MCOptions.getABIName().startswith("elfv2"))
+    return PPCTargetMachine::PPC_ABI_ELFv2;
+
+  assert(Options.MCOptions.getABIName().empty() &&
+	 "Unknown target-abi option!");
+
+  if (!TT.isMacOSX()) {
+    switch (TT.getArch()) {
+    case Triple::ppc64le:
+      return PPCTargetMachine::PPC_ABI_ELFv2;
+    case Triple::ppc64:
+      return PPCTargetMachine::PPC_ABI_ELFv1;
+    default:
+      // Fallthrough.
+      ;
+    }
+  }
+  return PPCTargetMachine::PPC_ABI_UNKNOWN;
+}
+
 // The FeatureString here is a little subtle. We are modifying the feature string
 // with what are (currently) non-function specific overrides as it goes into the
 // LLVMTargetMachine constructor and then using the stored value in the
@@ -134,6 +163,7 @@ PPCTargetMachine::PPCTargetMachine(const Target &T, StringRef TT, StringRef CPU,
     : LLVMTargetMachine(T, TT, CPU, computeFSAdditions(FS, OL, TT), Options, RM,
                         CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
+      TargetABI(computeTargetABI(Triple(TT), Options)),
       DL(getDataLayoutString(Triple(TT))), Subtarget(TT, CPU, TargetFS, *this) {
   initAsmInfo();
 }
@@ -162,11 +192,8 @@ PPC64TargetMachine::PPC64TargetMachine(const Target &T, StringRef TT,
 
 const PPCSubtarget *
 PPCTargetMachine::getSubtargetImpl(const Function &F) const {
-  AttributeSet FnAttrs = F.getAttributes();
-  Attribute CPUAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-cpu");
-  Attribute FSAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-features");
+  Attribute CPUAttr = F.getFnAttribute("target-cpu");
+  Attribute FSAttr = F.getFnAttribute("target-features");
 
   std::string CPU = !CPUAttr.hasAttribute(Attribute::None)
                         ? CPUAttr.getValueAsString().str()
@@ -217,6 +244,16 @@ TargetPassConfig *PPCTargetMachine::createPassConfig(PassManagerBase &PM) {
 
 void PPCPassConfig::addIRPasses() {
   addPass(createAtomicExpandPass(&getPPCTargetMachine()));
+
+  // For the BG/Q (or if explicitly requested), add explicit data prefetch
+  // intrinsics.
+  bool UsePrefetching =
+    Triple(TM->getTargetTriple()).getVendor() == Triple::BGQ &&           
+    getOptLevel() != CodeGenOpt::None;
+  if (EnablePrefetch.getNumOccurrences() > 0)
+    UsePrefetching = EnablePrefetch;
+  if (UsePrefetching)
+    addPass(createPPCLoopDataPrefetchPass());
 
   if (TM->getOptLevel() == CodeGenOpt::Aggressive && EnableGEPOpt) {
     // Call SeparateConstOffsetFromGEP pass to extract constants within indices

@@ -22,7 +22,9 @@ public:
   PDBSymbolTypeEnum(const IPDBSession &PDBSession,
                     std::unique_ptr<IPDBRawSymbol> EnumTypeSymbol);
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Enum)
+
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
 
   FORWARD_SYMBOL_METHOD(getBuiltinType)
   FORWARD_SYMBOL_METHOD(getClassParentId)
@@ -42,10 +44,6 @@ public:
   FORWARD_SYMBOL_METHOD(getTypeId)
   FORWARD_SYMBOL_METHOD(isUnalignedType)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Enum;
-  }
 };
 
 } // namespace llvm

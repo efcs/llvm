@@ -22,7 +22,14 @@ public:
   PDBSymbolTypeFunctionSig(const IPDBSession &PDBSession,
                            std::unique_ptr<IPDBRawSymbol> Symbol);
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::FunctionSig)
+
+  std::unique_ptr<PDBSymbol> getReturnType() const;
+  std::unique_ptr<IPDBEnumSymbols> getArguments() const;
+  std::unique_ptr<PDBSymbol> getClassParent() const;
+
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
+  void dumpArgList(raw_ostream &OS) const;
 
   FORWARD_SYMBOL_METHOD(getCallingConvention)
   FORWARD_SYMBOL_METHOD(getClassParentId)
@@ -35,10 +42,6 @@ public:
   FORWARD_SYMBOL_METHOD(getTypeId)
   FORWARD_SYMBOL_METHOD(isUnalignedType)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::FunctionSig;
-  }
 };
 
 } // namespace llvm

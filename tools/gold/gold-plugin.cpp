@@ -24,12 +24,12 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/IRObjectFile.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -693,7 +693,7 @@ getModuleForFile(LLVMContext &Context, claimed_file &F,
 }
 
 static void runLTOPasses(Module &M, TargetMachine &TM) {
-  PassManager passes;
+  legacy::PassManager passes;
   passes.add(new DataLayoutPass());
   passes.add(createTargetTransformInfoWrapperPass(TM.getTargetIRAnalysis()));
 
@@ -743,7 +743,7 @@ static void codegen(Module &M) {
   if (options::TheOutputType == options::OT_SAVE_TEMPS)
     saveBCFile(output_name + ".opt.bc", M);
 
-  PassManager CodeGenPasses;
+  legacy::PassManager CodeGenPasses;
   CodeGenPasses.add(new DataLayoutPass());
 
   SmallString<128> Filename;
@@ -869,8 +869,13 @@ static ld_plugin_status all_symbols_read_hook(void) {
   llvm_shutdown();
 
   if (options::TheOutputType == options::OT_BC_ONLY ||
-      options::TheOutputType == options::OT_DISABLE)
+      options::TheOutputType == options::OT_DISABLE) {
+    if (options::TheOutputType == options::OT_DISABLE)
+      // Remove the output file here since ld.bfd creates the output file
+      // early.
+      sys::fs::remove(output_name);
     exit(0);
+  }
 
   return Ret;
 }

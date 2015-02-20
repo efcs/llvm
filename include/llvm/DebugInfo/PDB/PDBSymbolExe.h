@@ -10,10 +10,9 @@
 #ifndef LLVM_DEBUGINFO_PDB_PDBSYMBOLEXE_H
 #define LLVM_DEBUGINFO_PDB_PDBSYMBOLEXE_H
 
-#include <string>
-
 #include "PDBSymbol.h"
 #include "PDBTypes.h"
+#include <string>
 
 namespace llvm {
 
@@ -24,7 +23,9 @@ public:
   PDBSymbolExe(const IPDBSession &PDBSession,
                std::unique_ptr<IPDBRawSymbol> ExeSymbol);
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Exe)
+
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
 
   FORWARD_SYMBOL_METHOD(getAge)
   FORWARD_SYMBOL_METHOD(getGuid)
@@ -36,9 +37,9 @@ public:
   FORWARD_SYMBOL_METHOD(getSymbolsFileName)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
 
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Exe;
-  }
+private:
+  void dumpChildren(raw_ostream &OS, StringRef Label, PDB_SymType ChildType,
+                    int Indent) const;
 };
 } // namespace llvm
 

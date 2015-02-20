@@ -228,25 +228,25 @@ const MCSection *TargetLoweringObjectFileELF::getExplicitSectionGlobal(
 /// DataSections.
 static StringRef getSectionPrefixForGlobal(SectionKind Kind) {
   if (Kind.isText())
-    return ".text.";
+    return ".text";
   if (Kind.isReadOnly())
-    return ".rodata.";
+    return ".rodata";
   if (Kind.isBSS())
-    return ".bss.";
+    return ".bss";
   if (Kind.isThreadData())
-    return ".tdata.";
+    return ".tdata";
   if (Kind.isThreadBSS())
-    return ".tbss.";
+    return ".tbss";
   if (Kind.isDataNoRel())
-    return ".data.";
+    return ".data";
   if (Kind.isDataRelLocal())
-    return ".data.rel.local.";
+    return ".data.rel.local";
   if (Kind.isDataRel())
-    return ".data.rel.";
+    return ".data.rel";
   if (Kind.isReadOnlyWithRelLocal())
-    return ".data.rel.ro.local.";
+    return ".data.rel.ro.local";
   assert(Kind.isReadOnlyWithRel() && "Unknown section kind");
-  return ".data.rel.ro.";
+  return ".data.rel.ro";
 }
 
 const MCSection *TargetLoweringObjectFileELF::
@@ -268,16 +268,19 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
     StringRef Prefix = getSectionPrefixForGlobal(Kind);
 
     SmallString<128> Name(Prefix);
-    TM.getNameWithPrefix(Name, GV, Mang, true);
-
+    bool UniqueSectionNames = TM.getUniqueSectionNames();
+    if (UniqueSectionNames) {
+      Name.push_back('.');
+      TM.getNameWithPrefix(Name, GV, Mang, true);
+    }
     StringRef Group = "";
     if (const Comdat *C = getELFComdat(GV)) {
       Flags |= ELF::SHF_GROUP;
       Group = C->getName();
     }
 
-    return getContext().getELFSection(
-        Name.str(), getELFSectionType(Name.str(), Kind), Flags, 0, Group);
+    return getContext().getELFSection(Name, getELFSectionType(Name, Kind),
+                                      Flags, 0, Group, !UniqueSectionNames);
   }
 
   if (Kind.isText()) return TextSection;
@@ -332,6 +335,35 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
 
   assert(Kind.isReadOnlyWithRel() && "Unknown section kind");
   return DataRelROSection;
+}
+
+const MCSection *TargetLoweringObjectFileELF::getSectionForJumpTable(
+    const Function &F, Mangler &Mang, const TargetMachine &TM) const {
+  // If the function can be removed, produce a unique section so that
+  // the table doesn't prevent the removal.
+  const Comdat *C = F.getComdat();
+  bool EmitUniqueSection = TM.getFunctionSections() || C;
+  if (!EmitUniqueSection)
+    return ReadOnlySection;
+
+  SmallString<128> Name(".rodata.");
+  TM.getNameWithPrefix(Name, &F, Mang, true);
+
+  unsigned Flags = ELF::SHF_ALLOC;
+  StringRef Group = "";
+  if (C) {
+    Flags |= ELF::SHF_GROUP;
+    Group = C->getName();
+  }
+
+  return getContext().getELFSection(Name, ELF::SHT_PROGBITS, Flags, 0, Group);
+}
+
+bool TargetLoweringObjectFileELF::shouldPutJumpTableInFunctionSection(
+    bool UsesLabelDifference, const Function &F) const {
+  // We can always create relative relocations, so use another section
+  // that can be marked non-executable.
+  return false;
 }
 
 /// getSectionForConstant - Given a mergeable constant with the
@@ -911,21 +943,10 @@ emitModuleFlags(MCStreamer &Streamer,
     MDNode *MDOptions = cast<MDNode>(LinkerOptions->getOperand(i));
     for (unsigned ii = 0, ie = MDOptions->getNumOperands(); ii != ie; ++ii) {
       MDString *MDOption = cast<MDString>(MDOptions->getOperand(ii));
-      StringRef Op = MDOption->getString();
       // Lead with a space for consistency with our dllexport implementation.
-      std::string Escaped(" ");
-      if (!Op.startswith("\"") && (Op.find(" ") != StringRef::npos)) {
-        // The PE-COFF spec says args with spaces must be quoted.  It doesn't say
-        // how to escape quotes, but it probably uses this algorithm:
-        // http://msdn.microsoft.com/en-us/library/17w5ykft(v=vs.85).aspx
-        // FIXME: Reuse escaping code from Support/Windows/Program.inc
-        Escaped.push_back('\"');
-        Escaped.append(Op);
-        Escaped.push_back('\"');
-      } else {
-        Escaped.append(Op);
-      }
-      Streamer.EmitBytes(Escaped);
+      std::string Directive(" ");
+      Directive.append(MDOption->getString());
+      Streamer.EmitBytes(Directive);
     }
   }
 }

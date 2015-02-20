@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/DebugInfo/PDB/PDBExtras.h"
+
 #include "llvm/ADT/ArrayRef.h"
 
 using namespace llvm;
@@ -22,6 +23,76 @@ using namespace llvm;
 
 raw_ostream &llvm::operator<<(raw_ostream &OS, const stream_indent &Indent) {
   OS.indent(Indent.Width);
+  return OS;
+}
+
+raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_VariantType &Type) {
+  switch (Type) {
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Bool, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Single, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Double, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Int8, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Int16, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Int32, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, Int64, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, UInt8, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, UInt16, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, UInt32, OS)
+    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_VariantType, UInt64, OS)
+    default:
+      OS << "Unknown";
+  }
+  return OS;
+}
+
+raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_CallingConv &Conv) {
+  OS << "__";
+  switch (Conv) {
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearCdecl, "cdecl", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, FarCdecl, "cdecl", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearPascal, "pascal", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, FarPascal, "pascal", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearFastcall, "fastcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, FarFastcall, "fastcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Skipped, "skippedcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearStdcall, "stdcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, FarStdcall, "stdcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearSyscall, "syscall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, FarSyscall, "syscall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Thiscall, "thiscall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, MipsCall, "mipscall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Generic, "genericcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Alphacall, "alphacall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Ppccall, "ppccall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, SuperHCall, "superhcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Armcall, "armcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, AM33call, "am33call", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Tricall, "tricall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Sh5call, "sh5call", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, M32R, "m32rcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Clrcall, "clrcall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, Inline, "inlinecall", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_CallingConv, NearVectorcall, "vectorcall",
+                               OS)
+  default:
+    OS << "unknowncall";
+  }
+  return OS;
+}
+
+raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_DataKind &Data) {
+  switch (Data) {
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Unknown, "unknown", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Local, "local", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, StaticLocal, "static local", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Param, "param", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, ObjectPtr, "this ptr", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, FileStatic, "static global", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Global, "global", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Member, "member", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, StaticMember, "static member", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_DataKind, Constant, "const", OS)
+  }
   return OS;
 }
 
@@ -75,23 +146,23 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_RegisterId &Reg) {
     CASE_OUTPUT_ENUM_CLASS_NAME(PDB_RegisterId, R14, OS)
     CASE_OUTPUT_ENUM_CLASS_NAME(PDB_RegisterId, R15, OS)
   default:
-    OS << "Unknown";
+    OS << static_cast<int>(Reg);
   }
   return OS;
 }
 
 raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_LocType &Loc) {
   switch (Loc) {
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, Static, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, TLS, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, RegRel, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, ThisRel, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, Enregistered, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, BitField, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, Slot, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, IlRel, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, MetaData, OS)
-    CASE_OUTPUT_ENUM_CLASS_NAME(PDB_LocType, Constant, OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, Static, "static", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, TLS, "tls", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, RegRel, "regrel", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, ThisRel, "thisrel", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, Enregistered, "register", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, BitField, "bitfield", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, Slot, "slot", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, IlRel, "IL rel", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, MetaData, "metadata", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_LocType, Constant, "constant", OS)
   default:
     OS << "Unknown";
   }
@@ -181,6 +252,31 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_SymType &Tag) {
   return OS;
 }
 
+raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_BuiltinType &Type) {
+  switch (Type) {
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Void, "void", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Char, "char", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, WCharT, "wchar_t", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Int, "int", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, UInt, "uint", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Float, "float", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, BCD, "BCD", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Bool, "bool", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Long, "long", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, ULong, "ulong", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Currency, "CURRENCY", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Date, "DATE", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Variant, "VARIANT", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Complex, "complex", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, Bitfield, "bitfield", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, BSTR, "BSTR", OS)
+    CASE_OUTPUT_ENUM_CLASS_STR(PDB_BuiltinType, HResult, "HRESULT", OS)
+  default:
+    break;
+  }
+  return OS;
+}
+
 raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_UniqueId &Id) {
   static const char *Lookup = "0123456789ABCDEF";
 
@@ -197,6 +293,48 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const PDB_UniqueId &Id) {
       OS << "-";
   }
   OS << "}";
+  return OS;
+}
+
+raw_ostream &llvm::operator<<(raw_ostream &OS, const Variant &Value) {
+  switch (Value.Type) {
+    case PDB_VariantType::Bool:
+      OS << (Value.Bool ? "true" : "false");
+      break;
+    case PDB_VariantType::Double:
+      OS << Value.Double;
+      break;
+    case PDB_VariantType::Int16:
+      OS << Value.Int16;
+      break;
+    case PDB_VariantType::Int32:
+      OS << Value.Int32;
+      break;
+    case PDB_VariantType::Int64:
+      OS << Value.Int64;
+      break;
+    case PDB_VariantType::Int8:
+      OS << Value.Int8;
+      break;
+    case PDB_VariantType::Single:
+      OS << Value.Single;
+      break;
+    case PDB_VariantType::UInt16:
+      OS << Value.Double;
+      break;
+    case PDB_VariantType::UInt32:
+      OS << Value.UInt32;
+      break;
+    case PDB_VariantType::UInt64:
+      OS << Value.UInt64;
+      break;
+    case PDB_VariantType::UInt8:
+      OS << Value.UInt8;
+      break;
+    default:
+      OS << Value.Type;
+  }
+  OS << " {" << Value.Type << "}";
   return OS;
 }
 

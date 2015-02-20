@@ -22,7 +22,9 @@ public:
   PDBSymbolTypeUDT(const IPDBSession &PDBSession,
                    std::unique_ptr<IPDBRawSymbol> UDTSymbol);
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::UDT)
+
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
 
   FORWARD_SYMBOL_METHOD(getClassParentId)
   FORWARD_SYMBOL_METHOD(hasConstructor)
@@ -42,10 +44,6 @@ public:
   FORWARD_SYMBOL_METHOD(isUnalignedType)
   FORWARD_SYMBOL_METHOD(getVirtualTableShapeId)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::UDT;
-  }
 };
 
 } // namespace llvm

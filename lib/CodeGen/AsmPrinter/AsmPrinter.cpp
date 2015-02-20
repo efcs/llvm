@@ -100,10 +100,13 @@ static unsigned getGVAlignmentLog2(const GlobalValue *GV, const DataLayout &TD,
 
 AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
     : MachineFunctionPass(ID), TM(tm), MAI(tm.getMCAsmInfo()),
-      MII(tm.getSubtargetImpl()->getInstrInfo()),
       OutContext(Streamer->getContext()), OutStreamer(*Streamer.release()),
       LastMI(nullptr), LastFn(0), Counter(~0U), SetCounter(0) {
-  DD = nullptr; MMI = nullptr; LI = nullptr; MF = nullptr;
+  MII = nullptr;
+  DD = nullptr;
+  MMI = nullptr;
+  LI = nullptr;
+  MF = nullptr;
   CurrentFnSym = CurrentFnSymForSize = nullptr;
   GCMetadataPrinters = nullptr;
   VerboseAsm = OutStreamer.isVerboseAsm();
@@ -915,8 +918,9 @@ bool AsmPrinter::doFinalization(Module &M) {
   if (JITI && !JITI->getTables().empty()) {
     unsigned Arch = Triple(getTargetTriple()).getArch();
     bool IsThumb = (Arch == Triple::thumb || Arch == Triple::thumbeb);
+    const TargetInstrInfo *TII = TM.getSubtargetImpl()->getInstrInfo();
     MCInst TrapInst;
-    TM.getSubtargetImpl()->getInstrInfo()->getTrap(TrapInst);
+    TII->getTrap(TrapInst);
     unsigned LogAlignment = llvm::Log2_64(JITI->entryByteAlignment());
 
     // Emit the right section for these functions.
@@ -942,8 +946,7 @@ bool AsmPrinter::doFinalization(Module &M) {
         const MCSymbolRefExpr *TargetSymRef =
           MCSymbolRefExpr::Create(TargetSymbol, MCSymbolRefExpr::VK_PLT,
                                   OutContext);
-        TM.getSubtargetImpl()->getInstrInfo()->getUnconditionalBranch(
-            JumpToFun, TargetSymRef);
+        TII->getUnconditionalBranch(JumpToFun, TargetSymRef);
         OutStreamer.EmitInstruction(JumpToFun, getSubtargetInfo());
         ++Count;
       }
@@ -1062,6 +1065,7 @@ bool AsmPrinter::doFinalization(Module &M) {
 
 void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   this->MF = &MF;
+  MII = MF.getSubtarget().getInstrInfo();
   // Get the function symbol.
   CurrentFnSym = getSymbol(MF.getFunction());
   CurrentFnSymForSize = CurrentFnSym;
@@ -1177,25 +1181,17 @@ void AsmPrinter::EmitJumpTableInfo() {
   // Pick the directive to use to print the jump table entries, and switch to
   // the appropriate section.
   const Function *F = MF->getFunction();
-  bool JTInDiffSection = false;
-  if (// In PIC mode, we need to emit the jump table to the same section as the
-      // function body itself, otherwise the label differences won't make sense.
-      // FIXME: Need a better predicate for this: what about custom entries?
-      MJTI->getEntryKind() == MachineJumpTableInfo::EK_LabelDifference32 ||
-      // We should also do if the section name is NULL or function is declared
-      // in discardable section
-      // FIXME: this isn't the right predicate, should be based on the MCSection
-      // for the function.
-      F->isWeakForLinker()) {
-    OutStreamer.SwitchSection(
-        getObjFileLowering().SectionForGlobal(F, *Mang, TM));
+  const TargetLoweringObjectFile &TLOF = getObjFileLowering();
+  bool JTInDiffSection = !TLOF.shouldPutJumpTableInFunctionSection(
+      MJTI->getEntryKind() == MachineJumpTableInfo::EK_LabelDifference32,
+      *F);
+  if (!JTInDiffSection) {
+    OutStreamer.SwitchSection(TLOF.SectionForGlobal(F, *Mang, TM));
   } else {
     // Otherwise, drop it in the readonly section.
     const MCSection *ReadOnlySection =
-        getObjFileLowering().getSectionForConstant(SectionKind::getReadOnly(),
-                                                   /*C=*/nullptr);
+        TLOF.getSectionForJumpTable(*F, *Mang, TM);
     OutStreamer.SwitchSection(ReadOnlySection);
-    JTInDiffSection = true;
   }
 
   EmitAlignment(Log2_32(
@@ -1217,7 +1213,7 @@ void AsmPrinter::EmitJumpTableInfo() {
     if (MJTI->getEntryKind() == MachineJumpTableInfo::EK_LabelDifference32 &&
         MAI->doesSetDirectiveSuppressesReloc()) {
       SmallPtrSet<const MachineBasicBlock*, 16> EmittedSets;
-      const TargetLowering *TLI = TM.getSubtargetImpl()->getTargetLowering();
+      const TargetLowering *TLI = MF->getSubtarget().getTargetLowering();
       const MCExpr *Base = TLI->getPICJumpTableRelocBaseExpr(MF,JTI,OutContext);
       for (unsigned ii = 0, ee = JTBBs.size(); ii != ee; ++ii) {
         const MachineBasicBlock *MBB = JTBBs[ii];
@@ -1261,9 +1257,8 @@ void AsmPrinter::EmitJumpTableEntry(const MachineJumpTableInfo *MJTI,
   case MachineJumpTableInfo::EK_Inline:
     llvm_unreachable("Cannot emit EK_Inline jump table entry");
   case MachineJumpTableInfo::EK_Custom32:
-    Value =
-        TM.getSubtargetImpl()->getTargetLowering()->LowerCustomJumpTableEntry(
-            MJTI, MBB, UID, OutContext);
+    Value = MF->getSubtarget().getTargetLowering()->LowerCustomJumpTableEntry(
+        MJTI, MBB, UID, OutContext);
     break;
   case MachineJumpTableInfo::EK_BlockAddress:
     // EK_BlockAddress - Each entry is a plain address of block, e.g.:
@@ -2072,7 +2067,7 @@ void AsmPrinter::printOffset(int64_t Offset, raw_ostream &OS) const {
 
 /// GetTempSymbol - Return the MCSymbol corresponding to the assembler
 /// temporary label with the specified stem and unique ID.
-MCSymbol *AsmPrinter::GetTempSymbol(Twine Name, unsigned ID) const {
+MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name, unsigned ID) const {
   const DataLayout *DL = TM.getDataLayout();
   return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix()) +
                                       Name + Twine(ID));
@@ -2080,7 +2075,7 @@ MCSymbol *AsmPrinter::GetTempSymbol(Twine Name, unsigned ID) const {
 
 /// GetTempSymbol - Return an assembler temporary label with the specified
 /// stem.
-MCSymbol *AsmPrinter::GetTempSymbol(Twine Name) const {
+MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name) const {
   const DataLayout *DL = TM.getDataLayout();
   return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix())+
                                       Name);

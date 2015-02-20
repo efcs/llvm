@@ -94,9 +94,8 @@ void DIBuilder::finalize() {
   for (unsigned i = 0, e = SPs.getNumElements(); i != e; ++i) {
     DISubprogram SP(SPs.getElement(i));
     if (MDNode *Temp = SP.getVariablesNodes()) {
-      SmallVector<Metadata *, 4> Variables;
-      for (Metadata *V : PreservedVariables.lookup(SP))
-        Variables.push_back(V);
+      const auto &PV = PreservedVariables.lookup(SP);
+      SmallVector<Metadata *, 4> Variables(PV.begin(), PV.end());
       DIArray AV = getOrCreateArray(Variables);
       DIType(Temp).replaceAllUsesWith(AV);
     }
@@ -105,9 +104,8 @@ void DIBuilder::finalize() {
   DIArray GVs = getOrCreateArray(AllGVs);
   DIType(TempGVs).replaceAllUsesWith(GVs);
 
-  SmallVector<Metadata *, 16> RetainValuesI;
-  for (unsigned I = 0, E = AllImportedModules.size(); I < E; I++)
-    RetainValuesI.push_back(AllImportedModules[I]);
+  SmallVector<Metadata *, 16> RetainValuesI(AllImportedModules.begin(),
+                                            AllImportedModules.end());
   DIArray IMs = getOrCreateArray(RetainValuesI);
   DIType(TempImportedModules).replaceAllUsesWith(IMs);
 
@@ -150,16 +148,14 @@ DICompileUnit DIBuilder::createCompileUnit(unsigned Lang, StringRef Filename,
          "Invalid Language tag");
   assert(!Filename.empty() &&
          "Unable to create compile unit without filename");
-  Metadata *TElts[] = {HeaderBuilder::get(DW_TAG_base_type).get(VMContext)};
-  TempEnumTypes = MDNode::getTemporary(VMContext, TElts).release();
 
-  TempRetainTypes = MDNode::getTemporary(VMContext, TElts).release();
-
-  TempSubprograms = MDNode::getTemporary(VMContext, TElts).release();
-
-  TempGVs = MDNode::getTemporary(VMContext, TElts).release();
-
-  TempImportedModules = MDNode::getTemporary(VMContext, TElts).release();
+  // TODO: Once we make MDCompileUnit distinct, stop using temporaries here
+  // (just start with operands assigned to nullptr).
+  TempEnumTypes = MDTuple::getTemporary(VMContext, None).release();
+  TempRetainTypes = MDTuple::getTemporary(VMContext, None).release();
+  TempSubprograms = MDTuple::getTemporary(VMContext, None).release();
+  TempGVs = MDTuple::getTemporary(VMContext, None).release();
+  TempImportedModules = MDTuple::getTemporary(VMContext, None).release();
 
   Metadata *Elts[] = {HeaderBuilder::get(dwarf::DW_TAG_compile_unit)
                           .concat(Lang)
@@ -174,6 +170,8 @@ DICompileUnit DIBuilder::createCompileUnit(unsigned Lang, StringRef Filename,
                       TempEnumTypes, TempRetainTypes, TempSubprograms, TempGVs,
                       TempImportedModules};
 
+  // TODO: Switch to getDistinct().  We never want to merge compile units based
+  // on contents.
   MDNode *CUNode = MDNode::get(VMContext, Elts);
 
   // Create a named metadata so that it is easier to find cu in a module.
@@ -416,7 +414,6 @@ DIDerivedType DIBuilder::createInheritance(DIType Ty, DIType BaseTy,
                           .get(VMContext),
                       nullptr, Ty.getRef(), BaseTy.getRef()};
   auto R = DIDerivedType(MDNode::get(VMContext, Elts));
-  trackIfUnresolved(R);
   return R;
 }
 
@@ -505,55 +502,52 @@ DIBuilder::createObjCProperty(StringRef Name, DIFile File, unsigned LineNumber,
 
 DITemplateTypeParameter
 DIBuilder::createTemplateTypeParameter(DIDescriptor Context, StringRef Name,
-                                       DIType Ty, MDNode *File, unsigned LineNo,
-                                       unsigned ColumnNo) {
+                                       DIType Ty) {
+  assert(!DIScope(getNonCompileUnitScope(Context)).getRef() &&
+         "Expected compile unit");
   Metadata *Elts[] = {HeaderBuilder::get(dwarf::DW_TAG_template_type_parameter)
                           .concat(Name)
-                          .concat(LineNo)
-                          .concat(ColumnNo)
+                          .concat(0)
+                          .concat(0)
                           .get(VMContext),
-                      DIScope(getNonCompileUnitScope(Context)).getRef(),
-                      Ty.getRef(), File};
+                      nullptr, Ty.getRef(), nullptr};
   return DITemplateTypeParameter(MDNode::get(VMContext, Elts));
 }
 
-static DITemplateValueParameter createTemplateValueParameterHelper(
-    LLVMContext &VMContext, unsigned Tag, DIDescriptor Context, StringRef Name,
-    DIType Ty, Metadata *MD, MDNode *File, unsigned LineNo, unsigned ColumnNo) {
+static DITemplateValueParameter
+createTemplateValueParameterHelper(LLVMContext &VMContext, unsigned Tag,
+                                   DIDescriptor Context, StringRef Name,
+                                   DIType Ty, Metadata *MD) {
+  assert(!DIScope(getNonCompileUnitScope(Context)).getRef() &&
+         "Expected compile unit");
   Metadata *Elts[] = {
-      HeaderBuilder::get(Tag).concat(Name).concat(LineNo).concat(ColumnNo).get(
-          VMContext),
-      DIScope(getNonCompileUnitScope(Context)).getRef(), Ty.getRef(), MD, File};
+      HeaderBuilder::get(Tag).concat(Name).concat(0).concat(0).get(VMContext),
+      nullptr, Ty.getRef(), MD, nullptr};
   return DITemplateValueParameter(MDNode::get(VMContext, Elts));
 }
 
 DITemplateValueParameter
 DIBuilder::createTemplateValueParameter(DIDescriptor Context, StringRef Name,
-                                        DIType Ty, Constant *Val, MDNode *File,
-                                        unsigned LineNo, unsigned ColumnNo) {
+                                        DIType Ty, Constant *Val) {
   return createTemplateValueParameterHelper(
       VMContext, dwarf::DW_TAG_template_value_parameter, Context, Name, Ty,
-      getConstantOrNull(Val), File, LineNo, ColumnNo);
+      getConstantOrNull(Val));
 }
 
 DITemplateValueParameter
 DIBuilder::createTemplateTemplateParameter(DIDescriptor Context, StringRef Name,
-                                           DIType Ty, StringRef Val,
-                                           MDNode *File, unsigned LineNo,
-                                           unsigned ColumnNo) {
+                                           DIType Ty, StringRef Val) {
   return createTemplateValueParameterHelper(
       VMContext, dwarf::DW_TAG_GNU_template_template_param, Context, Name, Ty,
-      MDString::get(VMContext, Val), File, LineNo, ColumnNo);
+      MDString::get(VMContext, Val));
 }
 
 DITemplateValueParameter
 DIBuilder::createTemplateParameterPack(DIDescriptor Context, StringRef Name,
-                                       DIType Ty, DIArray Val,
-                                       MDNode *File, unsigned LineNo,
-                                       unsigned ColumnNo) {
+                                       DIType Ty, DIArray Val) {
   return createTemplateValueParameterHelper(
       VMContext, dwarf::DW_TAG_GNU_template_parameter_pack, Context, Name, Ty,
-      Val, File, LineNo, ColumnNo);
+      Val);
 }
 
 DICompositeType DIBuilder::createClassType(DIDescriptor Context, StringRef Name,
@@ -588,6 +582,7 @@ DICompositeType DIBuilder::createClassType(DIDescriptor Context, StringRef Name,
          "createClassType should return a DICompositeType");
   if (!UniqueIdentifier.empty())
     retainType(R);
+  trackIfUnresolved(R);
   return R;
 }
 
@@ -621,6 +616,7 @@ DICompositeType DIBuilder::createStructType(DIDescriptor Context,
          "createStructType should return a DICompositeType");
   if (!UniqueIdentifier.empty())
     retainType(R);
+  trackIfUnresolved(R);
   return R;
 }
 
@@ -649,6 +645,7 @@ DICompositeType DIBuilder::createUnionType(DIDescriptor Scope, StringRef Name,
   DICompositeType R(MDNode::get(VMContext, Elts));
   if (!UniqueIdentifier.empty())
     retainType(R);
+  trackIfUnresolved(R);
   return R;
 }
 
@@ -695,6 +692,7 @@ DICompositeType DIBuilder::createEnumerationType(
   AllEnumTypes.push_back(CTy);
   if (!UniqueIdentifier.empty())
     retainType(CTy);
+  trackIfUnresolved(CTy);
   return CTy;
 }
 
@@ -716,7 +714,9 @@ DICompositeType DIBuilder::createArrayType(uint64_t Size, uint64_t AlignInBits,
       Ty.getRef(), Subscripts, nullptr, nullptr,
       nullptr // Type Identifer
   };
-  return DICompositeType(MDNode::get(VMContext, Elts));
+  DICompositeType R(MDNode::get(VMContext, Elts));
+  trackIfUnresolved(R);
+  return R;
 }
 
 DICompositeType DIBuilder::createVectorType(uint64_t Size, uint64_t AlignInBits,
@@ -737,7 +737,9 @@ DICompositeType DIBuilder::createVectorType(uint64_t Size, uint64_t AlignInBits,
       Ty.getRef(), Subscripts, nullptr, nullptr,
       nullptr // Type Identifer
   };
-  return DICompositeType(MDNode::get(VMContext, Elts));
+  DICompositeType R(MDNode::get(VMContext, Elts));
+  trackIfUnresolved(R);
+  return R;
 }
 
 static HeaderBuilder setTypeFlagsInHeader(StringRef Header,
@@ -763,8 +765,7 @@ static DIType createTypeWithFlags(LLVMContext &Context, DIType Ty,
   assert(N && "Unexpected input DIType!");
   // Update header field.
   Elts.push_back(setTypeFlagsInHeader(Ty.getHeader(), FlagsToSet).get(Context));
-  for (unsigned I = 1, E = N->getNumOperands(); I != E; ++I)
-    Elts.push_back(N->getOperand(I));
+  Elts.append(N->op_begin() + 1, N->op_end());
 
   return DIType(MDNode::get(Context, Elts));
 }
@@ -815,6 +816,7 @@ DIBuilder::createForwardDecl(unsigned Tag, StringRef Name, DIDescriptor Scope,
          "createForwardDecl result should be a DIType");
   if (!UniqueIdentifier.empty())
     retainType(RetTy);
+  trackIfUnresolved(RetTy);
   return RetTy;
 }
 
@@ -843,6 +845,7 @@ DICompositeType DIBuilder::createReplaceableCompositeType(
          "createReplaceableForwardDecl result should be a DIType");
   if (!UniqueIdentifier.empty())
     retainType(RetTy);
+  trackIfUnresolved(RetTy);
   return RetTy;
 }
 
@@ -1033,6 +1036,7 @@ DISubprogram DIBuilder::createFunction(DIDescriptor Context, StringRef Name,
     // do not lose this mdnode.
     if (isDefinition)
       AllSubprograms.push_back(Node);
+    trackIfUnresolved(Node);
     return Node;
   });
 }
@@ -1088,6 +1092,7 @@ DISubprogram DIBuilder::createMethod(DIDescriptor Context, StringRef Name,
     AllSubprograms.push_back(Node);
   DISubprogram S(Node);
   assert(S.isSubprogram() && "createMethod should return a valid DISubprogram");
+  trackIfUnresolved(S);
   return S;
 }
 

@@ -14,6 +14,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "LLVMContextImpl.h"
 #include "MetadataImpl.h"
+#include "llvm/IR/Function.h"
 
 using namespace llvm;
 
@@ -147,8 +148,8 @@ MDEnumerator *MDEnumerator::getImpl(LLVMContext &Context, int64_t Value,
 }
 
 MDBasicType *MDBasicType::getImpl(LLVMContext &Context, unsigned Tag,
-                                  MDString *Name, unsigned SizeInBits,
-                                  unsigned AlignInBits, unsigned Encoding,
+                                  MDString *Name, uint64_t SizeInBits,
+                                  uint64_t AlignInBits, unsigned Encoding,
                                   StorageType Storage, bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(
@@ -160,8 +161,8 @@ MDBasicType *MDBasicType::getImpl(LLVMContext &Context, unsigned Tag,
 
 MDDerivedType *MDDerivedType::getImpl(
     LLVMContext &Context, unsigned Tag, MDString *Name, Metadata *File,
-    unsigned Line, Metadata *Scope, Metadata *BaseType, unsigned SizeInBits,
-    unsigned AlignInBits, unsigned OffsetInBits, unsigned Flags,
+    unsigned Line, Metadata *Scope, Metadata *BaseType, uint64_t SizeInBits,
+    uint64_t AlignInBits, uint64_t OffsetInBits, unsigned Flags,
     Metadata *ExtraData, StorageType Storage, bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(MDDerivedType, (Tag, getString(Name), File, Line, Scope,
@@ -175,8 +176,8 @@ MDDerivedType *MDDerivedType::getImpl(
 
 MDCompositeType *MDCompositeType::getImpl(
     LLVMContext &Context, unsigned Tag, MDString *Name, Metadata *File,
-    unsigned Line, Metadata *Scope, Metadata *BaseType, unsigned SizeInBits,
-    unsigned AlignInBits, unsigned OffsetInBits, unsigned Flags,
+    unsigned Line, Metadata *Scope, Metadata *BaseType, uint64_t SizeInBits,
+    uint64_t AlignInBits, uint64_t OffsetInBits, unsigned Flags,
     Metadata *Elements, unsigned RuntimeLang, Metadata *VTableHolder,
     Metadata *TemplateParams, MDString *Identifier, StorageType Storage,
     bool ShouldCreate) {
@@ -199,7 +200,7 @@ MDSubroutineType *MDSubroutineType::getImpl(LLVMContext &Context,
                                             bool ShouldCreate) {
   DEFINE_GETIMPL_LOOKUP(MDSubroutineType, (Flags, TypeArray));
   Metadata *Ops[] = {nullptr,   nullptr, nullptr, nullptr,
-                     TypeArray, nullptr, nullptr};
+                     TypeArray, nullptr, nullptr, nullptr};
   DEFINE_GETIMPL_STORE(MDSubroutineType, (Flags), Ops);
 }
 
@@ -264,6 +265,11 @@ MDSubprogram *MDSubprogram::getImpl(
                        Ops);
 }
 
+void MDSubprogram::replaceFunction(Function *F) {
+  replaceFunction(F ? ConstantAsMetadata::get(F)
+                    : static_cast<ConstantAsMetadata *>(nullptr));
+}
+
 MDLexicalBlock *MDLexicalBlock::getImpl(LLVMContext &Context, Metadata *Scope,
                                         Metadata *File, unsigned Line,
                                         unsigned Column, StorageType Storage,
@@ -292,24 +298,24 @@ MDNamespace *MDNamespace::getImpl(LLVMContext &Context, Metadata *Scope,
   DEFINE_GETIMPL_STORE(MDNamespace, (Line), Ops);
 }
 
-MDTemplateTypeParameter *
-MDTemplateTypeParameter::getImpl(LLVMContext &Context, Metadata *Scope,
-                                 MDString *Name, Metadata *Type,
-                                 StorageType Storage, bool ShouldCreate) {
+MDTemplateTypeParameter *MDTemplateTypeParameter::getImpl(LLVMContext &Context,
+                                                          MDString *Name,
+                                                          Metadata *Type,
+                                                          StorageType Storage,
+                                                          bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
-  DEFINE_GETIMPL_LOOKUP(MDTemplateTypeParameter,
-                        (Scope, getString(Name), Type));
-  Metadata *Ops[] = {Scope, Name, Type};
+  DEFINE_GETIMPL_LOOKUP(MDTemplateTypeParameter, (getString(Name), Type));
+  Metadata *Ops[] = {Name, Type};
   DEFINE_GETIMPL_STORE_NO_CONSTRUCTOR_ARGS(MDTemplateTypeParameter, Ops);
 }
 
 MDTemplateValueParameter *MDTemplateValueParameter::getImpl(
-    LLVMContext &Context, unsigned Tag, Metadata *Scope, MDString *Name,
-    Metadata *Type, Metadata *Value, StorageType Storage, bool ShouldCreate) {
+    LLVMContext &Context, unsigned Tag, MDString *Name, Metadata *Type,
+    Metadata *Value, StorageType Storage, bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(MDTemplateValueParameter,
-                        (Tag, Scope, getString(Name), Type, Value));
-  Metadata *Ops[] = {Scope, Name, Type, Value};
+                        (Tag, getString(Name), Type, Value));
+  Metadata *Ops[] = {Name, Type, Value};
   DEFINE_GETIMPL_STORE(MDTemplateValueParameter, (Tag), Ops);
 }
 
@@ -336,6 +342,12 @@ MDLocalVariable *MDLocalVariable::getImpl(
     LLVMContext &Context, unsigned Tag, Metadata *Scope, MDString *Name,
     Metadata *File, unsigned Line, Metadata *Type, unsigned Arg, unsigned Flags,
     Metadata *InlinedAt, StorageType Storage, bool ShouldCreate) {
+  // Truncate Arg to 8 bits.
+  //
+  // FIXME: This is gross (and should be changed to an assert or removed), but
+  // it matches historical behaviour for now.
+  Arg &= (1u << 8) - 1;
+
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(MDLocalVariable, (Tag, Scope, getString(Name), File,
                                           Line, Type, Arg, Flags, InlinedAt));
@@ -348,6 +360,38 @@ MDExpression *MDExpression::getImpl(LLVMContext &Context,
                                     StorageType Storage, bool ShouldCreate) {
   DEFINE_GETIMPL_LOOKUP(MDExpression, (Elements));
   DEFINE_GETIMPL_STORE_NO_OPS(MDExpression, (Elements));
+}
+
+unsigned MDExpression::ExprOperand::getSize() const {
+  switch (getOp()) {
+  case dwarf::DW_OP_bit_piece:
+    return 3;
+  case dwarf::DW_OP_plus:
+    return 2;
+  default:
+    return 1;
+  }
+}
+
+bool MDExpression::isValid() const {
+  for (auto I = expr_op_begin(), E = expr_op_end(); I != E; ++I) {
+    // Check that there's space for the operand.
+    if (I->get() + I->getSize() > E->get())
+      return false;
+
+    // Check that the operand is valid.
+    switch (I->getOp()) {
+    default:
+      return false;
+    case dwarf::DW_OP_bit_piece:
+      // Piece expressions must be at the end.
+      return I->get() + I->getSize() == E->get();
+    case dwarf::DW_OP_plus:
+    case dwarf::DW_OP_deref:
+      break;
+    }
+  }
+  return true;
 }
 
 MDObjCProperty *MDObjCProperty::getImpl(

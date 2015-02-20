@@ -10,9 +10,9 @@
 #ifndef LLVM_DEBUGINFO_PDB_PDBTYPES_H
 #define LLVM_DEBUGINFO_PDB_PDBTYPES_H
 
-#include <stdint.h>
-#include <functional>
 #include "llvm/Config/llvm-config.h"
+#include <functional>
+#include <stdint.h>
 
 namespace llvm {
 
@@ -74,6 +74,44 @@ enum class PDB_DumpLevel {
   Normal,
   Detailed,
 };
+
+enum PDB_DumpFlags {
+  PDB_DF_None = 0x0,
+  PDB_DF_Functions = 0x1,  // Dump functions
+  PDB_DF_Data = 0x2,       // Dump variables and constants
+  PDB_DF_Labels = 0x4,     // Dump labels
+  PDB_DF_PublicSyms = 0x8, // Dump public symbols
+  PDB_DF_Classes = 0x10,   // Dump class types
+  PDB_DF_Enums = 0x20,     // Dump enums
+  PDB_DF_Funcsigs = 0x40,  // Dump function signatures
+  PDB_DF_VTables = 0x80,   // Dump virtual function tables
+  PDB_DF_Thunks = 0x100,   // Dump thunks
+  PDB_DF_ObjFiles = 0x200, // Dump object files (compilands)
+  PDB_DF_Typedefs = 0x400, // Dump typedefs
+  PDB_DF_Children = 0x800, // Dump children of the current symbol
+  PDB_DF_Hidden = 0x1000,  // Dump everything.  This is not simply a bitwise
+                           // or of the previous flags.  It will find symbols
+                           // that would otherwise be missed, but can lead to
+                           // much slower dumps for large input files.
+  PDB_DF_All = 0x7FF
+};
+inline PDB_DumpFlags operator|(PDB_DumpFlags LHS, PDB_DumpFlags RHS) {
+  return static_cast<PDB_DumpFlags>((int)LHS | (int)RHS);
+}
+
+inline PDB_DumpFlags operator&(PDB_DumpFlags LHS, PDB_DumpFlags RHS) {
+  return static_cast<PDB_DumpFlags>((int)LHS & (int)RHS);
+}
+
+inline PDB_DumpFlags operator~(PDB_DumpFlags LHS) {
+  return static_cast<PDB_DumpFlags>(~(int)LHS);
+}
+inline PDB_DumpFlags &operator|=(PDB_DumpFlags &LHS, PDB_DumpFlags RHS) {
+  return (LHS = (LHS | RHS));
+}
+inline PDB_DumpFlags &operator&=(PDB_DumpFlags &LHS, PDB_DumpFlags RHS) {
+  return (LHS = (LHS & RHS));
+}
 
 /// Defines a 128-bit unique identifier.  This maps to a GUID on Windows, but
 /// is abstracted here for the purposes of non-Windows platforms that don't have
@@ -431,6 +469,44 @@ struct VersionInfo {
   uint32_t Minor;
   uint32_t Build;
   uint32_t QFE;
+};
+
+enum PDB_VariantType {
+  Empty,
+  Unknown,
+  Int8,
+  Int16,
+  Int32,
+  Int64,
+  Single,
+  Double,
+  UInt8,
+  UInt16,
+  UInt32,
+  UInt64,
+  Bool,
+};
+
+struct Variant {
+  Variant()
+    : Type(PDB_VariantType::Empty) {
+  }
+
+  PDB_VariantType Type;
+  union {
+    bool Bool;
+    int8_t Int8;
+    int16_t Int16;
+    int32_t Int32;
+    int64_t Int64;
+    float Single;
+    double Double;
+    uint8_t UInt8;
+    uint16_t UInt16;
+    uint32_t UInt32;
+    uint64_t UInt64;
+    void* Pointer;
+  };
 };
 
 } // namespace llvm

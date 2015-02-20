@@ -22,7 +22,11 @@ public:
   PDBSymbolFunc(const IPDBSession &PDBSession,
                 std::unique_ptr<IPDBRawSymbol> FuncSymbol);
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
+  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
+
+  std::unique_ptr<PDBSymbolTypeFunctionSig> getSignature() const;
+
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Function)
 
   FORWARD_SYMBOL_METHOD(getAccess)
   FORWARD_SYMBOL_METHOD(getAddressOffset)
@@ -66,10 +70,6 @@ public:
   FORWARD_SYMBOL_METHOD(getVirtualAddress)
   FORWARD_SYMBOL_METHOD(getVirtualBaseOffset)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Function;
-  }
 };
 
 } // namespace llvm

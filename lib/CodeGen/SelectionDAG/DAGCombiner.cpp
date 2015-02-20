@@ -403,12 +403,9 @@ namespace {
     DAGCombiner(SelectionDAG &D, AliasAnalysis &A, CodeGenOpt::Level OL)
         : DAG(D), TLI(D.getTargetLoweringInfo()), Level(BeforeLegalizeTypes),
           OptLevel(OL), LegalOperations(false), LegalTypes(false), AA(A) {
-      AttributeSet FnAttrs =
-          DAG.getMachineFunction().getFunction()->getAttributes();
-      ForCodeSize =
-          FnAttrs.hasAttribute(AttributeSet::FunctionIndex,
-                               Attribute::OptimizeForSize) ||
-          FnAttrs.hasAttribute(AttributeSet::FunctionIndex, Attribute::MinSize);
+      auto *F = DAG.getMachineFunction().getFunction();
+      ForCodeSize = F->hasFnAttribute(Attribute::OptimizeForSize) ||
+                    F->hasFnAttribute(Attribute::MinSize);
     }
 
     /// Runs the dag combiner on all nodes in the work list
@@ -469,7 +466,7 @@ void TargetLowering::DAGCombinerInfo::RemoveFromWorklist(SDNode *N) {
 }
 
 SDValue TargetLowering::DAGCombinerInfo::
-CombineTo(SDNode *N, const std::vector<SDValue> &To, bool AddTo) {
+CombineTo(SDNode *N, ArrayRef<SDValue> To, bool AddTo) {
   return ((DAGCombiner*)DC)->CombineTo(N, &To[0], To.size(), AddTo);
 }
 
@@ -1184,10 +1181,8 @@ void DAGCombiner::Run(CombineLevel AtLevel) {
   LegalTypes = Level >= AfterLegalizeTypes;
 
   // Early exit if this basic block is in an optnone function.
-  AttributeSet FnAttrs =
-    DAG.getMachineFunction().getFunction()->getAttributes();
-  if (FnAttrs.hasAttribute(AttributeSet::FunctionIndex,
-                           Attribute::OptimizeNone))
+  if (DAG.getMachineFunction().getFunction()->hasFnAttribute(
+          Attribute::OptimizeNone))
     return;
 
   // Add all the dag nodes to the worklist.
@@ -6918,8 +6913,7 @@ ConstantFoldBITCASTofBUILD_VECTOR(SDNode *BV, EVT DstEltVT) {
 
   for (unsigned i = 0, e = BV->getNumOperands(); i != e; ++i) {
     if (BV->getOperand(i).getOpcode() == ISD::UNDEF) {
-      for (unsigned j = 0; j != NumOutputsPerInput; ++j)
-        Ops.push_back(DAG.getUNDEF(DstEltVT));
+      Ops.append(NumOutputsPerInput, DAG.getUNDEF(DstEltVT));
       continue;
     }
 
@@ -7850,6 +7844,50 @@ SDValue DAGCombiner::visitUINT_TO_FP(SDNode *N) {
   return SDValue();
 }
 
+// Fold (fp_to_{s/u}int ({s/u}int_to_fpx)) -> zext x, sext x, trunc x, or x
+static SDValue FoldIntToFPToInt(SDNode *N, SelectionDAG &DAG) {
+  SDValue N0 = N->getOperand(0);
+  EVT VT = N->getValueType(0);
+
+  if (N0.getOpcode() != ISD::UINT_TO_FP && N0.getOpcode() != ISD::SINT_TO_FP)
+    return SDValue();
+
+  SDValue Src = N0.getOperand(0);
+  EVT SrcVT = Src.getValueType();
+  bool IsInputSigned = N0.getOpcode() == ISD::SINT_TO_FP;
+  bool IsOutputSigned = N->getOpcode() == ISD::FP_TO_SINT;
+
+  // We can safely assume the conversion won't overflow the output range,
+  // because (for example) (uint8_t)18293.f is undefined behavior.
+
+  // Since we can assume the conversion won't overflow, our decision as to
+  // whether the input will fit in the float should depend on the minimum
+  // of the input range and output range.
+
+  // This means this is also safe for a signed input and unsigned output, since
+  // a negative input would lead to undefined behavior.
+  unsigned InputSize = (int)SrcVT.getScalarSizeInBits() - IsInputSigned;
+  unsigned OutputSize = (int)VT.getScalarSizeInBits() - IsOutputSigned;
+  unsigned ActualSize = std::min(InputSize, OutputSize);
+  const fltSemantics &sem = DAG.EVTToAPFloatSemantics(N0.getValueType());
+
+  // We can only fold away the float conversion if the input range can be
+  // represented exactly in the float range.
+  if (APFloat::semanticsPrecision(sem) >= ActualSize) {
+    if (VT.getScalarSizeInBits() > SrcVT.getScalarSizeInBits()) {
+      unsigned ExtOp = IsInputSigned && IsOutputSigned ? ISD::SIGN_EXTEND
+                                                       : ISD::ZERO_EXTEND;
+      return DAG.getNode(ExtOp, SDLoc(N), VT, Src);
+    }
+    if (VT.getScalarSizeInBits() < SrcVT.getScalarSizeInBits())
+      return DAG.getNode(ISD::TRUNCATE, SDLoc(N), VT, Src);
+    if (SrcVT == VT)
+      return Src;
+    return DAG.getNode(ISD::BITCAST, SDLoc(N), VT, Src);
+  }
+  return SDValue();
+}
+
 SDValue DAGCombiner::visitFP_TO_SINT(SDNode *N) {
   SDValue N0 = N->getOperand(0);
   ConstantFPSDNode *N0CFP = dyn_cast<ConstantFPSDNode>(N0);
@@ -7859,7 +7897,7 @@ SDValue DAGCombiner::visitFP_TO_SINT(SDNode *N) {
   if (N0CFP)
     return DAG.getNode(ISD::FP_TO_SINT, SDLoc(N), VT, N0);
 
-  return SDValue();
+  return FoldIntToFPToInt(N, DAG);
 }
 
 SDValue DAGCombiner::visitFP_TO_UINT(SDNode *N) {
@@ -7871,7 +7909,7 @@ SDValue DAGCombiner::visitFP_TO_UINT(SDNode *N) {
   if (N0CFP)
     return DAG.getNode(ISD::FP_TO_UINT, SDLoc(N), VT, N0);
 
-  return SDValue();
+  return FoldIntToFPToInt(N, DAG);
 }
 
 SDValue DAGCombiner::visitFP_ROUND(SDNode *N) {
@@ -7890,11 +7928,16 @@ SDValue DAGCombiner::visitFP_ROUND(SDNode *N) {
 
   // fold (fp_round (fp_round x)) -> (fp_round x)
   if (N0.getOpcode() == ISD::FP_ROUND) {
-    // This is a value preserving truncation if both round's are.
-    bool IsTrunc = N->getConstantOperandVal(1) == 1 &&
-                   N0.getNode()->getConstantOperandVal(1) == 1;
-    return DAG.getNode(ISD::FP_ROUND, SDLoc(N), VT, N0.getOperand(0),
-                       DAG.getIntPtrConstant(IsTrunc));
+    const bool NIsTrunc = N->getConstantOperandVal(1) == 1;
+    const bool N0IsTrunc = N0.getNode()->getConstantOperandVal(1) == 1;
+    // If the first fp_round isn't a value preserving truncation, it might
+    // introduce a tie in the second fp_round, that wouldn't occur in the
+    // single-step fp_round we want to fold to.
+    // In other words, double rounding isn't the same as rounding.
+    // Also, this is a value preserving truncation iff both fp_round's are.
+    if (DAG.getTarget().Options.UnsafeFPMath || N0IsTrunc)
+      return DAG.getNode(ISD::FP_ROUND, SDLoc(N), VT, N0.getOperand(0),
+                         DAG.getIntPtrConstant(NIsTrunc && N0IsTrunc));
   }
 
   // fold (fp_round (copysign X, Y)) -> (copysign (fp_round X), Y)
@@ -9484,7 +9527,7 @@ CheckForMaskedLoad(SDValue V, SDValue Ptr, SDValue Chain) {
   if (NotMaskLZ == 64) return Result;  // All zero mask.
 
   // See if we have a continuous run of bits.  If so, we have 0*1+0*
-  if (CountTrailingOnes_64(NotMask >> NotMaskTZ)+NotMaskTZ+NotMaskLZ != 64)
+  if (countTrailingOnes(NotMask >> NotMaskTZ) + NotMaskTZ + NotMaskLZ != 64)
     return Result;
 
   // Adjust NotMaskLZ down to be from the actual size of the int instead of i64.
@@ -9950,8 +9993,8 @@ bool DAGCombiner::MergeStoresOfConstantsOrVecElts(
 bool DAGCombiner::MergeConsecutiveStores(StoreSDNode* St) {
   EVT MemVT = St->getMemoryVT();
   int64_t ElementSizeBytes = MemVT.getSizeInBits()/8;
-  bool NoVectors = DAG.getMachineFunction().getFunction()->getAttributes().
-    hasAttribute(AttributeSet::FunctionIndex, Attribute::NoImplicitFloat);
+  bool NoVectors = DAG.getMachineFunction().getFunction()->hasFnAttribute(
+      Attribute::NoImplicitFloat);
 
   // Don't merge vectors into wider inputs.
   if (MemVT.isVector() || !MemVT.isSimple())
@@ -11706,23 +11749,17 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
       if (AllSame)
         return N0;
 
-      // If the splatted element is a constant, just build the vector out of
-      // constants directly.
+      // Canonicalize any other splat as a build_vector.
       const SDValue &Splatted = V->getOperand(SVN->getSplatIndex());
-      if (isa<ConstantSDNode>(Splatted) || isa<ConstantFPSDNode>(Splatted)) {
-        SmallVector<SDValue, 8> Ops;
-        for (unsigned i = 0; i != NumElts; ++i) {
-          Ops.push_back(Splatted);
-        }
-        SDValue NewBV = DAG.getNode(ISD::BUILD_VECTOR, SDLoc(N),
-          V->getValueType(0), Ops);
+      SmallVector<SDValue, 8> Ops(NumElts, Splatted);
+      SDValue NewBV = DAG.getNode(ISD::BUILD_VECTOR, SDLoc(N),
+                                  V->getValueType(0), Ops);
 
-        // We may have jumped through bitcasts, so the type of the
-        // BUILD_VECTOR may not match the type of the shuffle.
-        if (V->getValueType(0) != VT)
-           NewBV = DAG.getNode(ISD::BITCAST, SDLoc(N), VT, NewBV);
-        return NewBV;
-      }
+      // We may have jumped through bitcasts, so the type of the
+      // BUILD_VECTOR may not match the type of the shuffle.
+      if (V->getValueType(0) != VT)
+          NewBV = DAG.getNode(ISD::BITCAST, SDLoc(N), VT, NewBV);
+      return NewBV;
     }
   }
 
@@ -11770,8 +11807,9 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
   //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(A, C, M2)
   //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(B, C, M2)
   // Don't try to fold shuffles with illegal type.
-  if (N0.getOpcode() == ISD::VECTOR_SHUFFLE && Level < AfterLegalizeDAG &&
-      TLI.isTypeLegal(VT)) {
+  // Only fold if this shuffle is the only user of the other shuffle.
+  if (N0.getOpcode() == ISD::VECTOR_SHUFFLE && N->isOnlyUserOf(N0.getNode()) &&
+      Level < AfterLegalizeDAG && TLI.isTypeLegal(VT)) {
     ShuffleVectorSDNode *OtherSV = cast<ShuffleVectorSDNode>(N0);
 
     // The incoming shuffle must be of the same type as the result of the
@@ -11935,9 +11973,11 @@ SDValue DAGCombiner::XformToShuffleWithZero(SDNode *N) {
           return SDValue();
       }
 
-      // Let's see if the target supports this vector_shuffle.
+      // Let's see if the target supports this vector_shuffle and make sure
+      // we're not running after operation legalization where it may have
+      // custom lowered the vector shuffles.
       EVT RVT = RHS.getValueType();
-      if (!TLI.isVectorClearMaskLegal(Indices, RVT))
+      if (LegalOperations || !TLI.isVectorClearMaskLegal(Indices, RVT))
         return SDValue();
 
       // Return the new VECTOR_SHUFFLE node.
