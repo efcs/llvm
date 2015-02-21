@@ -1,8 +1,10 @@
 def addrimm12 : ComplexPattern<iPTR, 2, "selectIntAddrMM", [frameindex]>;
+def addrimm4lsl2 : ComplexPattern<iPTR, 2, "selectIntAddrLSL2MM", [frameindex]>;
 
 def simm4 : Operand<i32> {
   let DecoderMethod = "DecodeSimm4";
 }
+def simm7 : Operand<i32>;
 def li_simm7 : Operand<i32> {
   let DecoderMethod = "DecodeLiSimm7";
 }
@@ -64,7 +66,7 @@ def MicroMipsMemGPRMM16AsmOperand : AsmOperandClass {
 
 class mem_mm_4_generic : Operand<i32> {
   let PrintMethod = "printMemOperand";
-  let MIOperandInfo = (ops ptr_rc, simm4);
+  let MIOperandInfo = (ops GPRMM16, simm4);
   let OperandType = "OPERAND_MEMORY";
   let ParserMatchClass = MicroMipsMemGPRMM16AsmOperand;
 }
@@ -94,6 +96,13 @@ def mem_mm_sp_imm5_lsl2 : Operand<i32> {
   let OperandType = "OPERAND_MEMORY";
   let ParserMatchClass = MicroMipsMemSPAsmOperand;
   let EncoderMethod = "getMemEncodingMMSPImm5Lsl2";
+}
+
+def mem_mm_gp_imm7_lsl2 : Operand<i32> {
+  let PrintMethod = "printMemOperand";
+  let MIOperandInfo = (ops GPRMM16:$base, simm7:$offset);
+  let OperandType = "OPERAND_MEMORY";
+  let EncoderMethod = "getMemEncodingMMGPImm7Lsl2";
 }
 
 def mem_mm_12 : Operand<i32> {
@@ -305,6 +314,15 @@ class StoreSPMM16<string opstr, DAGOperand RO, InstrItinClass Itin,
                   !strconcat(opstr, "\t$rt, $offset"), [], Itin, FrmI> {
   let DecoderMethod = "DecodeMemMMSPImm5Lsl2";
   let mayStore = 1;
+}
+
+class LoadGPMM16<string opstr, DAGOperand RO, InstrItinClass Itin,
+                 Operand MemOpnd> :
+  MicroMipsInst16<(outs RO:$rt), (ins MemOpnd:$offset),
+                  !strconcat(opstr, "\t$rt, $offset"), [], Itin, FrmI> {
+  let DecoderMethod = "DecodeMemMMGPImm7Lsl2";
+  let canFoldAsLoad = 1;
+  let mayLoad = 1;
 }
 
 class AddImmUR2<string opstr, RegisterOperand RO> :
@@ -539,6 +557,8 @@ def SH16_MM : StoreMM16<"sh16", GPRMM16OpndZero, GPRMM16Opnd, truncstorei16,
                         LOAD_STORE_FM_MM16<0x2a>;
 def SW16_MM : StoreMM16<"sw16", GPRMM16OpndZero, GPRMM16Opnd, store, II_SW,
                         mem_mm_4_lsl2>, LOAD_STORE_FM_MM16<0x3a>;
+def LWGP_MM : LoadGPMM16<"lw", GPRMM16Opnd, II_LW, mem_mm_gp_imm7_lsl2>,
+                         LOAD_GP_FM_MM16<0x19>;
 def LWSP_MM : LoadSPMM16<"lw", GPR32Opnd, II_LW, mem_mm_sp_imm5_lsl2>,
               LOAD_STORE_SP_FM_MM16<0x12>;
 def SWSP_MM : StoreSPMM16<"sw", GPR32Opnd, II_SW, mem_mm_sp_imm5_lsl2>,
@@ -677,6 +697,19 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   /// Load and Store Pair Instructions
   def SWP_MM  : StorePairMM<"swp">, LWM_FM_MM<0x9>;
   def LWP_MM  : LoadPairMM<"lwp">, LWM_FM_MM<0x1>;
+
+  /// Load and Store multiple pseudo Instructions
+  class LoadWordMultMM<string instr_asm > :
+    MipsAsmPseudoInst<(outs reglist:$rt), (ins mem_mm_12:$addr),
+                      !strconcat(instr_asm, "\t$rt, $addr")> ;
+
+  class StoreWordMultMM<string instr_asm > :
+    MipsAsmPseudoInst<(outs), (ins reglist:$rt, mem_mm_12:$addr),
+                      !strconcat(instr_asm, "\t$rt, $addr")> ;
+
+
+  def SWM_MM  : StoreWordMultMM<"swm">;
+  def LWM_MM  : LoadWordMultMM<"lwm">;
 
   /// Move Conditional
   def MOVZ_I_MM : MMRel, CMov_I_I_FT<"movz", GPR32Opnd, GPR32Opnd,
@@ -846,6 +879,16 @@ def : MipsPat<(srl GPRMM16:$src, immZExt2Shift:$imm),
               (SRL16_MM GPRMM16:$src, immZExt2Shift:$imm)>;
 def : MipsPat<(srl GPR32:$src, immZExt5:$imm),
               (SRL_MM GPR32:$src, immZExt5:$imm)>;
+
+def : MipsPat<(store GPRMM16:$src, addrimm4lsl2:$addr),
+              (SW16_MM GPRMM16:$src, addrimm4lsl2:$addr)>;
+def : MipsPat<(store GPR32:$src, addr:$addr),
+              (SW_MM GPR32:$src, addr:$addr)>;
+
+def : MipsPat<(load addrimm4lsl2:$addr),
+              (LW16_MM addrimm4lsl2:$addr)>;
+def : MipsPat<(load addr:$addr),
+              (LW_MM addr:$addr)>;
 
 //===----------------------------------------------------------------------===//
 // MicroMips instruction aliases

@@ -81,7 +81,9 @@ static cl::opt<bool> PrintGCInfo("print-gc", cl::Hidden,
     cl::desc("Dump garbage collector data"));
 static cl::opt<bool> VerifyMachineCode("verify-machineinstrs", cl::Hidden,
     cl::desc("Verify generated machine code"),
-    cl::init(getenv("LLVM_VERIFY_MACHINEINSTRS")!=nullptr));
+    cl::init(false),
+    cl::ZeroOrMore);
+
 static cl::opt<std::string>
 PrintMachineInstrs("print-machineinstrs", cl::ValueOptional,
                    cl::desc("Print machine instrs"),
@@ -249,7 +251,7 @@ TargetPassConfig::TargetPassConfig(TargetMachine *tm, PassManagerBase &pm)
   substitutePass(&PostRAMachineLICMID, &MachineLICMID);
 
   // Temporarily disable experimental passes.
-  const TargetSubtargetInfo &ST = TM->getSubtarget<TargetSubtargetInfo>();
+  const TargetSubtargetInfo &ST = *TM->getSubtargetImpl();
   if (!ST.useMachineScheduler())
     disablePass(&MachineSchedulerID);
 }
@@ -419,7 +421,10 @@ void TargetPassConfig::addIRPasses() {
       addPass(createPrintFunctionPass(dbgs(), "\n\n*** Code after LSR ***\n"));
   }
 
+  // Run GC lowering passes for builtin collectors
+  // TODO: add a pass insertion point here
   addPass(createGCLoweringPass());
+  addPass(createShadowStackGCLoweringPass());
 
   // Make sure that no unreachable blocks are instruction selected.
   addPass(createUnreachableBlockEliminationPass());
@@ -447,8 +452,10 @@ void TargetPassConfig::addPassesToHandleExceptions() {
     // FALLTHROUGH
   case ExceptionHandling::DwarfCFI:
   case ExceptionHandling::ARM:
-  case ExceptionHandling::WinEH:
     addPass(createDwarfEHPass(TM));
+    break;
+  case ExceptionHandling::WinEH:
+    addPass(createWinEHPass(TM));
     break;
   case ExceptionHandling::None:
     addPass(createLowerInvokePass());

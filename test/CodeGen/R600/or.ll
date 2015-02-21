@@ -1,3 +1,4 @@
+; RUN: llc -march=amdgcn -mcpu=tonga -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 ; RUN: llc -march=amdgcn -mcpu=verde -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 ; RUN: llc -march=r600 -mcpu=redwood < %s | FileCheck -check-prefix=EG -check-prefix=FUNC %s
 
@@ -167,7 +168,7 @@ define void @or_i1(float addrspace(1)* %out, float addrspace(1)* %in0, float add
 }
 
 ; FUNC-LABEL: {{^}}s_or_i1:
-; SI: s_or_b64 s[{{[0-9]+:[0-9]+}}], s[{{[0-9]+:[0-9]+}}], vcc
+; SI: s_or_b64 s[{{[0-9]+:[0-9]+}}], vcc, s[{{[0-9]+:[0-9]+}}]
 define void @s_or_i1(i1 addrspace(1)* %out, i32 %a, i32 %b, i32 %c, i32 %d) {
   %cmp0 = icmp eq i32 %a, %b
   %cmp1 = icmp eq i32 %c, %d

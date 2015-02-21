@@ -130,6 +130,30 @@ int64_t DwarfUnit::getDefaultLowerBound() const {
     if (dwarf::DWARF_VERSION >= 4)
       return 1;
     break;
+
+  // The languages below have valid values only if the DWARF version >= 5.
+  case dwarf::DW_LANG_OpenCL:
+  case dwarf::DW_LANG_Go:
+  case dwarf::DW_LANG_Haskell:
+  case dwarf::DW_LANG_C_plus_plus_03:
+  case dwarf::DW_LANG_C_plus_plus_11:
+  case dwarf::DW_LANG_OCaml:
+  case dwarf::DW_LANG_Rust:
+  case dwarf::DW_LANG_C11:
+  case dwarf::DW_LANG_Swift:
+  case dwarf::DW_LANG_Dylan:
+  case dwarf::DW_LANG_C_plus_plus_14:
+    if (dwarf::DWARF_VERSION >= 5)
+      return 0;
+    break;
+
+  case dwarf::DW_LANG_Modula3:
+  case dwarf::DW_LANG_Julia:
+  case dwarf::DW_LANG_Fortran03:
+  case dwarf::DW_LANG_Fortran08:
+    if (dwarf::DWARF_VERSION >= 5)
+      return 1;
+    break;
   }
 
   return -1;
@@ -606,6 +630,7 @@ static bool isUnsignedDIType(DwarfDebug *DD, DIType Ty) {
           Encoding == dwarf::DW_ATE_unsigned_char ||
           Encoding == dwarf::DW_ATE_signed ||
           Encoding == dwarf::DW_ATE_signed_char ||
+          Encoding == dwarf::DW_ATE_float ||
           Encoding == dwarf::DW_ATE_UTF || Encoding == dwarf::DW_ATE_boolean ||
           (Ty.getTag() == dwarf::DW_TAG_unspecified_type &&
            Ty.getName() == "decltype(nullptr)")) &&
@@ -627,10 +652,7 @@ static uint64_t getBaseTypeSize(DwarfDebug *DD, DIDerivedType Ty) {
 
   DIType BaseType = DD->resolve(Ty.getTypeDerivedFrom());
 
-  // If this type is not derived from any type or the type is a declaration then
-  // take conservative approach.
-  if (!BaseType.isValid() || BaseType.isForwardDecl())
-    return Ty.getSizeInBits();
+  assert(BaseType.isValid() && "Unexpected invalid base type");
 
   // If this is a derived type, go ahead and get the base type, unless it's a
   // reference then it's just the size of the field. Pointer types have no need
@@ -1474,7 +1496,7 @@ void DwarfUnit::constructMemberDIE(DIE &Buffer, DIDerivedType DT) {
     uint64_t FieldSize = getBaseTypeSize(DD, DT);
     uint64_t OffsetInBytes;
 
-    if (Size != FieldSize) {
+    if (FieldSize && Size != FieldSize) {
       // Handle bitfield, assume bytes are 8 bits.
       addUInt(MemberDie, dwarf::DW_AT_byte_size, None, FieldSize/8);
       addUInt(MemberDie, dwarf::DW_AT_bit_size, None, Size);

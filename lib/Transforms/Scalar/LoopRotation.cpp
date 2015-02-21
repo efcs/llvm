@@ -63,7 +63,7 @@ namespace {
       AU.addRequiredID(LCSSAID);
       AU.addPreservedID(LCSSAID);
       AU.addPreserved<ScalarEvolution>();
-      AU.addRequired<TargetTransformInfo>();
+      AU.addRequired<TargetTransformInfoWrapperPass>();
     }
 
     bool runOnLoop(Loop *L, LPPassManager &LPM) override;
@@ -81,7 +81,7 @@ namespace {
 
 char LoopRotate::ID = 0;
 INITIALIZE_PASS_BEGIN(LoopRotate, "loop-rotate", "Rotate Loops", false, false)
-INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
@@ -101,10 +101,11 @@ bool LoopRotate::runOnLoop(Loop *L, LPPassManager &LPM) {
   // Save the loop metadata.
   MDNode *LoopMD = L->getLoopID();
 
+  Function &F = *L->getHeader()->getParent();
+
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-  TTI = &getAnalysis<TargetTransformInfo>();
-  AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(
-      *L->getHeader()->getParent());
+  TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
+  AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
   auto *DTWP = getAnalysisIfAvailable<DominatorTreeWrapperPass>();
   DT = DTWP ? &DTWP->getDomTree() : nullptr;
 
@@ -229,20 +230,17 @@ static bool shouldSpeculateInstrs(BasicBlock::iterator Begin,
     case Instruction::Shl:
     case Instruction::LShr:
     case Instruction::AShr: {
-      Value *IVOpnd = nullptr;
-      if (isa<ConstantInt>(I->getOperand(0)))
-        IVOpnd = I->getOperand(1);
-
-      if (isa<ConstantInt>(I->getOperand(1))) {
-        if (IVOpnd)
-          return false;
-
-        IVOpnd = I->getOperand(0);
-      }
+      Value *IVOpnd = !isa<Constant>(I->getOperand(0))
+                          ? I->getOperand(0)
+                          : !isa<Constant>(I->getOperand(1))
+                                ? I->getOperand(1)
+                                : nullptr;
+      if (!IVOpnd)
+        return false;
 
       // If increment operand is used outside of the loop, this speculation
       // could cause extra live range interference.
-      if (MultiExitLoop && IVOpnd) {
+      if (MultiExitLoop) {
         for (User *UseI : IVOpnd->users()) {
           auto *UserInst = cast<Instruction>(UseI);
           if (!L->contains(UserInst))

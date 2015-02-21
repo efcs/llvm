@@ -905,7 +905,9 @@ int main(int argc, char **argv) {
       && !(UniversalHeaders && MachOOpt)
       && !(ArchiveHeaders && MachOOpt)
       && !(IndirectSymbols && MachOOpt)
-      && !(DataInCode && MachOOpt)) {
+      && !(DataInCode && MachOOpt)
+      && !(LinkOptHints && MachOOpt)
+      && !(DumpSections.size() != 0 && MachOOpt)) {
     cl::PrintHelpMessage();
     return 2;
   }

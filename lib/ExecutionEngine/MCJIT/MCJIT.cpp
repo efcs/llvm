@@ -25,8 +25,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/MutexGuard.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 
 using namespace llvm;
 
@@ -410,7 +408,8 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(const char *FnName,
                                                  ModulePtrSet::iterator I,
                                                  ModulePtrSet::iterator E) {
   for (; I != E; ++I) {
-    if (Function *F = (*I)->getFunction(FnName))
+    Function *F = (*I)->getFunction(FnName);
+    if (F && !F->isDeclaration())
       return F;
   }
   return nullptr;

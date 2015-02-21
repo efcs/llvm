@@ -67,10 +67,9 @@ EnableAArch64SlrGeneration("aarch64-shift-insert-generation", cl::Hidden,
                          cl::desc("Allow AArch64 SLI/SRI formation"),
                          cl::init(false));
 
-
-AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM)
-    : TargetLowering(TM) {
-  Subtarget = &TM.getSubtarget<AArch64Subtarget>();
+AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
+                                             const AArch64Subtarget &STI)
+    : TargetLowering(TM), Subtarget(&STI) {
 
   // AArch64 doesn't have comparisons which set GPRs or setcc instructions, so
   // we have to make something up. Arbitrarily, choose ZeroOrOne.
@@ -878,9 +877,8 @@ AArch64TargetLowering::EmitF128CSEL(MachineInstr *MI,
   // EndBB:
   //     Dest = PHI [IfTrue, TrueBB], [IfFalse, OrigBB]
 
-  const TargetInstrInfo *TII =
-      getTargetMachine().getSubtargetImpl()->getInstrInfo();
   MachineFunction *MF = MBB->getParent();
+  const TargetInstrInfo *TII = Subtarget->getInstrInfo();
   const BasicBlock *LLVM_BB = MBB->getBasicBlock();
   DebugLoc DL = MI->getDebugLoc();
   MachineFunction::iterator It = MBB;
@@ -2797,19 +2795,16 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
 
   // Add a register mask operand representing the call-preserved registers.
   const uint32_t *Mask;
-  const TargetRegisterInfo *TRI =
-      getTargetMachine().getSubtargetImpl()->getRegisterInfo();
-  const AArch64RegisterInfo *ARI =
-      static_cast<const AArch64RegisterInfo *>(TRI);
+  const AArch64RegisterInfo *TRI = Subtarget->getRegisterInfo();
   if (IsThisReturn) {
     // For 'this' returns, use the X0-preserving mask if applicable
-    Mask = ARI->getThisReturnPreservedMask(CallConv);
+    Mask = TRI->getThisReturnPreservedMask(CallConv);
     if (!Mask) {
       IsThisReturn = false;
-      Mask = ARI->getCallPreservedMask(CallConv);
+      Mask = TRI->getCallPreservedMask(CallConv);
     }
   } else
-    Mask = ARI->getCallPreservedMask(CallConv);
+    Mask = TRI->getCallPreservedMask(CallConv);
 
   assert(Mask && "Missing call preserved mask for calling convention");
   Ops.push_back(DAG.getRegisterMask(Mask));
@@ -3029,11 +3024,8 @@ AArch64TargetLowering::LowerDarwinGlobalTLSAddress(SDValue Op,
   // TLS calls preserve all registers except those that absolutely must be
   // trashed: X0 (it takes an argument), LR (it's a call) and NZCV (let's not be
   // silly).
-  const TargetRegisterInfo *TRI =
-      getTargetMachine().getSubtargetImpl()->getRegisterInfo();
-  const AArch64RegisterInfo *ARI =
-      static_cast<const AArch64RegisterInfo *>(TRI);
-  const uint32_t *Mask = ARI->getTLSCallPreservedMask();
+  const uint32_t *Mask =
+      Subtarget->getRegisterInfo()->getTLSCallPreservedMask();
 
   // Finally, we can make the call. This is just a degenerate version of a
   // normal AArch64 call node: x0 takes the address of the descriptor, and
@@ -3080,11 +3072,8 @@ SDValue AArch64TargetLowering::LowerELFTLSDescCall(SDValue SymAddr,
   // TLS calls preserve all registers except those that absolutely must be
   // trashed: X0 (it takes an argument), LR (it's a call) and NZCV (let's not be
   // silly).
-  const TargetRegisterInfo *TRI =
-      getTargetMachine().getSubtargetImpl()->getRegisterInfo();
-  const AArch64RegisterInfo *ARI =
-      static_cast<const AArch64RegisterInfo *>(TRI);
-  const uint32_t *Mask = ARI->getTLSCallPreservedMask();
+  const uint32_t *Mask =
+      Subtarget->getRegisterInfo()->getTLSCallPreservedMask();
 
   // The function takes only one argument: the address of the descriptor itself
   // in X0.
@@ -3274,8 +3263,8 @@ SDValue AArch64TargetLowering::LowerBR_CC(SDValue Op, SelectionDAG &DAG) const {
       OFCC = getInvertedCondCode(OFCC);
     SDValue CCVal = DAG.getConstant(OFCC, MVT::i32);
 
-    return DAG.getNode(AArch64ISD::BRCOND, SDLoc(LHS), MVT::Other, Chain, Dest,
-                       CCVal, Overflow);
+    return DAG.getNode(AArch64ISD::BRCOND, dl, MVT::Other, Chain, Dest, CCVal,
+                       Overflow);
   }
 
   if (LHS.getValueType().isInteger()) {
@@ -3462,18 +3451,12 @@ SDValue AArch64TargetLowering::LowerCTPOP(SDValue Op, SelectionDAG &DAG) const {
   SDValue Val = Op.getOperand(0);
   SDLoc DL(Op);
   EVT VT = Op.getValueType();
-  SDValue ZeroVec = DAG.getUNDEF(MVT::v8i8);
 
-  SDValue VecVal;
-  if (VT == MVT::i32) {
-    VecVal = DAG.getNode(ISD::BITCAST, DL, MVT::f32, Val);
-    VecVal = DAG.getTargetInsertSubreg(AArch64::ssub, DL, MVT::v8i8, ZeroVec,
-                                       VecVal);
-  } else {
-    VecVal = DAG.getNode(ISD::BITCAST, DL, MVT::v8i8, Val);
-  }
+  if (VT == MVT::i32)
+    Val = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i64, Val);
+  Val = DAG.getNode(ISD::BITCAST, DL, MVT::v8i8, Val);
 
-  SDValue CtPop = DAG.getNode(ISD::CTPOP, DL, MVT::v8i8, VecVal);
+  SDValue CtPop = DAG.getNode(ISD::CTPOP, DL, MVT::v8i8, Val);
   SDValue UaddLV = DAG.getNode(
       ISD::INTRINSIC_WO_CHAIN, DL, MVT::i32,
       DAG.getConstant(Intrinsic::aarch64_neon_uaddlv, MVT::i32), CtPop);
@@ -6287,6 +6270,8 @@ static SDValue EmitVectorComparison(SDValue LHS, SDValue RHS,
                                     AArch64CC::CondCode CC, bool NoNans, EVT VT,
                                     SDLoc dl, SelectionDAG &DAG) {
   EVT SrcVT = LHS.getValueType();
+  assert(VT.getSizeInBits() == SrcVT.getSizeInBits() &&
+         "function only supposed to emit natural comparisons");
 
   BuildVectorSDNode *BVN = dyn_cast<BuildVectorSDNode>(RHS.getNode());
   APInt CnstBits(VT.getSizeInBits(), 0);
@@ -6381,13 +6366,15 @@ SDValue AArch64TargetLowering::LowerVSETCC(SDValue Op,
   ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(2))->get();
   SDValue LHS = Op.getOperand(0);
   SDValue RHS = Op.getOperand(1);
+  EVT CmpVT = LHS.getValueType().changeVectorElementTypeToInteger();
   SDLoc dl(Op);
 
   if (LHS.getValueType().getVectorElementType().isInteger()) {
     assert(LHS.getValueType() == RHS.getValueType());
     AArch64CC::CondCode AArch64CC = changeIntCCToAArch64CC(CC);
-    return EmitVectorComparison(LHS, RHS, AArch64CC, false, Op.getValueType(),
-                                dl, DAG);
+    SDValue Cmp =
+        EmitVectorComparison(LHS, RHS, AArch64CC, false, CmpVT, dl, DAG);
+    return DAG.getSExtOrTrunc(Cmp, dl, Op.getValueType());
   }
 
   assert(LHS.getValueType().getVectorElementType() == MVT::f32 ||
@@ -6401,18 +6388,20 @@ SDValue AArch64TargetLowering::LowerVSETCC(SDValue Op,
 
   bool NoNaNs = getTargetMachine().Options.NoNaNsFPMath;
   SDValue Cmp =
-      EmitVectorComparison(LHS, RHS, CC1, NoNaNs, Op.getValueType(), dl, DAG);
+      EmitVectorComparison(LHS, RHS, CC1, NoNaNs, CmpVT, dl, DAG);
   if (!Cmp.getNode())
     return SDValue();
 
   if (CC2 != AArch64CC::AL) {
     SDValue Cmp2 =
-        EmitVectorComparison(LHS, RHS, CC2, NoNaNs, Op.getValueType(), dl, DAG);
+        EmitVectorComparison(LHS, RHS, CC2, NoNaNs, CmpVT, dl, DAG);
     if (!Cmp2.getNode())
       return SDValue();
 
-    Cmp = DAG.getNode(ISD::OR, dl, Cmp.getValueType(), Cmp, Cmp2);
+    Cmp = DAG.getNode(ISD::OR, dl, CmpVT, Cmp, Cmp2);
   }
+
+  Cmp = DAG.getSExtOrTrunc(Cmp, dl, Op.getValueType());
 
   if (ShouldInvert)
     return Cmp = DAG.getNOT(dl, Cmp, Cmp.getValueType());
@@ -7857,7 +7846,7 @@ static SDValue performSTORECombine(SDNode *N,
     return SDValue();
 
   // Cyclone has bad performance on unaligned 16B stores when crossing line and
-  // page boundries. We want to split such stores.
+  // page boundaries. We want to split such stores.
   if (!Subtarget->isCyclone())
     return SDValue();
 

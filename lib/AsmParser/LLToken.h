@@ -28,9 +28,7 @@ namespace lltok {
     lbrace, rbrace,    // {  }
     less, greater,     // <  >
     lparen, rparen,    // (  )
-    backslash,         // \    (not /)
     exclaim,           // !
-    hash,              // #
 
     kw_x,
     kw_true,    kw_false,
@@ -200,6 +198,7 @@ namespace lltok {
     LocalVar,          // %foo %"foo"
     MetadataVar,       // !foo
     StringConstant,    // "foo"
+    DwarfTag,          // DW_TAG_foo (includes "DW_TAG_")
 
     // Type valued tokens (TyVal).
     Type,

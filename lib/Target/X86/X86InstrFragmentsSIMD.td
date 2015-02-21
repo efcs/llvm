@@ -12,6 +12,17 @@
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
+// MMX specific DAG Nodes.
+//===----------------------------------------------------------------------===//
+
+// Low word of MMX to GPR.
+def MMX_X86movd2w : SDNode<"X86ISD::MMX_MOVD2W", SDTypeProfile<1, 1,
+                            [SDTCisVT<0, i32>, SDTCisVT<1, x86mmx>]>>;
+// GPR to low word of MMX.
+def MMX_X86movw2d : SDNode<"X86ISD::MMX_MOVW2D", SDTypeProfile<1, 1,
+                            [SDTCisVT<0, x86mmx>, SDTCisVT<1, i32>]>>;
+
+//===----------------------------------------------------------------------===//
 // MMX Pattern Fragments
 //===----------------------------------------------------------------------===//
 
@@ -203,6 +214,8 @@ def SDTBlend : SDTypeProfile<1, 3, [SDTCisVec<0>, SDTCisSameAs<0,1>,
 
 def SDTFma : SDTypeProfile<1, 3, [SDTCisSameAs<0,1>,
                            SDTCisSameAs<1,2>, SDTCisSameAs<1,3>]>;
+def SDTFmaRound : SDTypeProfile<1, 4, [SDTCisSameAs<0,1>,
+                           SDTCisSameAs<1,2>, SDTCisSameAs<1,3>, SDTCisInt<4>]>;
 def STDFp1SrcRm : SDTypeProfile<1, 2, [SDTCisSameAs<0,1>,
                            SDTCisVec<0>, SDTCisInt<2>]>;
 def STDFp2SrcRm : SDTypeProfile<1, 3, [SDTCisSameAs<0,1>,
@@ -264,6 +277,13 @@ def X86Fmsub     : SDNode<"X86ISD::FMSUB",     SDTFma>;
 def X86Fnmsub    : SDNode<"X86ISD::FNMSUB",    SDTFma>;
 def X86Fmaddsub  : SDNode<"X86ISD::FMADDSUB",  SDTFma>;
 def X86Fmsubadd  : SDNode<"X86ISD::FMSUBADD",  SDTFma>;
+
+def X86FmaddRnd     : SDNode<"X86ISD::FMADD_RND",     SDTFmaRound>;
+def X86FnmaddRnd    : SDNode<"X86ISD::FNMADD_RND",    SDTFmaRound>;
+def X86FmsubRnd     : SDNode<"X86ISD::FMSUB_RND",     SDTFmaRound>;
+def X86FnmsubRnd    : SDNode<"X86ISD::FNMSUB_RND",    SDTFmaRound>;
+def X86FmaddsubRnd  : SDNode<"X86ISD::FMADDSUB_RND",  SDTFmaRound>;
+def X86FmsubaddRnd  : SDNode<"X86ISD::FMSUBADD_RND",  SDTFmaRound>;
 
 def X86rsqrt28   : SDNode<"X86ISD::RSQRT28",  STDFp1SrcRm>;
 def X86rcp28     : SDNode<"X86ISD::RCP28",    STDFp1SrcRm>;
@@ -424,7 +444,7 @@ def alignedloadv8i64  : PatFrag<(ops node:$ptr),
 // setting a feature bit in the processor (on startup, for example).
 // Opteron 10h and later implement such a feature.
 def memop : PatFrag<(ops node:$ptr), (load node:$ptr), [{
-  return    Subtarget->hasVectorUAMem()
+  return    Subtarget->hasSSEUnalignedMem()
          || cast<LoadSDNode>(N)->getAlignment() >= 16;
 }]>;
 
@@ -436,18 +456,6 @@ def memopfsf64 : PatFrag<(ops node:$ptr), (f64   (memop node:$ptr))>;
 def memopv4f32 : PatFrag<(ops node:$ptr), (v4f32 (memop node:$ptr))>;
 def memopv2f64 : PatFrag<(ops node:$ptr), (v2f64 (memop node:$ptr))>;
 def memopv2i64 : PatFrag<(ops node:$ptr), (v2i64 (memop node:$ptr))>;
-
-// 256-bit memop pattern fragments
-// NOTE: all 256-bit integer vector loads are promoted to v4i64
-def memopv8f32 : PatFrag<(ops node:$ptr), (v8f32 (memop node:$ptr))>;
-def memopv4f64 : PatFrag<(ops node:$ptr), (v4f64 (memop node:$ptr))>;
-def memopv4i64 : PatFrag<(ops node:$ptr), (v4i64 (memop node:$ptr))>;
-
-// 512-bit memop pattern fragments
-def memopv16f32 : PatFrag<(ops node:$ptr), (v16f32 (memop node:$ptr))>;
-def memopv8f64  : PatFrag<(ops node:$ptr), (v8f64  (memop node:$ptr))>;
-def memopv16i32 : PatFrag<(ops node:$ptr), (v16i32 (memop node:$ptr))>;
-def memopv8i64  : PatFrag<(ops node:$ptr), (v8i64  (memop node:$ptr))>;
 
 // SSSE3 uses MMX registers for some instructions. They aren't aligned on a
 // 16-byte boundary.

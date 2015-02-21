@@ -61,6 +61,8 @@ struct Query {
 static Value *SimplifyAndInst(Value *, Value *, const Query &, unsigned);
 static Value *SimplifyBinOp(unsigned, Value *, Value *, const Query &,
                             unsigned);
+static Value *SimplifyFPBinOp(unsigned, Value *, Value *, const FastMathFlags &,
+                              const Query &, unsigned);
 static Value *SimplifyCmpInst(unsigned, Value *, Value *, const Query &,
                               unsigned);
 static Value *SimplifyOrInst(Value *, Value *, const Query &, unsigned);
@@ -3087,6 +3089,20 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
           }
         }
       }
+      if (CFP->getValueAPF().isZero()) {
+        switch (Pred) {
+        case FCmpInst::FCMP_UGE:
+          if (CannotBeOrderedLessThanZero(LHS)) 
+            return ConstantInt::getTrue(CFP->getContext());
+          break;
+        case FCmpInst::FCMP_OLT:
+          if (CannotBeOrderedLessThanZero(LHS)) 
+            return ConstantInt::getFalse(CFP->getContext());
+          break;
+        default:
+          break;
+        }
+     }
     }
   }
 
@@ -3451,12 +3467,40 @@ static Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
   }
 }
 
+/// SimplifyFPBinOp - Given operands for a BinaryOperator, see if we can
+/// fold the result.  If not, this returns null.
+/// In contrast to SimplifyBinOp, try to use FastMathFlag when folding the
+/// result. In case we don't need FastMathFlags, simply fall to SimplifyBinOp.
+static Value *SimplifyFPBinOp(unsigned Opcode, Value *LHS, Value *RHS,
+                              const FastMathFlags &FMF, const Query &Q,
+                              unsigned MaxRecurse) {
+  switch (Opcode) {
+  case Instruction::FAdd:
+    return SimplifyFAddInst(LHS, RHS, FMF, Q, MaxRecurse);
+  case Instruction::FSub:
+    return SimplifyFSubInst(LHS, RHS, FMF, Q, MaxRecurse);
+  case Instruction::FMul:
+    return SimplifyFMulInst(LHS, RHS, FMF, Q, MaxRecurse);
+  default:
+    return SimplifyBinOp(Opcode, LHS, RHS, Q, MaxRecurse);
+  }
+}
+
 Value *llvm::SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
                            const DataLayout *DL, const TargetLibraryInfo *TLI,
                            const DominatorTree *DT, AssumptionCache *AC,
                            const Instruction *CxtI) {
   return ::SimplifyBinOp(Opcode, LHS, RHS, Query(DL, TLI, DT, AC, CxtI),
                          RecursionLimit);
+}
+
+Value *llvm::SimplifyFPBinOp(unsigned Opcode, Value *LHS, Value *RHS,
+                             const FastMathFlags &FMF, const DataLayout *DL,
+                             const TargetLibraryInfo *TLI,
+                             const DominatorTree *DT, AssumptionCache *AC,
+                             const Instruction *CxtI) {
+  return ::SimplifyFPBinOp(Opcode, LHS, RHS, FMF, Query(DL, TLI, DT, AC, CxtI),
+                           RecursionLimit);
 }
 
 /// SimplifyCmpInst - Given operands for a CmpInst, see if we can

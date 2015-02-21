@@ -43,6 +43,7 @@
 
 #include "llvm/ADT/Optional.h"
 
+#include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopPass.h"
@@ -75,11 +76,11 @@
 
 using namespace llvm;
 
-cl::opt<unsigned> LoopSizeCutoff("irce-loop-size-cutoff", cl::Hidden,
-                                 cl::init(64));
+static cl::opt<unsigned> LoopSizeCutoff("irce-loop-size-cutoff", cl::Hidden,
+                                        cl::init(64));
 
-cl::opt<bool> PrintChangedLoops("irce-print-changed-loops", cl::Hidden,
-                                cl::init(false));
+static cl::opt<bool> PrintChangedLoops("irce-print-changed-loops", cl::Hidden,
+                                       cl::init(false));
 
 #define DEBUG_TYPE "irce"
 
@@ -169,7 +170,8 @@ public:
   /// Create an inductive range check out of BI if possible, else return
   /// nullptr.
   static InductiveRangeCheck *create(AllocatorTy &Alloc, BranchInst *BI,
-                                     Loop *L, ScalarEvolution &SE);
+                                     Loop *L, ScalarEvolution &SE,
+                                     BranchProbabilityInfo &BPI);
 };
 
 class InductiveRangeCheckElimination : public LoopPass {
@@ -187,6 +189,7 @@ public:
     AU.addRequiredID(LoopSimplifyID);
     AU.addRequiredID(LCSSAID);
     AU.addRequired<ScalarEvolution>();
+    AU.addRequired<BranchProbabilityInfo>();
   }
 
   bool runOnLoop(Loop *L, LPPassManager &LPM) override;
@@ -354,11 +357,18 @@ static bool SplitRangeCheckCondition(Loop *L, ScalarEvolution &SE,
   return true;
 }
 
+
 InductiveRangeCheck *
 InductiveRangeCheck::create(InductiveRangeCheck::AllocatorTy &A, BranchInst *BI,
-                            Loop *L, ScalarEvolution &SE) {
+                            Loop *L, ScalarEvolution &SE,
+                            BranchProbabilityInfo &BPI) {
 
   if (BI->isUnconditional() || BI->getParent() == L->getLoopLatch())
+    return nullptr;
+
+  BranchProbability LikelyTaken(15, 16);
+
+  if (BPI.getEdgeProbability(BI->getParent(), (unsigned) 0) < LikelyTaken)
     return nullptr;
 
   Value *Length = nullptr;
@@ -559,10 +569,8 @@ class LoopConstrainer {
   // Even though we do not preserve any passes at this time, we at least need to
   // keep the parent loop structure consistent.  The `LPPassManager' seems to
   // verify this after running a loop pass.  This function adds the list of
-  // blocks denoted by the iterator range [BlocksBegin, BlocksEnd) to this loops
-  // parent loop if required.
-  template<typename IteratorTy>
-  void addToParentLoopIfNeeded(IteratorTy BlocksBegin, IteratorTy BlocksEnd);
+  // blocks denoted by BBs to this loops parent loop if required.
+  void addToParentLoopIfNeeded(ArrayRef<BasicBlock *> BBs);
 
   // Some global state.
   Function &F;
@@ -999,15 +1007,13 @@ LoopConstrainer::createPreheader(const LoopConstrainer::LoopStructure &LS,
   return Preheader;
 }
 
-template<typename IteratorTy>
-void LoopConstrainer::addToParentLoopIfNeeded(IteratorTy Begin,
-                                              IteratorTy End) {
+void LoopConstrainer::addToParentLoopIfNeeded(ArrayRef<BasicBlock *> BBs) {
   Loop *ParentLoop = OriginalLoop.getParentLoop();
   if (!ParentLoop)
     return;
 
-  for (; Begin != End; Begin++)
-    ParentLoop->addBasicBlockToLoop(*Begin, OriginalLoopInfo);
+  for (BasicBlock *BB : BBs)
+    ParentLoop->addBasicBlockToLoop(BB, OriginalLoopInfo);
 }
 
 bool LoopConstrainer::run() {
@@ -1072,27 +1078,20 @@ bool LoopConstrainer::run() {
                                  PostLoopRRI);
   }
 
-  SmallVector<BasicBlock *, 6> NewBlocks;
-  NewBlocks.push_back(PostLoopPreheader);
-  NewBlocks.push_back(PreLoopRRI.PseudoExit);
-  NewBlocks.push_back(PreLoopRRI.ExitSelector);
-  NewBlocks.push_back(PostLoopRRI.PseudoExit);
-  NewBlocks.push_back(PostLoopRRI.ExitSelector);
-  if (MainLoopPreheader != Preheader)
-    NewBlocks.push_back(MainLoopPreheader);
+  BasicBlock *NewMainLoopPreheader =
+      MainLoopPreheader != Preheader ? MainLoopPreheader : nullptr;
+  BasicBlock *NewBlocks[] = {PostLoopPreheader,        PreLoopRRI.PseudoExit,
+                             PreLoopRRI.ExitSelector,  PostLoopRRI.PseudoExit,
+                             PostLoopRRI.ExitSelector, NewMainLoopPreheader};
 
   // Some of the above may be nullptr, filter them out before passing to
   // addToParentLoopIfNeeded.
-  auto NewBlocksEnd = std::remove(NewBlocks.begin(), NewBlocks.end(), nullptr);
+  auto NewBlocksEnd =
+      std::remove(std::begin(NewBlocks), std::end(NewBlocks), nullptr);
 
-  typedef SmallVector<BasicBlock *, 6>::iterator SmallVectItTy;
-  typedef std::vector<BasicBlock *>::iterator StdVectItTy;
-
-  addToParentLoopIfNeeded<SmallVectItTy>(NewBlocks.begin(), NewBlocksEnd);
-  addToParentLoopIfNeeded<StdVectItTy>(PreLoop.Blocks.begin(),
-                                       PreLoop.Blocks.end());
-  addToParentLoopIfNeeded<StdVectItTy>(PostLoop.Blocks.begin(),
-                                       PostLoop.Blocks.end());
+  addToParentLoopIfNeeded(makeArrayRef(std::begin(NewBlocks), NewBlocksEnd));
+  addToParentLoopIfNeeded(PreLoop.Blocks);
+  addToParentLoopIfNeeded(PostLoop.Blocks);
 
   return true;
 }
@@ -1175,11 +1174,12 @@ bool InductiveRangeCheckElimination::runOnLoop(Loop *L, LPPassManager &LPM) {
   InductiveRangeCheck::AllocatorTy IRCAlloc;
   SmallVector<InductiveRangeCheck *, 16> RangeChecks;
   ScalarEvolution &SE = getAnalysis<ScalarEvolution>();
+  BranchProbabilityInfo &BPI = getAnalysis<BranchProbabilityInfo>();
 
   for (auto BBI : L->getBlocks())
     if (BranchInst *TBI = dyn_cast<BranchInst>(BBI->getTerminator()))
       if (InductiveRangeCheck *IRC =
-              InductiveRangeCheck::create(IRCAlloc, TBI, L, SE))
+          InductiveRangeCheck::create(IRCAlloc, TBI, L, SE, BPI))
         RangeChecks.push_back(IRC);
 
   if (RangeChecks.empty())

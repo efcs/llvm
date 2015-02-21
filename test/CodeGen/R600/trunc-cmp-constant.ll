@@ -1,4 +1,5 @@
-; RUN: llc -march=r600 -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
+; RUN: llc -march=amdgcn -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
+; RUN: llc -march=amdgcn -mcpu=tonga -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 
 ; FUNC-LABEL {{^}}sextload_i1_to_i32_trunc_cmp_eq_0:
 ; SI: buffer_load_ubyte [[LOAD:v[0-9]+]]
@@ -33,7 +34,7 @@ define void @zextload_i1_to_i32_trunc_cmp_eq_0(i1 addrspace(1)* %out, i1 addrspa
 
 ; FUNC-LABEL: {{^}}sextload_i1_to_i32_trunc_cmp_eq_1:
 ; SI: v_mov_b32_e32 [[RESULT:v[0-9]+]], 0{{$}}
-; SI-NEXT: buffer_store_byte [[RESULT]]
+; SI: buffer_store_byte [[RESULT]]
 define void @sextload_i1_to_i32_trunc_cmp_eq_1(i1 addrspace(1)* %out, i1 addrspace(1)* %in) nounwind {
   %load = load i1 addrspace(1)* %in
   %ext = sext i1 %load to i32
@@ -68,7 +69,7 @@ define void @sextload_i1_to_i32_trunc_cmp_eq_neg1(i1 addrspace(1)* %out, i1 addr
 
 ; FUNC-LABEL: {{^}}zextload_i1_to_i32_trunc_cmp_eq_neg1:
 ; SI: v_mov_b32_e32 [[RESULT:v[0-9]+]], 0{{$}}
-; SI-NEXT: buffer_store_byte [[RESULT]]
+; SI: buffer_store_byte [[RESULT]]
 define void @zextload_i1_to_i32_trunc_cmp_eq_neg1(i1 addrspace(1)* %out, i1 addrspace(1)* %in) nounwind {
   %load = load i1 addrspace(1)* %in
   %ext = zext i1 %load to i32
@@ -104,7 +105,7 @@ define void @zextload_i1_to_i32_trunc_cmp_ne_0(i1 addrspace(1)* %out, i1 addrspa
 
 ; FUNC-LABEL: {{^}}sextload_i1_to_i32_trunc_cmp_ne_1:
 ; SI: v_mov_b32_e32 [[RESULT:v[0-9]+]], 1{{$}}
-; SI-NEXT: buffer_store_byte [[RESULT]]
+; SI: buffer_store_byte [[RESULT]]
 define void @sextload_i1_to_i32_trunc_cmp_ne_1(i1 addrspace(1)* %out, i1 addrspace(1)* %in) nounwind {
   %load = load i1 addrspace(1)* %in
   %ext = sext i1 %load to i32
@@ -145,7 +146,7 @@ define void @sextload_i1_to_i32_trunc_cmp_ne_neg1(i1 addrspace(1)* %out, i1 addr
 
 ; FUNC-LABEL: {{^}}zextload_i1_to_i32_trunc_cmp_ne_neg1:
 ; SI: v_mov_b32_e32 [[RESULT:v[0-9]+]], 1{{$}}
-; SI-NEXT: buffer_store_byte [[RESULT]]
+; SI: buffer_store_byte [[RESULT]]
 define void @zextload_i1_to_i32_trunc_cmp_ne_neg1(i1 addrspace(1)* %out, i1 addrspace(1)* %in) nounwind {
   %load = load i1 addrspace(1)* %in
   %ext = zext i1 %load to i32
