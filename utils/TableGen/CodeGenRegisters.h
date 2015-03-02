@@ -18,6 +18,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/CodeGen/MachineValueType.h"
@@ -41,10 +42,10 @@ namespace llvm {
   struct MaskRolPair {
     unsigned Mask;
     uint8_t RotateLeft;
-    bool operator==(const MaskRolPair Other) {
+    bool operator==(const MaskRolPair Other) const {
       return Mask == Other.Mask && RotateLeft == Other.RotateLeft;
     }
-    bool operator!=(const MaskRolPair Other) {
+    bool operator!=(const MaskRolPair Other) const {
       return Mask != Other.Mask || RotateLeft != Other.RotateLeft;
     }
   };
@@ -74,8 +75,7 @@ namespace llvm {
     std::string getQualifiedName() const;
 
     // Map of composite subreg indices.
-    typedef std::map<CodeGenSubRegIndex *, CodeGenSubRegIndex *,
-                     deref<llvm::less>> CompMap;
+    typedef DenseMap<CodeGenSubRegIndex *, CodeGenSubRegIndex *> CompMap;
 
     // Returns the subreg index that results from composing this with Idx.
     // Returns NULL if this and Idx don't compose.

@@ -228,7 +228,7 @@ TEST_F(MDNodeTest, Print) {
     MDNode *Nodes[] = {N0, N1, N2};
     for (auto *Node : Nodes)
       OS << ", <" << (void *)Node << ">";
-    OS << "}\n";
+    OS << "}";
   }
 
   std::string Actual;
@@ -1039,6 +1039,12 @@ TEST_F(MDFileTest, get) {
 
   TempMDFile Temp = N->clone();
   EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
+}
+
+TEST_F(MDFileTest, ScopeGetFile) {
+  // Ensure that MDScope::getFile() returns itself.
+  MDScope *N = MDFile::get(Context, "file", "dir");
+  EXPECT_EQ(N, N->getFile());
 }
 
 typedef MetadataTest MDCompileUnitTest;

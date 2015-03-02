@@ -43,9 +43,9 @@ entry:
 ; CHECK-NEXT:   call void @llvm.dbg.declare(metadata [20 x i8]* %agg.tmp.sroa.3.i,
   %agg.tmp.sroa.3 = alloca [20 x i8], align 4
   tail call void @llvm.dbg.declare(metadata [20 x i8]* %agg.tmp.sroa.3, metadata !46, metadata !48), !dbg !49
-  %agg.tmp.sroa.0.0.copyload = load i32* getelementptr inbounds (%struct.A* @b, i64 0, i32 0), align 8, !dbg !50
+  %agg.tmp.sroa.0.0.copyload = load i32, i32* getelementptr inbounds (%struct.A* @b, i64 0, i32 0), align 8, !dbg !50
   tail call void @llvm.dbg.value(metadata i32 %agg.tmp.sroa.0.0.copyload, i64 0, metadata !46, metadata !51), !dbg !49
-  %agg.tmp.sroa.3.0..sroa_idx = getelementptr inbounds [20 x i8]* %agg.tmp.sroa.3, i64 0, i64 0, !dbg !50
+  %agg.tmp.sroa.3.0..sroa_idx = getelementptr inbounds [20 x i8], [20 x i8]* %agg.tmp.sroa.3, i64 0, i64 0, !dbg !50
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %agg.tmp.sroa.3.0..sroa_idx, i8* getelementptr (i8* bitcast (%struct.A* @b to i8*), i64 4), i64 20, i32 4, i1 false), !dbg !50
   tail call void @llvm.dbg.declare(metadata %struct.A* undef, metadata !46, metadata !31) #2, !dbg !49
   %tobool.i = icmp eq i32 %agg.tmp.sroa.0.0.copyload, 0, !dbg !52
@@ -130,10 +130,10 @@ attributes #3 = { noreturn nounwind }
 !45 = !MDLocation(line: 9, scope: !15)
 !46 = !{!"0x101\00p1\0016777222\000", !15, !16, !"_ZTS1A", !47} ; [ DW_TAG_arg_variable ] [p1] [line 6]
 !47 = distinct !MDLocation(line: 11, scope: !21)
-!48 = !{!"0x102\00147\004\0020"}                  ; [ DW_TAG_expression ] [DW_OP_piece offset=4, size=20]
+!48 = !{!"0x102\00157\0032\00160"}                  ; [ DW_TAG_expression ] [DW_OP_bit_piece offset=32, size=160]
 !49 = !MDLocation(line: 6, scope: !15, inlinedAt: !47)
 !50 = !MDLocation(line: 11, scope: !21)
-!51 = !{!"0x102\00147\000\004"}                   ; [ DW_TAG_expression ] [DW_OP_piece offset=0, size=4]
+!51 = !{!"0x102\00157\000\0032"}                   ; [ DW_TAG_expression ] [DW_OP_bit_piece offset=0, size=32]
 !52 = !MDLocation(line: 7, scope: !34, inlinedAt: !47)
 !53 = !MDLocation(line: 7, scope: !15, inlinedAt: !47)
 !54 = !MDLocation(line: 8, scope: !34, inlinedAt: !47)

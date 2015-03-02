@@ -17,6 +17,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DIBuilder.h"
@@ -35,6 +36,48 @@ using namespace llvm::dwarf;
 //===----------------------------------------------------------------------===//
 // DIDescriptor
 //===----------------------------------------------------------------------===//
+
+unsigned DIDescriptor::getFlag(StringRef Flag) {
+  return StringSwitch<unsigned>(Flag)
+#define HANDLE_DI_FLAG(ID, NAME) .Case("DIFlag" #NAME, Flag##NAME)
+#include "llvm/IR/DebugInfoFlags.def"
+      .Default(0);
+}
+
+const char *DIDescriptor::getFlagString(unsigned Flag) {
+  switch (Flag) {
+  default:
+    return "";
+#define HANDLE_DI_FLAG(ID, NAME)                                               \
+  case Flag##NAME:                                                             \
+    return "DIFlag" #NAME;
+#include "llvm/IR/DebugInfoFlags.def"
+  }
+}
+
+unsigned DIDescriptor::splitFlags(unsigned Flags,
+                                  SmallVectorImpl<unsigned> &SplitFlags) {
+  // Accessibility flags need to be specially handled, since they're packed
+  // together.
+  if (unsigned A = Flags & FlagAccessibility) {
+    if (A == FlagPrivate)
+      SplitFlags.push_back(FlagPrivate);
+    else if (A == FlagProtected)
+      SplitFlags.push_back(FlagProtected);
+    else
+      SplitFlags.push_back(FlagPublic);
+    Flags &= ~A;
+  }
+
+#define HANDLE_DI_FLAG(ID, NAME)                                               \
+  if (unsigned Bit = Flags & ID) {                                             \
+    SplitFlags.push_back(Bit);                                                 \
+    Flags &= ~Bit;                                                             \
+  }
+#include "llvm/IR/DebugInfoFlags.def"
+
+  return Flags;
+}
 
 bool DIDescriptor::Verify() const {
   return DbgNode &&
@@ -333,35 +376,31 @@ bool DIDescriptor::isExpression() const {
 // Simple Descriptor Constructors and other Methods
 //===----------------------------------------------------------------------===//
 
-void DIDescriptor::replaceAllUsesWith(LLVMContext &VMContext, DIDescriptor D) {
-
+void DIDescriptor::replaceAllUsesWith(LLVMContext &, DIDescriptor D) {
   assert(DbgNode && "Trying to replace an unverified type!");
+  assert(DbgNode->isTemporary() && "Expected temporary node");
+  TempMDNode Temp(get());
 
   // Since we use a TrackingVH for the node, its easy for clients to manufacture
   // legitimate situations where they want to replaceAllUsesWith() on something
   // which, due to uniquing, has merged with the source. We shield clients from
   // this detail by allowing a value to be replaced with replaceAllUsesWith()
   // itself.
-  const MDNode *DN = D;
-  if (DbgNode == DN) {
-    SmallVector<Metadata *, 10> Ops(DbgNode->op_begin(), DbgNode->op_end());
-    DN = MDNode::get(VMContext, Ops);
+  if (Temp.get() == D.get()) {
+    DbgNode = MDNode::replaceWithUniqued(std::move(Temp));
+    return;
   }
 
-  assert(DbgNode->isTemporary() && "Expected temporary node");
-  auto *Node = const_cast<MDNode *>(DbgNode);
-  Node->replaceAllUsesWith(const_cast<MDNode *>(DN));
-  MDNode::deleteTemporary(Node);
-  DbgNode = DN;
+  Temp->replaceAllUsesWith(D.get());
+  DbgNode = D.get();
 }
 
 void DIDescriptor::replaceAllUsesWith(MDNode *D) {
   assert(DbgNode && "Trying to replace an unverified type!");
   assert(DbgNode != D && "This replacement should always happen");
   assert(DbgNode->isTemporary() && "Expected temporary node");
-  auto *Node = const_cast<MDNode *>(DbgNode);
+  TempMDNode Node(get());
   Node->replaceAllUsesWith(D);
-  MDNode::deleteTemporary(Node);
 }
 
 bool DICompileUnit::Verify() const {

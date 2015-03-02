@@ -330,7 +330,16 @@ protected:
   ~MDScope() {}
 
 public:
-  Metadata *getFile() const { return getOperand(0); }
+  /// \brief Return the underlying file.
+  ///
+  /// An \a MDFile is an \a MDScope, but it doesn't point at a separate file
+  /// (it\em is the file).  If \c this is an \a MDFile, we need to return \c
+  /// this.  Otherwise, return the first operand, which is where all other
+  /// subclasses store their file pointer.
+  Metadata *getFile() const {
+    return isa<MDFile>(this) ? const_cast<MDScope *>(this)
+                             : static_cast<Metadata *>(getOperand(0));
+  }
 
   static bool classof(const Metadata *MD) {
     switch (MD->getMetadataID()) {
@@ -754,25 +763,11 @@ public:
 
   TempMDFile clone() const { return cloneImpl(); }
 
-  MDTuple *getFileNode() const { return cast<MDTuple>(getOperand(0)); }
+  StringRef getFilename() const { return getStringOperand(0); }
+  StringRef getDirectory() const { return getStringOperand(1); }
 
-  StringRef getFilename() const {
-    if (auto *S = getRawFilename())
-      return S->getString();
-    return StringRef();
-  }
-  StringRef getDirectory() const {
-    if (auto *S = getRawDirectory())
-      return S->getString();
-    return StringRef();
-  }
-
-  MDString *getRawFilename() const {
-    return cast_or_null<MDString>(getFileNode()->getOperand(0));
-  }
-  MDString *getRawDirectory() const {
-    return cast_or_null<MDString>(getFileNode()->getOperand(1));
-  }
+  MDString *getRawFilename() const { return getOperandAs<MDString>(0); }
+  MDString *getRawDirectory() const { return getOperandAs<MDString>(1); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDFileKind;
