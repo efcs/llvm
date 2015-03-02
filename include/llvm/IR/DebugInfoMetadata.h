@@ -330,7 +330,16 @@ protected:
   ~MDScope() {}
 
 public:
-  Metadata *getFile() const { return getOperand(0); }
+  /// \brief Return the underlying file.
+  ///
+  /// An \a MDFile is an \a MDScope, but it doesn't point at a separate file
+  /// (it\em is the file).  If \c this is an \a MDFile, we need to return \c
+  /// this.  Otherwise, return the first operand, which is where all other
+  /// subclasses store their file pointer.
+  Metadata *getFile() const {
+    return isa<MDFile>(this) ? const_cast<MDScope *>(this)
+                             : static_cast<Metadata *>(getOperand(0));
+  }
 
   static bool classof(const Metadata *MD) {
     switch (MD->getMetadataID()) {
@@ -358,24 +367,25 @@ public:
 /// TODO: Split up flags.
 class MDType : public MDScope {
   unsigned Line;
-  unsigned SizeInBits;
-  unsigned AlignInBits;
-  unsigned OffsetInBits;
   unsigned Flags;
+  uint64_t SizeInBits;
+  uint64_t AlignInBits;
+  uint64_t OffsetInBits;
 
 protected:
   MDType(LLVMContext &C, unsigned ID, StorageType Storage, unsigned Tag,
-         unsigned Line, unsigned SizeInBits, unsigned AlignInBits,
-         unsigned OffsetInBits, unsigned Flags, ArrayRef<Metadata *> Ops)
-      : MDScope(C, ID, Storage, Tag, Ops), Line(Line), SizeInBits(SizeInBits),
-        AlignInBits(AlignInBits), OffsetInBits(OffsetInBits), Flags(Flags) {}
+         unsigned Line, uint64_t SizeInBits, uint64_t AlignInBits,
+         uint64_t OffsetInBits, unsigned Flags, ArrayRef<Metadata *> Ops)
+      : MDScope(C, ID, Storage, Tag, Ops), Line(Line), Flags(Flags),
+        SizeInBits(SizeInBits), AlignInBits(AlignInBits),
+        OffsetInBits(OffsetInBits) {}
   ~MDType() {}
 
 public:
   unsigned getLine() const { return Line; }
-  unsigned getSizeInBits() const { return SizeInBits; }
-  unsigned getAlignInBits() const { return AlignInBits; }
-  unsigned getOffsetInBits() const { return OffsetInBits; }
+  uint64_t getSizeInBits() const { return SizeInBits; }
+  uint64_t getAlignInBits() const { return AlignInBits; }
+  uint64_t getOffsetInBits() const { return OffsetInBits; }
   unsigned getFlags() const { return Flags; }
 
   Metadata *getScope() const { return getOperand(1); }
@@ -407,7 +417,7 @@ class MDBasicType : public MDType {
   unsigned Encoding;
 
   MDBasicType(LLVMContext &C, StorageType Storage, unsigned Tag,
-              unsigned SizeInBits, unsigned AlignInBits, unsigned Encoding,
+              uint64_t SizeInBits, uint64_t AlignInBits, unsigned Encoding,
               ArrayRef<Metadata *> Ops)
       : MDType(C, MDBasicTypeKind, Storage, Tag, 0, SizeInBits, AlignInBits, 0,
                0, Ops),
@@ -415,15 +425,15 @@ class MDBasicType : public MDType {
   ~MDBasicType() {}
 
   static MDBasicType *getImpl(LLVMContext &Context, unsigned Tag,
-                              StringRef Name, unsigned SizeInBits,
-                              unsigned AlignInBits, unsigned Encoding,
+                              StringRef Name, uint64_t SizeInBits,
+                              uint64_t AlignInBits, unsigned Encoding,
                               StorageType Storage, bool ShouldCreate = true) {
     return getImpl(Context, Tag, getCanonicalMDString(Context, Name),
                    SizeInBits, AlignInBits, Encoding, Storage, ShouldCreate);
   }
   static MDBasicType *getImpl(LLVMContext &Context, unsigned Tag,
-                              MDString *Name, unsigned SizeInBits,
-                              unsigned AlignInBits, unsigned Encoding,
+                              MDString *Name, uint64_t SizeInBits,
+                              uint64_t AlignInBits, unsigned Encoding,
                               StorageType Storage, bool ShouldCreate = true);
 
   TempMDBasicType cloneImpl() const {
@@ -433,12 +443,12 @@ class MDBasicType : public MDType {
 
 public:
   DEFINE_MDNODE_GET(MDBasicType,
-                    (unsigned Tag, StringRef Name, unsigned SizeInBits,
-                     unsigned AlignInBits, unsigned Encoding),
+                    (unsigned Tag, StringRef Name, uint64_t SizeInBits,
+                     uint64_t AlignInBits, unsigned Encoding),
                     (Tag, Name, SizeInBits, AlignInBits, Encoding))
   DEFINE_MDNODE_GET(MDBasicType,
-                    (unsigned Tag, MDString *Name, unsigned SizeInBits,
-                     unsigned AlignInBits, unsigned Encoding),
+                    (unsigned Tag, MDString *Name, uint64_t SizeInBits,
+                     uint64_t AlignInBits, unsigned Encoding),
                     (Tag, Name, SizeInBits, AlignInBits, Encoding))
 
   TempMDBasicType clone() const { return cloneImpl(); }
@@ -456,8 +466,8 @@ public:
 class MDDerivedTypeBase : public MDType {
 protected:
   MDDerivedTypeBase(LLVMContext &C, unsigned ID, StorageType Storage,
-                    unsigned Tag, unsigned Line, unsigned SizeInBits,
-                    unsigned AlignInBits, unsigned OffsetInBits, unsigned Flags,
+                    unsigned Tag, unsigned Line, uint64_t SizeInBits,
+                    uint64_t AlignInBits, uint64_t OffsetInBits, unsigned Flags,
                     ArrayRef<Metadata *> Ops)
       : MDType(C, ID, Storage, Tag, Line, SizeInBits, AlignInBits, OffsetInBits,
                Flags, Ops) {}
@@ -484,8 +494,8 @@ class MDDerivedType : public MDDerivedTypeBase {
   friend class MDNode;
 
   MDDerivedType(LLVMContext &C, StorageType Storage, unsigned Tag,
-                unsigned Line, unsigned SizeInBits, unsigned AlignInBits,
-                unsigned OffsetInBits, unsigned Flags, ArrayRef<Metadata *> Ops)
+                unsigned Line, uint64_t SizeInBits, uint64_t AlignInBits,
+                uint64_t OffsetInBits, unsigned Flags, ArrayRef<Metadata *> Ops)
       : MDDerivedTypeBase(C, MDDerivedTypeKind, Storage, Tag, Line, SizeInBits,
                           AlignInBits, OffsetInBits, Flags, Ops) {}
   ~MDDerivedType() {}
@@ -493,8 +503,8 @@ class MDDerivedType : public MDDerivedTypeBase {
   static MDDerivedType *getImpl(LLVMContext &Context, unsigned Tag,
                                 StringRef Name, Metadata *File, unsigned Line,
                                 Metadata *Scope, Metadata *BaseType,
-                                unsigned SizeInBits, unsigned AlignInBits,
-                                unsigned OffsetInBits, unsigned Flags,
+                                uint64_t SizeInBits, uint64_t AlignInBits,
+                                uint64_t OffsetInBits, unsigned Flags,
                                 Metadata *ExtraData, StorageType Storage,
                                 bool ShouldCreate = true) {
     return getImpl(Context, Tag, getCanonicalMDString(Context, Name), File,
@@ -504,8 +514,8 @@ class MDDerivedType : public MDDerivedTypeBase {
   static MDDerivedType *getImpl(LLVMContext &Context, unsigned Tag,
                                 MDString *Name, Metadata *File, unsigned Line,
                                 Metadata *Scope, Metadata *BaseType,
-                                unsigned SizeInBits, unsigned AlignInBits,
-                                unsigned OffsetInBits, unsigned Flags,
+                                uint64_t SizeInBits, uint64_t AlignInBits,
+                                uint64_t OffsetInBits, unsigned Flags,
                                 Metadata *ExtraData, StorageType Storage,
                                 bool ShouldCreate = true);
 
@@ -520,16 +530,16 @@ public:
   DEFINE_MDNODE_GET(MDDerivedType,
                     (unsigned Tag, MDString *Name, Metadata *File,
                      unsigned Line, Metadata *Scope, Metadata *BaseType,
-                     unsigned SizeInBits, unsigned AlignInBits,
-                     unsigned OffsetInBits, unsigned Flags,
+                     uint64_t SizeInBits, uint64_t AlignInBits,
+                     uint64_t OffsetInBits, unsigned Flags,
                      Metadata *ExtraData = nullptr),
                     (Tag, Name, File, Line, Scope, BaseType, SizeInBits,
                      AlignInBits, OffsetInBits, Flags, ExtraData))
   DEFINE_MDNODE_GET(MDDerivedType,
                     (unsigned Tag, StringRef Name, Metadata *File,
                      unsigned Line, Metadata *Scope, Metadata *BaseType,
-                     unsigned SizeInBits, unsigned AlignInBits,
-                     unsigned OffsetInBits, unsigned Flags,
+                     uint64_t SizeInBits, uint64_t AlignInBits,
+                     uint64_t OffsetInBits, unsigned Flags,
                      Metadata *ExtraData = nullptr),
                     (Tag, Name, File, Line, Scope, BaseType, SizeInBits,
                      AlignInBits, OffsetInBits, Flags, ExtraData))
@@ -559,8 +569,8 @@ class MDCompositeTypeBase : public MDDerivedTypeBase {
 protected:
   MDCompositeTypeBase(LLVMContext &C, unsigned ID, StorageType Storage,
                       unsigned Tag, unsigned Line, unsigned RuntimeLang,
-                      unsigned SizeInBits, unsigned AlignInBits,
-                      unsigned OffsetInBits, unsigned Flags,
+                      uint64_t SizeInBits, uint64_t AlignInBits,
+                      uint64_t OffsetInBits, unsigned Flags,
                       ArrayRef<Metadata *> Ops)
       : MDDerivedTypeBase(C, ID, Storage, Tag, Line, SizeInBits, AlignInBits,
                           OffsetInBits, Flags, Ops),
@@ -614,8 +624,8 @@ class MDCompositeType : public MDCompositeTypeBase {
   friend class MDNode;
 
   MDCompositeType(LLVMContext &C, StorageType Storage, unsigned Tag,
-                  unsigned Line, unsigned RuntimeLang, unsigned SizeInBits,
-                  unsigned AlignInBits, unsigned OffsetInBits, unsigned Flags,
+                  unsigned Line, unsigned RuntimeLang, uint64_t SizeInBits,
+                  uint64_t AlignInBits, uint64_t OffsetInBits, unsigned Flags,
                   ArrayRef<Metadata *> Ops)
       : MDCompositeTypeBase(C, MDCompositeTypeKind, Storage, Tag, Line,
                             RuntimeLang, SizeInBits, AlignInBits, OffsetInBits,
@@ -625,8 +635,8 @@ class MDCompositeType : public MDCompositeTypeBase {
   static MDCompositeType *
   getImpl(LLVMContext &Context, unsigned Tag, StringRef Name, Metadata *File,
           unsigned Line, Metadata *Scope, Metadata *BaseType,
-          unsigned SizeInBits, unsigned AlignInBits, unsigned OffsetInBits,
-          unsigned Flags, Metadata *Elements, unsigned RuntimeLang,
+          uint64_t SizeInBits, uint64_t AlignInBits, uint64_t OffsetInBits,
+          uint64_t Flags, Metadata *Elements, unsigned RuntimeLang,
           Metadata *VTableHolder, Metadata *TemplateParams,
           StringRef Identifier, StorageType Storage, bool ShouldCreate = true) {
     return getImpl(Context, Tag, getCanonicalMDString(Context, Name), File,
@@ -638,7 +648,7 @@ class MDCompositeType : public MDCompositeTypeBase {
   static MDCompositeType *
   getImpl(LLVMContext &Context, unsigned Tag, MDString *Name, Metadata *File,
           unsigned Line, Metadata *Scope, Metadata *BaseType,
-          unsigned SizeInBits, unsigned AlignInBits, unsigned OffsetInBits,
+          uint64_t SizeInBits, uint64_t AlignInBits, uint64_t OffsetInBits,
           unsigned Flags, Metadata *Elements, unsigned RuntimeLang,
           Metadata *VTableHolder, Metadata *TemplateParams,
           MDString *Identifier, StorageType Storage, bool ShouldCreate = true);
@@ -655,8 +665,8 @@ public:
   DEFINE_MDNODE_GET(MDCompositeType,
                     (unsigned Tag, StringRef Name, Metadata *File,
                      unsigned Line, Metadata *Scope, Metadata *BaseType,
-                     unsigned SizeInBits, unsigned AlignInBits,
-                     unsigned OffsetInBits, unsigned Flags, Metadata *Elements,
+                     uint64_t SizeInBits, uint64_t AlignInBits,
+                     uint64_t OffsetInBits, unsigned Flags, Metadata *Elements,
                      unsigned RuntimeLang, Metadata *VTableHolder,
                      Metadata *TemplateParams = nullptr,
                      StringRef Identifier = ""),
@@ -666,8 +676,8 @@ public:
   DEFINE_MDNODE_GET(MDCompositeType,
                     (unsigned Tag, MDString *Name, Metadata *File,
                      unsigned Line, Metadata *Scope, Metadata *BaseType,
-                     unsigned SizeInBits, unsigned AlignInBits,
-                     unsigned OffsetInBits, unsigned Flags, Metadata *Elements,
+                     uint64_t SizeInBits, uint64_t AlignInBits,
+                     uint64_t OffsetInBits, unsigned Flags, Metadata *Elements,
                      unsigned RuntimeLang, Metadata *VTableHolder,
                      Metadata *TemplateParams = nullptr,
                      MDString *Identifier = nullptr),
@@ -753,25 +763,11 @@ public:
 
   TempMDFile clone() const { return cloneImpl(); }
 
-  MDTuple *getFileNode() const { return cast<MDTuple>(getOperand(0)); }
+  StringRef getFilename() const { return getStringOperand(0); }
+  StringRef getDirectory() const { return getStringOperand(1); }
 
-  StringRef getFilename() const {
-    if (auto *S = getRawFilename())
-      return S->getString();
-    return StringRef();
-  }
-  StringRef getDirectory() const {
-    if (auto *S = getRawDirectory())
-      return S->getString();
-    return StringRef();
-  }
-
-  MDString *getRawFilename() const {
-    return cast_or_null<MDString>(getFileNode()->getOperand(0));
-  }
-  MDString *getRawDirectory() const {
-    return cast_or_null<MDString>(getFileNode()->getOperand(1));
-  }
+  MDString *getRawFilename() const { return getOperandAs<MDString>(0); }
+  MDString *getRawDirectory() const { return getOperandAs<MDString>(1); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDFileKind;

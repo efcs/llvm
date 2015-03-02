@@ -10,6 +10,7 @@
 #include "llvm/DebugInfo/PDB/PDBSymbolFuncDebugStart.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 #include <utility>
 
@@ -19,5 +20,6 @@ PDBSymbolFuncDebugStart::PDBSymbolFuncDebugStart(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolFuncDebugStart::dump(raw_ostream &OS, int Indent,
-                                   PDB_DumpLevel Level, PDB_DumpFlags Flags) const {}
+void PDBSymbolFuncDebugStart::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
+}

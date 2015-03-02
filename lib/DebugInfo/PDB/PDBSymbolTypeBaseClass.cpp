@@ -10,6 +10,7 @@
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeBaseClass.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 #include <utility>
 
@@ -19,8 +20,6 @@ PDBSymbolTypeBaseClass::PDBSymbolTypeBaseClass(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeBaseClass::dump(raw_ostream &OS, int Indent,
-                                  PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
-  OS << stream_indent(Indent);
-  OS << "<base class> " << getName();
+void PDBSymbolTypeBaseClass::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
 }

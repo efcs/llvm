@@ -9,8 +9,7 @@
 
 #include "llvm/DebugInfo/PDB/PDBSymbolLabel.h"
 
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/Support/Format.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 #include <utility>
 
@@ -20,9 +19,4 @@ PDBSymbolLabel::PDBSymbolLabel(const IPDBSession &PDBSession,
                                std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolLabel::dump(raw_ostream &OS, int Indent,
-                          PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
-  OS << stream_indent(Indent);
-  OS << "label [" << format_hex(getRelativeVirtualAddress(), 10) << "] "
-     << getName();
-}
+void PDBSymbolLabel::dump(PDBSymDumper &Dumper) const { Dumper.dump(*this); }
