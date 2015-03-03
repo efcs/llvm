@@ -116,10 +116,8 @@ catch.dispatch:                                   ; preds = %lpad
 
 catch:                                            ; preds = %catch.dispatch
   %exn = load i8*, i8** %exn.slot
-  %tmp8 = call i8* @llvm.eh.begincatch(i8* %exn) #1
-  %tmp9 = bitcast i8* %tmp8 to i32*
-  %tmp10 = load i32, i32* %tmp9, align 4
-  store i32 %tmp10, i32* %e, align 4
+  %e.i8 = bitcast i32* %e to i8*
+  call void @llvm.eh.begincatch(i8* %exn, i8* %e.i8) #1
   %tmp11 = load i32, i32* %e, align 4
   %tmp12 = load i32, i32* %NumExceptions, align 4
   %idxprom = sext i32 %tmp12 to i64
@@ -179,8 +177,8 @@ eh.resume:                                        ; preds = %catch.dispatch
 }
 
 ; The following catch handler should be outlined.
-; CHECK-LABEL: define i8* @"\01?test@@YAXXZ.catch"(i8*, i8*) {
-; CHECK: catch.entry:
+; CHECK-LABEL: define internal i8* @"\01?test@@YAXXZ.catch"(i8*, i8*) {
+; CHECK: entry:
 ; CHECK:   %eh.alloc = call i8* @llvm.framerecover(i8* bitcast (void ()* @"\01?test@@YAXXZ" to i8*), i8* %1)
 ; CHECK:   %eh.data = bitcast i8* %eh.alloc to %"struct.\01?test@@YAXXZ.ehdata"*
 ; CHECK:   %eh.obj.ptr = getelementptr inbounds %"struct.\01?test@@YAXXZ.ehdata", %"struct.\01?test@@YAXXZ.ehdata"* %eh.data, i32 0, i32 1
@@ -190,9 +188,6 @@ eh.resume:                                        ; preds = %catch.dispatch
 ; CHECK:   %ExceptionVal = getelementptr inbounds %"struct.\01?test@@YAXXZ.ehdata", %"struct.\01?test@@YAXXZ.ehdata"* %eh.data, i32 0, i32 4
 ; CHECK:   %i = getelementptr inbounds %"struct.\01?test@@YAXXZ.ehdata", %"struct.\01?test@@YAXXZ.ehdata"* %eh.data, i32 0, i32 5
 ; CHECK:   %Data = getelementptr inbounds %"struct.\01?test@@YAXXZ.ehdata", %"struct.\01?test@@YAXXZ.ehdata"* %eh.data, i32 0, i32 6
-; CHECK:   %tmp9 = bitcast i8* %eh.obj to i32*
-; CHECK:   %tmp10 = load i32, i32* %tmp9, align 4
-; CHECK:   store i32 %tmp10, i32* %e, align 4
 ; CHECK:   %tmp11 = load i32, i32* %e, align 4
 ; CHECK:   %tmp12 = load i32, i32* %NumExceptions, align 4
 ; CHECK:   %idxprom = sext i32 %tmp12 to i64
@@ -206,7 +201,7 @@ eh.resume:                                        ; preds = %catch.dispatch
 ; CHECK:   %cmp1 = icmp eq i32 %tmp14, %tmp15
 ; CHECK:   br i1 %cmp1, label %if.then, label %if.else
 ;
-; CHECK: if.then:                                          ; preds = %catch.entry
+; CHECK: if.then:                                          ; preds = %entry
 ; CHECK:   %tmp16 = load i32, i32* %e, align 4
 ; CHECK:   %b = getelementptr inbounds %struct.SomeData, %struct.SomeData* %Data, i32 0, i32 1
 ; CHECK:   %tmp17 = load i32, i32* %b, align 4
@@ -214,7 +209,7 @@ eh.resume:                                        ; preds = %catch.dispatch
 ; CHECK:   store i32 %add2, i32* %b, align 4
 ; CHECK:   br label %if.end
 ;
-; CHECK: if.else:                                          ; preds = %catch.entry
+; CHECK: if.else:                                          ; preds = %entry
 ; CHECK:   %tmp18 = load i32, i32* %e, align 4
 ; CHECK:   %a3 = getelementptr inbounds %struct.SomeData, %struct.SomeData* %Data, i32 0, i32 0
 ; CHECK:   %tmp19 = load i32, i32* %a3, align 4
@@ -241,7 +236,7 @@ declare i32 @__CxxFrameHandler3(...)
 ; Function Attrs: nounwind readnone
 declare i32 @llvm.eh.typeid.for(i8*) #3
 
-declare i8* @llvm.eh.begincatch(i8*)
+declare void @llvm.eh.begincatch(i8*, i8*)
 
 declare void @llvm.eh.endcatch()
 

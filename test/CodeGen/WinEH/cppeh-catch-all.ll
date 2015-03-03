@@ -40,7 +40,7 @@ lpad:                                             ; preds = %entry
 
 catch:                                            ; preds = %lpad
   %exn = load i8*, i8** %exn.slot
-  %tmp3 = call i8* @llvm.eh.begincatch(i8* %exn) #2
+  call void @llvm.eh.begincatch(i8* %exn, i8* null) #2
   call void @_Z16handle_exceptionv()
   br label %invoke.cont2
 
@@ -52,8 +52,8 @@ try.cont:                                         ; preds = %invoke.cont2, %invo
   ret void
 }
 
-; CHECK: define i8* @_Z4testv.catch(i8*, i8*) {
-; CHECK: catch.entry:
+; CHECK: define internal i8* @_Z4testv.catch(i8*, i8*) {
+; CHECK: entry:
 ; CHECK:   %eh.alloc = call i8* @llvm.framerecover(i8* bitcast (void ()* @_Z4testv to i8*), i8* %1)
 ; CHECK:   %eh.data = bitcast i8* %eh.alloc to %struct._Z4testv.ehdata*
 ; CHECK:   %eh.obj.ptr = getelementptr inbounds %struct._Z4testv.ehdata, %struct._Z4testv.ehdata* %eh.data, i32 0, i32 1
@@ -66,7 +66,7 @@ declare void @_Z9may_throwv() #1
 
 declare i32 @__CxxFrameHandler3(...)
 
-declare i8* @llvm.eh.begincatch(i8*)
+declare void @llvm.eh.begincatch(i8*, i8*)
 
 declare void @_Z16handle_exceptionv() #1
 
