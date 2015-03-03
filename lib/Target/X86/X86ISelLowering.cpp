@@ -18108,6 +18108,92 @@ X86TargetLowering::EmitLoweredSelect(MachineInstr *MI,
   //   fallthrough --> copy0MBB
   MachineBasicBlock *thisMBB = BB;
   MachineFunction *F = BB->getParent();
+
+  // We also lower double CMOVs:
+  //   (CMOV (CMOV F, T, cc1), T, cc2)
+  // to two successives branches.  For that, we look for another CMOV as the
+  // following instruction.
+  //
+  // Without this, we would add a PHI between the two jumps, which ends up
+  // creating a few copies all around. For instance, for
+  //
+  //    (sitofp (zext (fcmp une)))
+  //
+  // we would generate:
+  //
+  //         ucomiss %xmm1, %xmm0
+  //         movss  <1.0f>, %xmm0
+  //         movaps  %xmm0, %xmm1
+  //         jne     .LBB5_2
+  //         xorps   %xmm1, %xmm1
+  // .LBB5_2:
+  //         jp      .LBB5_4
+  //         movaps  %xmm1, %xmm0
+  // .LBB5_4:
+  //         retq
+  //
+  // because this custom-inserter would have generated:
+  //
+  //   A
+  //   | \
+  //   |  B
+  //   | /
+  //   C
+  //   | \
+  //   |  D
+  //   | /
+  //   E
+  //
+  // A: X = ...; Y = ...
+  // B: empty
+  // C: Z = PHI [X, A], [Y, B]
+  // D: empty
+  // E: PHI [X, C], [Z, D]
+  //
+  // If we lower both CMOVs in a single step, we can instead generate:
+  //
+  //   A
+  //   | \
+  //   |  C
+  //   | /|
+  //   |/ |
+  //   |  |
+  //   |  D
+  //   | /
+  //   E
+  //
+  // A: X = ...; Y = ...
+  // D: empty
+  // E: PHI [X, A], [X, C], [Y, D]
+  //
+  // Which, in our sitofp/fcmp example, gives us something like:
+  //
+  //         ucomiss %xmm1, %xmm0
+  //         movss  <1.0f>, %xmm0
+  //         jne     .LBB5_4
+  //         jp      .LBB5_4
+  //         xorps   %xmm0, %xmm0
+  // .LBB5_4:
+  //         retq
+  //
+  MachineInstr *NextCMOV = nullptr;
+  MachineBasicBlock::iterator NextMIIt =
+      std::next(MachineBasicBlock::iterator(MI));
+  if (NextMIIt != BB->end() && NextMIIt->getOpcode() == MI->getOpcode() &&
+      NextMIIt->getOperand(2).getReg() == MI->getOperand(2).getReg() &&
+      NextMIIt->getOperand(1).getReg() == MI->getOperand(0).getReg())
+    NextCMOV = &*NextMIIt;
+
+  MachineBasicBlock *jcc1MBB = nullptr;
+
+  // If we have a double CMOV, we lower it to two successive branches to
+  // the same block.  EFLAGS is used by both, so mark it as live in the second.
+  if (NextCMOV) {
+    jcc1MBB = F->CreateMachineBasicBlock(LLVM_BB);
+    F->insert(It, jcc1MBB);
+    jcc1MBB->addLiveIn(X86::EFLAGS);
+  }
+
   MachineBasicBlock *copy0MBB = F->CreateMachineBasicBlock(LLVM_BB);
   MachineBasicBlock *sinkMBB = F->CreateMachineBasicBlock(LLVM_BB);
   F->insert(It, copy0MBB);
@@ -18116,8 +18202,10 @@ X86TargetLowering::EmitLoweredSelect(MachineInstr *MI,
   // If the EFLAGS register isn't dead in the terminator, then claim that it's
   // live into the sink and copy blocks.
   const TargetRegisterInfo *TRI = Subtarget->getRegisterInfo();
-  if (!MI->killsRegister(X86::EFLAGS) &&
-      !checkAndUpdateEFLAGSKill(MI, BB, TRI)) {
+
+  MachineInstr *LastEFLAGSUser = NextCMOV ? NextCMOV : MI;
+  if (!LastEFLAGSUser->killsRegister(X86::EFLAGS) &&
+      !checkAndUpdateEFLAGSKill(LastEFLAGSUser, BB, TRI)) {
     copy0MBB->addLiveIn(X86::EFLAGS);
     sinkMBB->addLiveIn(X86::EFLAGS);
   }
@@ -18128,13 +18216,31 @@ X86TargetLowering::EmitLoweredSelect(MachineInstr *MI,
   sinkMBB->transferSuccessorsAndUpdatePHIs(BB);
 
   // Add the true and fallthrough blocks as its successors.
-  BB->addSuccessor(copy0MBB);
+  if (NextCMOV) {
+    // The fallthrough block may be jcc1MBB, if we have a double CMOV.
+    BB->addSuccessor(jcc1MBB);
+
+    // In that case, jcc1MBB will itself fallthrough the copy0MBB, and
+    // jump to the sinkMBB.
+    jcc1MBB->addSuccessor(copy0MBB);
+    jcc1MBB->addSuccessor(sinkMBB);
+  } else {
+    BB->addSuccessor(copy0MBB);
+  }
+
+  // The true block target of the first (or only) branch is always sinkMBB.
   BB->addSuccessor(sinkMBB);
 
   // Create the conditional branch instruction.
   unsigned Opc =
     X86::GetCondBranchFromCond((X86::CondCode)MI->getOperand(3).getImm());
   BuildMI(BB, DL, TII->get(Opc)).addMBB(sinkMBB);
+
+  if (NextCMOV) {
+    unsigned Opc2 = X86::GetCondBranchFromCond(
+        (X86::CondCode)NextCMOV->getOperand(3).getImm());
+    BuildMI(jcc1MBB, DL, TII->get(Opc2)).addMBB(sinkMBB);
+  }
 
   //  copy0MBB:
   //   %FalseValue = ...
@@ -18144,10 +18250,22 @@ X86TargetLowering::EmitLoweredSelect(MachineInstr *MI,
   //  sinkMBB:
   //   %Result = phi [ %FalseValue, copy0MBB ], [ %TrueValue, thisMBB ]
   //  ...
-  BuildMI(*sinkMBB, sinkMBB->begin(), DL,
-          TII->get(X86::PHI), MI->getOperand(0).getReg())
-    .addReg(MI->getOperand(1).getReg()).addMBB(copy0MBB)
-    .addReg(MI->getOperand(2).getReg()).addMBB(thisMBB);
+  MachineInstrBuilder MIB =
+      BuildMI(*sinkMBB, sinkMBB->begin(), DL, TII->get(X86::PHI),
+              MI->getOperand(0).getReg())
+          .addReg(MI->getOperand(1).getReg()).addMBB(copy0MBB)
+          .addReg(MI->getOperand(2).getReg()).addMBB(thisMBB);
+
+  // If we have a double CMOV, the second Jcc provides the same incoming
+  // value as the first Jcc (the True operand of the SELECT_CC/CMOV nodes).
+  if (NextCMOV) {
+    MIB.addReg(MI->getOperand(2).getReg()).addMBB(jcc1MBB);
+    // Copy the PHI result to the register defined by the second CMOV.
+    BuildMI(*sinkMBB, std::next(MachineBasicBlock::iterator(MIB.getInstr())),
+            DL, TII->get(TargetOpcode::COPY), NextCMOV->getOperand(0).getReg())
+        .addReg(MI->getOperand(0).getReg());
+    NextCMOV->eraseFromParent();
+  }
 
   MI->eraseFromParent();   // The pseudo instruction is gone now.
   return sinkMBB;
@@ -21006,6 +21124,49 @@ static SDValue checkBoolTestSetCCCombine(SDValue Cmp, X86::CondCode &CC) {
   return SDValue();
 }
 
+/// Check whether Cond is an AND/OR of SETCCs off of the same EFLAGS.
+/// Match:
+///   (X86or (X86setcc) (X86setcc))
+///   (X86cmp (and (X86setcc) (X86setcc)), 0)
+static bool checkBoolTestAndOrSetCCCombine(SDValue Cond, X86::CondCode &CC0,
+                                           X86::CondCode &CC1, SDValue &Flags,
+                                           bool &isAnd) {
+  if (Cond->getOpcode() == X86ISD::CMP) {
+    ConstantSDNode *CondOp1C = dyn_cast<ConstantSDNode>(Cond->getOperand(1));
+    if (!CondOp1C || !CondOp1C->isNullValue())
+      return false;
+
+    Cond = Cond->getOperand(0);
+  }
+
+  isAnd = false;
+
+  SDValue SetCC0, SetCC1;
+  switch (Cond->getOpcode()) {
+  default: return false;
+  case ISD::AND:
+  case X86ISD::AND:
+    isAnd = true;
+    // fallthru
+  case ISD::OR:
+  case X86ISD::OR:
+    SetCC0 = Cond->getOperand(0);
+    SetCC1 = Cond->getOperand(1);
+    break;
+  };
+
+  // Make sure we have SETCC nodes, using the same flags value.
+  if (SetCC0.getOpcode() != X86ISD::SETCC ||
+      SetCC1.getOpcode() != X86ISD::SETCC ||
+      SetCC0->getOperand(1) != SetCC1->getOperand(1))
+    return false;
+
+  CC0 = (X86::CondCode)SetCC0->getConstantOperandVal(0);
+  CC1 = (X86::CondCode)SetCC1->getConstantOperandVal(0);
+  Flags = SetCC0->getOperand(1);
+  return true;
+}
+
 /// Optimize X86ISD::CMOV [LHS, RHS, CONDCODE (e.g. X86::COND_NE), CONDVAL]
 static SDValue PerformCMOVCombine(SDNode *N, SelectionDAG &DAG,
                                   TargetLowering::DAGCombinerInfo &DCI,
@@ -21172,6 +21333,44 @@ static SDValue PerformCMOVCombine(SDNode *N, SelectionDAG &DAG,
                           DAG.getConstant(CC, MVT::i8), Cond };
         return DAG.getNode(X86ISD::CMOV, DL, N->getVTList (), Ops);
       }
+    }
+  }
+
+  // Fold and/or of setcc's to double CMOV:
+  //   (CMOV F, T, ((cc1 | cc2) != 0)) -> (CMOV (CMOV F, T, cc1), T, cc2)
+  //   (CMOV F, T, ((cc1 & cc2) != 0)) -> (CMOV (CMOV T, F, !cc1), F, !cc2)
+  //
+  // This combine lets us generate:
+  //   cmovcc1 (jcc1 if we don't have CMOV)
+  //   cmovcc2 (same)
+  // instead of:
+  //   setcc1
+  //   setcc2
+  //   and/or
+  //   cmovne (jne if we don't have CMOV)
+  // When we can't use the CMOV instruction, it might increase branch
+  // mispredicts.
+  // When we can use CMOV, or when there is no mispredict, this improves
+  // throughput and reduces register pressure.
+  //
+  if (CC == X86::COND_NE) {
+    SDValue Flags;
+    X86::CondCode CC0, CC1;
+    bool isAndSetCC;
+    if (checkBoolTestAndOrSetCCCombine(Cond, CC0, CC1, Flags, isAndSetCC)) {
+      if (isAndSetCC) {
+        std::swap(FalseOp, TrueOp);
+        CC0 = X86::GetOppositeBranchCondition(CC0);
+        CC1 = X86::GetOppositeBranchCondition(CC1);
+      }
+
+      SDValue LOps[] = {FalseOp, TrueOp, DAG.getConstant(CC0, MVT::i8),
+        Flags};
+      SDValue LCMOV = DAG.getNode(X86ISD::CMOV, DL, N->getVTList(), LOps);
+      SDValue Ops[] = {LCMOV, TrueOp, DAG.getConstant(CC1, MVT::i8), Flags};
+      SDValue CMOV = DAG.getNode(X86ISD::CMOV, DL, N->getVTList(), Ops);
+      DAG.ReplaceAllUsesOfValueWith(SDValue(N, 1), SDValue(CMOV.getNode(), 1));
+      return CMOV;
     }
   }
 

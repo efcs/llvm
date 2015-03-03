@@ -714,23 +714,17 @@ TargetLibraryInfoImpl &TargetLibraryInfoImpl::operator=(TargetLibraryInfoImpl &&
   return *this;
 }
 
-namespace {
-struct StringComparator {
-  /// Compare two strings and return true if LHS is lexicographically less than
-  /// RHS. Requires that RHS doesn't contain any zero bytes.
-  bool operator()(const char *LHS, StringRef RHS) const {
-    // Compare prefixes with strncmp. If prefixes match we know that LHS is
-    // greater or equal to RHS as RHS can't contain any '\0'.
-    return std::strncmp(LHS, RHS.data(), RHS.size()) < 0;
-  }
+static StringRef sanitizeFunctionName(StringRef funcName) {
+  // Filter out empty names and names containing null bytes, those can't be in
+  // our table.
+  if (funcName.empty() || funcName.find('\0') != StringRef::npos)
+    return StringRef();
 
-  // Provided for compatibility with MSVC's debug mode.
-  bool operator()(StringRef LHS, const char *RHS) const { return LHS < RHS; }
-  bool operator()(StringRef LHS, StringRef RHS) const { return LHS < RHS; }
-  bool operator()(const char *LHS, const char *RHS) const {
-    return std::strcmp(LHS, RHS) < 0;
-  }
-};
+  // Check for \01 prefix that is used to mangle __asm declarations and
+  // strip it if present.
+  if (funcName.front() == '\01')
+    funcName = funcName.substr(1);
+  return funcName;
 }
 
 bool TargetLibraryInfoImpl::getLibFunc(StringRef funcName,
@@ -738,16 +732,14 @@ bool TargetLibraryInfoImpl::getLibFunc(StringRef funcName,
   const char **Start = &StandardNames[0];
   const char **End = &StandardNames[LibFunc::NumLibFuncs];
 
-  // Filter out empty names and names containing null bytes, those can't be in
-  // our table.
-  if (funcName.empty() || funcName.find('\0') != StringRef::npos)
+  funcName = sanitizeFunctionName(funcName);
+  if (funcName.empty())
     return false;
 
-  // Check for \01 prefix that is used to mangle __asm declarations and
-  // strip it if present.
-  if (funcName.front() == '\01')
-    funcName = funcName.substr(1);
-  const char **I = std::lower_bound(Start, End, funcName, StringComparator());
+  const char **I = std::lower_bound(
+      Start, End, funcName, [](const char *LHS, StringRef RHS) {
+        return std::strncmp(LHS, RHS.data(), RHS.size()) < 0;
+      });
   if (I != End && *I == funcName) {
     F = (LibFunc::Func)(I - Start);
     return true;
