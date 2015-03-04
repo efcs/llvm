@@ -412,8 +412,10 @@ def int_eh_return_i32 : Intrinsic<[], [llvm_i32_ty, llvm_ptr_ty]>;
 def int_eh_return_i64 : Intrinsic<[], [llvm_i64_ty, llvm_ptr_ty]>;
 
 // eh.begincatch takes a pointer returned by a landingpad instruction and
-// returns the exception object pointer for the exception to be handled.
-def int_eh_begincatch : Intrinsic<[llvm_ptr_ty], [llvm_ptr_ty]>;
+// copies the exception object into the memory pointed to by the second
+// parameter. If the second parameter is null, no copy occurs.
+def int_eh_begincatch : Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty],
+                                  [NoCapture<0>, NoCapture<1>]>;
 def int_eh_endcatch : Intrinsic<[], []>;
 
 // __builtin_unwind_init is an undocumented GCC intrinsic that causes all
@@ -602,6 +604,10 @@ def int_masked_scatter: Intrinsic<[],
                                    LLVMVectorOfPointersToElt<0>, llvm_i32_ty,
                                    LLVMVectorSameWidth<0, llvm_i1_ty>],
                                   [IntrReadWriteArgMem]>;
+
+// Intrinsics to support bit sets.
+def int_bitset_test : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty, llvm_metadata_ty],
+                                [IntrNoMem]>;
 
 //===----------------------------------------------------------------------===//
 // Target-specific intrinsics

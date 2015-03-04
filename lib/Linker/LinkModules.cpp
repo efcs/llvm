@@ -1748,6 +1748,10 @@ bool Linker::linkInModule(Module *Src) {
   return RetCode;
 }
 
+void Linker::setModule(Module *Dst) {
+  init(Dst, DiagnosticHandler);
+}
+
 //===----------------------------------------------------------------------===//
 // LinkModules entrypoint.
 //===----------------------------------------------------------------------===//
@@ -1773,7 +1777,7 @@ bool Linker::LinkModules(Module *Dest, Module *Src) {
 //===----------------------------------------------------------------------===//
 
 LLVMBool LLVMLinkModules(LLVMModuleRef Dest, LLVMModuleRef Src,
-                         unsigned Unused, char **OutMessages) {
+                         LLVMLinkerMode Unused, char **OutMessages) {
   Module *D = unwrap(Dest);
   std::string Message;
   raw_string_ostream Stream(Message);

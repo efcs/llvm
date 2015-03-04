@@ -9,8 +9,7 @@
 
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeFunctionArg.h"
 
-#include "llvm/DebugInfo/PDB/IPDBSession.h"
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 #include <utility>
 
@@ -20,11 +19,6 @@ PDBSymbolTypeFunctionArg::PDBSymbolTypeFunctionArg(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeFunctionArg::dump(raw_ostream &OS, int Indent,
-                                    PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
-  OS << stream_indent(Indent);
-  uint32_t TypeId = getTypeId();
-  if (auto Type = Session.getSymbolById(TypeId)) {
-    Type->dump(OS, 0, Level, PDB_DF_Children);
-  }
+void PDBSymbolTypeFunctionArg::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
 }

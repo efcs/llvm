@@ -46,7 +46,6 @@ class MCCFIInstruction;
 class MCContext;
 class MCExpr;
 class MCInst;
-class MCInstrInfo;
 class MCSection;
 class MCStreamer;
 class MCSubtargetInfo;
@@ -69,7 +68,6 @@ public:
   ///
   const MCAsmInfo *MAI;
 
-  const MCInstrInfo *MII;
   /// This is the context for the output file that we are streaming. This owns
   /// all of the global MC-related objects for the generated translation unit.
   MCContext &OutContext;
@@ -99,7 +97,15 @@ public:
   /// default, this is equal to CurrentFnSym.
   MCSymbol *CurrentFnSymForSize;
 
+  /// Map global GOT equivalent MCSymbols to GlobalVariables and keep track of
+  /// its number of uses by other globals.
+  typedef std::pair<const GlobalVariable *, unsigned> GOTEquivUsePair;
+  DenseMap<const MCSymbol *, GOTEquivUsePair> GlobalGOTEquivs;
+
 private:
+  MCSymbol *CurrentFnBegin;
+  MCSymbol *CurrentFnEnd;
+
   // The garbage collection metadata printer table.
   void *GCMetadataPrinters; // Really a DenseMap.
 
@@ -142,6 +148,9 @@ public:
   /// Return a unique ID for the current function.
   ///
   unsigned getFunctionNumber() const;
+
+  MCSymbol *getFunctionBegin() const { return CurrentFnBegin; }
+  MCSymbol *getFunctionEnd() const { return CurrentFnEnd; }
 
   /// Return information about object file lowering.
   const TargetLoweringObjectFile &getObjFileLowering() const;
@@ -244,6 +253,21 @@ public:
   /// \brief Print a general LLVM constant to the .s file.
   void EmitGlobalConstant(const Constant *CV);
 
+  /// \brief Unnamed constant global variables solely contaning a pointer to
+  /// another globals variable act like a global variable "proxy", or GOT
+  /// equivalents, i.e., it's only used to hold the address of the latter. One
+  /// optimization is to replace accesses to these proxies by using the GOT
+  /// entry for the final global instead. Hence, we select GOT equivalent
+  /// candidates among all the module global variables, avoid emitting them
+  /// unnecessarily and finally replace references to them by pc relative
+  /// accesses to GOT entries.
+  void computeGlobalGOTEquivs(Module &M);
+
+  /// \brief Constant expressions using GOT equivalent globals may not be
+  /// eligible for PC relative GOT entry conversion, in such cases we need to
+  /// emit the proxies we previously omitted in EmitGlobalVariable.
+  void emitGlobalGOTEquivs();
+
   //===------------------------------------------------------------------===//
   // Overridable Hooks
   //===------------------------------------------------------------------===//
@@ -312,6 +336,8 @@ public:
 
   /// Return an assembler temporary label with the specified stem.
   MCSymbol *GetTempSymbol(const Twine &Name) const;
+
+  MCSymbol *createTempSymbol(const Twine &Name, unsigned ID) const;
 
   /// Return the MCSymbol for a private symbol with global value name as its
   /// base, with the specified suffix.
@@ -407,29 +433,6 @@ public:
 
   /// Get the value for DW_AT_APPLE_isa. Zero if no isa encoding specified.
   virtual unsigned getISAEncoding(const Function *) { return 0; }
-
-  /// Emit a dwarf register operation for describing
-  /// - a small value occupying only part of a register or
-  /// - a register representing only part of a value.
-  void EmitDwarfOpPiece(ByteStreamer &Streamer, unsigned SizeInBits,
-                        unsigned OffsetInBits = 0) const;
-
-
-  /// \brief Emit a partial DWARF register operation.
-  /// \param MLoc             the register
-  /// \param PieceSize        size and
-  /// \param PieceOffset      offset of the piece in bits, if this is one
-  ///                         piece of an aggregate value.
-  ///
-  /// If size and offset is zero an operation for the entire
-  /// register is emitted: Some targets do not provide a DWARF
-  /// register number for every register.  If this is the case, this
-  /// function will attempt to emit a DWARF register by emitting a
-  /// piece of a super-register or by piecing together multiple
-  /// subregisters that alias the register.
-  void EmitDwarfRegOpPiece(ByteStreamer &BS, const MachineLocation &MLoc,
-                           unsigned PieceSize = 0,
-                           unsigned PieceOffset = 0) const;
 
   /// EmitDwarfRegOp - Emit a dwarf register operation.
   virtual void EmitDwarfRegOp(ByteStreamer &BS,

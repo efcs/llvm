@@ -9,9 +9,7 @@
 
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeTypedef.h"
 
-#include "llvm/DebugInfo/PDB/IPDBSession.h"
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolTypeUDT.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 #include <utility>
 
@@ -21,19 +19,6 @@ PDBSymbolTypeTypedef::PDBSymbolTypeTypedef(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeTypedef::dump(raw_ostream &OS, int Indent,
-                                PDB_DumpLevel Level, PDB_DumpFlags Flags) const {
-  OS.indent(Indent);
-  if (Level >= PDB_DumpLevel::Normal) {
-    std::string Name = getName();
-    OS << "typedef:" << Name << " -> ";
-    std::string TargetTypeName;
-    uint32_t TargetId = getTypeId();
-    if (auto TypeSymbol = Session.getSymbolById(TargetId)) {
-      TypeSymbol->dump(OS, 0, PDB_DumpLevel::Compact, PDB_DF_Children);
-    }
-    OS << TargetTypeName;
-  } else {
-    OS << getName();
-  }
+void PDBSymbolTypeTypedef::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
 }

@@ -71,6 +71,17 @@ bool CanUse(const Instruction *Inst, const Value *Ptr, ProvenanceAnalysis &PA,
 bool CanAlterRefCount(const Instruction *Inst, const Value *Ptr,
                       ProvenanceAnalysis &PA, ARCInstKind Class);
 
+/// Returns true if we can not conservatively prove that Inst can not decrement
+/// the reference count of Ptr. Returns false if we can.
+bool CanDecrementRefCount(const Instruction *Inst, const Value *Ptr,
+                          ProvenanceAnalysis &PA, ARCInstKind Class);
+
+static inline bool CanDecrementRefCount(const Instruction *Inst,
+                                        const Value *Ptr,
+                                        ProvenanceAnalysis &PA) {
+  return CanDecrementRefCount(Inst, Ptr, PA, GetARCInstKind(Inst));
+}
+
 } // namespace objcarc
 } // namespace llvm
 

@@ -383,15 +383,9 @@ def brtarget8 : Operand<OtherVT>;
 
 }
 
-// Special parsers to detect mode to disambiguate.
+// Special parser to detect 16-bit mode to select 16-bit displacement.
 def X86AbsMem16AsmOperand : AsmOperandClass {
   let Name = "AbsMem16";
-  let RenderMethod = "addAbsMemOperands";
-  let SuperClasses = [X86AbsMemAsmOperand];
-}
-
-def X86AbsMem32AsmOperand : AsmOperandClass {
-  let Name = "AbsMem32";
   let RenderMethod = "addAbsMemOperands";
   let SuperClasses = [X86AbsMemAsmOperand];
 }
@@ -401,7 +395,7 @@ let OperandType = "OPERAND_PCREL",
     PrintMethod = "printPCRelImm" in {
 let ParserMatchClass = X86AbsMem16AsmOperand in
   def brtarget16 : Operand<OtherVT>;
-let ParserMatchClass = X86AbsMem32AsmOperand in
+let ParserMatchClass = X86AbsMemAsmOperand in
   def brtarget32 : Operand<OtherVT>;
 }
 
@@ -578,10 +572,13 @@ def X86GR32orGR64AsmOperand : AsmOperandClass {
 def GR32orGR64 : RegisterOperand<GR32> {
   let ParserMatchClass = X86GR32orGR64AsmOperand;
 }
-
+def AVX512RCOperand : AsmOperandClass {
+  let Name = "AVX512RC";
+}
 def AVX512RC : Operand<i32> {
   let PrintMethod = "printRoundingControl";
   let OperandType = "OPERAND_IMMEDIATE";
+  let ParserMatchClass = AVX512RCOperand;
 }
 
 // Sign-extended immediate classes. We don't need to define the full lattice

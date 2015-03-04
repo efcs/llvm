@@ -793,16 +793,9 @@ void Verifier::visitMDImportedEntity(const MDImportedEntity &N) {
 }
 
 void Verifier::visitComdat(const Comdat &C) {
-  // All Comdat::SelectionKind values other than Comdat::Any require a
-  // GlobalValue with the same name as the Comdat.
-  const GlobalValue *GV = M->getNamedValue(C.getName());
-  if (C.getSelectionKind() != Comdat::Any)
-    Assert1(GV,
-            "comdat selection kind requires a global value with the same name",
-            &C);
   // The Module is invalid if the GlobalValue has private linkage.  Entities
   // with private linkage don't have entries in the symbol table.
-  if (GV)
+  if (const GlobalValue *GV = M->getNamedValue(C.getName()))
     Assert1(!GV->hasPrivateLinkage(), "comdat global value has private linkage",
             GV);
 }
@@ -2803,14 +2796,20 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
   } break;
   case Intrinsic::memcpy:
   case Intrinsic::memmove:
-  case Intrinsic::memset:
-    Assert1(isa<ConstantInt>(CI.getArgOperand(3)),
+  case Intrinsic::memset: {
+    ConstantInt *AlignCI = dyn_cast<ConstantInt>(CI.getArgOperand(3));
+    Assert1(AlignCI,
             "alignment argument of memory intrinsics must be a constant int",
+            &CI);
+    const APInt &AlignVal = AlignCI->getValue();
+    Assert1(AlignCI->isZero() || AlignVal.isPowerOf2(),
+            "alignment argument of memory intrinsics must be a power of 2",
             &CI);
     Assert1(isa<ConstantInt>(CI.getArgOperand(4)),
             "isvolatile argument of memory intrinsics must be a constant int",
             &CI);
     break;
+  }
   case Intrinsic::gcroot:
   case Intrinsic::gcwrite:
   case Intrinsic::gcread:
