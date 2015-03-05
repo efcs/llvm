@@ -23,6 +23,7 @@
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/IntrinsicLowering.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -11198,9 +11199,12 @@ bool ARMTargetLowering::shouldExpandAtomicLoadInIR(LoadInst *LI) const {
 
 // For the real atomic operations, we have ldrex/strex up to 32 bits,
 // and up to 64 bits on the non-M profiles
-bool ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
+TargetLoweringBase::AtomicRMWExpansionKind
+ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
   unsigned Size = AI->getType()->getPrimitiveSizeInBits();
-  return Size <= (Subtarget->isMClass() ? 32U : 64U);
+  return (Size <= (Subtarget->isMClass() ? 32U : 64U))
+             ? AtomicRMWExpansionKind::LLSC
+             : AtomicRMWExpansionKind::None;
 }
 
 // This has so far only been implemented for MachO.
