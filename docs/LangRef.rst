@@ -1369,6 +1369,11 @@ example:
     If a function that has an ``sspstrong`` attribute is inlined into a
     function that doesn't have an ``sspstrong`` attribute, then the
     resulting function will have an ``sspstrong`` attribute.
+``"thunk"``
+    This attribute indicates that the function will delegate to some other
+    function with a tail call. The prototype of a thunk should not be used for
+    optimization purposes. The caller is expected to cast the thunk prototype to
+    match the thunk target prototype.
 ``uwtable``
     This attribute indicates that the ABI being targeted requires that
     an unwind table entry be produce for this function even if we can
@@ -6913,9 +6918,7 @@ Arguments:
 
 The '``select``' instruction requires an 'i1' value or a vector of 'i1'
 values indicating the condition, and two values of the same :ref:`first
-class <t_firstclass>` type. If the val1/val2 are vectors and the
-condition is a scalar, then entire vectors are selected, not individual
-elements.
+class <t_firstclass>` type.
 
 Semantics:
 """"""""""
@@ -6926,6 +6929,9 @@ argument.
 
 If the condition is a vector of i1, then the value arguments must be
 vectors of the same size, and the selection is done element by element.
+
+If the condition is an i1 and the value arguments are vectors of the
+same size, then an entire vector is selected.
 
 Example:
 """"""""
