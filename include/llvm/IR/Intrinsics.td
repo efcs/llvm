@@ -261,10 +261,10 @@ def int_gcwrite : Intrinsic<[],
 //
 def int_returnaddress : Intrinsic<[llvm_ptr_ty], [llvm_i32_ty], [IntrNoMem]>;
 def int_frameaddress  : Intrinsic<[llvm_ptr_ty], [llvm_i32_ty], [IntrNoMem]>;
-def int_frameallocate : Intrinsic<[llvm_ptr_ty], [llvm_i32_ty]>;
+def int_frameescape : Intrinsic<[], [llvm_vararg_ty]>;
 def int_framerecover : Intrinsic<[llvm_ptr_ty],
-                                             [llvm_ptr_ty, llvm_ptr_ty],
-                                             [IntrNoMem]>;
+                                 [llvm_ptr_ty, llvm_ptr_ty, llvm_i32_ty],
+                                 [IntrNoMem]>;
 def int_read_register  : Intrinsic<[llvm_anyint_ty], [llvm_metadata_ty],
                                    [IntrNoMem], "llvm.read_register">;
 def int_write_register : Intrinsic<[], [llvm_metadata_ty, llvm_anyint_ty],
@@ -410,6 +410,13 @@ def int_eh_typeid_for : Intrinsic<[llvm_i32_ty], [llvm_ptr_ty], [IntrNoMem]>;
 
 def int_eh_return_i32 : Intrinsic<[], [llvm_i32_ty, llvm_ptr_ty]>;
 def int_eh_return_i64 : Intrinsic<[], [llvm_i64_ty, llvm_ptr_ty]>;
+
+// eh.begincatch takes a pointer returned by a landingpad instruction and
+// copies the exception object into the memory pointed to by the second
+// parameter. If the second parameter is null, no copy occurs.
+def int_eh_begincatch : Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty],
+                                  [NoCapture<0>, NoCapture<1>]>;
+def int_eh_endcatch : Intrinsic<[], []>;
 
 // __builtin_unwind_init is an undocumented GCC intrinsic that causes all
 // callee-saved registers to be saved and restored (regardless of whether they
@@ -597,6 +604,10 @@ def int_masked_scatter: Intrinsic<[],
                                    LLVMVectorOfPointersToElt<0>, llvm_i32_ty,
                                    LLVMVectorSameWidth<0, llvm_i1_ty>],
                                   [IntrReadWriteArgMem]>;
+
+// Intrinsics to support bit sets.
+def int_bitset_test : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty, llvm_metadata_ty],
+                                [IntrNoMem]>;
 
 //===----------------------------------------------------------------------===//
 // Target-specific intrinsics

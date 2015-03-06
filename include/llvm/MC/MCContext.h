@@ -16,7 +16,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/MC/MCDwarf.h"
-#include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/SectionKind.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Compiler.h"
@@ -47,8 +46,8 @@ namespace llvm {
   /// of the sections that it creates.
   ///
   class MCContext {
-    MCContext(const MCContext&) LLVM_DELETED_FUNCTION;
-    MCContext &operator=(const MCContext&) LLVM_DELETED_FUNCTION;
+    MCContext(const MCContext&) = delete;
+    MCContext &operator=(const MCContext&) = delete;
   public:
     typedef StringMap<MCSymbol*, BumpPtrAllocator&> SymbolTable;
   private:
@@ -215,6 +214,8 @@ namespace llvm {
     /// with a unique but unspecified name.
     MCSymbol *CreateTempSymbol();
 
+    MCSymbol *createTempSymbol(const Twine &Name);
+
     /// getUniqueSymbolID() - Return a unique identifier for use in constructing
     /// symbol names.
     unsigned getUniqueSymbolID() { return NextUniqueID++; }
@@ -237,7 +238,7 @@ namespace llvm {
 
     MCSymbol *getOrCreateSectionSymbol(const MCSectionELF &Section);
 
-    MCSymbol *getOrCreateFrameAllocSymbol(StringRef FuncName);
+    MCSymbol *getOrCreateFrameAllocSymbol(StringRef FuncName, unsigned Idx);
 
     /// LookupSymbol - Get the symbol for \p Name, or null.
     MCSymbol *LookupSymbol(StringRef Name) const;
@@ -276,6 +277,10 @@ namespace llvm {
     const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
                                       unsigned Flags, unsigned EntrySize,
                                       StringRef Group);
+
+    const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
+                                      unsigned Flags, unsigned EntrySize,
+                                      StringRef Group, bool Unique);
 
     void renameELFSection(const MCSectionELF *Section, StringRef Name);
 

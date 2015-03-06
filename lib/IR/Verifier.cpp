@@ -191,21 +191,25 @@ class Verifier : public InstVisitor<Verifier>, VerifierSupport {
   SmallPtrSet<Instruction *, 16> InstsInThisBlock;
 
   /// \brief Keep track of the metadata nodes that have been checked already.
-  SmallPtrSet<Metadata *, 32> MDNodes;
+  SmallPtrSet<const Metadata *, 32> MDNodes;
 
   /// \brief The personality function referenced by the LandingPadInsts.
   /// All LandingPadInsts within the same function must use the same
   /// personality function.
   const Value *PersonalityFn;
 
-  /// \brief Whether we've seen a call to @llvm.frameallocate in this function
+  /// \brief Whether we've seen a call to @llvm.frameescape in this function
   /// already.
-  bool SawFrameAllocate;
+  bool SawFrameEscape;
+
+  /// Stores the count of how many objects were passed to llvm.frameescape for a
+  /// given function and the largest index passed to llvm.framerecover.
+  DenseMap<Function *, std::pair<unsigned, unsigned>> FrameEscapeInfo;
 
 public:
   explicit Verifier(raw_ostream &OS = dbgs())
       : VerifierSupport(OS), Context(nullptr), PersonalityFn(nullptr),
-        SawFrameAllocate(false) {}
+        SawFrameEscape(false) {}
 
   bool verify(const Function &F) {
     M = F.getParent();
@@ -240,7 +244,7 @@ public:
     visit(const_cast<Function &>(F));
     InstsInThisBlock.clear();
     PersonalityFn = nullptr;
-    SawFrameAllocate = false;
+    SawFrameEscape = false;
 
     return !Broken;
   }
@@ -258,6 +262,10 @@ public:
       if (I->isDeclaration())
         visitFunction(*I);
     }
+
+    // Now that we've visited every function, verify that we never asked to
+    // recover a frame index that wasn't escaped.
+    verifyFrameRecoverIndices();
 
     for (Module::const_global_iterator I = M.global_begin(), E = M.global_end();
          I != E; ++I)
@@ -290,9 +298,9 @@ private:
   void visitAliaseeSubExpr(SmallPtrSetImpl<const GlobalAlias *> &Visited,
                            const GlobalAlias &A, const Constant &C);
   void visitNamedMDNode(const NamedMDNode &NMD);
-  void visitMDNode(MDNode &MD);
-  void visitMetadataAsValue(MetadataAsValue &MD, Function *F);
-  void visitValueAsMetadata(ValueAsMetadata &MD, Function *F);
+  void visitMDNode(const MDNode &MD);
+  void visitMetadataAsValue(const MetadataAsValue &MD, Function *F);
+  void visitValueAsMetadata(const ValueAsMetadata &MD, Function *F);
   void visitComdat(const Comdat &C);
   void visitModuleIdents(const Module &M);
   void visitModuleFlags(const Module &M);
@@ -303,6 +311,8 @@ private:
   void visitBasicBlock(BasicBlock &BB);
   void visitRangeMetadata(Instruction& I, MDNode* Range, Type* Ty);
 
+#define HANDLE_SPECIALIZED_MDNODE_LEAF(CLASS) void visit##CLASS(const CLASS &N);
+#include "llvm/IR/Metadata.def"
 
   // InstVisitor overrides...
   using InstVisitor<Verifier>::visit;
@@ -371,6 +381,7 @@ private:
 
   void VerifyConstantExprBitcastType(const ConstantExpr *CE);
   void VerifyStatepoint(ImmutableCallSite CS);
+  void verifyFrameRecoverIndices();
 };
 class DebugInfoVerifier : public VerifierSupport {
 public:
@@ -516,8 +527,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
       continue;
 
     if (const User *U = dyn_cast<User>(V)) {
-      for (unsigned I = 0, N = U->getNumOperands(); I != N; ++I)
-        WorkStack.push_back(U->getOperand(I));
+      WorkStack.append(U->op_begin(), U->op_end());
     }
 
     if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(V)) {
@@ -595,11 +605,23 @@ void Verifier::visitNamedMDNode(const NamedMDNode &NMD) {
   }
 }
 
-void Verifier::visitMDNode(MDNode &MD) {
+void Verifier::visitMDNode(const MDNode &MD) {
   // Only visit each node once.  Metadata can be mutually recursive, so this
   // avoids infinite recursion here, as well as being an optimization.
   if (!MDNodes.insert(&MD).second)
     return;
+
+  switch (MD.getMetadataID()) {
+  default:
+    llvm_unreachable("Invalid MDNode subclass");
+  case Metadata::MDTupleKind:
+    break;
+#define HANDLE_SPECIALIZED_MDNODE_LEAF(CLASS)                                  \
+  case Metadata::CLASS##Kind:                                                  \
+    visit##CLASS(cast<CLASS>(MD));                                             \
+    break;
+#include "llvm/IR/Metadata.def"
+  }
 
   for (unsigned i = 0, e = MD.getNumOperands(); i != e; ++i) {
     Metadata *Op = MD.getOperand(i);
@@ -622,7 +644,7 @@ void Verifier::visitMDNode(MDNode &MD) {
   Assert1(MD.isResolved(), "All nodes should be resolved!", &MD);
 }
 
-void Verifier::visitValueAsMetadata(ValueAsMetadata &MD, Function *F) {
+void Verifier::visitValueAsMetadata(const ValueAsMetadata &MD, Function *F) {
   Assert1(MD.getValue(), "Expected valid value", &MD);
   Assert2(!MD.getValue()->getType()->isMetadataTy(),
           "Unexpected metadata round-trip through values", &MD, MD.getValue());
@@ -648,7 +670,7 @@ void Verifier::visitValueAsMetadata(ValueAsMetadata &MD, Function *F) {
   Assert1(ActualF == F, "function-local metadata used in wrong function", L);
 }
 
-void Verifier::visitMetadataAsValue(MetadataAsValue &MDV, Function *F) {
+void Verifier::visitMetadataAsValue(const MetadataAsValue &MDV, Function *F) {
   Metadata *MD = MDV.getMetadata();
   if (auto *N = dyn_cast<MDNode>(MD)) {
     visitMDNode(*N);
@@ -664,17 +686,125 @@ void Verifier::visitMetadataAsValue(MetadataAsValue &MDV, Function *F) {
     visitValueAsMetadata(*V, F);
 }
 
+void Verifier::visitMDLocation(const MDLocation &N) {
+  Assert1(N.getScope(), "location requires a valid scope", &N);
+  if (auto *IA = N.getInlinedAt())
+    Assert2(isa<MDLocation>(IA), "inlined-at should be a location", &N, IA);
+}
+
+void Verifier::visitGenericDebugNode(const GenericDebugNode &N) {
+  Assert1(N.getTag(), "invalid tag", &N);
+}
+
+void Verifier::visitMDSubrange(const MDSubrange &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_subrange_type, "invalid tag", &N);
+}
+
+void Verifier::visitMDEnumerator(const MDEnumerator &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_enumerator, "invalid tag", &N);
+}
+
+void Verifier::visitMDBasicType(const MDBasicType &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_base_type ||
+              N.getTag() == dwarf::DW_TAG_unspecified_type,
+          "invalid tag", &N);
+}
+
+void Verifier::visitMDDerivedType(const MDDerivedType &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_typedef ||
+              N.getTag() == dwarf::DW_TAG_pointer_type ||
+              N.getTag() == dwarf::DW_TAG_ptr_to_member_type ||
+              N.getTag() == dwarf::DW_TAG_reference_type ||
+              N.getTag() == dwarf::DW_TAG_rvalue_reference_type ||
+              N.getTag() == dwarf::DW_TAG_const_type ||
+              N.getTag() == dwarf::DW_TAG_volatile_type ||
+              N.getTag() == dwarf::DW_TAG_restrict_type ||
+              N.getTag() == dwarf::DW_TAG_member ||
+              N.getTag() == dwarf::DW_TAG_inheritance ||
+              N.getTag() == dwarf::DW_TAG_friend,
+          "invalid tag", &N);
+}
+
+void Verifier::visitMDCompositeType(const MDCompositeType &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_array_type ||
+              N.getTag() == dwarf::DW_TAG_structure_type ||
+              N.getTag() == dwarf::DW_TAG_union_type ||
+              N.getTag() == dwarf::DW_TAG_enumeration_type ||
+              N.getTag() == dwarf::DW_TAG_subroutine_type ||
+              N.getTag() == dwarf::DW_TAG_class_type,
+          "invalid tag", &N);
+}
+
+void Verifier::visitMDSubroutineType(const MDSubroutineType &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_subroutine_type, "invalid tag", &N);
+}
+
+void Verifier::visitMDFile(const MDFile &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_file_type, "invalid tag", &N);
+}
+
+void Verifier::visitMDCompileUnit(const MDCompileUnit &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_compile_unit, "invalid tag", &N);
+}
+
+void Verifier::visitMDSubprogram(const MDSubprogram &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_subprogram, "invalid tag", &N);
+}
+
+void Verifier::visitMDLexicalBlock(const MDLexicalBlock &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_lexical_block, "invalid tag", &N);
+}
+
+void Verifier::visitMDLexicalBlockFile(const MDLexicalBlockFile &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_lexical_block, "invalid tag", &N);
+}
+
+void Verifier::visitMDNamespace(const MDNamespace &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_namespace, "invalid tag", &N);
+}
+
+void Verifier::visitMDTemplateTypeParameter(const MDTemplateTypeParameter &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_template_type_parameter, "invalid tag",
+          &N);
+}
+
+void Verifier::visitMDTemplateValueParameter(
+    const MDTemplateValueParameter &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_template_value_parameter ||
+              N.getTag() == dwarf::DW_TAG_GNU_template_template_param ||
+              N.getTag() == dwarf::DW_TAG_GNU_template_parameter_pack,
+          "invalid tag", &N);
+}
+
+void Verifier::visitMDGlobalVariable(const MDGlobalVariable &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_variable, "invalid tag", &N);
+}
+
+void Verifier::visitMDLocalVariable(const MDLocalVariable &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_auto_variable ||
+              N.getTag() == dwarf::DW_TAG_arg_variable,
+          "invalid tag", &N);
+}
+
+void Verifier::visitMDExpression(const MDExpression &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_expression, "invalid tag", &N);
+  Assert1(N.isValid(), "invalid expression", &N);
+}
+
+void Verifier::visitMDObjCProperty(const MDObjCProperty &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_APPLE_property, "invalid tag", &N);
+}
+
+void Verifier::visitMDImportedEntity(const MDImportedEntity &N) {
+  Assert1(N.getTag() == dwarf::DW_TAG_imported_module ||
+              N.getTag() == dwarf::DW_TAG_imported_declaration,
+          "invalid tag", &N);
+}
+
 void Verifier::visitComdat(const Comdat &C) {
-  // All Comdat::SelectionKind values other than Comdat::Any require a
-  // GlobalValue with the same name as the Comdat.
-  const GlobalValue *GV = M->getNamedValue(C.getName());
-  if (C.getSelectionKind() != Comdat::Any)
-    Assert1(GV,
-            "comdat selection kind requires a global value with the same name",
-            &C);
   // The Module is invalid if the GlobalValue has private linkage.  Entities
   // with private linkage don't have entries in the symbol table.
-  if (GV)
+  if (const GlobalValue *GV = M->getNamedValue(C.getName()))
     Assert1(!GV->hasPrivateLinkage(), "comdat global value has private linkage",
             GV);
 }
@@ -690,7 +820,7 @@ void Verifier::visitModuleIdents(const Module &M) {
     const MDNode *N = Idents->getOperand(i);
     Assert1(N->getNumOperands() == 1,
             "incorrect number of operands in llvm.ident metadata", N);
-    Assert1(isa<MDString>(N->getOperand(0)),
+    Assert1(dyn_cast_or_null<MDString>(N->getOperand(0)),
             ("invalid value for llvm.ident metadata entry operand"
              "(the operand should be a string)"),
             N->getOperand(0));
@@ -741,14 +871,14 @@ Verifier::visitModuleFlag(const MDNode *Op,
   Module::ModFlagBehavior MFB;
   if (!Module::isValidModFlagBehavior(Op->getOperand(0), MFB)) {
     Assert1(
-        mdconst::dyn_extract<ConstantInt>(Op->getOperand(0)),
+        mdconst::dyn_extract_or_null<ConstantInt>(Op->getOperand(0)),
         "invalid behavior operand in module flag (expected constant integer)",
         Op->getOperand(0));
     Assert1(false,
             "invalid behavior operand in module flag (unexpected constant)",
             Op->getOperand(0));
   }
-  MDString *ID = dyn_cast<MDString>(Op->getOperand(1));
+  MDString *ID = dyn_cast_or_null<MDString>(Op->getOperand(1));
   Assert1(ID,
           "invalid ID operand in module flag (expected metadata string)",
           Op->getOperand(1));
@@ -1143,6 +1273,19 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
   // out to be problematic since optimizations run after safepoint insertion
   // can recognize equality properties that the insertion logic doesn't know
   // about.  See example statepoint.ll in the verifier subdirectory
+}
+
+void Verifier::verifyFrameRecoverIndices() {
+  for (auto &Counts : FrameEscapeInfo) {
+    Function *F = Counts.first;
+    unsigned EscapedObjectCount = Counts.second.first;
+    unsigned MaxRecoveredIndex = Counts.second.second;
+    Assert1(MaxRecoveredIndex <= EscapedObjectCount,
+            "all indices passed to llvm.framerecover must be less than the "
+            "number of arguments passed ot llvm.frameescape in the parent "
+            "function",
+            F);
+  }
 }
 
 // visitFunction - Verify that a function is ok.
@@ -1859,6 +2002,13 @@ void Verifier::visitInvokeInst(InvokeInst &II) {
   Assert1(II.getUnwindDest()->isLandingPad(),
           "The unwind destination does not have a landingpad instruction!",&II);
 
+  if (Function *F = II.getCalledFunction())
+    // TODO: Ideally we should use visitIntrinsicFunction here. But it uses
+    //       CallInst as an input parameter. It not woth updating this whole
+    //       function only to support statepoint verification.
+    if (F->getIntrinsicID() == Intrinsic::experimental_gc_statepoint)
+      VerifyStatepoint(ImmutableCallSite(&II));
+
   visitTerminatorInst(II);
 }
 
@@ -2358,7 +2508,8 @@ void Verifier::visitInstruction(Instruction &I) {
       Assert1(!F->isIntrinsic() || isa<CallInst>(I) ||
               F->getIntrinsicID() == Intrinsic::donothing ||
               F->getIntrinsicID() == Intrinsic::experimental_patchpoint_void ||
-              F->getIntrinsicID() == Intrinsic::experimental_patchpoint_i64,
+              F->getIntrinsicID() == Intrinsic::experimental_patchpoint_i64 ||
+              F->getIntrinsicID() == Intrinsic::experimental_gc_statepoint,
               "Cannot invoke an intrinsinc other than"
               " donothing or patchpoint", &I);
       Assert1(F->getParent() == M, "Referencing function in another module!",
@@ -2667,14 +2818,20 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
   } break;
   case Intrinsic::memcpy:
   case Intrinsic::memmove:
-  case Intrinsic::memset:
-    Assert1(isa<ConstantInt>(CI.getArgOperand(3)),
+  case Intrinsic::memset: {
+    ConstantInt *AlignCI = dyn_cast<ConstantInt>(CI.getArgOperand(3));
+    Assert1(AlignCI,
             "alignment argument of memory intrinsics must be a constant int",
+            &CI);
+    const APInt &AlignVal = AlignCI->getValue();
+    Assert1(AlignCI->isZero() || AlignVal.isPowerOf2(),
+            "alignment argument of memory intrinsics must be a power of 2",
             &CI);
     Assert1(isa<ConstantInt>(CI.getArgOperand(4)),
             "isvolatile argument of memory intrinsics must be a constant int",
             &CI);
     break;
+  }
   case Intrinsic::gcroot:
   case Intrinsic::gcwrite:
   case Intrinsic::gcread:
@@ -2724,15 +2881,19 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
             "llvm.invariant.end parameter #2 must be a constant integer", &CI);
     break;
 
-  case Intrinsic::frameallocate: {
+  case Intrinsic::frameescape: {
     BasicBlock *BB = CI.getParent();
     Assert1(BB == &BB->getParent()->front(),
-            "llvm.frameallocate used outside of entry block", &CI);
-    Assert1(!SawFrameAllocate,
-            "multiple calls to llvm.frameallocate in one function", &CI);
-    SawFrameAllocate = true;
-    Assert1(isa<ConstantInt>(CI.getArgOperand(0)),
-            "llvm.frameallocate argument must be constant integer size", &CI);
+            "llvm.frameescape used outside of entry block", &CI);
+    Assert1(!SawFrameEscape,
+            "multiple calls to llvm.frameescape in one function", &CI);
+    for (Value *Arg : CI.arg_operands()) {
+      auto *AI = dyn_cast<AllocaInst>(Arg->stripPointerCasts());
+      Assert1(AI && AI->isStaticAlloca(),
+              "llvm.frameescape only accepts static allocas", &CI);
+    }
+    FrameEscapeInfo[BB->getParent()].first = CI.getNumArgOperands();
+    SawFrameEscape = true;
     break;
   }
   case Intrinsic::framerecover: {
@@ -2740,6 +2901,12 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     Function *Fn = dyn_cast<Function>(FnArg);
     Assert1(Fn && !Fn->isDeclaration(), "llvm.framerecover first "
             "argument must be function defined in this module", &CI);
+    auto *IdxArg = dyn_cast<ConstantInt>(CI.getArgOperand(2));
+    Assert1(IdxArg, "idx argument of llvm.framerecover must be a constant int",
+            &CI);
+    auto &Entry = FrameEscapeInfo[Fn];
+    Entry.second = unsigned(
+        std::max(uint64_t(Entry.second), IdxArg->getLimitedValue(~0U) + 1));
     break;
   }
 
@@ -2773,14 +2940,46 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     break;
   }
   case Intrinsic::experimental_gc_relocate: {
-    // Are we tied to a statepoint properly?
-    CallSite StatepointCS(CI.getArgOperand(0));
-    const Function *StatepointFn =
-        StatepointCS.getInstruction() ? StatepointCS.getCalledFunction() : nullptr;
-    Assert2(StatepointFn && StatepointFn->isDeclaration() &&
-            StatepointFn->getIntrinsicID() == Intrinsic::experimental_gc_statepoint,
-            "gc.relocate operand #1 must be from a statepoint",
-	    &CI, CI.getArgOperand(0));
+    Assert1(CI.getNumArgOperands() == 3, "wrong number of arguments", &CI);
+
+    // Check that this relocate is correctly tied to the statepoint
+
+    // This is case for relocate on the unwinding path of an invoke statepoint
+    if (ExtractValueInst *ExtractValue =
+          dyn_cast<ExtractValueInst>(CI.getArgOperand(0))) {
+      Assert1(isa<LandingPadInst>(ExtractValue->getAggregateOperand()),
+              "gc relocate on unwind path incorrectly linked to the statepoint",
+              &CI);
+
+      const BasicBlock *invokeBB =
+        ExtractValue->getParent()->getUniquePredecessor();
+
+      // Landingpad relocates should have only one predecessor with invoke
+      // statepoint terminator
+      Assert1(invokeBB,
+              "safepoints should have unique landingpads",
+              ExtractValue->getParent());
+      Assert1(invokeBB->getTerminator(),
+              "safepoint block should be well formed",
+              invokeBB);
+      Assert1(isStatepoint(invokeBB->getTerminator()),
+              "gc relocate should be linked to a statepoint",
+              invokeBB);
+    }
+    else {
+      // In all other cases relocate should be tied to the statepoint directly.
+      // This covers relocates on a normal return path of invoke statepoint and
+      // relocates of a call statepoint
+      auto Token = CI.getArgOperand(0);
+      Assert2(isa<Instruction>(Token) && isStatepoint(cast<Instruction>(Token)),
+              "gc relocate is incorrectly tied to the statepoint",
+              &CI, Token);
+    }
+
+    // Verify rest of the relocate arguments
+
+    GCRelocateOperands ops(&CI);
+    ImmutableCallSite StatepointCS(ops.statepoint());
 
     // Both the base and derived must be piped through the safepoint
     Value* Base = CI.getArgOperand(1);

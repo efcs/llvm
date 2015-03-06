@@ -57,6 +57,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -726,8 +727,7 @@ bool llvm::simplifyLoop(Loop *L, DominatorTree *DT, LoopInfo *LI, Pass *PP,
   // order. We can use this simple process because loops form a tree.
   for (unsigned Idx = 0; Idx != Worklist.size(); ++Idx) {
     Loop *L2 = Worklist[Idx];
-    for (Loop::iterator I = L2->begin(), E = L2->end(); I != E; ++I)
-      Worklist.push_back(*I);
+    Worklist.append(L2->begin(), L2->end());
   }
 
   while (!Worklist.empty())
@@ -798,8 +798,7 @@ bool LoopSimplify::runOnFunction(Function &F) {
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   SE = getAnalysisIfAvailable<ScalarEvolution>();
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : nullptr;
+  DL = &F.getParent()->getDataLayout();
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
   // Simplify each loop nest in the function.

@@ -7,9 +7,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <type_traits>
 #include <unordered_map>
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
 #include "llvm/DebugInfo/PDB/IPDBRawSymbol.h"
 #include "llvm/DebugInfo/PDB/IPDBSession.h"
@@ -51,16 +51,6 @@
 #include "gtest/gtest.h"
 using namespace llvm;
 
-namespace std {
-  template<>
-  struct hash<PDB_SymType> {
-  public:
-    std::size_t operator()(PDB_SymType Symbol) const {
-      return std::hash<int>()(static_cast<int>(Symbol));
-    }
-  };
-}
-
 namespace {
 
 #define MOCK_SYMBOL_ACCESSOR(Func)                                             \
@@ -75,10 +65,21 @@ class MockSession : public IPDBSession {
   std::unique_ptr<PDBSymbolExe> getGlobalScope() const override {
     return nullptr;
   }
-  std::unique_ptr<PDBSymbol> getSymbolById() const override { return nullptr; }
-  std::unique_ptr<IPDBSourceFile> getSourceFileById() const override {
+  std::unique_ptr<PDBSymbol> getSymbolById(uint32_t SymbolId) const override {
     return nullptr;
   }
+  std::unique_ptr<IPDBSourceFile>
+  getSourceFileById(uint32_t SymbolId) const override {
+    return nullptr;
+  }
+  std::unique_ptr<IPDBEnumSourceFiles> getAllSourceFiles() const override {
+    return nullptr;
+  }
+  std::unique_ptr<IPDBEnumSourceFiles> getSourceFilesForCompiland(
+      const PDBSymbolCompiland &Compiland) const override {
+    return nullptr;
+  }
+
   std::unique_ptr<IPDBEnumDataStreams> getDebugStreams() const override {
     return nullptr;
   }
@@ -86,10 +87,15 @@ class MockSession : public IPDBSession {
 
 class MockRawSymbol : public IPDBRawSymbol {
 public:
-  MockRawSymbol(PDB_SymType SymType) : Type(SymType) {}
+  MockRawSymbol(PDB_SymType SymType)
+      : Type(SymType) {}
 
-  void dump(llvm::raw_ostream &OS) const override {}
+  void dump(raw_ostream &OS, int Indent) const override {}
 
+  std::unique_ptr<IPDBEnumSymbols>
+  findChildren(PDB_SymType Type) const override {
+    return nullptr;
+  }
   std::unique_ptr<IPDBEnumSymbols>
   findChildren(PDB_SymType Type, StringRef Name,
                PDB_NameSearchFlags Flags) const override {
@@ -203,6 +209,7 @@ public:
   MOCK_SYMBOL_ACCESSOR(hasDebugInfo)
   MOCK_SYMBOL_ACCESSOR(hasEH)
   MOCK_SYMBOL_ACCESSOR(hasEHa)
+  MOCK_SYMBOL_ACCESSOR(hasFramePointer)
   MOCK_SYMBOL_ACCESSOR(hasInlAsm)
   MOCK_SYMBOL_ACCESSOR(hasInlineAttribute)
   MOCK_SYMBOL_ACCESSOR(hasInterruptReturn)
@@ -265,6 +272,9 @@ public:
   MOCK_SYMBOL_ACCESSOR(isVirtualBaseClass)
   MOCK_SYMBOL_ACCESSOR(isVirtualInheritance)
   MOCK_SYMBOL_ACCESSOR(isVolatileType)
+  MOCK_SYMBOL_ACCESSOR(getValue)
+  MOCK_SYMBOL_ACCESSOR(wasInlined)
+  MOCK_SYMBOL_ACCESSOR(getUnused)
 
 private:
   PDB_SymType Type;
@@ -331,7 +341,7 @@ private:
   std::unique_ptr<IPDBSession> Session;
 
   void InsertItemWithTag(PDB_SymType Tag) {
-    auto RawSymbol = std::unique_ptr<IPDBRawSymbol>(new MockRawSymbol(Tag));
+    auto RawSymbol = llvm::make_unique<MockRawSymbol>(Tag);
     auto Symbol = PDBSymbol::create(*Session, std::move(RawSymbol));
     SymbolMap.insert(std::make_pair(Tag, std::move(Symbol)));
   }

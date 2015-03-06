@@ -22,10 +22,9 @@
 #define DEBUG_TYPE "ppc-loop-preinc-prep"
 #include "PPC.h"
 #include "PPCTargetMachine.h"
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -37,8 +36,10 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
@@ -84,7 +85,6 @@ namespace {
     PPCTargetMachine *TM;
     LoopInfo *LI;
     ScalarEvolution *SE;
-    const DataLayout *DL;
   };
 }
 
@@ -141,9 +141,6 @@ bool PPCLoopPreIncPrep::runOnFunction(Function &F) {
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   SE = &getAnalysis<ScalarEvolution>();
 
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : 0;
-
   bool MadeChange = false;
 
   for (LoopInfo::iterator I = LI->begin(), E = LI->end();
@@ -157,9 +154,6 @@ bool PPCLoopPreIncPrep::runOnFunction(Function &F) {
 
 bool PPCLoopPreIncPrep::runOnLoop(Loop *L) {
   bool MadeChange = false;
-
-  if (!DL)
-    return MadeChange;
 
   // Only prep. the inner-most loop
   if (!L->empty())

@@ -6,9 +6,6 @@
 /* Exported configuration */
 #include "llvm/Config/llvm-config.h"
 
-/* Patch version of the LLVM API */
-#cmakedefine LLVM_VERSION_PATCH ${LLVM_VERSION_PATCH}
-
 /* Bug report URL. */
 #define BUG_REPORT_URL "${BUG_REPORT_URL}"
 
@@ -54,6 +51,9 @@
 /* Define to 1 if you have the declaration of `strerror_s', and to 0 if you
    don't. */
 #cmakedefine01 HAVE_DECL_STRERROR_S
+
+/* Define to 1 if you have the DIA SDK installed, and to 0 if you don't. */
+#cmakedefine HAVE_DIA_SDK ${HAVE_DIA_SDK}
 
 /* Define to 1 if you have the <dirent.h> header file, and it defines `DIR'.
    */
@@ -221,6 +221,9 @@
 
 /* Define to 1 if you have the `malloc_zone_statistics' function. */
 #cmakedefine HAVE_MALLOC_ZONE_STATISTICS ${HAVE_MALLOC_ZONE_STATISTICS}
+
+/* Define to 1 if you have the `mallctl` function. */
+#cmakedefine HAVE_MALLCTL ${HAVE_MALLCTL}
 
 /* Define to 1 if you have the `mkdtemp' function. */
 #cmakedefine HAVE_MKDTEMP ${HAVE_MKDTEMP}

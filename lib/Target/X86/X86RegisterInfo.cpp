@@ -66,21 +66,22 @@ X86RegisterInfo::X86RegisterInfo(const X86Subtarget &STI)
   Is64Bit = Subtarget.is64Bit();
   IsWin64 = Subtarget.isTargetWin64();
 
+  // Use a callee-saved register as the base pointer.  These registers must
+  // not conflict with any ABI requirements.  For example, in 32-bit mode PIC
+  // requires GOT in the EBX register before function calls via PLT GOT pointer.
   if (Is64Bit) {
     SlotSize = 8;
-    StackPtr = (Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64()) ?
-        X86::RSP : X86::ESP;
-    FramePtr = (Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64()) ?
-        X86::RBP : X86::EBP;
+    bool Use64BitReg = 
+      Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64();
+    StackPtr = Use64BitReg ? X86::RSP : X86::ESP;
+    FramePtr = Use64BitReg ? X86::RBP : X86::EBP;
+    BasePtr = Use64BitReg ? X86::RBX : X86::EBX;
   } else {
     SlotSize = 4;
     StackPtr = X86::ESP;
     FramePtr = X86::EBP;
+    BasePtr = X86::ESI;
   }
-  // Use a callee-saved register as the base pointer.  These registers must
-  // not conflict with any ABI requirements.  For example, in 32-bit mode PIC
-  // requires GOT in the EBX register before function calls via PLT GOT pointer.
-  BasePtr = Is64Bit ? X86::RBX : X86::ESI;
 }
 
 bool
@@ -219,6 +220,7 @@ const MCPhysReg *
 X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   bool HasAVX = Subtarget.hasAVX();
   bool HasAVX512 = Subtarget.hasAVX512();
+  bool CallsEHReturn = MF->getMMI().callsEHReturn();
 
   assert(MF && "MachineFunction required");
   switch (MF->getFunction()->getCallingConv()) {
@@ -252,11 +254,16 @@ X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
     if (Is64Bit)
       return CSR_64_MostRegs_SaveList;
     break;
+  case CallingConv::X86_64_Win64:
+    return CSR_Win64_SaveList;
+  case CallingConv::X86_64_SysV:
+    if (CallsEHReturn)
+      return CSR_64EHRet_SaveList;
+    return CSR_64_SaveList;
   default:
     break;
   }
 
-  bool CallsEHReturn = MF->getMMI().callsEHReturn();
   if (Is64Bit) {
     if (IsWin64)
       return CSR_Win64_SaveList;
@@ -307,6 +314,10 @@ X86RegisterInfo::getCallPreservedMask(CallingConv::ID CC) const {
     break;
   default:
     break;
+  case CallingConv::X86_64_Win64:
+    return CSR_Win64_RegMask;
+  case CallingConv::X86_64_SysV:
+    return CSR_64_RegMask;
   }
 
   // Unlike getCalleeSavedRegs(), we don't have MMI so we can't check
@@ -354,7 +365,9 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
         "Stack realignment in presence of dynamic allocas is not supported with"
         "this calling convention.");
 
-    for (MCSubRegIterator I(getBaseRegister(), this, /*IncludeSelf=*/true);
+    unsigned BasePtr = getX86SubSuperRegister(getBaseRegister(), MVT::i64,
+                                              false);
+    for (MCSubRegIterator I(BasePtr, this, /*IncludeSelf=*/true);
          I.isValid(); ++I)
       Reserved.set(*I);
   }
@@ -445,10 +458,8 @@ bool X86RegisterInfo::needsStackRealignment(const MachineFunction &MF) const {
   const Function *F = MF.getFunction();
   unsigned StackAlign =
     MF.getSubtarget().getFrameLowering()->getStackAlignment();
-  bool requiresRealignment =
-    ((MFI->getMaxAlignment() > StackAlign) ||
-     F->getAttributes().hasAttribute(AttributeSet::FunctionIndex,
-                                     Attribute::StackAlignment));
+  bool requiresRealignment = ((MFI->getMaxAlignment() > StackAlign) ||
+                              F->hasFnAttribute(Attribute::StackAlignment));
 
   // If we've requested that we force align the stack do so now.
   if (ForceStackAlign)
@@ -484,6 +495,25 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     BasePtr = StackPtr;
   else
     BasePtr = (TFI->hasFP(MF) ? FramePtr : StackPtr);
+
+  // FRAME_ALLOC uses a single offset, with no register. It only works in the
+  // simple FP case, and doesn't work with stack realignment. On 32-bit, the
+  // offset is from the traditional base pointer location.  On 64-bit, the
+  // offset is from the SP at the end of the prologue, not the FP location. This
+  // matches the behavior of llvm.frameaddress.
+  if (Opc == TargetOpcode::FRAME_ALLOC) {
+    assert(TFI->hasFP(MF) && "frame alloc requires FP");
+    MachineOperand &FI = MI.getOperand(FIOperandNum);
+    const MachineFrameInfo *MFI = MF.getFrameInfo();
+    int Offset = MFI->getObjectOffset(FrameIndex) - TFI->getOffsetOfLocalArea();
+    bool IsWinEH = MF.getTarget().getMCAsmInfo()->usesWindowsCFI();
+    if (IsWinEH)
+      Offset += MFI->getStackSize();
+    else
+      Offset += SlotSize;
+    FI.ChangeToImmediate(Offset);
+    return;
+  }
 
   // For LEA64_32r when BasePtr is 32-bits (X32) we can use full-size 64-bit
   // register as source operand, semantic is the same and destination is

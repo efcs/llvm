@@ -991,11 +991,9 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
         // Add dependence on alias chain, if needed.
         if (AliasChain)
           addChainDependency(AAForDep, MFI, SU, AliasChain, RejectMemNodes);
-        // But we also should check dependent instructions for the
-        // SU in question.
-        adjustChainDeps(AA, MFI, SU, &ExitSU, RejectMemNodes,
-                        TrueMemOrderLatency);
       }
+      adjustChainDeps(AA, MFI, SU, &ExitSU, RejectMemNodes,
+                      TrueMemOrderLatency);
     } else if (MI->mayLoad()) {
       bool MayAlias = true;
       if (MI->isInvariantLoad(AA)) {
@@ -1213,7 +1211,7 @@ std::string ScheduleDAGInstrs::getGraphNodeLabel(const SUnit *SU) const {
   else if (SU == &ExitSU)
     oss << "<exit>";
   else
-    SU->getInstr()->print(oss, &TM, /*SkipOpers=*/true);
+    SU->getInstr()->print(oss, /*SkipOpers=*/true);
   return oss.str();
 }
 

@@ -93,10 +93,10 @@ private:
 
   DebugLoc debugLoc;                    // Source line information.
 
-  MachineInstr(const MachineInstr&) LLVM_DELETED_FUNCTION;
-  void operator=(const MachineInstr&) LLVM_DELETED_FUNCTION;
+  MachineInstr(const MachineInstr&) = delete;
+  void operator=(const MachineInstr&) = delete;
   // Use MachineFunction::DeleteMachineInstr() instead.
-  ~MachineInstr() LLVM_DELETED_FUNCTION;
+  ~MachineInstr() = delete;
 
   // Intrusive list support
   friend struct ilist_traits<MachineInstr>;
@@ -1113,8 +1113,7 @@ public:
   //
   // Debugging support
   //
-  void print(raw_ostream &OS, const TargetMachine *TM = nullptr,
-             bool SkipOpers = false) const;
+  void print(raw_ostream &OS, bool SkipOpers = false) const;
   void dump() const;
 
   //===--------------------------------------------------------------------===//

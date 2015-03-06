@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm-c/lto.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/LTO/LTOCodeGenerator.h"
@@ -246,6 +247,10 @@ void lto_codegen_dispose(lto_code_gen_t cg) { delete unwrap(cg); }
 
 bool lto_codegen_add_module(lto_code_gen_t cg, lto_module_t mod) {
   return !unwrap(cg)->addModule(unwrap(mod));
+}
+
+void lto_codegen_set_module(lto_code_gen_t cg, lto_module_t mod) {
+  unwrap(cg)->setModule(unwrap(mod));
 }
 
 bool lto_codegen_set_debug_model(lto_code_gen_t cg, lto_debug_model debug) {

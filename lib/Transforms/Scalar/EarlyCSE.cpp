@@ -328,8 +328,8 @@ private:
           CallScope(AvailableCalls) {}
 
   private:
-    NodeScope(const NodeScope &) LLVM_DELETED_FUNCTION;
-    void operator=(const NodeScope &) LLVM_DELETED_FUNCTION;
+    NodeScope(const NodeScope &) = delete;
+    void operator=(const NodeScope &) = delete;
 
     ScopedHTType::ScopeTy Scope;
     LoadHTType::ScopeTy LoadScope;
@@ -365,8 +365,8 @@ private:
     void process() { Processed = true; }
 
   private:
-    StackNode(const StackNode &) LLVM_DELETED_FUNCTION;
-    void operator=(const StackNode &) LLVM_DELETED_FUNCTION;
+    StackNode(const StackNode &) = delete;
+    void operator=(const StackNode &) = delete;
 
     // Members.
     unsigned CurrentGeneration;
@@ -527,6 +527,9 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       // Ignore volatile loads.
       if (MemInst.isVolatile()) {
         LastStore = nullptr;
+        // Don't CSE across synchronization boundaries.
+        if (Inst->mayWriteToMemory())
+          ++CurrentGeneration;
         continue;
       }
 
@@ -682,14 +685,14 @@ bool EarlyCSE::run() {
 
 PreservedAnalyses EarlyCSEPass::run(Function &F,
                                     AnalysisManager<Function> *AM) {
-  const DataLayout *DL = F.getParent()->getDataLayout();
+  const DataLayout &DL = F.getParent()->getDataLayout();
 
   auto &TLI = AM->getResult<TargetLibraryAnalysis>(F);
   auto &TTI = AM->getResult<TargetIRAnalysis>(F);
   auto &DT = AM->getResult<DominatorTreeAnalysis>(F);
   auto &AC = AM->getResult<AssumptionAnalysis>(F);
 
-  EarlyCSE CSE(F, DL, TLI, TTI, DT, AC);
+  EarlyCSE CSE(F, &DL, TLI, TTI, DT, AC);
 
   if (!CSE.run())
     return PreservedAnalyses::all();
@@ -721,14 +724,13 @@ public:
     if (skipOptnoneFunction(F))
       return false;
 
-    DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-    auto *DL = DLP ? &DLP->getDataLayout() : nullptr;
+    auto &DL = F.getParent()->getDataLayout();
     auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
     auto &TTI = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
     auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
-    EarlyCSE CSE(F, DL, TLI, TTI, DT, AC);
+    EarlyCSE CSE(F, &DL, TLI, TTI, DT, AC);
 
     return CSE.run();
   }

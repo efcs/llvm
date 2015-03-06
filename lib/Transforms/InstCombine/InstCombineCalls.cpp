@@ -576,6 +576,44 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
     return new StoreInst(II->getArgOperand(0), Ptr, false, 1);
   }
+  case Intrinsic::ppc_qpx_qvlfs:
+    // Turn PPC QPX qvlfs -> load if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16, DL, AC, II, DT) >=
+        16) {
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
+                                         PointerType::getUnqual(II->getType()));
+      return new LoadInst(Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvlfd:
+    // Turn PPC QPX qvlfd -> load if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 32, DL, AC, II, DT) >=
+        32) {
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
+                                         PointerType::getUnqual(II->getType()));
+      return new LoadInst(Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvstfs:
+    // Turn PPC QPX qvstfs -> store if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 16, DL, AC, II, DT) >=
+        16) {
+      Type *OpPtrTy =
+        PointerType::getUnqual(II->getArgOperand(0)->getType());
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
+      return new StoreInst(II->getArgOperand(0), Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvstfd:
+    // Turn PPC QPX qvstfd -> store if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 32, DL, AC, II, DT) >=
+        32) {
+      Type *OpPtrTy =
+        PointerType::getUnqual(II->getArgOperand(0)->getType());
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
+      return new StoreInst(II->getArgOperand(0), Ptr);
+    }
+    break;
   case Intrinsic::x86_sse_storeu_ps:
   case Intrinsic::x86_sse2_storeu_pd:
   case Intrinsic::x86_sse2_storeu_dq:
@@ -1081,19 +1119,12 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
           cast<Constant>(RHS)->isNullValue()) {
         LoadInst* LI = cast<LoadInst>(LHS);
         if (isValidAssumeForContext(II, LI, DL, DT)) {
-          // assume( load (call|invoke) != null ) -> add 'nonnull' return
-          // attribute
-          Value *LIOperand = LI->getOperand(0);
-          if (CallInst *I = dyn_cast<CallInst>(LIOperand))
-            I->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
-          else if (InvokeInst *I = dyn_cast<InvokeInst>(LIOperand))
-            I->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
-
           MDNode *MD = MDNode::get(II->getContext(), None);
           LI->setMetadata(LLVMContext::MD_nonnull, MD);
           return EraseInstFromFunction(*II);
         }
       }
+      // TODO: apply nonnull return attributes to calls and invokes
       // TODO: apply range metadata for range check patterns?
     }
     // If there is a dominating assume with the same condition as this one,
@@ -1134,11 +1165,17 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     if (isKnownNonNull(DerivedPtr))
       II->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
 
-    // TODO: dereferenceable -> deref attribute
+    // isDereferenceablePointer -> deref attribute
+    if (DerivedPtr->isDereferenceablePointer(DL)) {
+      if (Argument *A = dyn_cast<Argument>(DerivedPtr)) {
+        uint64_t Bytes = A->getDereferenceableBytes();
+        II->addDereferenceableAttr(AttributeSet::ReturnIndex, Bytes);
+      }
+    }
 
     // TODO: bitcast(relocate(p)) -> relocate(bitcast(p))
     // Canonicalize on the type from the uses to the defs
-    
+
     // TODO: relocate((gep p, C, C2, ...)) -> gep(relocate(p), C, C2, ...)
   }
   }

@@ -7,13 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <memory>
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbol.h"
 
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
 #include "llvm/DebugInfo/PDB/IPDBRawSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbol.h"
-
 #include "llvm/DebugInfo/PDB/PDBSymbolAnnotation.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolBlock.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolCompiland.h"
@@ -45,6 +42,12 @@
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeVTableShape.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolUnknown.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolUsingNamespace.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
+#include <memory>
+#include <utility>
+
+#include <memory>
+#include <utility>
 
 using namespace llvm;
 
@@ -98,9 +101,26 @@ PDBSymbol::create(const IPDBSession &PDBSession,
   }
 }
 
-void PDBSymbol::dump(llvm::raw_ostream &OS) const { RawSymbol->dump(OS); }
+#define TRY_DUMP_TYPE(Type)                                                    \
+  if (const Type *DerivedThis = dyn_cast<Type>(this))                          \
+    Dumper.dump(OS, Indent, *DerivedThis);
+
+#define ELSE_TRY_DUMP_TYPE(Type, Dumper) else TRY_DUMP_TYPE(Type, Dumper)
+
+void PDBSymbol::defaultDump(raw_ostream &OS, int Indent) const {
+  RawSymbol->dump(OS, Indent);
+}
 
 PDB_SymType PDBSymbol::getSymTag() const { return RawSymbol->getSymTag(); }
+
+std::unique_ptr<IPDBEnumSymbols> PDBSymbol::findAllChildren() const {
+  return findAllChildren(PDB_SymType::None);
+}
+
+std::unique_ptr<IPDBEnumSymbols>
+PDBSymbol::findAllChildren(PDB_SymType Type) const {
+  return RawSymbol->findChildren(Type);
+}
 
 std::unique_ptr<IPDBEnumSymbols>
 PDBSymbol::findChildren(PDB_SymType Type, StringRef Name,
@@ -117,4 +137,15 @@ PDBSymbol::findChildrenByRVA(PDB_SymType Type, StringRef Name,
 std::unique_ptr<IPDBEnumSymbols>
 PDBSymbol::findInlineFramesByRVA(uint32_t RVA) const {
   return RawSymbol->findInlineFramesByRVA(RVA);
+}
+
+std::unique_ptr<IPDBEnumSymbols>
+PDBSymbol::getChildStats(TagStats &Stats) const {
+  std::unique_ptr<IPDBEnumSymbols> Result(findAllChildren());
+  Stats.clear();
+  while (auto Child = Result->getNext()) {
+    ++Stats[Child->getSymTag()];
+  }
+  Result->reset();
+  return Result;
 }

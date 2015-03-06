@@ -8,10 +8,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbolTypeDimension.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolTypeDimension.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -19,4 +21,6 @@ PDBSymbolTypeDimension::PDBSymbolTypeDimension(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeDimension::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolTypeDimension::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
+}

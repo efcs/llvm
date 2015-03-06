@@ -12,23 +12,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Analysis/JumpInstrTableInfo.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
-#include "llvm/CodeGen/ForwardControlFlowIntegrity.h"
-#include "llvm/CodeGen/JumpInstrTables.h"
 #include "llvm/CodeGen/MachineFunctionAnalysis.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/IRPrintingPasses.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
@@ -145,16 +142,6 @@ bool LLVMTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
                                             bool DisableVerify,
                                             AnalysisID StartAfter,
                                             AnalysisID StopAfter) {
-  // Passes to handle jumptable function annotations. These can't be handled at
-  // JIT time, so we don't add them directly to addPassesToGenerateCode.
-  PM.add(createJumpInstrTableInfoPass(
-      getSubtargetImpl()->getInstrInfo()->getJumpInstrTableEntryBound()));
-  PM.add(createJumpInstrTablesPass(Options.JTType));
-  if (Options.FCFI)
-    PM.add(createForwardControlFlowIntegrityPass(
-        Options.JTType, Options.CFIType, Options.CFIEnforcing,
-        Options.getCFIFuncName()));
-
   // Add common CodeGen passes.
   MCContext *Context = addPassesToGenerateCode(this, PM, DisableVerify,
                                                StartAfter, StopAfter);

@@ -7,10 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbolTypeVTableShape.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolTypeVTableShape.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -18,4 +20,6 @@ PDBSymbolTypeVTableShape::PDBSymbolTypeVTableShape(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeVTableShape::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolTypeVTableShape::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
+}

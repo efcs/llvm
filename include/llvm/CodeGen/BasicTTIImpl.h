@@ -145,9 +145,35 @@ public:
     return getTLI()->isTruncateFree(Ty1, Ty2);
   }
 
+  bool isProfitableToHoist(Instruction *I) {
+    return getTLI()->isProfitableToHoist(I);
+  }
+
   bool isTypeLegal(Type *Ty) {
     EVT VT = getTLI()->getValueType(Ty);
     return getTLI()->isTypeLegal(VT);
+  }
+
+  unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
+                            ArrayRef<const Value *> Arguments) {
+    return BaseT::getIntrinsicCost(IID, RetTy, Arguments);
+  }
+
+  unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
+                            ArrayRef<Type *> ParamTys) {
+    if (IID == Intrinsic::cttz) {
+      if (getTLI()->isCheapToSpeculateCttz())
+        return TargetTransformInfo::TCC_Basic;
+      return TargetTransformInfo::TCC_Expensive;
+    }
+
+    if (IID == Intrinsic::ctlz) {
+       if (getTLI()->isCheapToSpeculateCtlz())
+        return TargetTransformInfo::TCC_Basic;
+      return TargetTransformInfo::TCC_Expensive;
+    }
+
+    return BaseT::getIntrinsicCost(IID, RetTy, ParamTys);
   }
 
   unsigned getJumpBufAlignment() { return getTLI()->getJumpBufAlignment(); }
@@ -171,6 +197,25 @@ public:
     // By default, FP instructions are no more expensive since they are
     // implemented in HW.  Target specific TTI can override this.
     return TargetTransformInfo::TCC_Basic;
+  }
+
+  unsigned getOperationCost(unsigned Opcode, Type *Ty, Type *OpTy) {
+    const TargetLoweringBase *TLI = getTLI();
+    switch (Opcode) {
+    default: break;
+    case Instruction::Trunc: {
+      if (TLI->isTruncateFree(OpTy, Ty))
+        return TargetTransformInfo::TCC_Free;
+      return TargetTransformInfo::TCC_Basic;
+    }
+    case Instruction::ZExt: {
+      if (TLI->isZExtFree(OpTy, Ty))
+        return TargetTransformInfo::TCC_Free;
+      return TargetTransformInfo::TCC_Basic;
+    }
+    }
+
+    return BaseT::getOperationCost(Opcode, Ty, OpTy);
   }
 
   void getUnrollingPreferences(Loop *L, TTI::UnrollingPreferences &UP) {
@@ -489,7 +534,7 @@ public:
       for (unsigned i = 0, ie = Tys.size(); i != ie; ++i) {
         if (Tys[i]->isVectorTy()) {
           ScalarizationCost += getScalarizationOverhead(Tys[i], false, true);
-          ScalarCalls = std::max(ScalarCalls, RetTy->getVectorNumElements());
+          ScalarCalls = std::max(ScalarCalls, Tys[i]->getVectorNumElements());
         }
       }
 

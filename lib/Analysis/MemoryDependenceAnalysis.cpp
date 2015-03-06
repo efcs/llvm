@@ -93,8 +93,7 @@ void MemoryDependenceAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 bool MemoryDependenceAnalysis::runOnFunction(Function &F) {
   AA = &getAnalysis<AliasAnalysis>();
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : nullptr;
+  DL = &F.getParent()->getDataLayout();
   DominatorTreeWrapperPass *DTWP =
       getAnalysisIfAvailable<DominatorTreeWrapperPass>();
   DT = DTWP ? &DTWP->getDomTree() : nullptr;
@@ -298,8 +297,7 @@ getLoadLoadClobberFullWidthSize(const Value *MemLocBase, int64_t MemLocOffs,
 
   // Load widening is hostile to ThreadSanitizer: it may cause false positives
   // or make the reports more cryptic (access sizes are wrong).
-  if (LI->getParent()->getParent()->getAttributes().
-      hasAttribute(AttributeSet::FunctionIndex, Attribute::SanitizeThread))
+  if (LI->getParent()->getParent()->hasFnAttribute(Attribute::SanitizeThread))
     return 0;
 
   // Get the base of this load.
@@ -344,9 +342,9 @@ getLoadLoadClobberFullWidthSize(const Value *MemLocBase, int64_t MemLocOffs,
         !DL.fitsInLegalInteger(NewLoadByteSize*8))
       return 0;
 
-    if (LIOffs+NewLoadByteSize > MemLocEnd &&
-        LI->getParent()->getParent()->getAttributes().
-          hasAttribute(AttributeSet::FunctionIndex, Attribute::SanitizeAddress))
+    if (LIOffs + NewLoadByteSize > MemLocEnd &&
+        LI->getParent()->getParent()->hasFnAttribute(
+            Attribute::SanitizeAddress))
       // We will be reading past the location accessed by the original program.
       // While this is safe in a regular build, Address Safety analysis tools
       // may start reporting false warnings. So, don't do widening.

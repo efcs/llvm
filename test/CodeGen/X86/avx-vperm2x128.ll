@@ -1,5 +1,5 @@
-; RUN: llc < %s -mtriple=x86_64-apple-darwin -mcpu=corei7-avx -mattr=+avx | FileCheck %s --check-prefix=ALL --check-prefix=AVX1
-; RUN: llc < %s -mtriple=x86_64-apple-darwin -mcpu=core-avx2 -mattr=+avx2 | FileCheck %s --check-prefix=ALL --check-prefix=AVX2
+; RUN: llc < %s -mtriple=x86_64-apple-darwin -mattr=+avx | FileCheck %s --check-prefix=ALL --check-prefix=AVX1
+; RUN: llc < %s -mtriple=x86_64-apple-darwin -mattr=+avx2 | FileCheck %s --check-prefix=ALL --check-prefix=AVX2
 
 define <8 x float> @A(<8 x float> %a, <8 x float> %b) nounwind uwtable readnone ssp {
 ; ALL-LABEL: A:
@@ -160,8 +160,8 @@ define <16 x i16> @E5i(<16 x i16>* %a, <16 x i16>* %b) nounwind uwtable readnone
 ; AVX2-NEXT:    vinserti128 $1, %xmm0, %ymm1, %ymm0
 ; AVX2-NEXT:    retq
 entry:
-  %c = load <16 x i16>* %a
-  %d = load <16 x i16>* %b
+  %c = load <16 x i16>, <16 x i16>* %a
+  %d = load <16 x i16>, <16 x i16>* %b
   %c2 = add <16 x i16> %c, <i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1>
   %shuffle = shufflevector <16 x i16> %c2, <16 x i16> %d, <16 x i32> <i32 16, i32 17, i32 18, i32 19, i32 20, i32 21, i32 22, i32 23, i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
   ret <16 x i16> %shuffle

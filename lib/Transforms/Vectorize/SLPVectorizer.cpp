@@ -84,6 +84,18 @@ static const unsigned AliasedCheckLimit = 10;
 // This limit is useful for very large basic blocks.
 static const unsigned MaxMemDepDistance = 160;
 
+/// \brief Predicate for the element types that the SLP vectorizer supports.
+///
+/// The most important thing to filter here are types which are invalid in LLVM
+/// vectors. We also filter target specific types which have absolutely no
+/// meaningful vectorization path such as x86_fp80 and ppc_f128. This just
+/// avoids spending time checking the cost model and realizing that they will
+/// be inevitably scalarized.
+static bool isValidElementType(Type *Ty) {
+  return VectorType::isValidElementType(Ty) && !Ty->isX86_FP80Ty() &&
+         !Ty->isPPC_FP128Ty();
+}
+
 /// \returns the parent basic block if all of the instructions in \p VL
 /// are in the same block or null otherwise.
 static BasicBlock *getSameBlock(ArrayRef<Value *> VL) {
@@ -1148,7 +1160,7 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth) {
       Type *SrcTy = VL0->getOperand(0)->getType();
       for (unsigned i = 0; i < VL.size(); ++i) {
         Type *Ty = cast<Instruction>(VL[i])->getOperand(0)->getType();
-        if (Ty != SrcTy || Ty->isAggregateType() || Ty->isVectorTy()) {
+        if (Ty != SrcTy || !isValidElementType(Ty)) {
           BS.cancelScheduling(VL);
           newTreeEntry(VL, false);
           DEBUG(dbgs() << "SLP: Gathering casts with different src types.\n");
@@ -3052,8 +3064,7 @@ struct SLPVectorizer : public FunctionPass {
       return false;
 
     SE = &getAnalysis<ScalarEvolution>();
-    DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-    DL = DLP ? &DLP->getDataLayout() : nullptr;
+    DL = &F.getParent()->getDataLayout();
     TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     auto *TLIP = getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
     TLI = TLIP ? &TLIP->getTLI() : nullptr;
@@ -3166,15 +3177,11 @@ private:
 /// the WeakVH array.
 /// Vectorization of part of the VL array may cause later values in the VL array
 /// to become invalid. We track when this has happened in the WeakVH array.
-static bool hasValueBeenRAUWed(ArrayRef<Value *> &VL,
-                               SmallVectorImpl<WeakVH> &VH,
-                               unsigned SliceBegin,
-                               unsigned SliceSize) {
-  for (unsigned i = SliceBegin; i < SliceBegin + SliceSize; ++i)
-    if (VH[i] != VL[i])
-      return true;
-
-  return false;
+static bool hasValueBeenRAUWed(ArrayRef<Value *> VL, ArrayRef<WeakVH> VH,
+                               unsigned SliceBegin, unsigned SliceSize) {
+  VL = VL.slice(SliceBegin, SliceSize);
+  VH = VH.slice(SliceBegin, SliceSize);
+  return !std::equal(VL.begin(), VL.end(), VH.begin());
 }
 
 bool SLPVectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain,
@@ -3294,7 +3301,7 @@ unsigned SLPVectorizer::collectStores(BasicBlock *BB, BoUpSLP &R) {
 
     // Check that the pointer points to scalars.
     Type *Ty = SI->getValueOperand()->getType();
-    if (Ty->isAggregateType() || Ty->isVectorTy())
+    if (!isValidElementType(Ty))
       continue;
 
     // Find the base pointer.
@@ -3335,7 +3342,7 @@ bool SLPVectorizer::tryToVectorizeList(ArrayRef<Value *> VL, BoUpSLP &R,
 
   for (int i = 0, e = VL.size(); i < e; ++i) {
     Type *Ty = VL[i]->getType();
-    if (Ty->isAggregateType() || Ty->isVectorTy())
+    if (!isValidElementType(Ty))
       return false;
     Instruction *Inst = dyn_cast<Instruction>(VL[i]);
     if (!Inst || Inst->getOpcode() != Opcode0)
@@ -3555,7 +3562,7 @@ public:
       return false;
 
     Type *Ty = B->getType();
-    if (Ty->isVectorTy())
+    if (!isValidElementType(Ty))
       return false;
 
     ReductionOpcode = B->getOpcode();

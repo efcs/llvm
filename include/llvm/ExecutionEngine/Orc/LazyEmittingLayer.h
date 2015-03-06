@@ -19,9 +19,12 @@
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Mangler.h"
+#include "llvm/IR/Module.h"
+#include "llvm/ADT/StringMap.h"
 #include <list>
 
 namespace llvm {
+namespace orc {
 
 /// @brief Lazy-emitting IR layer.
 ///
@@ -42,20 +45,24 @@ private:
     JITSymbol find(StringRef Name, bool ExportedSymbolsOnly, BaseLayerT &B) {
       switch (EmitState) {
       case NotEmitted:
-        if (provides(Name, ExportedSymbolsOnly))
+        if (provides(Name, ExportedSymbolsOnly)) {
+          // Create a std::string version of Name to capture here - the argument
+          // (a StringRef) may go away before the lambda is executed.
+          // FIXME: Use capture-init when we move to C++14. 
+          std::string PName = Name;
           return JITSymbol(
-              [this,ExportedSymbolsOnly,Name,&B]() -> TargetAddress {
+              [this, ExportedSymbolsOnly, PName, &B]() -> TargetAddress {
                 if (this->EmitState == Emitting)
                   return 0;
-                else if (this->EmitState != Emitted) {
+                else if (this->EmitState == NotEmitted) {
                   this->EmitState = Emitting;
-                  Handle = this->emit(B);
+                  Handle = this->emitToBaseLayer(B);
                   this->EmitState = Emitted;
                 }
-                return B.findSymbolIn(Handle, Name, ExportedSymbolsOnly)
+                return B.findSymbolIn(Handle, PName, ExportedSymbolsOnly)
                           .getAddress();
               });
-        else
+        } else
           return nullptr;
       case Emitting:
         // Calling "emit" can trigger external symbol lookup (e.g. to check for
@@ -74,6 +81,17 @@ private:
         BaseLayer.removeModuleSet(Handle);
     }
 
+    void emitAndFinalize(BaseLayerT &BaseLayer) {
+      assert(EmitState != Emitting &&
+             "Cannot emitAndFinalize while already emitting");
+      if (EmitState == NotEmitted) {
+        EmitState = Emitting;
+        Handle = emitToBaseLayer(BaseLayer);
+        EmitState = Emitted;
+      }
+      BaseLayer.emitAndFinalize(Handle);
+    }
+
     template <typename ModuleSetT>
     static std::unique_ptr<EmissionDeferredSet>
     create(BaseLayerT &B, ModuleSetT Ms,
@@ -81,7 +99,7 @@ private:
 
   protected:
     virtual bool provides(StringRef Name, bool ExportedSymbolsOnly) const = 0;
-    virtual BaseLayerHandleT emit(BaseLayerT &BaseLayer) = 0;
+    virtual BaseLayerHandleT emitToBaseLayer(BaseLayerT &BaseLayer) = 0;
 
   private:
     enum { NotEmitted, Emitting, Emitted } EmitState;
@@ -96,7 +114,8 @@ private:
         : Ms(std::move(Ms)), MM(std::move(MM)) {}
 
   protected:
-    BaseLayerHandleT emit(BaseLayerT &BaseLayer) override {
+
+    BaseLayerHandleT emitToBaseLayer(BaseLayerT &BaseLayer) override {
       // We don't need the mangled names set any more: Once we've emitted this
       // to the base layer we'll just look for symbols there.
       MangledNames.reset();
@@ -164,7 +183,7 @@ private:
       auto Names = llvm::make_unique<StringMap<bool>>();
 
       for (const auto &M : Ms) {
-        Mangler Mang(M->getDataLayout());
+        Mangler Mang(&M->getDataLayout());
 
         for (const auto &GV : M->globals())
           if (addGlobalValue(*Names, GV, Mang, SearchName, ExportedSymbolsOnly))
@@ -239,6 +258,14 @@ public:
                          bool ExportedSymbolsOnly) {
     return (*H)->find(Name, ExportedSymbolsOnly, BaseLayer);
   }
+
+  /// @brief Immediately emit and finalize the moduleOB set represented by the
+  ///        given handle.
+  /// @param H Handle for module set to emit/finalize.
+  void emitAndFinalize(ModuleSetHandleT H) {
+    (*H)->emitAndFinalize(BaseLayer);
+  }
+
 };
 
 template <typename BaseLayerT>
@@ -249,6 +276,8 @@ LazyEmittingLayer<BaseLayerT>::EmissionDeferredSet::create(
   return llvm::make_unique<EmissionDeferredSetImpl<ModuleSetT>>(std::move(Ms),
                                                                 std::move(MM));
 }
-}
+
+} // End namespace orc.
+} // End namespace llvm.
 
 #endif // LLVM_EXECUTIONENGINE_ORC_LAZYEMITTINGLAYER_H

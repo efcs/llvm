@@ -18,6 +18,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -225,6 +226,7 @@ void TypeMapTy::linkDefinedTypeBodies() {
       Elements[I] = get(SrcSTy->getElementType(I));
 
     DstSTy->setBody(Elements, SrcSTy->isPacked());
+    DstStructTypesSet.switchToNonOpaque(DstSTy);
   }
   SrcDefinitionsToResolve.clear();
   DstResolvedOpaqueTypes.clear();
@@ -671,17 +673,12 @@ bool ModuleLinker::computeResultingSelectionKind(StringRef ComdatName,
         getComdatLeader(SrcM, ComdatName, SrcGV))
       return true;
 
-    const DataLayout *DstDL = DstM->getDataLayout();
-    const DataLayout *SrcDL = SrcM->getDataLayout();
-    if (!DstDL || !SrcDL) {
-      return emitError(
-          "Linking COMDATs named '" + ComdatName +
-          "': can't do size dependent selection without DataLayout!");
-    }
+    const DataLayout &DstDL = DstM->getDataLayout();
+    const DataLayout &SrcDL = SrcM->getDataLayout();
     uint64_t DstSize =
-        DstDL->getTypeAllocSize(DstGV->getType()->getPointerElementType());
+        DstDL.getTypeAllocSize(DstGV->getType()->getPointerElementType());
     uint64_t SrcSize =
-        SrcDL->getTypeAllocSize(SrcGV->getType()->getPointerElementType());
+        SrcDL.getTypeAllocSize(SrcGV->getType()->getPointerElementType());
     if (Result == Comdat::SelectionKind::ExactMatch) {
       if (SrcGV->getInitializer() != DstGV->getInitializer())
         return emitError("Linking COMDATs named '" + ComdatName +
@@ -1416,10 +1413,8 @@ bool ModuleLinker::linkModuleFlagsMetadata() {
       MDNode *SrcValue = cast<MDNode>(SrcOp->getOperand(2));
       SmallVector<Metadata *, 8> MDs;
       MDs.reserve(DstValue->getNumOperands() + SrcValue->getNumOperands());
-      for (unsigned i = 0, e = DstValue->getNumOperands(); i != e; ++i)
-        MDs.push_back(DstValue->getOperand(i));
-      for (unsigned i = 0, e = SrcValue->getNumOperands(); i != e; ++i)
-        MDs.push_back(SrcValue->getOperand(i));
+      MDs.append(DstValue->op_begin(), DstValue->op_end());
+      MDs.append(SrcValue->op_begin(), SrcValue->op_end());
 
       replaceDstValue(MDNode::get(DstM->getContext(), MDs));
       break;
@@ -1428,10 +1423,8 @@ bool ModuleLinker::linkModuleFlagsMetadata() {
       SmallSetVector<Metadata *, 16> Elts;
       MDNode *DstValue = cast<MDNode>(DstOp->getOperand(2));
       MDNode *SrcValue = cast<MDNode>(SrcOp->getOperand(2));
-      for (unsigned i = 0, e = DstValue->getNumOperands(); i != e; ++i)
-        Elts.insert(DstValue->getOperand(i));
-      for (unsigned i = 0, e = SrcValue->getNumOperands(); i != e; ++i)
-        Elts.insert(SrcValue->getOperand(i));
+      Elts.insert(DstValue->op_begin(), DstValue->op_end());
+      Elts.insert(SrcValue->op_begin(), SrcValue->op_end());
 
       replaceDstValue(MDNode::get(DstM->getContext(),
                                   makeArrayRef(Elts.begin(), Elts.end())));
@@ -1457,35 +1450,59 @@ bool ModuleLinker::linkModuleFlagsMetadata() {
   return HasErr;
 }
 
+// This function returns true if the triples match.
+static bool triplesMatch(const Triple &T0, const Triple &T1) {
+  // If vendor is apple, ignore the version number.
+  if (T0.getVendor() == Triple::Apple)
+    return T0.getArch() == T1.getArch() &&
+           T0.getSubArch() == T1.getSubArch() &&
+           T0.getVendor() == T1.getVendor() &&
+           T0.getOS() == T1.getOS();
+
+  return T0 == T1;
+}
+
+// This function returns the merged triple.
+static std::string mergeTriples(const Triple &SrcTriple, const Triple &DstTriple) {
+  // If vendor is apple, pick the triple with the larger version number.
+  if (SrcTriple.getVendor() == Triple::Apple)
+    if (DstTriple.isOSVersionLT(SrcTriple))
+      return SrcTriple.str();
+
+  return DstTriple.str();
+}
+
 bool ModuleLinker::run() {
   assert(DstM && "Null destination module");
   assert(SrcM && "Null source module");
 
   // Inherit the target data from the source module if the destination module
   // doesn't have one already.
-  if (!DstM->getDataLayout() && SrcM->getDataLayout())
+  if (DstM->getDataLayout().isDefault())
     DstM->setDataLayout(SrcM->getDataLayout());
 
-  // Copy the target triple from the source to dest if the dest's is empty.
-  if (DstM->getTargetTriple().empty() && !SrcM->getTargetTriple().empty())
-    DstM->setTargetTriple(SrcM->getTargetTriple());
-
-  if (SrcM->getDataLayout() && DstM->getDataLayout() &&
-      *SrcM->getDataLayout() != *DstM->getDataLayout()) {
+  if (SrcM->getDataLayout() != DstM->getDataLayout()) {
     emitWarning("Linking two modules of different data layouts: '" +
                 SrcM->getModuleIdentifier() + "' is '" +
                 SrcM->getDataLayoutStr() + "' whereas '" +
                 DstM->getModuleIdentifier() + "' is '" +
                 DstM->getDataLayoutStr() + "'\n");
   }
-  if (!SrcM->getTargetTriple().empty() &&
-      DstM->getTargetTriple() != SrcM->getTargetTriple()) {
+
+  // Copy the target triple from the source to dest if the dest's is empty.
+  if (DstM->getTargetTriple().empty() && !SrcM->getTargetTriple().empty())
+    DstM->setTargetTriple(SrcM->getTargetTriple());
+
+  Triple SrcTriple(SrcM->getTargetTriple()), DstTriple(DstM->getTargetTriple());
+
+  if (!SrcM->getTargetTriple().empty() && !triplesMatch(SrcTriple, DstTriple))
     emitWarning("Linking two modules of different target triples: " +
                 SrcM->getModuleIdentifier() + "' is '" +
                 SrcM->getTargetTriple() + "' whereas '" +
                 DstM->getModuleIdentifier() + "' is '" +
                 DstM->getTargetTriple() + "'\n");
-  }
+
+  DstM->setTargetTriple(mergeTriples(SrcTriple, DstTriple));
 
   // Append the module inline asm string.
   if (!SrcM->getModuleInlineAsm().empty()) {
@@ -1662,6 +1679,14 @@ void Linker::IdentifiedStructTypeSet::addNonOpaque(StructType *Ty) {
   NonOpaqueStructTypes.insert(Ty);
 }
 
+void Linker::IdentifiedStructTypeSet::switchToNonOpaque(StructType *Ty) {
+  assert(!Ty->isOpaque());
+  NonOpaqueStructTypes.insert(Ty);
+  bool Removed = OpaqueStructTypes.erase(Ty);
+  (void)Removed;
+  assert(Removed);
+}
+
 void Linker::IdentifiedStructTypeSet::addOpaque(StructType *Ty) {
   assert(Ty->isOpaque());
   OpaqueStructTypes.insert(Ty);
@@ -1726,6 +1751,10 @@ bool Linker::linkInModule(Module *Src) {
   return RetCode;
 }
 
+void Linker::setModule(Module *Dst) {
+  init(Dst, DiagnosticHandler);
+}
+
 //===----------------------------------------------------------------------===//
 // LinkModules entrypoint.
 //===----------------------------------------------------------------------===//
@@ -1751,7 +1780,7 @@ bool Linker::LinkModules(Module *Dest, Module *Src) {
 //===----------------------------------------------------------------------===//
 
 LLVMBool LLVMLinkModules(LLVMModuleRef Dest, LLVMModuleRef Src,
-                         unsigned Unused, char **OutMessages) {
+                         LLVMLinkerMode Unused, char **OutMessages) {
   Module *D = unwrap(Dest);
   std::string Message;
   raw_string_ostream Stream(Message);

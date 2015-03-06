@@ -18,6 +18,7 @@
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -130,9 +131,10 @@ MCSymbol *MCContext::getOrCreateSectionSymbol(const MCSectionELF &Section) {
   return Sym;
 }
 
-MCSymbol *MCContext::getOrCreateFrameAllocSymbol(StringRef FuncName) {
-  return GetOrCreateSymbol(Twine(MAI->getPrivateGlobalPrefix()) +
-                           "frameallocation_" + FuncName);
+MCSymbol *MCContext::getOrCreateFrameAllocSymbol(StringRef FuncName,
+                                                 unsigned Idx) {
+  return GetOrCreateSymbol(Twine(MAI->getPrivateGlobalPrefix()) + FuncName +
+                           "$frame_escape_" + Twine(Idx));
 }
 
 MCSymbol *MCContext::CreateSymbol(StringRef Name) {
@@ -158,6 +160,12 @@ MCSymbol *MCContext::CreateSymbol(StringRef Name) {
       new (*this) MCSymbol(NameEntry.first->getKey(), isTemporary);
 
   return Result;
+}
+
+MCSymbol *MCContext::createTempSymbol(const Twine &Name) {
+  SmallString<128> NameSV;
+  raw_svector_ostream(NameSV) << MAI->getPrivateGlobalPrefix() << Name;
+  return CreateSymbol(NameSV);
 }
 
 MCSymbol *MCContext::GetOrCreateSymbol(const Twine &Name) {
@@ -272,12 +280,13 @@ void MCContext::renameELFSection(const MCSectionELF *Section, StringRef Name) {
 
 const MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
                                              unsigned Flags, unsigned EntrySize,
-                                             StringRef Group) {
+                                             StringRef Group, bool Unique) {
   // Do the lookup, if we have a hit, return it.
   auto IterBool = ELFUniquingMap.insert(
       std::make_pair(SectionGroupPair(Section, Group), nullptr));
   auto &Entry = *IterBool.first;
-  if (!IterBool.second) return Entry.second;
+  if (!IterBool.second && !Unique)
+    return Entry.second;
 
   MCSymbol *GroupSym = nullptr;
   if (!Group.empty())
@@ -292,15 +301,22 @@ const MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
     Kind = SectionKind::getReadOnly();
 
   MCSectionELF *Result = new (*this)
-      MCSectionELF(CachedName, Type, Flags, Kind, EntrySize, GroupSym);
-  Entry.second = Result;
+      MCSectionELF(CachedName, Type, Flags, Kind, EntrySize, GroupSym, Unique);
+  if (!Unique)
+    Entry.second = Result;
   return Result;
+}
+
+const MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
+                                             unsigned Flags, unsigned EntrySize,
+                                             StringRef Group) {
+  return getELFSection(Section, Type, Flags, EntrySize, Group, false);
 }
 
 const MCSectionELF *MCContext::CreateELFGroupSection() {
   MCSectionELF *Result =
-    new (*this) MCSectionELF(".group", ELF::SHT_GROUP, 0,
-                             SectionKind::getReadOnly(), 4, nullptr);
+      new (*this) MCSectionELF(".group", ELF::SHT_GROUP, 0,
+                               SectionKind::getReadOnly(), 4, nullptr, false);
   return Result;
 }
 

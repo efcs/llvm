@@ -275,6 +275,9 @@ unsigned PPCRegisterInfo::getRegPressureLimit(const TargetRegisterClass *RC,
   }
   case PPC::F8RCRegClassID:
   case PPC::F4RCRegClassID:
+  case PPC::QFRCRegClassID:
+  case PPC::QSRCRegClassID:
+  case PPC::QBRCRegClassID:
   case PPC::VRRCRegClassID:
   case PPC::VFRCRegClassID:
   case PPC::VSLRCRegClassID:
@@ -821,8 +824,7 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   // to Offset to get the correct offset.
   // Naked functions have stack size 0, although getStackSize may not reflect that
   // because we didn't call all the pieces that compute it for naked functions.
-  if (!MF.getFunction()->getAttributes().
-        hasAttribute(AttributeSet::FunctionIndex, Attribute::Naked)) {
+  if (!MF.getFunction()->hasFnAttribute(Attribute::Naked)) {
     if (!(hasBasePointer(MF) && FrameIndex < 0))
       Offset += MFI->getStackSize();
   }
@@ -928,10 +930,8 @@ bool PPCRegisterInfo::needsStackRealignment(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   const Function *F = MF.getFunction();
   unsigned StackAlign = Subtarget.getFrameLowering()->getStackAlignment();
-  bool requiresRealignment =
-    ((MFI->getMaxAlignment() > StackAlign) ||
-     F->getAttributes().hasAttribute(AttributeSet::FunctionIndex,
-                                     Attribute::StackAlignment));
+  bool requiresRealignment = ((MFI->getMaxAlignment() > StackAlign) ||
+                              F->hasFnAttribute(Attribute::StackAlignment));
 
   return requiresRealignment && canRealignStack(MF);
 }

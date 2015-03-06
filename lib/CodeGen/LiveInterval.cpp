@@ -88,18 +88,18 @@ public:
     return VNI;
   }
 
-  VNInfo *extendInBlock(SlotIndex StartIdx, SlotIndex Kill) {
+  VNInfo *extendInBlock(SlotIndex StartIdx, SlotIndex Use) {
     if (segments().empty())
       return nullptr;
     iterator I =
-        impl().findInsertPos(Segment(Kill.getPrevSlot(), Kill, nullptr));
+        impl().findInsertPos(Segment(Use.getPrevSlot(), Use, nullptr));
     if (I == segments().begin())
       return nullptr;
     --I;
     if (I->end <= StartIdx)
       return nullptr;
-    if (I->end < Kill)
-      extendSegmentEndTo(I, Kill);
+    if (I->end < Use)
+      extendSegmentEndTo(I, Use);
     return I->valno;
   }
 
@@ -567,13 +567,9 @@ void LiveRange::removeSegment(SlotIndex Start, SlotIndex End,
 /// Also remove the value# from value# list.
 void LiveRange::removeValNo(VNInfo *ValNo) {
   if (empty()) return;
-  iterator I = end();
-  iterator E = begin();
-  do {
-    --I;
-    if (I->valno == ValNo)
-      segments.erase(I);
-  } while (I != E);
+  segments.erase(std::remove_if(begin(), end(), [ValNo](const Segment &S) {
+    return S.valno == ValNo;
+  }), end());
   // Now that ValNo is dead, remove it.
   markValNoForDeletion(ValNo);
 }
@@ -747,7 +743,6 @@ void LiveRange::flushSegmentSet() {
       segments.empty() &&
       "segment set can be used only initially before switching to the array");
   segments.append(segmentSet->begin(), segmentSet->end());
-  delete segmentSet;
   segmentSet = nullptr;
   verify();
 }

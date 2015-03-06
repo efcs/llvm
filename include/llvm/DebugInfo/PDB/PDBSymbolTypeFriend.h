@@ -22,16 +22,14 @@ public:
   PDBSymbolTypeFriend(const IPDBSession &PDBSession,
                       std::unique_ptr<IPDBRawSymbol> Symbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Friend)
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   FORWARD_SYMBOL_METHOD(getClassParentId)
   FORWARD_SYMBOL_METHOD(getName)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
   FORWARD_SYMBOL_METHOD(getTypeId)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Friend;
-  }
 };
 
 } // namespace llvm

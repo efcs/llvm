@@ -1467,8 +1467,7 @@ static void checkNumAlignedDPRCS2Regs(MachineFunction &MF) {
     return;
 
   // Naked functions don't spill callee-saved registers.
-  if (MF.getFunction()->getAttributes().hasAttribute(AttributeSet::FunctionIndex,
-                                                     Attribute::Naked))
+  if (MF.getFunction()->hasFnAttribute(Attribute::Naked))
     return;
 
   // We are planning to use NEON instructions vst1 / vld1.
@@ -1865,7 +1864,7 @@ static const uint64_t kSplitStackAvailable = 256;
 void ARMFrameLowering::adjustForSegmentedStacks(MachineFunction &MF) const {
   unsigned Opcode;
   unsigned CFIIndex;
-  const ARMSubtarget *ST = &MF.getTarget().getSubtarget<ARMSubtarget>();
+  const ARMSubtarget *ST = &MF.getSubtarget<ARMSubtarget>();
   bool Thumb = ST->isThumb();
 
   // Sadly, this currently doesn't support varargs, platforms other than

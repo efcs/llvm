@@ -1723,6 +1723,49 @@ unsigned ComputeNumSignBits(Value *V, const DataLayout *TD,
     Tmp = TyBits - U->getOperand(0)->getType()->getScalarSizeInBits();
     return ComputeNumSignBits(U->getOperand(0), TD, Depth+1, Q) + Tmp;
 
+  case Instruction::SDiv: {
+    const APInt *Denominator;
+    // sdiv X, C -> adds log(C) sign bits.
+    if (match(U->getOperand(1), m_APInt(Denominator))) {
+
+      // Ignore non-positive denominator.
+      if (!Denominator->isStrictlyPositive())
+        break;
+
+      // Calculate the incoming numerator bits.
+      unsigned NumBits = ComputeNumSignBits(U->getOperand(0), TD, Depth+1, Q);
+
+      // Add floor(log(C)) bits to the numerator bits.
+      return std::min(TyBits, NumBits + Denominator->logBase2());
+    }
+    break;
+  }
+
+  case Instruction::SRem: {
+    const APInt *Denominator;
+    // srem X, C -> we know that the result is within 0..C-1 when C is a
+    // positive constant and the sign bits are at most TypeBits - log2(C).
+    if (match(U->getOperand(1), m_APInt(Denominator))) {
+
+      // Ignore non-positive denominator.
+      if (!Denominator->isStrictlyPositive())
+        break;
+
+      // Calculate the incoming numerator bits. SRem by a positive constant
+      // can't lower the number of sign bits.
+      unsigned NumrBits = ComputeNumSignBits(U->getOperand(0), TD, Depth+1, Q);
+
+      // Calculate the leading sign bit constraints by examining the
+      // denominator. The remainder is in the range 0..C-1, which is
+      // calculated by the log2(denominator). The sign bits are the bit-width
+      // minus this value. The result of this subtraction has to be positive.
+      unsigned ResBits = TyBits - Denominator->logBase2();
+
+      return std::max(NumrBits, ResBits);
+    }
+    break;
+  }
+
   case Instruction::AShr: {
     Tmp = ComputeNumSignBits(U->getOperand(0), TD, Depth+1, Q);
     // ashr X, C   -> adds C sign bits.  Vectors too.
@@ -2000,8 +2043,11 @@ bool llvm::CannotBeNegativeZero(const Value *V, unsigned Depth) {
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(V))
     return !CFP->getValueAPF().isNegZero();
 
+  // FIXME: Magic number! At the least, this should be given a name because it's
+  // used similarly in CannotBeOrderedLessThanZero(). A better fix may be to
+  // expose it as a parameter, so it can be used for testing / experimenting.
   if (Depth == 6)
-    return 1;  // Limit search depth.
+    return false;  // Limit search depth.
 
   const Operator *I = dyn_cast<Operator>(V);
   if (!I) return false;
@@ -2048,6 +2094,9 @@ bool llvm::CannotBeOrderedLessThanZero(const Value *V, unsigned Depth) {
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(V))
     return !CFP->getValueAPF().isNegative() || CFP->getValueAPF().isZero();
 
+  // FIXME: Magic number! At the least, this should be given a name because it's
+  // used similarly in CannotBeNegativeZero(). A better fix may be to
+  // expose it as a parameter, so it can be used for testing / experimenting.
   if (Depth == 6)
     return false;  // Limit search depth.
 

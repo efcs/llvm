@@ -371,10 +371,8 @@ DataFlowSanitizer::DataFlowSanitizer(
 }
 
 FunctionType *DataFlowSanitizer::getArgsFunctionType(FunctionType *T) {
-  llvm::SmallVector<Type *, 4> ArgTypes;
-  std::copy(T->param_begin(), T->param_end(), std::back_inserter(ArgTypes));
-  for (unsigned i = 0, e = T->getNumParams(); i != e; ++i)
-    ArgTypes.push_back(ShadowTy);
+  llvm::SmallVector<Type *, 4> ArgTypes(T->param_begin(), T->param_end());
+  ArgTypes.append(T->getNumParams(), ShadowTy);
   if (T->isVarArg())
     ArgTypes.push_back(ShadowPtrTy);
   Type *RetType = T->getReturnType();
@@ -387,9 +385,8 @@ FunctionType *DataFlowSanitizer::getTrampolineFunctionType(FunctionType *T) {
   assert(!T->isVarArg());
   llvm::SmallVector<Type *, 4> ArgTypes;
   ArgTypes.push_back(T->getPointerTo());
-  std::copy(T->param_begin(), T->param_end(), std::back_inserter(ArgTypes));
-  for (unsigned i = 0, e = T->getNumParams(); i != e; ++i)
-    ArgTypes.push_back(ShadowTy);
+  ArgTypes.append(T->param_begin(), T->param_end());
+  ArgTypes.append(T->getNumParams(), ShadowTy);
   Type *RetType = T->getReturnType();
   if (!RetType->isVoidTy())
     ArgTypes.push_back(ShadowPtrTy);
@@ -425,10 +422,7 @@ bool DataFlowSanitizer::doInitialization(Module &M) {
   bool IsMIPS64 = TargetTriple.getArch() == llvm::Triple::mips64 ||
                   TargetTriple.getArch() == llvm::Triple::mips64el;
 
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  if (!DLP)
-    report_fatal_error("data layout missing");
-  DL = &DLP->getDataLayout();
+  DL = &M.getDataLayout();
 
   Mod = &M;
   Ctx = &M.getContext();
@@ -596,9 +590,6 @@ Constant *DataFlowSanitizer::getOrBuildTrampolineFunction(FunctionType *FT,
 }
 
 bool DataFlowSanitizer::runOnModule(Module &M) {
-  if (!DL)
-    return false;
-
   if (ABIList.isIn(M, "skip"))
     return false;
 

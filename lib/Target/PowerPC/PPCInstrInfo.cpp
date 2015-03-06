@@ -181,6 +181,9 @@ unsigned PPCInstrInfo::isLoadFromStackSlot(const MachineInstr *MI,
   case PPC::RESTORE_CRBIT:
   case PPC::LVX:
   case PPC::LXVD2X:
+  case PPC::QVLFDX:
+  case PPC::QVLFSXs:
+  case PPC::QVLFDXb:
   case PPC::RESTORE_VRSAVE:
     // Check for the operands added by addFrameReference (the immediate is the
     // offset which defaults to 0).
@@ -207,6 +210,9 @@ unsigned PPCInstrInfo::isStoreToStackSlot(const MachineInstr *MI,
   case PPC::SPILL_CRBIT:
   case PPC::STVX:
   case PPC::STXVD2X:
+  case PPC::QVSTFDX:
+  case PPC::QVSTFSXs:
+  case PPC::QVSTFDXb:
   case PPC::SPILL_VRSAVE:
     // Check for the operands added by addFrameReference (the immediate is the
     // offset which defaults to 0).
@@ -699,7 +705,7 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   // legalization. Promote them here.
   const TargetRegisterInfo *TRI = &getRegisterInfo();
   if (PPC::F8RCRegClass.contains(DestReg) &&
-      PPC::VSLRCRegClass.contains(SrcReg)) {
+      PPC::VSRCRegClass.contains(SrcReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(DestReg, PPC::sub_64, &PPC::VSRCRegClass);
 
@@ -708,7 +714,7 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
     DestReg = SuperReg;
   } else if (PPC::VRRCRegClass.contains(DestReg) &&
-             PPC::VSHRCRegClass.contains(SrcReg)) {
+             PPC::VSRCRegClass.contains(SrcReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(DestReg, PPC::sub_128, &PPC::VSRCRegClass);
 
@@ -717,7 +723,7 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
     DestReg = SuperReg;
   } else if (PPC::F8RCRegClass.contains(SrcReg) &&
-             PPC::VSLRCRegClass.contains(DestReg)) {
+             PPC::VSRCRegClass.contains(DestReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(SrcReg, PPC::sub_64, &PPC::VSRCRegClass);
 
@@ -726,7 +732,7 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
     SrcReg = SuperReg;
   } else if (PPC::VRRCRegClass.contains(SrcReg) &&
-             PPC::VSHRCRegClass.contains(DestReg)) {
+             PPC::VSRCRegClass.contains(DestReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(SrcReg, PPC::sub_128, &PPC::VSRCRegClass);
 
@@ -759,6 +765,12 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     Opc = PPC::XXLOR;
   else if (PPC::VSFRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::XXLORf;
+  else if (PPC::QFRCRegClass.contains(DestReg, SrcReg))
+    Opc = PPC::QVFMR;
+  else if (PPC::QSRCRegClass.contains(DestReg, SrcReg))
+    Opc = PPC::QVFMRs;
+  else if (PPC::QBRCRegClass.contains(DestReg, SrcReg))
+    Opc = PPC::QVFMRb;
   else if (PPC::CRBITRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::CROR;
   else
@@ -844,6 +856,24 @@ PPCInstrInfo::StoreRegToStackSlot(MachineFunction &MF,
                                                getKillRegState(isKill)),
                                        FrameIdx));
     SpillsVRS = true;
+  } else if (PPC::QFRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVSTFDX))
+                                       .addReg(SrcReg,
+                                               getKillRegState(isKill)),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::QSRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVSTFSXs))
+                                       .addReg(SrcReg,
+                                               getKillRegState(isKill)),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::QBRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVSTFDXb))
+                                       .addReg(SrcReg,
+                                               getKillRegState(isKill)),
+                                       FrameIdx));
+    NonRI = true;
   } else {
     llvm_unreachable("Unknown regclass!");
   }
@@ -939,6 +969,18 @@ PPCInstrInfo::LoadRegFromStackSlot(MachineFunction &MF, DebugLoc DL,
                                                DestReg),
                                        FrameIdx));
     SpillsVRS = true;
+  } else if (PPC::QFRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVLFDX), DestReg),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::QSRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVLFSXs), DestReg),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::QBRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::QVLFDXb), DestReg),
+                                       FrameIdx));
+    NonRI = true;
   } else {
     llvm_unreachable("Unknown regclass!");
   }

@@ -939,6 +939,8 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
     Sec->Header.SizeOfRawData = Layout.getSectionAddressSize(&Section);
 
     if (IsPhysicalSection(Sec)) {
+      // Align the section data to a four byte boundary.
+      offset = RoundUpToAlignment(offset, 4);
       Sec->Header.PointerToRawData = offset;
 
       offset += Sec->Header.SizeOfRawData;
@@ -1009,8 +1011,14 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
         continue;
 
       if ((*i)->Header.PointerToRawData != 0) {
-        assert(OS.tell() == (*i)->Header.PointerToRawData &&
+        assert(OS.tell() <= (*i)->Header.PointerToRawData &&
                "Section::PointerToRawData is insane!");
+
+        unsigned SectionDataPadding = (*i)->Header.PointerToRawData - OS.tell();
+        assert(SectionDataPadding < 4 &&
+               "Should only need at most three bytes of padding!");
+
+        WriteZeros(SectionDataPadding);
 
         Asm.writeSectionData(j, Layout);
       }

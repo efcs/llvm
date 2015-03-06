@@ -18,6 +18,7 @@
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/Target/TargetLowering.h"
 
 namespace llvm {
@@ -29,9 +30,9 @@ enum {
   WrapperLarge, // 4-instruction MOVZ/MOVK sequence for 64-bit addresses.
   CALL,         // Function call.
 
-  // Almost the same as a normal call node, except that a TLSDesc relocation is
-  // needed so the linker can relax it correctly if possible.
-  TLSDESC_CALL,
+  // Produces the full sequence of instructions for getting the thread pointer
+  // offset of a variable into X0, using the TLSDesc model.
+  TLSDESC_CALLSEQ,
   ADRP,     // Page address of a TargetGlobalAddress operand.
   ADDlow,   // Add the low 12 bits of a TargetGlobalAddress operand.
   LOADgot,  // Load from automatically generated descriptor (e.g. Global
@@ -245,10 +246,6 @@ public:
   /// getFunctionAlignment - Return the Log2 alignment of this function.
   unsigned getFunctionAlignment(const Function *F) const;
 
-  /// getMaximalGlobalOffset - Returns the maximal possible offset which can
-  /// be used for loads / stores from the global.
-  unsigned getMaximalGlobalOffset() const override;
-
   /// Returns true if a cast between SrcAS and DestAS is a noop.
   bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
     // Addrspacecasts are always noops.
@@ -285,6 +282,8 @@ public:
 
   bool isTruncateFree(Type *Ty1, Type *Ty2) const override;
   bool isTruncateFree(EVT VT1, EVT VT2) const override;
+
+  bool isProfitableToHoist(Instruction *I) const override;
 
   bool isZExtFree(Type *Ty1, Type *Ty2) const override;
   bool isZExtFree(EVT VT1, EVT VT2) const override;
@@ -336,7 +335,8 @@ public:
 
   bool shouldExpandAtomicLoadInIR(LoadInst *LI) const override;
   bool shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
-  bool shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
+  TargetLoweringBase::AtomicRMWExpansionKind
+  shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
 
   bool useLoadStackGuardNode() const override;
   TargetLoweringBase::LegalizeTypeAction
@@ -400,8 +400,8 @@ private:
   SDValue LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerDarwinGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerELFGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerELFTLSDescCall(SDValue SymAddr, SDValue DescAddr, SDLoc DL,
-                              SelectionDAG &DAG) const;
+  SDValue LowerELFTLSDescCallSeq(SDValue SymAddr, SDLoc DL,
+                                 SelectionDAG &DAG) const;
   SDValue LowerSETCC(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBR_CC(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSELECT(SDValue Op, SelectionDAG &DAG) const;
@@ -454,7 +454,8 @@ private:
                                  const char *constraint) const override;
 
   std::pair<unsigned, const TargetRegisterClass *>
-  getRegForInlineAsmConstraint(const std::string &Constraint,
+  getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                               const std::string &Constraint,
                                MVT VT) const override;
   void LowerAsmOperandForConstraint(SDValue Op, std::string &Constraint,
                                     std::vector<SDValue> &Ops,

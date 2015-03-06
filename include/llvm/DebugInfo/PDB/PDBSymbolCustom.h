@@ -10,10 +10,9 @@
 #ifndef LLVM_DEBUGINFO_PDB_PDBSYMBOLCUSTOM_H
 #define LLVM_DEBUGINFO_PDB_PDBSYMBOLCUSTOM_H
 
-#include "llvm/ADT/SmallVector.h"
-
 #include "PDBSymbol.h"
 #include "PDBTypes.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace llvm {
 
@@ -27,14 +26,12 @@ public:
   PDBSymbolCustom(const IPDBSession &PDBSession,
                   std::unique_ptr<IPDBRawSymbol> CustomSymbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Custom)
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   void getDataBytes(llvm::SmallVector<uint8_t, 32> &bytes);
   FORWARD_SYMBOL_METHOD(getSymIndexId)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Custom;
-  }
 };
 
 } // namespace llvm

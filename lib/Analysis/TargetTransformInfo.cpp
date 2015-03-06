@@ -123,6 +123,10 @@ bool TargetTransformInfo::isTruncateFree(Type *Ty1, Type *Ty2) const {
   return TTIImpl->isTruncateFree(Ty1, Ty2);
 }
 
+bool TargetTransformInfo::isProfitableToHoist(Instruction *I) const {
+  return TTIImpl->isProfitableToHoist(I);
+}
+
 bool TargetTransformInfo::isTypeLegal(Type *Ty) const {
   return TTIImpl->isTypeLegal(Ty);
 }
@@ -273,7 +277,7 @@ TargetIRAnalysis::Result TargetIRAnalysis::run(Function &F) {
 char TargetIRAnalysis::PassID;
 
 TargetIRAnalysis::Result TargetIRAnalysis::getDefaultTTI(Function &F) {
-  return Result(F.getParent()->getDataLayout());
+  return Result(&F.getParent()->getDataLayout());
 }
 
 // Register the basic pass.
