@@ -51,18 +51,17 @@ static cl::opt<bool> UseTBAA("use-tbaa-in-sched-mi", cl::Hidden,
 
 ScheduleDAGInstrs::ScheduleDAGInstrs(MachineFunction &mf,
                                      const MachineLoopInfo *mli,
-                                     bool IsPostRAFlag,
-                                     bool RemoveKillFlags,
+                                     bool IsPostRAFlag, bool RemoveKillFlags,
                                      LiveIntervals *lis)
-  : ScheduleDAG(mf), MLI(mli), MFI(mf.getFrameInfo()), LIS(lis),
-    IsPostRA(IsPostRAFlag), RemoveKillFlags(RemoveKillFlags),
-    CanHandleTerminators(false), FirstDbgValue(nullptr) {
+    : ScheduleDAG(mf), MLI(mli), MFI(mf.getFrameInfo()), LIS(lis),
+      IsPostRA(IsPostRAFlag), RemoveKillFlags(RemoveKillFlags),
+      CanHandleTerminators(false), FirstDbgValue(nullptr) {
   assert((IsPostRA || LIS) && "PreRA scheduling requires LiveIntervals");
   DbgValues.clear();
   assert(!(IsPostRA && MRI.getNumVirtRegs()) &&
          "Virtual registers must be removed prior to PostRA scheduling");
 
-  const TargetSubtargetInfo &ST = TM.getSubtarget<TargetSubtargetInfo>();
+  const TargetSubtargetInfo &ST = mf.getSubtarget();
   SchedModel.init(ST.getSchedModel(), &ST, TII);
 }
 
@@ -253,7 +252,7 @@ void ScheduleDAGInstrs::addPhysRegDataDeps(SUnit *SU, unsigned OperIdx) {
   assert(MO.isDef() && "expect physreg def");
 
   // Ask the target if address-backscheduling is desirable, and if so how much.
-  const TargetSubtargetInfo &ST = TM.getSubtarget<TargetSubtargetInfo>();
+  const TargetSubtargetInfo &ST = MF.getSubtarget();
 
   for (MCRegAliasIterator Alias(MO.getReg(), TRI, true);
        Alias.isValid(); ++Alias) {
@@ -444,7 +443,7 @@ void ScheduleDAGInstrs::addVRegUseDeps(SUnit *SU, unsigned OperIdx) {
       int DefOp = Def->findRegisterDefOperandIdx(Reg);
       dep.setLatency(SchedModel.computeOperandLatency(Def, DefOp, MI, OperIdx));
 
-      const TargetSubtargetInfo &ST = TM.getSubtarget<TargetSubtargetInfo>();
+      const TargetSubtargetInfo &ST = MF.getSubtarget();
       ST.adjustSchedDependency(DefSU, SU, const_cast<SDep &>(dep));
       SU->addPred(dep);
     }
@@ -743,7 +742,7 @@ void ScheduleDAGInstrs::initSUnits() {
 void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
                                         RegPressureTracker *RPTracker,
                                         PressureDiffs *PDiffs) {
-  const TargetSubtargetInfo &ST = TM.getSubtarget<TargetSubtargetInfo>();
+  const TargetSubtargetInfo &ST = MF.getSubtarget();
   bool UseAA = EnableAASchedMI.getNumOccurrences() > 0 ? EnableAASchedMI
                                                        : ST.useAA();
   AliasAnalysis *AAForDep = UseAA ? AA : nullptr;
@@ -992,11 +991,9 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
         // Add dependence on alias chain, if needed.
         if (AliasChain)
           addChainDependency(AAForDep, MFI, SU, AliasChain, RejectMemNodes);
-        // But we also should check dependent instructions for the
-        // SU in question.
-        adjustChainDeps(AA, MFI, SU, &ExitSU, RejectMemNodes,
-                        TrueMemOrderLatency);
       }
+      adjustChainDeps(AA, MFI, SU, &ExitSU, RejectMemNodes,
+                      TrueMemOrderLatency);
     } else if (MI->mayLoad()) {
       bool MayAlias = true;
       if (MI->isInvariantLoad(AA)) {
@@ -1214,7 +1211,7 @@ std::string ScheduleDAGInstrs::getGraphNodeLabel(const SUnit *SU) const {
   else if (SU == &ExitSU)
     oss << "<exit>";
   else
-    SU->getInstr()->print(oss, &TM, /*SkipOpers=*/true);
+    SU->getInstr()->print(oss, /*SkipOpers=*/true);
   return oss.str();
 }
 

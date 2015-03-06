@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "InstCombine.h"
+#include "InstCombineInternal.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/CallSite.h"
@@ -21,6 +21,7 @@
 #include "llvm/IR/Statepoint.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/SimplifyLibCalls.h"
 using namespace llvm;
 using namespace PatternMatch;
 
@@ -575,6 +576,44 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
     return new StoreInst(II->getArgOperand(0), Ptr, false, 1);
   }
+  case Intrinsic::ppc_qpx_qvlfs:
+    // Turn PPC QPX qvlfs -> load if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16, DL, AC, II, DT) >=
+        16) {
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
+                                         PointerType::getUnqual(II->getType()));
+      return new LoadInst(Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvlfd:
+    // Turn PPC QPX qvlfd -> load if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 32, DL, AC, II, DT) >=
+        32) {
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
+                                         PointerType::getUnqual(II->getType()));
+      return new LoadInst(Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvstfs:
+    // Turn PPC QPX qvstfs -> store if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 16, DL, AC, II, DT) >=
+        16) {
+      Type *OpPtrTy =
+        PointerType::getUnqual(II->getArgOperand(0)->getType());
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
+      return new StoreInst(II->getArgOperand(0), Ptr);
+    }
+    break;
+  case Intrinsic::ppc_qpx_qvstfd:
+    // Turn PPC QPX qvstfd -> store if the pointer is known aligned.
+    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 32, DL, AC, II, DT) >=
+        32) {
+      Type *OpPtrTy =
+        PointerType::getUnqual(II->getArgOperand(0)->getType());
+      Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
+      return new StoreInst(II->getArgOperand(0), Ptr);
+    }
+    break;
   case Intrinsic::x86_sse_storeu_ps:
   case Intrinsic::x86_sse2_storeu_pd:
   case Intrinsic::x86_sse2_storeu_dq:
@@ -1126,11 +1165,17 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     if (isKnownNonNull(DerivedPtr))
       II->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
 
-    // TODO: dereferenceable -> deref attribute
+    // isDereferenceablePointer -> deref attribute
+    if (DerivedPtr->isDereferenceablePointer(DL)) {
+      if (Argument *A = dyn_cast<Argument>(DerivedPtr)) {
+        uint64_t Bytes = A->getDereferenceableBytes();
+        II->addDereferenceableAttr(AttributeSet::ReturnIndex, Bytes);
+      }
+    }
 
     // TODO: bitcast(relocate(p)) -> relocate(bitcast(p))
     // Canonicalize on the type from the uses to the defs
-    
+
     // TODO: relocate((gep p, C, C2, ...)) -> gep(relocate(p), C, C2, ...)
   }
   }
@@ -1184,7 +1229,11 @@ static bool isSafeToEliminateVarargsCast(const CallSite CS,
 Instruction *InstCombiner::tryOptimizeCall(CallInst *CI, const DataLayout *DL) {
   if (!CI->getCalledFunction()) return nullptr;
 
-  if (Value *With = Simplifier->optimizeCall(CI)) {
+  auto InstCombineRAUW = [this](Instruction *From, Value *With) {
+    ReplaceInstUsesWith(*From, With);
+  };
+  LibCallSimplifier Simplifier(DL, TLI, InstCombineRAUW);
+  if (Value *With = Simplifier.optimizeCall(CI)) {
     ++NumSimplified;
     return CI->use_empty() ? CI : ReplaceInstUsesWith(*CI, With);
   }
@@ -1375,6 +1424,10 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   Function *Callee =
     dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
   if (!Callee)
+    return false;
+  // The prototype of thunks are a lie, don't try to directly call such
+  // functions.
+  if (Callee->hasFnAttribute("thunk"))
     return false;
   Instruction *Caller = CS.getInstruction();
   const AttributeSet &CallerPAL = CS.getAttributes();

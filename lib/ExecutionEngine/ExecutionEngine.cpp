@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
@@ -46,6 +47,11 @@ ExecutionEngine *(*ExecutionEngine::MCJITCtor)(
     std::unique_ptr<Module> M, std::string *ErrorStr,
     std::unique_ptr<RTDyldMemoryManager> MCJMM,
     std::unique_ptr<TargetMachine> TM) = nullptr;
+
+ExecutionEngine *(*ExecutionEngine::OrcMCJITReplacementCtor)(
+  std::string *ErrorStr, std::unique_ptr<RTDyldMemoryManager> OrcJMM,
+  std::unique_ptr<TargetMachine> TM) = nullptr;
+
 ExecutionEngine *(*ExecutionEngine::InterpCtor)(std::unique_ptr<Module> M,
                                                 std::string *ErrorStr) =nullptr;
 
@@ -137,7 +143,8 @@ bool ExecutionEngine::removeModule(Module *M) {
 
 Function *ExecutionEngine::FindFunctionNamed(const char *FnName) {
   for (unsigned i = 0, e = Modules.size(); i != e; ++i) {
-    if (Function *F = Modules[i]->getFunction(FnName))
+    Function *F = Modules[i]->getFunction(FnName);
+    if (F && !F->isDeclaration())
       return F;
   }
   return nullptr;
@@ -393,6 +400,10 @@ int ExecutionEngine::runFunctionAsMain(Function *Fn,
   return runFunction(Fn, GVArgs).IntVal.getZExtValue();
 }
 
+EngineBuilder::EngineBuilder() {
+  InitEngine();
+}
+
 EngineBuilder::EngineBuilder(std::unique_ptr<Module> M)
   : M(std::move(M)), MCJMM(nullptr) {
   InitEngine();
@@ -414,6 +425,7 @@ void EngineBuilder::InitEngine() {
   Options = TargetOptions();
   RelocModel = Reloc::Default;
   CMModel = CodeModel::JITDefault;
+  UseOrcMCJITReplacement = false;
 
 // IR module verification is enabled by default in debug builds, and disabled
 // by default in release builds.
@@ -456,9 +468,14 @@ ExecutionEngine *EngineBuilder::create(TargetMachine *TM) {
     }
 
     ExecutionEngine *EE = nullptr;
-    if (ExecutionEngine::MCJITCtor)
+    if (ExecutionEngine::OrcMCJITReplacementCtor && UseOrcMCJITReplacement) {
+      EE = ExecutionEngine::OrcMCJITReplacementCtor(ErrorStr, std::move(MCJMM),
+                                                    std::move(TheTM));
+      EE->addModule(std::move(M));
+    } else if (ExecutionEngine::MCJITCtor)
       EE = ExecutionEngine::MCJITCtor(std::move(M), ErrorStr, std::move(MCJMM),
                                       std::move(TheTM));
+
     if (EE) {
       EE->setVerifyModules(VerifyModules);
       return EE;

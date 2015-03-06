@@ -190,7 +190,7 @@ class ARMAsmParser : public MCTargetAsmParser {
   }
 
   bool validatetLDMRegList(MCInst Inst, const OperandVector &Operands,
-                           unsigned ListNo, bool IsPop = false);
+                           unsigned ListNo, bool IsARPop = false);
   bool validatetSTMRegList(MCInst Inst, const OperandVector &Operands,
                            unsigned ListNo);
 
@@ -4424,11 +4424,6 @@ ARMAsmParser::parseModImm(OperandVector &Operands) {
   if (CE) {
     // Immediate must fit within 32-bits
     Imm1 = CE->getValue();
-    if (Imm1 < INT32_MIN || Imm1 > UINT32_MAX) {
-      Error(Sx1, "immediate operand must be representable with 32 bits");
-      return MatchOperand_ParseFail;
-    }
-
     int Enc = ARM_AM::getSOImmVal(Imm1);
     if (Enc != -1 && Parser.getTok().is(AsmToken::EndOfStatement)) {
       // We have a match!
@@ -5254,15 +5249,52 @@ bool ARMAsmParser::parsePrefix(ARMMCExpr::VariantKind &RefKind) {
     return true;
   }
 
+  enum {
+    COFF = (1 << MCObjectFileInfo::IsCOFF),
+    ELF = (1 << MCObjectFileInfo::IsELF),
+    MACHO = (1 << MCObjectFileInfo::IsMachO)
+  };
+  static const struct PrefixEntry {
+    const char *Spelling;
+    ARMMCExpr::VariantKind VariantKind;
+    uint8_t SupportedFormats;
+  } PrefixEntries[] = {
+    { "lower16", ARMMCExpr::VK_ARM_LO16, COFF | ELF | MACHO },
+    { "upper16", ARMMCExpr::VK_ARM_HI16, COFF | ELF | MACHO },
+  };
+
   StringRef IDVal = Parser.getTok().getIdentifier();
-  if (IDVal == "lower16") {
-    RefKind = ARMMCExpr::VK_ARM_LO16;
-  } else if (IDVal == "upper16") {
-    RefKind = ARMMCExpr::VK_ARM_HI16;
-  } else {
+
+  const auto &Prefix =
+      std::find_if(std::begin(PrefixEntries), std::end(PrefixEntries),
+                   [&IDVal](const PrefixEntry &PE) {
+                      return PE.Spelling == IDVal;
+                   });
+  if (Prefix == std::end(PrefixEntries)) {
     Error(Parser.getTok().getLoc(), "unexpected prefix in operand");
     return true;
   }
+
+  uint8_t CurrentFormat;
+  switch (getContext().getObjectFileInfo()->getObjectFileType()) {
+  case MCObjectFileInfo::IsMachO:
+    CurrentFormat = MACHO;
+    break;
+  case MCObjectFileInfo::IsELF:
+    CurrentFormat = ELF;
+    break;
+  case MCObjectFileInfo::IsCOFF:
+    CurrentFormat = COFF;
+    break;
+  }
+
+  if (~Prefix->SupportedFormats & CurrentFormat) {
+    Error(Parser.getTok().getLoc(),
+          "cannot represent relocation in the current file format");
+    return true;
+  }
+
+  RefKind = Prefix->VariantKind;
   Parser.Lex();
 
   if (getLexer().isNot(AsmToken::Colon)) {
@@ -5270,6 +5302,7 @@ bool ARMAsmParser::parsePrefix(ARMMCExpr::VariantKind &RefKind) {
     return true;
   }
   Parser.Lex(); // Eat the last ':'
+
   return false;
 }
 
@@ -5989,7 +6022,7 @@ static bool instIsBreakpoint(const MCInst &Inst) {
 
 bool ARMAsmParser::validatetLDMRegList(MCInst Inst,
                                        const OperandVector &Operands,
-                                       unsigned ListNo, bool IsPop) {
+                                       unsigned ListNo, bool IsARPop) {
   const ARMOperand &Op = static_cast<const ARMOperand &>(*Operands[ListNo]);
   bool HasWritebackToken = Op.isToken() && Op.getToken() == "!";
 
@@ -5997,7 +6030,7 @@ bool ARMAsmParser::validatetLDMRegList(MCInst Inst,
   bool ListContainsLR = listContainsReg(Inst, ListNo, ARM::LR);
   bool ListContainsPC = listContainsReg(Inst, ListNo, ARM::PC);
 
-  if (!IsPop && ListContainsSP)
+  if (!IsARPop && ListContainsSP)
     return Error(Operands[ListNo + HasWritebackToken]->getStartLoc(),
                  "SP may not be in the register list");
   else if (ListContainsPC && ListContainsLR)
@@ -6300,7 +6333,7 @@ bool ARMAsmParser::validateInstruction(MCInst &Inst,
         !isThumbTwo())
       return Error(Operands[2]->getStartLoc(),
                    "registers must be in range r0-r7 or pc");
-    if (validatetLDMRegList(Inst, Operands, 2, /*IsPop=*/true))
+    if (validatetLDMRegList(Inst, Operands, 2, !isMClass()))
       return true;
     break;
   }
@@ -8972,7 +9005,7 @@ bool ARMAsmParser::parseDirectiveReq(StringRef Name, SMLoc L) {
 
   Parser.Lex(); // Consume the EndOfStatement
 
-  if (!RegisterReqs.insert(std::make_pair(Name, Reg)).second) {
+  if (RegisterReqs.insert(std::make_pair(Name, Reg)).first->second != Reg) {
     Error(SRegLoc, "redefinition of '" + Name + "' does not match original.");
     return false;
   }
@@ -9144,8 +9177,7 @@ bool ARMAsmParser::parseDirectiveCPU(SMLoc L) {
   // see: http://llvm.org/bugs/show_bug.cgi?id=20757
   STI.InitMCProcessorInfo(CPU, "");
   STI.InitCPUSchedModel(CPU);
-  unsigned FB = ComputeAvailableFeatures(STI.getFeatureBits());
-  setAvailableFeatures(FB);
+  setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
 
   return false;
 }
@@ -9153,32 +9185,59 @@ bool ARMAsmParser::parseDirectiveCPU(SMLoc L) {
 // FIXME: This is duplicated in getARMFPUFeatures() in
 // tools/clang/lib/Driver/Tools.cpp
 static const struct {
-  const unsigned Fpu;
+  const unsigned ID;
   const uint64_t Enabled;
   const uint64_t Disabled;
-} Fpus[] = {
-      {ARM::VFP, ARM::FeatureVFP2, ARM::FeatureNEON},
-      {ARM::VFPV2, ARM::FeatureVFP2, ARM::FeatureNEON},
-      {ARM::VFPV3, ARM::FeatureVFP3, ARM::FeatureNEON},
-      {ARM::VFPV3_D16, ARM::FeatureVFP3 | ARM::FeatureD16, ARM::FeatureNEON},
-      {ARM::VFPV4, ARM::FeatureVFP4, ARM::FeatureNEON},
-      {ARM::VFPV4_D16, ARM::FeatureVFP4 | ARM::FeatureD16, ARM::FeatureNEON},
-      {ARM::FPV5_D16, ARM::FeatureFPARMv8 | ARM::FeatureD16,
-       ARM::FeatureNEON | ARM::FeatureCrypto},
-      {ARM::FP_ARMV8, ARM::FeatureFPARMv8,
-       ARM::FeatureNEON | ARM::FeatureCrypto},
-      {ARM::NEON, ARM::FeatureNEON, 0},
-      {ARM::NEON_VFPV4, ARM::FeatureVFP4 | ARM::FeatureNEON, 0},
-      {ARM::NEON_FP_ARMV8, ARM::FeatureFPARMv8 | ARM::FeatureNEON,
-       ARM::FeatureCrypto},
-      {ARM::CRYPTO_NEON_FP_ARMV8,
-       ARM::FeatureFPARMv8 | ARM::FeatureNEON | ARM::FeatureCrypto, 0},
-      {ARM::SOFTVFP, 0, 0},
+} FPUs[] = {
+    {/* ID */ ARM::VFP,
+     /* Enabled */ ARM::FeatureVFP2,
+     /* Disabled */ ARM::FeatureNEON},
+    {/* ID */ ARM::VFPV2,
+     /* Enabled */ ARM::FeatureVFP2,
+     /* Disabled */ ARM::FeatureNEON},
+    {/* ID */ ARM::VFPV3,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3,
+     /* Disabled */ ARM::FeatureNEON | ARM::FeatureD16},
+    {/* ID */ ARM::VFPV3_D16,
+     /* Enable */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureD16,
+     /* Disabled */ ARM::FeatureNEON},
+    {/* ID */ ARM::VFPV4,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4,
+     /* Disabled */ ARM::FeatureNEON | ARM::FeatureD16},
+    {/* ID */ ARM::VFPV4_D16,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureD16,
+     /* Disabled */ ARM::FeatureNEON},
+    {/* ID */ ARM::FPV5_D16,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureFPARMv8 | ARM::FeatureD16,
+     /* Disabled */ ARM::FeatureNEON | ARM::FeatureCrypto},
+    {/* ID */ ARM::FP_ARMV8,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureFPARMv8,
+     /* Disabled */ ARM::FeatureNEON | ARM::FeatureCrypto | ARM::FeatureD16},
+    {/* ID */ ARM::NEON,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureNEON,
+     /* Disabled */ ARM::FeatureD16},
+    {/* ID */ ARM::NEON_VFPV4,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureNEON,
+     /* Disabled */ ARM::FeatureD16},
+    {/* ID */ ARM::NEON_FP_ARMV8,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureFPARMv8 | ARM::FeatureNEON,
+     /* Disabled */ ARM::FeatureCrypto | ARM::FeatureD16},
+    {/* ID */ ARM::CRYPTO_NEON_FP_ARMV8,
+     /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
+         ARM::FeatureFPARMv8 | ARM::FeatureNEON | ARM::FeatureCrypto,
+     /* Disabled */ ARM::FeatureD16},
+    {ARM::SOFTVFP, 0, 0},
 };
 
 /// parseDirectiveFPU
 ///  ::= .fpu str
 bool ARMAsmParser::parseDirectiveFPU(SMLoc L) {
+  SMLoc FPUNameLoc = getTok().getLoc();
   StringRef FPU = getParser().parseStringToEndOfStatement().trim();
 
   unsigned ID = StringSwitch<unsigned>(FPU)
@@ -9187,18 +9246,18 @@ bool ARMAsmParser::parseDirectiveFPU(SMLoc L) {
     .Default(ARM::INVALID_FPU);
 
   if (ID == ARM::INVALID_FPU) {
-    Error(L, "Unknown FPU name");
+    Error(FPUNameLoc, "Unknown FPU name");
     return false;
   }
 
-  for (const auto &Fpu : Fpus) {
-    if (Fpu.Fpu != ID)
+  for (const auto &Entry : FPUs) {
+    if (Entry.ID != ID)
       continue;
 
     // Need to toggle features that should be on but are off and that
     // should off but are on.
-    uint64_t Toggle = (Fpu.Enabled & ~STI.getFeatureBits()) |
-                      (Fpu.Disabled & STI.getFeatureBits());
+    uint64_t Toggle = (Entry.Enabled & ~STI.getFeatureBits()) |
+                      (Entry.Disabled & STI.getFeatureBits());
     setAvailableFeatures(ComputeAvailableFeatures(STI.ToggleFeature(Toggle)));
     break;
   }

@@ -109,9 +109,6 @@ Pass *llvm::createArgumentPromotionPass(unsigned maxElements) {
 bool ArgPromotion::runOnSCC(CallGraphSCC &SCC) {
   bool Changed = false, LocalChange;
 
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : nullptr;
-
   do {  // Iterate until we stop promoting from this SCC.
     LocalChange = false;
     // Attempt to promote arguments from all functions in this SCC.
@@ -209,6 +206,8 @@ CallGraphNode *ArgPromotion::PromoteArguments(CallGraphNode *CGN) {
 
   // Make sure that it is local to this module.
   if (!F || !F->hasLocalLinkage()) return nullptr;
+
+  DL = &F->getParent()->getDataLayout();
 
   // First check: see if there are any pointer arguments!  If not, quick exit.
   SmallVector<Argument*, 16> PointerArgs;
@@ -561,8 +560,7 @@ bool ArgPromotion::isSafeToPromoteArgument(Argument *Arg,
     // Now check every path from the entry block to the load for transparency.
     // To do this, we perform a depth first search on the inverse CFG from the
     // loading block.
-    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
-      BasicBlock *P = *PI;
+    for (BasicBlock *P : predecessors(BB)) {
       for (BasicBlock *TranspBB : inverse_depth_first_ext(P, TranspBlocks))
         if (AA.canBasicBlockModify(*TranspBB, Loc))
           return false;
@@ -624,8 +622,7 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
       // Simple byval argument? Just add all the struct element types.
       Type *AgTy = cast<PointerType>(I->getType())->getElementType();
       StructType *STy = cast<StructType>(AgTy);
-      for (unsigned i = 0, e = STy->getNumElements(); i != e; ++i)
-        Params.push_back(STy->getElementType(i));
+      Params.insert(Params.end(), STy->element_begin(), STy->element_end());
       ++NumByValArgsPromoted;
     } else if (!ArgsToPromote.count(I)) {
       // Unchanged argument

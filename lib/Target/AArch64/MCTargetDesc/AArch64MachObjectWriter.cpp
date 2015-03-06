@@ -123,11 +123,22 @@ static bool canUseLocalRelocation(const MCSectionMachO &Section,
   if (Log2Size != 3)
     return false;
 
-  // But only if they don't point to a cstring.
+  // But only if they don't point to a few forbidden sections.
   if (!Symbol.isInSection())
     return true;
   const MCSectionMachO &RefSec = cast<MCSectionMachO>(Symbol.getSection());
-  return RefSec.getType() != MachO::S_CSTRING_LITERALS;
+  if (RefSec.getType() == MachO::S_CSTRING_LITERALS)
+    return false;
+
+  if (RefSec.getSegmentName() == "__DATA" &&
+      RefSec.getSectionName() == "__cfstring")
+    return false;
+
+  if (RefSec.getSegmentName() == "__DATA" &&
+      RefSec.getSectionName() == "__objc_classrefs")
+    return false;
+
+  return true;
 }
 
 void AArch64MachObjectWriter::RecordRelocation(
