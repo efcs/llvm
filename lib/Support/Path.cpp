@@ -14,9 +14,9 @@
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Errc.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include <cctype>
 #include <cstdio>
@@ -30,6 +30,7 @@
 #endif
 
 using namespace llvm;
+using namespace llvm::support::endian;
 
 namespace {
   using llvm::StringRef;
@@ -917,7 +918,7 @@ file_magic identify_magic(StringRef Magic) {
         if (Magic.size() < MinSize)
           return file_magic::coff_import_library;
 
-        int BigObjVersion = *reinterpret_cast<const support::ulittle16_t*>(
+        int BigObjVersion = read16le(
             Magic.data() + offsetof(COFF::BigObjHeader, Version));
         if (BigObjVersion < COFF::BigObjHeader::MinBigObjectVersion)
           return file_magic::coff_import_library;
@@ -960,7 +961,7 @@ file_magic identify_magic(StringRef Magic) {
         unsigned low  = Data2MSB ? 17 : 16;
         if (Magic[high] == 0)
           switch (Magic[low]) {
-            default: break;
+            default: return file_magic::elf;
             case 1: return file_magic::elf_relocatable;
             case 2: return file_magic::elf_executable;
             case 3: return file_magic::elf_shared_object;
@@ -1012,6 +1013,7 @@ file_magic identify_magic(StringRef Magic) {
         case 8: return file_magic::macho_bundle;
         case 9: return file_magic::macho_dynamically_linked_shared_lib_stub;
         case 10: return file_magic::macho_dsym_companion;
+        case 11: return file_magic::macho_kext_bundle;
       }
       break;
     }
@@ -1033,8 +1035,7 @@ file_magic identify_magic(StringRef Magic) {
 
     case 'M': // Possible MS-DOS stub on Windows PE file
       if (Magic[1] == 'Z') {
-        uint32_t off =
-          *reinterpret_cast<const support::ulittle32_t*>(Magic.data() + 0x3c);
+        uint32_t off = read32le(Magic.data() + 0x3c);
         // PE/COFF file, either EXE or DLL.
         if (off < Magic.size() &&
             memcmp(Magic.data()+off, COFF::PEMagic, sizeof(COFF::PEMagic)) == 0)

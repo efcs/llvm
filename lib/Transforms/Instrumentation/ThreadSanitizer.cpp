@@ -19,6 +19,8 @@
 // The rest is handled by the run-time library.
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Analysis/CaptureTracking.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -68,6 +70,7 @@ STATISTIC(NumInstrumentedVtableReads, "Number of vtable ptr reads");
 STATISTIC(NumOmittedReadsFromConstantGlobals,
           "Number of reads from constant globals");
 STATISTIC(NumOmittedReadsFromVtable, "Number of vtable reads");
+STATISTIC(NumOmittedNonCaptured, "Number of accesses ignored due to capturing");
 
 namespace {
 
@@ -99,6 +102,8 @@ struct ThreadSanitizer : public FunctionPass {
   static const size_t kNumberOfAccessSizes = 5;
   Function *TsanRead[kNumberOfAccessSizes];
   Function *TsanWrite[kNumberOfAccessSizes];
+  Function *TsanUnalignedRead[kNumberOfAccessSizes];
+  Function *TsanUnalignedWrite[kNumberOfAccessSizes];
   Function *TsanAtomicLoad[kNumberOfAccessSizes];
   Function *TsanAtomicStore[kNumberOfAccessSizes];
   Function *TsanAtomicRMW[AtomicRMWInst::LAST_BINOP + 1][kNumberOfAccessSizes];
@@ -149,6 +154,16 @@ void ThreadSanitizer::initializeCallbacks(Module &M) {
     SmallString<32> WriteName("__tsan_write" + itostr(ByteSize));
     TsanWrite[i] = checkInterfaceFunction(M.getOrInsertFunction(
         WriteName, IRB.getVoidTy(), IRB.getInt8PtrTy(), nullptr));
+
+    SmallString<64> UnalignedReadName("__tsan_unaligned_read" +
+        itostr(ByteSize));
+    TsanUnalignedRead[i] = checkInterfaceFunction(M.getOrInsertFunction(
+        UnalignedReadName, IRB.getVoidTy(), IRB.getInt8PtrTy(), nullptr));
+
+    SmallString<64> UnalignedWriteName("__tsan_unaligned_write" +
+        itostr(ByteSize));
+    TsanUnalignedWrite[i] = checkInterfaceFunction(M.getOrInsertFunction(
+        UnalignedWriteName, IRB.getVoidTy(), IRB.getInt8PtrTy(), nullptr));
 
     Type *Ty = Type::getIntNTy(M.getContext(), BitSize);
     Type *PtrTy = Ty->getPointerTo();
@@ -215,10 +230,7 @@ void ThreadSanitizer::initializeCallbacks(Module &M) {
 }
 
 bool ThreadSanitizer::doInitialization(Module &M) {
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  if (!DLP)
-    report_fatal_error("data layout missing");
-  DL = &DLP->getDataLayout();
+  DL = &M.getDataLayout();
 
   // Always insert a call to __tsan_init into the module's CTORs.
   IRBuilder<> IRB(M.getContext());
@@ -260,6 +272,7 @@ bool ThreadSanitizer::addrPointsToConstantData(Value *Addr) {
 // Instrumenting some of the accesses may be proven redundant.
 // Currently handled:
 //  - read-before-write (within same BB, no calls between)
+//  - not captured variables
 //
 // We do not handle some of the patterns that should not survive
 // after the classic compiler optimizations.
@@ -290,6 +303,17 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         // Addr points to some constant data -- it can not race with any writes.
         continue;
       }
+    }
+    Value *Addr = isa<StoreInst>(*I)
+        ? cast<StoreInst>(I)->getPointerOperand()
+        : cast<LoadInst>(I)->getPointerOperand();
+    if (isa<AllocaInst>(GetUnderlyingObject(Addr, nullptr)) &&
+        !PointerMayBeCaptured(Addr, true, true)) {
+      // The variable is addressable but not captured, so it cannot be
+      // referenced from a different thread and participate in a data race
+      // (see llvm/Analysis/CaptureTracking.h for details).
+      NumOmittedNonCaptured++;
+      continue;
     }
     All.push_back(I);
   }
@@ -412,7 +436,16 @@ bool ThreadSanitizer::instrumentLoadOrStore(Instruction *I) {
     NumInstrumentedVtableReads++;
     return true;
   }
-  Value *OnAccessFunc = IsWrite ? TsanWrite[Idx] : TsanRead[Idx];
+  const unsigned Alignment = IsWrite
+      ? cast<StoreInst>(I)->getAlignment()
+      : cast<LoadInst>(I)->getAlignment();
+  Type *OrigTy = cast<PointerType>(Addr->getType())->getElementType();
+  const uint32_t TypeSize = DL->getTypeStoreSizeInBits(OrigTy);
+  Value *OnAccessFunc = nullptr;
+  if (Alignment == 0 || Alignment >= 8 || (Alignment % (TypeSize / 8)) == 0)
+    OnAccessFunc = IsWrite ? TsanWrite[Idx] : TsanRead[Idx];
+  else
+    OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
   IRB.CreateCall(OnAccessFunc, IRB.CreatePointerCast(Addr, IRB.getInt8PtrTy()));
   if (IsWrite) NumInstrumentedWrites++;
   else         NumInstrumentedReads++;

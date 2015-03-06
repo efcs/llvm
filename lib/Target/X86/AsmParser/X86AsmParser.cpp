@@ -11,6 +11,7 @@
 #include "X86AsmInstrumentation.h"
 #include "X86AsmParserCommon.h"
 #include "X86Operand.h"
+#include "X86ISelLowering.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -664,6 +665,7 @@ private:
   ParseIntelSegmentOverride(unsigned SegReg, SMLoc Start, unsigned Size);
   std::unique_ptr<X86Operand>
   ParseIntelMemOperand(int64_t ImmDisp, SMLoc StartLoc, unsigned Size);
+  std::unique_ptr<X86Operand> ParseRoundingModeOp(SMLoc Start, SMLoc End);
   bool ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End);
   std::unique_ptr<X86Operand> ParseIntelBracExpression(unsigned SegReg,
                                                        SMLoc Start,
@@ -684,6 +686,7 @@ private:
   bool ParseDirectiveWord(unsigned Size, SMLoc L);
   bool ParseDirectiveCode(StringRef IDVal, SMLoc L);
 
+  bool validateInstruction(MCInst &Inst, const OperandVector &Ops);
   bool processInstruction(MCInst &Inst, const OperandVector &Ops);
 
   /// Wrapper around MCStreamer::EmitInstruction(). Possibly adds
@@ -1406,6 +1409,35 @@ X86AsmParser::ParseIntelSegmentOverride(unsigned SegReg, SMLoc Start,
                                /*Scale=*/1, Start, End, Size, Identifier, Info);
 }
 
+//ParseRoundingModeOp - Parse AVX-512 rounding mode operand
+std::unique_ptr<X86Operand>
+X86AsmParser::ParseRoundingModeOp(SMLoc Start, SMLoc End) {
+  MCAsmParser &Parser = getParser();
+  const AsmToken &Tok = Parser.getTok();
+  consumeToken(); // Eat "{"
+  if (Tok.getIdentifier().startswith("r")){
+    int rndMode = StringSwitch<int>(Tok.getIdentifier())
+      .Case("rn", X86::STATIC_ROUNDING::TO_NEAREST_INT)
+      .Case("rd", X86::STATIC_ROUNDING::TO_NEG_INF)
+      .Case("ru", X86::STATIC_ROUNDING::TO_POS_INF)
+      .Case("rz", X86::STATIC_ROUNDING::TO_ZERO)
+      .Default(-1);
+    if (-1 == rndMode)
+      return ErrorOperand(Tok.getLoc(), "Invalid rounding mode.");
+     Parser.Lex();  // Eat "r*" of r*-sae
+    if (!getLexer().is(AsmToken::Minus))
+      return ErrorOperand(Tok.getLoc(), "Expected - at this point");
+    Parser.Lex();  // Eat "-"
+    Parser.Lex();  // Eat the sae
+    if (!getLexer().is(AsmToken::RCurly))
+      return ErrorOperand(Tok.getLoc(), "Expected } at this point");
+    Parser.Lex();  // Eat "}"
+    const MCExpr *RndModeOp =
+      MCConstantExpr::Create(rndMode, Parser.getContext());
+    return X86Operand::CreateImm(RndModeOp, Start, End);
+  }
+  return ErrorOperand(Tok.getLoc(), "unknown token in expression");
+}
 /// ParseIntelMemOperand - Parse intel style memory operand.
 std::unique_ptr<X86Operand> X86AsmParser::ParseIntelMemOperand(int64_t ImmDisp,
                                                                SMLoc Start,
@@ -1655,6 +1687,11 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand() {
     return ParseIntelMemOperand(Imm, Start, Size);
   }
 
+  // rounding mode token
+  if (STI.getFeatureBits() & X86::FeatureAVX512 &&
+      getLexer().is(AsmToken::LCurly))
+    return ParseRoundingModeOp(Start, End);
+
   // Register.
   unsigned RegNo = 0;
   if (!ParseRegister(RegNo, Start, End)) {
@@ -1706,6 +1743,12 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseATTOperand() {
     if (getParser().parseExpression(Val, End))
       return nullptr;
     return X86Operand::CreateImm(Val, Start, End);
+  }
+  case AsmToken::LCurly:{
+    SMLoc Start = Parser.getTok().getLoc(), End;
+    if (STI.getFeatureBits() & X86::FeatureAVX512)
+      return ParseRoundingModeOp(Start, End);
+    return ErrorOperand(Start, "unknown token in expression");
   }
   }
 }
@@ -1963,14 +2006,13 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     PatchedName = PatchedName.substr(0, Name.size()-1);
 
   // FIXME: Hack to recognize cmp<comparison code>{ss,sd,ps,pd}.
-  const MCExpr *ExtraImmOp = nullptr;
   if ((PatchedName.startswith("cmp") || PatchedName.startswith("vcmp")) &&
       (PatchedName.endswith("ss") || PatchedName.endswith("sd") ||
        PatchedName.endswith("ps") || PatchedName.endswith("pd"))) {
     bool IsVCMP = PatchedName[0] == 'v';
-    unsigned SSECCIdx = IsVCMP ? 4 : 3;
-    unsigned SSEComparisonCode = StringSwitch<unsigned>(
-      PatchedName.slice(SSECCIdx, PatchedName.size() - 2))
+    unsigned CCIdx = IsVCMP ? 4 : 3;
+    unsigned ComparisonCode = StringSwitch<unsigned>(
+      PatchedName.slice(CCIdx, PatchedName.size() - 2))
       .Case("eq",       0x00)
       .Case("lt",       0x01)
       .Case("le",       0x02)
@@ -2005,26 +2047,74 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
       .Case("gt_oq",    0x1E)
       .Case("true_us",  0x1F)
       .Default(~0U);
-    if (SSEComparisonCode != ~0U && (IsVCMP || SSEComparisonCode < 8)) {
-      ExtraImmOp = MCConstantExpr::Create(SSEComparisonCode,
-                                          getParser().getContext());
-      if (PatchedName.endswith("ss")) {
-        PatchedName = IsVCMP ? "vcmpss" : "cmpss";
-      } else if (PatchedName.endswith("sd")) {
-        PatchedName = IsVCMP ? "vcmpsd" : "cmpsd";
-      } else if (PatchedName.endswith("ps")) {
-        PatchedName = IsVCMP ? "vcmpps" : "cmpps";
-      } else {
-        assert(PatchedName.endswith("pd") && "Unexpected mnemonic!");
-        PatchedName = IsVCMP ? "vcmppd" : "cmppd";
-      }
+    if (ComparisonCode != ~0U && (IsVCMP || ComparisonCode < 8)) {
+
+      Operands.push_back(X86Operand::CreateToken(PatchedName.slice(0, CCIdx),
+                                                 NameLoc));
+
+      const MCExpr *ImmOp = MCConstantExpr::Create(ComparisonCode,
+                                                   getParser().getContext());
+      Operands.push_back(X86Operand::CreateImm(ImmOp, NameLoc, NameLoc));
+
+      PatchedName = PatchedName.substr(PatchedName.size() - 2);
+    }
+  }
+
+  // FIXME: Hack to recognize vpcmp<comparison code>{ub,uw,ud,uq,b,w,d,q}.
+  if (PatchedName.startswith("vpcmp") &&
+      (PatchedName.endswith("b") || PatchedName.endswith("w") ||
+       PatchedName.endswith("d") || PatchedName.endswith("q"))) {
+    unsigned CCIdx = PatchedName.drop_back().back() == 'u' ? 2 : 1;
+    unsigned ComparisonCode = StringSwitch<unsigned>(
+      PatchedName.slice(5, PatchedName.size() - CCIdx))
+      .Case("eq",    0x0) // Only allowed on unsigned. Checked below.
+      .Case("lt",    0x1)
+      .Case("le",    0x2)
+      //.Case("false", 0x3) // Not a documented alias.
+      .Case("neq",   0x4)
+      .Case("nlt",   0x5)
+      .Case("nle",   0x6)
+      //.Case("true",  0x7) // Not a documented alias.
+      .Default(~0U);
+    if (ComparisonCode != ~0U && (ComparisonCode != 0 || CCIdx == 2)) {
+      Operands.push_back(X86Operand::CreateToken("vpcmp", NameLoc));
+
+      const MCExpr *ImmOp = MCConstantExpr::Create(ComparisonCode,
+                                                   getParser().getContext());
+      Operands.push_back(X86Operand::CreateImm(ImmOp, NameLoc, NameLoc));
+
+      PatchedName = PatchedName.substr(PatchedName.size() - CCIdx);
+    }
+  }
+
+  // FIXME: Hack to recognize vpcom<comparison code>{ub,uw,ud,uq,b,w,d,q}.
+  if (PatchedName.startswith("vpcom") &&
+      (PatchedName.endswith("b") || PatchedName.endswith("w") ||
+       PatchedName.endswith("d") || PatchedName.endswith("q"))) {
+    unsigned CCIdx = PatchedName.drop_back().back() == 'u' ? 2 : 1;
+    unsigned ComparisonCode = StringSwitch<unsigned>(
+      PatchedName.slice(5, PatchedName.size() - CCIdx))
+      .Case("lt",    0x0)
+      .Case("le",    0x1)
+      .Case("gt",    0x2)
+      .Case("ge",    0x3)
+      .Case("eq",    0x4)
+      .Case("neq",   0x5)
+      .Case("false", 0x6)
+      .Case("true",  0x7)
+      .Default(~0U);
+    if (ComparisonCode != ~0U) {
+      Operands.push_back(X86Operand::CreateToken("vpcom", NameLoc));
+
+      const MCExpr *ImmOp = MCConstantExpr::Create(ComparisonCode,
+                                                   getParser().getContext());
+      Operands.push_back(X86Operand::CreateImm(ImmOp, NameLoc, NameLoc));
+
+      PatchedName = PatchedName.substr(PatchedName.size() - CCIdx);
     }
   }
 
   Operands.push_back(X86Operand::CreateToken(PatchedName, NameLoc));
-
-  if (ExtraImmOp && !isParsingIntelSyntax())
-    Operands.push_back(X86Operand::CreateImm(ExtraImmOp, NameLoc, NameLoc));
 
   // Determine whether this is an instruction prefix.
   bool isPrefix =
@@ -2070,9 +2160,6 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   if (getLexer().is(AsmToken::EndOfStatement) ||
       (isPrefix && getLexer().is(AsmToken::Slash)))
     Parser.Lex();
-
-  if (ExtraImmOp && isParsingIntelSyntax())
-    Operands.push_back(X86Operand::CreateImm(ExtraImmOp, NameLoc, NameLoc));
 
   // This is a terrible hack to handle "out[bwl]? %al, (%dx)" ->
   // "outb %al, %dx".  Out doesn't take a memory form, but this is a widely
@@ -2272,6 +2359,22 @@ static bool convert64i32to64ri8(MCInst &Inst, unsigned Opcode,
   return convertToSExti8(Inst, Opcode, X86::RAX, isCmp);
 }
 
+bool X86AsmParser::validateInstruction(MCInst &Inst, const OperandVector &Ops) {
+  switch (Inst.getOpcode()) {
+  default: return true;
+  case X86::INT:
+    X86Operand &Op = static_cast<X86Operand &>(*Ops[1]);
+    assert(Op.isImm() && "expected immediate");
+    int64_t Res;
+    if (!Op.getImm()->EvaluateAsAbsolute(Res) || Res > 255) {
+      Error(Op.getStartLoc(), "interrupt vector must be in range [0-255]");
+      return false;
+    }
+    return true;
+  }
+  llvm_unreachable("handle the instruction appropriately");
+}
+
 bool X86AsmParser::processInstruction(MCInst &Inst, const OperandVector &Ops) {
   switch (Inst.getOpcode()) {
   default: return false;
@@ -2434,6 +2537,9 @@ bool X86AsmParser::MatchAndEmitATTInstruction(SMLoc IDLoc, unsigned &Opcode,
                                isParsingIntelSyntax())) {
   default: llvm_unreachable("Unexpected match result!");
   case Match_Success:
+    if (!validateInstruction(Inst, Operands))
+      return true;
+
     // Some instructions need post-processing to, for example, tweak which
     // encoding is selected. Loop on it while changes happen so the
     // individual transformations can chain off each other.
@@ -2648,7 +2754,7 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
   }
 
   // If we haven't matched anything yet, this is not a basic integer or FPU
-  // operation.  There shouldn't be any ambiguity in our mneumonic table, so try
+  // operation.  There shouldn't be any ambiguity in our mnemonic table, so try
   // matching with the unsized operand.
   if (Match.empty()) {
     Match.push_back(MatchInstructionImpl(Operands, Inst, ErrorInfo,
@@ -2677,6 +2783,9 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
   unsigned NumSuccessfulMatches =
       std::count(std::begin(Match), std::end(Match), Match_Success);
   if (NumSuccessfulMatches == 1) {
+    if (!validateInstruction(Inst, Operands))
+      return true;
+
     // Some instructions need post-processing to, for example, tweak which
     // encoding is selected. Loop on it while changes happen so the individual
     // transformations can chain off each other.

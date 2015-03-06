@@ -14,15 +14,16 @@
 #ifndef LLVM_LIB_CODEGEN_SELECTIONDAG_SELECTIONDAGBUILDER_H
 #define LLVM_LIB_CODEGEN_SELECTIONDAG_SELECTIONDAGBUILDER_H
 
+#include "StatepointLowering.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetLowering.h"
-#include "StatepointLowering.h"
 #include <vector>
 
 namespace llvm {
@@ -621,8 +622,7 @@ public:
   void removeValue(const Value *V) {
     // This is to support hack in lowerCallFromStatepoint
     // Should be removed when hack is resolved
-    if (NodeMap.count(V))
-      NodeMap.erase(V);
+    NodeMap.erase(V);
   }
 
   void setUnusedArgValue(const Value *V, SDValue NewN) {
@@ -653,12 +653,15 @@ public:
           unsigned NumArgs,
           SDValue Callee,
           bool UseVoidTy = false,
-          MachineBasicBlock *LandingPad = nullptr);
+          MachineBasicBlock *LandingPad = nullptr,
+          bool IsPatchPoint = false);
 
   /// UpdateSplitBlock - When an MBB was split during scheduling, update the
   /// references that need to refer to the last resulting block.
   void UpdateSplitBlock(MachineBasicBlock *First, MachineBasicBlock *Last);
 
+  // This function is responsible for the whole statepoint lowering process.
+  void LowerStatepoint(ImmutableStatepoint Statepoint);
 private:
   std::pair<SDValue, SDValue> lowerInvokable(
           TargetLowering::CallLoweringInfo &CLI,
@@ -686,6 +689,8 @@ private:
                                CaseRecVector& WorkList,
                                const Value* SV,
                                MachineBasicBlock *SwitchBB);
+  void splitSwitchCase(CaseRec &CR, CaseItr Pivot, CaseRecVector &WorkList,
+                       const Value *SV, MachineBasicBlock *SwitchBB);
   bool handleBitTestsSwitchCase(CaseRec& CR,
                                 CaseRecVector& WorkList,
                                 const Value* SV,
@@ -712,6 +717,8 @@ public:
   void visitJumpTable(JumpTable &JT);
   void visitJumpTableHeader(JumpTable &JT, JumpTableHeader &JTH,
                             MachineBasicBlock *SwitchBB);
+  unsigned visitLandingPadClauseBB(GlobalValue *ClauseGV,
+                                   MachineBasicBlock *LPadMBB);
 
 private:
   // These all get lowered before this pass.

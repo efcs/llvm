@@ -152,13 +152,17 @@ namespace llvm {
 
       // iPTR - An int value the size of the pointer of the current
       // target.  This should only be used internal to tblgen!
-      iPTR           = 255
+      iPTR           = 255,
+
+      // Any - Any type. This is used for intrinsics that have overloadings.
+      // This is only for tblgen's consumption!
+      Any            = 256
     };
 
     SimpleValueType SimpleTy;
 
-    MVT() : SimpleTy((SimpleValueType)(INVALID_SIMPLE_VALUE_TYPE)) {}
-    MVT(SimpleValueType SVT) : SimpleTy(SVT) { }
+    LLVM_CONSTEXPR MVT() : SimpleTy(INVALID_SIMPLE_VALUE_TYPE) {}
+    LLVM_CONSTEXPR MVT(SimpleValueType SVT) : SimpleTy(SVT) { }
 
     bool operator>(const MVT& S)  const { return SimpleTy >  S.SimpleTy; }
     bool operator<(const MVT& S)  const { return SimpleTy <  S.SimpleTy; }
@@ -245,7 +249,8 @@ namespace llvm {
 
     /// isOverloaded - Return true if this is an overloaded type for TableGen.
     bool isOverloaded() const {
-      return (SimpleTy==MVT::iAny || SimpleTy==MVT::fAny ||
+      return (SimpleTy==MVT::Any  ||
+              SimpleTy==MVT::iAny || SimpleTy==MVT::fAny ||
               SimpleTy==MVT::vAny || SimpleTy==MVT::iPTRAny);
     }
 
@@ -380,6 +385,7 @@ namespace llvm {
       case iAny:
       case fAny:
       case vAny:
+      case Any:
         llvm_unreachable("Value type is overloaded.");
       case Metadata:
         llvm_unreachable("Value type is metadata.");

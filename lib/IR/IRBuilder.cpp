@@ -231,10 +231,10 @@ CallInst *IRBuilderBase::CreateMaskedIntrinsic(unsigned Id,
 }
 
 CallInst *IRBuilderBase::CreateGCStatepoint(Value *ActualCallee,
-                                            ArrayRef<Value*> CallArgs,
-                                            ArrayRef<Value*> DeoptArgs,
-                                            ArrayRef<Value*> GCArgs,
-                                            const Twine& Name) {
+                                            ArrayRef<Value *> CallArgs,
+                                            ArrayRef<Value *> DeoptArgs,
+                                            ArrayRef<Value *> GCArgs,
+                                            const Twine &Name) {
  // Extract out the type of the callee.
  PointerType *FuncPtrType = cast<PointerType>(ActualCallee->getType());
  assert(isa<FunctionType>(FuncPtrType->getElementType()) &&
@@ -260,19 +260,21 @@ CallInst *IRBuilderBase::CreateGCStatepoint(Value *ActualCallee,
  return createCallHelper(FnStatepoint, args, this, Name);
 }
 
+CallInst *IRBuilderBase::CreateGCStatepoint(Value *ActualCallee,
+                                            ArrayRef<Use> CallArgs,
+                                            ArrayRef<Value *> DeoptArgs,
+                                            ArrayRef<Value *> GCArgs,
+                                            const Twine &Name) {
+  std::vector<Value *> VCallArgs;
+  for (auto &U : CallArgs)
+    VCallArgs.push_back(U.get());
+  return CreateGCStatepoint(ActualCallee, VCallArgs, DeoptArgs, GCArgs, Name);
+}
+
 CallInst *IRBuilderBase::CreateGCResult(Instruction *Statepoint,
                                        Type *ResultType,
                                        const Twine &Name) {
- Intrinsic::ID ID;
- if (ResultType->isIntegerTy()) {
-   ID = Intrinsic::experimental_gc_result_int;
- } else if (ResultType->isFloatingPointTy()) {
-   ID = Intrinsic::experimental_gc_result_float;
- } else if (ResultType->isPointerTy()) {
-   ID = Intrinsic::experimental_gc_result_ptr;
- } else {
-   llvm_unreachable("unimplemented result type for gc.result");
- }
+ Intrinsic::ID ID = Intrinsic::experimental_gc_result;
  Module *M = BB->getParent()->getParent();
  Type *Types[] = {ResultType};
  Value *FnGCResult = Intrinsic::getDeclaration(M, ID, Types);

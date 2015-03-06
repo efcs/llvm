@@ -179,11 +179,6 @@ TrapFuncName("trap-func", cl::Hidden,
         cl::desc("Emit a call to trap function rather than a trap instruction"),
         cl::init(""));
 
-cl::opt<std::string>
-ABIName("target-abi", cl::Hidden,
-        cl::desc("The name of the ABI to be targeted from the backend."),
-        cl::init(""));
-
 cl::opt<bool>
 EnablePIE("enable-pie",
           cl::desc("Assume the creation of a position independent executable."),
@@ -211,6 +206,10 @@ cl::opt<bool>
 FunctionSections("function-sections",
                  cl::desc("Emit functions into separate sections"),
                  cl::init(false));
+
+cl::opt<bool> UniqueSectionNames("unique-section-names",
+                                 cl::desc("Give unique names to every section"),
+                                 cl::init(true));
 
 cl::opt<llvm::JumpTable::JumpTableType>
 JTableType("jump-table-type",
@@ -285,11 +284,11 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.DisableTailCalls = DisableTailCalls;
   Options.StackAlignmentOverride = OverrideStackAlignment;
   Options.TrapFuncName = TrapFuncName;
-  Options.ABIName = ABIName;
   Options.PositionIndependentExecutable = EnablePIE;
   Options.UseInitArray = !UseCtors;
   Options.DataSections = DataSections;
   Options.FunctionSections = FunctionSections;
+  Options.UniqueSectionNames = UniqueSectionNames;
 
   Options.MCOptions = InitMCTargetOptionsFromFlags();
   Options.JTType = JTableType;

@@ -21,6 +21,11 @@
 using namespace llvm;
 using namespace dwarf;
 
+X86_64MachoTargetObjectFile::X86_64MachoTargetObjectFile()
+  : TargetLoweringObjectFileMachO() {
+  SupportIndirectSymViaGOTPCRel = true;
+}
+
 const MCExpr *X86_64MachoTargetObjectFile::getTTypeGlobalReference(
     const GlobalValue *GV, unsigned Encoding, Mangler &Mang,
     const TargetMachine &TM, MachineModuleInfo *MMI,
@@ -46,16 +51,26 @@ MCSymbol *X86_64MachoTargetObjectFile::getCFIPersonalitySymbol(
   return TM.getSymbol(GV, Mang);
 }
 
+const MCExpr *X86_64MachoTargetObjectFile::getIndirectSymViaGOTPCRel(
+    const MCSymbol *Sym, int64_t Offset) const {
+  // On Darwin/X86-64, we need to use foo@GOTPCREL+4 to access the got entry
+  // from a data section. In case there's an additional offset, then use
+  // foo@GOTPCREL+4+<offset>.
+  const MCExpr *Res =
+    MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_GOTPCREL, getContext());
+  const MCExpr *Off = MCConstantExpr::Create(Offset+4, getContext());
+  return MCBinaryExpr::CreateAdd(Res, Off, getContext());
+}
+
+const MCExpr *X86ELFTargetObjectFile::getDebugThreadLocalSymbol(
+    const MCSymbol *Sym) const {
+  return MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_DTPOFF, getContext());
+}
+
 void
 X86LinuxTargetObjectFile::Initialize(MCContext &Ctx, const TargetMachine &TM) {
   TargetLoweringObjectFileELF::Initialize(Ctx, TM);
   InitializeELF(TM.Options.UseInitArray);
-}
-
-const MCExpr *
-X86LinuxTargetObjectFile::getDebugThreadLocalSymbol(
-    const MCSymbol *Sym) const {
-  return MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_DTPOFF, getContext());
 }
 
 const MCExpr *X86WindowsTargetObjectFile::getExecutableRelativeSymbol(

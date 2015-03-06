@@ -11,13 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "ARM.h"
-#include "ARMTargetMachine.h"
 #include "ARMFrameLowering.h"
+#include "ARMTargetMachine.h"
 #include "ARMTargetObjectFile.h"
+#include "ARMTargetTransformInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/MCAsmInfo.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -55,12 +56,13 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
 static ARMBaseTargetMachine::ARMABI
 computeTargetABI(const Triple &TT, StringRef CPU,
                  const TargetOptions &Options) {
-  if (Options.getABIName().startswith("aapcs"))
+  if (Options.MCOptions.getABIName().startswith("aapcs"))
     return ARMBaseTargetMachine::ARM_ABI_AAPCS;
-  else if (Options.getABIName().startswith("apcs"))
+  else if (Options.MCOptions.getABIName().startswith("apcs"))
     return ARMBaseTargetMachine::ARM_ABI_APCS;
 
-  assert(Options.getABIName().empty() && "Unknown target-abi option!");
+  assert(Options.MCOptions.getABIName().empty() &&
+         "Unknown target-abi option!");
 
   ARMBaseTargetMachine::ARMABI TargetABI =
       ARMBaseTargetMachine::ARM_ABI_UNKNOWN;
@@ -103,6 +105,58 @@ computeTargetABI(const Triple &TT, StringRef CPU,
   return TargetABI;
 }
 
+static std::string computeDataLayout(const Triple &TT,
+                                     ARMBaseTargetMachine::ARMABI ABI,
+                                     bool isLittle) {
+  std::string Ret = "";
+
+  if (isLittle)
+    // Little endian.
+    Ret += "e";
+  else
+    // Big endian.
+    Ret += "E";
+
+  Ret += DataLayout::getManglingComponent(TT);
+
+  // Pointers are 32 bits and aligned to 32 bits.
+  Ret += "-p:32:32";
+
+  // ABIs other than APCS have 64 bit integers with natural alignment.
+  if (ABI != ARMBaseTargetMachine::ARM_ABI_APCS)
+    Ret += "-i64:64";
+
+  // We have 64 bits floats. The APCS ABI requires them to be aligned to 32
+  // bits, others to 64 bits. We always try to align to 64 bits.
+  if (ABI == ARMBaseTargetMachine::ARM_ABI_APCS)
+    Ret += "-f64:32:64";
+
+  // We have 128 and 64 bit vectors. The APCS ABI aligns them to 32 bits, others
+  // to 64. We always ty to give them natural alignment.
+  if (ABI == ARMBaseTargetMachine::ARM_ABI_APCS)
+    Ret += "-v64:32:64-v128:32:128";
+  else
+    Ret += "-v128:64:128";
+
+  // Try to align aggregates to 32 bits (the default is 64 bits, which has no
+  // particular hardware support on 32-bit ARM).
+  Ret += "-a:0:32";
+
+  // Integer registers are 32 bits.
+  Ret += "-n32";
+
+  // The stack is 128 bit aligned on NaCl, 64 bit aligned on AAPCS and 32 bit
+  // aligned everywhere else.
+  if (TT.isOSNaCl())
+    Ret += "-S128";
+  else if (ABI == ARMBaseTargetMachine::ARM_ABI_AAPCS)
+    Ret += "-S64";
+  else
+    Ret += "-S32";
+
+  return Ret;
+}
+
 /// TargetMachine ctor - Create an ARM architecture model.
 ///
 ARMBaseTargetMachine::ARMBaseTargetMachine(const Target &T, StringRef TT,
@@ -112,6 +166,7 @@ ARMBaseTargetMachine::ARMBaseTargetMachine(const Target &T, StringRef TT,
                                            CodeGenOpt::Level OL, bool isLittle)
     : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
       TargetABI(computeTargetABI(Triple(TT), CPU, Options)),
+      DL(computeDataLayout(Triple(TT), TargetABI, isLittle)),
       TLOF(createTLOF(Triple(getTargetTriple()))),
       Subtarget(TT, CPU, FS, *this, isLittle), isLittle(isLittle) {
 
@@ -125,11 +180,8 @@ ARMBaseTargetMachine::~ARMBaseTargetMachine() {}
 
 const ARMSubtarget *
 ARMBaseTargetMachine::getSubtargetImpl(const Function &F) const {
-  AttributeSet FnAttrs = F.getAttributes();
-  Attribute CPUAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-cpu");
-  Attribute FSAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-features");
+  Attribute CPUAttr = F.getFnAttribute("target-cpu");
+  Attribute FSAttr = F.getFnAttribute("target-features");
 
   std::string CPU = !CPUAttr.hasAttribute(Attribute::None)
                         ? CPUAttr.getValueAsString().str()
@@ -143,8 +195,7 @@ ARMBaseTargetMachine::getSubtargetImpl(const Function &F) const {
   // function before we can generate a subtarget. We also need to use
   // it as a key for the subtarget since that can be the only difference
   // between two functions.
-  Attribute SFAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "use-soft-float");
+  Attribute SFAttr = F.getFnAttribute("use-soft-float");
   bool SoftFloat = !SFAttr.hasAttribute(Attribute::None)
                        ? SFAttr.getValueAsString() == "true"
                        : Options.UseSoftFloat;
@@ -161,12 +212,9 @@ ARMBaseTargetMachine::getSubtargetImpl(const Function &F) const {
   return I.get();
 }
 
-void ARMBaseTargetMachine::addAnalysisPasses(PassManagerBase &PM) {
-  // Add first the target-independent BasicTTI pass, then our ARM pass. This
-  // allows the ARM pass to delegate to the target independent layer when
-  // appropriate.
-  PM.add(createBasicTargetTransformInfoPass(this));
-  PM.add(createARMTargetTransformInfoPass(this));
+TargetIRAnalysis ARMBaseTargetMachine::getTargetIRAnalysis() {
+  return TargetIRAnalysis(
+      [this](Function &F) { return TargetTransformInfo(ARMTTIImpl(this, F)); });
 }
 
 
@@ -278,7 +326,12 @@ void ARMPassConfig::addIRPasses() {
 
 bool ARMPassConfig::addPreISel() {
   if (TM->getOptLevel() != CodeGenOpt::None)
-    addPass(createGlobalMergePass(TM));
+    // FIXME: This is using the thumb1 only constant value for
+    // maximal global offset for merging globals. We may want
+    // to look into using the old value for non-thumb1 code of
+    // 4095 based on the TargetMachine, but this starts to become
+    // tricky when doing code gen per function.
+    addPass(createGlobalMergePass(TM, 127));
 
   return false;
 }
@@ -286,8 +339,7 @@ bool ARMPassConfig::addPreISel() {
 bool ARMPassConfig::addInstSelector() {
   addPass(createARMISelDag(getARMTargetMachine(), getOptLevel()));
 
-  const ARMSubtarget *Subtarget = &getARMSubtarget();
-  if (Subtarget->isTargetELF() && !Subtarget->isThumb1Only() &&
+  if (Triple(TM->getTargetTriple()).isOSBinFormatELF() &&
       TM->Options.EnableFastISel)
     addPass(createARMGlobalBaseRegPass());
   return false;
@@ -296,12 +348,9 @@ bool ARMPassConfig::addInstSelector() {
 void ARMPassConfig::addPreRegAlloc() {
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createARMLoadStoreOptimizationPass(true));
-  if (getOptLevel() != CodeGenOpt::None && getARMSubtarget().isCortexA9())
+  if (getOptLevel() != CodeGenOpt::None)
     addPass(createMLxExpansionPass());
-  // Since the A15SDOptimizer pass can insert VDUP instructions, it can only be
-  // enabled when NEON is available.
-  if (getOptLevel() != CodeGenOpt::None && getARMSubtarget().isCortexA15() &&
-    getARMSubtarget().hasNEON() && !DisableA15SDOptimization) {
+  if (getOptLevel() != CodeGenOpt::None && !DisableA15SDOptimization) {
     addPass(createA15SDOptimizerPass());
   }
 }
@@ -319,26 +368,21 @@ void ARMPassConfig::addPreSched2() {
   addPass(createARMExpandPseudoPass());
 
   if (getOptLevel() != CodeGenOpt::None) {
-    if (!getARMSubtarget().isThumb1Only()) {
-      // in v8, IfConversion depends on Thumb instruction widths
-      if (getARMSubtarget().restrictIT() &&
-          !getARMSubtarget().prefers32BitThumb())
-        addPass(createThumb2SizeReductionPass());
+    // in v8, IfConversion depends on Thumb instruction widths
+    if (getARMSubtarget().restrictIT())
+      addPass(createThumb2SizeReductionPass());
+    if (!getARMSubtarget().isThumb1Only())
       addPass(&IfConverterID);
-    }
-  }
-  if (getARMSubtarget().isThumb2())
-    addPass(createThumb2ITBlockPass());
+   }
+  addPass(createThumb2ITBlockPass());
 }
 
 void ARMPassConfig::addPreEmitPass() {
-  if (getARMSubtarget().isThumb2()) {
-    if (!getARMSubtarget().prefers32BitThumb())
-      addPass(createThumb2SizeReductionPass());
+  addPass(createThumb2SizeReductionPass());
 
-    // Constant island pass work on unbundled instructions.
+  // Constant island pass work on unbundled instructions.
+  if (getARMSubtarget().isThumb2())
     addPass(&UnpackMachineBundlesID);
-  }
 
   addPass(createARMOptimizeBarriersPass());
   addPass(createARMConstantIslandPass());

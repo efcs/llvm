@@ -456,6 +456,11 @@ public:
   /// used by register scavenger to determine what registers are free.
   virtual BitVector getReservedRegs(const MachineFunction &MF) const = 0;
 
+  /// Prior to adding the live-out mask to a stackmap or patchpoint
+  /// instruction, provide the target the opportunity to adjust it (mainly to
+  /// remove pseudo-registers that should be ignored).
+  virtual void adjustStackMapLiveOutMask(uint32_t *Mask) const { }
+
   /// getMatchingSuperReg - Return a super-register of the specified register
   /// Reg so its sub-register of index SubIdx is Reg.
   unsigned getMatchingSuperReg(unsigned Reg, unsigned SubIdx,
@@ -689,13 +694,13 @@ public:
     return false;
   }
 
-  /// UpdateRegAllocHint - A callback to allow target a chance to update
+  /// updateRegAllocHint - A callback to allow target a chance to update
   /// register allocation hints when a register is "changed" (e.g. coalesced)
   /// to another register. e.g. On ARM, some virtual registers should target
   /// register pairs, if one of pair is coalesced to another register, the
   /// allocation hint of the other half of the pair should be changed to point
   /// to the new register.
-  virtual void UpdateRegAllocHint(unsigned Reg, unsigned NewReg,
+  virtual void updateRegAllocHint(unsigned Reg, unsigned NewReg,
                                   MachineFunction &MF) const {
     // Do nothing.
   }

@@ -172,18 +172,19 @@ bool SIFoldOperands::runOnMachineFunction(MachineFunction &MF) {
       if (!isSafeToFold(MI.getOpcode()))
         continue;
 
+      unsigned OpSize = TII->getOpSize(MI, 1);
       MachineOperand &OpToFold = MI.getOperand(1);
-      bool FoldingImm = OpToFold.isImm() || OpToFold.isFPImm();
+      bool FoldingImm = OpToFold.isImm();
 
       // FIXME: We could also be folding things like FrameIndexes and
       // TargetIndexes.
       if (!FoldingImm && !OpToFold.isReg())
         continue;
 
-      // Folding immediates with more than one use will increase program side.
+      // Folding immediates with more than one use will increase program size.
       // FIXME: This will also reduce register usage, which may be better
       // in some cases.  A better heuristic is needed.
-      if (FoldingImm && !TII->isInlineConstant(OpToFold) &&
+      if (FoldingImm && !TII->isInlineConstant(OpToFold, OpSize) &&
           !MRI.hasOneUse(MI.getOperand(0).getReg()))
         continue;
 
@@ -202,20 +203,21 @@ bool SIFoldOperands::runOnMachineFunction(MachineFunction &MF) {
         const MachineOperand &UseOp = UseMI->getOperand(Use.getOperandNo());
 
         // FIXME: Fold operands with subregs.
-        if (UseOp.isReg() && UseOp.getSubReg() && OpToFold.isReg()) {
+        if (UseOp.isReg() && ((UseOp.getSubReg() && OpToFold.isReg()) ||
+            UseOp.isImplicit())) {
           continue;
         }
 
         APInt Imm;
 
         if (FoldingImm) {
-          const TargetRegisterClass *UseRC = MRI.getRegClass(UseOp.getReg());
+          unsigned UseReg = UseOp.getReg();
+          const TargetRegisterClass *UseRC
+            = TargetRegisterInfo::isVirtualRegister(UseReg) ?
+            MRI.getRegClass(UseReg) :
+            TRI.getRegClass(UseReg);
 
-          if (OpToFold.isFPImm()) {
-            Imm = OpToFold.getFPImm()->getValueAPF().bitcastToAPInt();
-          } else {
-            Imm = APInt(64, OpToFold.getImm());
-          }
+          Imm = APInt(64, OpToFold.getImm());
 
           // Split 64-bit constants into 32-bits for folding.
           if (UseOp.getSubReg()) {
@@ -233,8 +235,13 @@ bool SIFoldOperands::runOnMachineFunction(MachineFunction &MF) {
           // In order to fold immediates into copies, we need to change the
           // copy to a MOV.
           if (UseMI->getOpcode() == AMDGPU::COPY) {
-            unsigned MovOp = TII->getMovOpcode(
-                MRI.getRegClass(UseMI->getOperand(0).getReg()));
+            unsigned DestReg = UseMI->getOperand(0).getReg();
+            const TargetRegisterClass *DestRC
+              = TargetRegisterInfo::isVirtualRegister(DestReg) ?
+              MRI.getRegClass(DestReg) :
+              TRI.getRegClass(DestReg);
+
+            unsigned MovOp = TII->getMovOpcode(DestRC);
             if (MovOp == AMDGPU::COPY)
               continue;
 

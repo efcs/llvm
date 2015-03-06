@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "InstCombine.h"
+#include "InstCombineInternal.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/PatternMatch.h"
@@ -422,7 +422,7 @@ static bool isFiniteNonZeroFp(Constant *C) {
   if (C->getType()->isVectorTy()) {
     for (unsigned I = 0, E = C->getType()->getVectorNumElements(); I != E;
          ++I) {
-      ConstantFP *CFP = dyn_cast<ConstantFP>(C->getAggregateElement(I));
+      ConstantFP *CFP = dyn_cast_or_null<ConstantFP>(C->getAggregateElement(I));
       if (!CFP || !CFP->getValueAPF().isFiniteNonZero())
         return false;
     }
@@ -437,7 +437,7 @@ static bool isNormalFp(Constant *C) {
   if (C->getType()->isVectorTy()) {
     for (unsigned I = 0, E = C->getType()->getVectorNumElements(); I != E;
          ++I) {
-      ConstantFP *CFP = dyn_cast<ConstantFP>(C->getAggregateElement(I));
+      ConstantFP *CFP = dyn_cast_or_null<ConstantFP>(C->getAggregateElement(I));
       if (!CFP || !CFP->getValueAPF().isNormal())
         return false;
     }
@@ -1206,7 +1206,8 @@ Instruction *InstCombiner::visitFDiv(BinaryOperator &I) {
   if (Value *V = SimplifyVectorOp(I))
     return ReplaceInstUsesWith(I, V);
 
-  if (Value *V = SimplifyFDivInst(Op0, Op1, DL, TLI, DT, AC))
+  if (Value *V = SimplifyFDivInst(Op0, Op1, I.getFastMathFlags(),
+                                  DL, TLI, DT, AC))
     return ReplaceInstUsesWith(I, V);
 
   if (isa<Constant>(Op0))
@@ -1481,7 +1482,8 @@ Instruction *InstCombiner::visitFRem(BinaryOperator &I) {
   if (Value *V = SimplifyVectorOp(I))
     return ReplaceInstUsesWith(I, V);
 
-  if (Value *V = SimplifyFRemInst(Op0, Op1, DL, TLI, DT, AC))
+  if (Value *V = SimplifyFRemInst(Op0, Op1, I.getFastMathFlags(),
+                                  DL, TLI, DT, AC))
     return ReplaceInstUsesWith(I, V);
 
   // Handle cases involving: rem X, (select Cond, Y, Z)
