@@ -269,6 +269,16 @@ class VX2_Int_Ty2<bits<11> xo, string opc, Intrinsic IntID, ValueType OutTy,
              !strconcat(opc, " $vD, $vB"), IIC_VecFP,
              [(set OutTy:$vD, (IntID InTy:$vB))]>;
 
+class VXBX_Int_Ty<bits<11> xo, string opc, Intrinsic IntID, ValueType Ty>
+  : VXForm_BX<xo, (outs vrrc:$vD), (ins vrrc:$vA),
+             !strconcat(opc, " $vD, $vA"), IIC_VecFP,
+             [(set Ty:$vD, (IntID Ty:$vA))]>;
+
+class VXCR_Int_Ty<bits<11> xo, string opc, Intrinsic IntID, ValueType Ty>
+  : VXForm_CR<xo, (outs vrrc:$vD), (ins vrrc:$vA, u1imm:$ST, u4imm:$SIX),
+              !strconcat(opc, " $vD, $vA, $ST, $SIX"), IIC_VecFP,
+              [(set Ty:$vD, (IntID Ty:$vA, imm:$ST, imm:$SIX))]>;
+
 //===----------------------------------------------------------------------===//
 // Instruction Definitions.
 
@@ -939,6 +949,7 @@ def : Pat<(v4f32 (fnearbyint v4f32:$vA)),
 } // end HasAltivec
 
 def HasP8Altivec : Predicate<"PPCSubTarget->hasP8Altivec()">;
+def HasP8Crypto : Predicate<"PPCSubTarget->hasP8Crypto()">;
 let Predicates = [HasP8Altivec] in {
 
 let isCommutable = 1 in {
@@ -958,11 +969,17 @@ def VMINSD : VX1_Int_Ty<962, "vminsd", int_ppc_altivec_vminsd, v2i64>;
 def VMIDUD : VX1_Int_Ty<706, "vminud", int_ppc_altivec_vminud, v2i64>;
 } // isCommutable
 
+// Vector shifts
 def VRLD : VX1_Int_Ty<196, "vrld", int_ppc_altivec_vrld, v2i64>;
-def VSLD : VX1_Int_Ty<1476, "vsld", int_ppc_altivec_vsld, v2i64>;
-def VSRD : VX1_Int_Ty<1732, "vsrd", int_ppc_altivec_vsrd, v2i64>;
-def VSRAD : VX1_Int_Ty<964, "vsrad", int_ppc_altivec_vsrad, v2i64>;
-
+def VSLD : VXForm_1<1476, (outs vrrc:$vD), (ins vrrc:$vA, vrrc:$vB),
+                    "vsld $vD, $vA, $vB", IIC_VecGeneral,
+                    [(set v2i64:$vD, (shl v2i64:$vA, v2i64:$vB))]>;
+def VSRD : VXForm_1<1732, (outs vrrc:$vD), (ins vrrc:$vA, vrrc:$vB),
+                   "vsrd $vD, $vA, $vB", IIC_VecGeneral,
+                   [(set v2i64:$vD, (srl v2i64:$vA, v2i64:$vB))]>;
+def VSRAD : VXForm_1<964, (outs vrrc:$vD), (ins vrrc:$vA, vrrc:$vB),
+                    "vsrad $vD, $vA, $vB", IIC_VecGeneral,
+                    [(set v2i64:$vD, (sra v2i64:$vA, v2i64:$vB))]>;
 
 // Vector Integer Arithmetic Instructions
 let isCommutable = 1 in {
@@ -1035,4 +1052,33 @@ def VCMPGTSDo : VCMPo<967, "vcmpgtsd. $vD, $vA, $vB", v2i64>;
 def VCMPGTUD  : VCMP <711, "vcmpgtud $vD, $vA, $vB" , v2i64>;
 def VCMPGTUDo : VCMPo<711, "vcmpgtud. $vD, $vA, $vB", v2i64>;
 
+// The cryptography instructions that do not require Category:Vector.Crypto
+def VPMSUMB : VX1_Int_Ty<1032, "vpmsumb",
+                         int_ppc_altivec_crypto_vpmsumb, v16i8>;
+def VPMSUMH : VX1_Int_Ty<1096, "vpmsumh",
+                         int_ppc_altivec_crypto_vpmsumh, v8i16>;
+def VPMSUMW : VX1_Int_Ty<1160, "vpmsumw",
+                         int_ppc_altivec_crypto_vpmsumw, v4i32>;
+def VPMSUMD : VX1_Int_Ty<1224, "vpmsumd",
+                         int_ppc_altivec_crypto_vpmsumd, v2i64>;
+def VPERMXOR : VA1a_Int_Ty<45, "vpermxor",
+                         int_ppc_altivec_crypto_vpermxor, v16i8>;
+
 } // end HasP8Altivec
+
+// Crypto instructions (from builtins)
+let Predicates = [HasP8Crypto] in {
+def VSHASIGMAW : VXCR_Int_Ty<1666, "vshasigmaw",
+                              int_ppc_altivec_crypto_vshasigmaw, v4i32>;
+def VSHASIGMAD : VXCR_Int_Ty<1730, "vshasigmad",
+                              int_ppc_altivec_crypto_vshasigmad, v2i64>;
+def VCIPHER : VX1_Int_Ty<1288, "vcipher", int_ppc_altivec_crypto_vcipher,
+                         v2i64>;
+def VCIPHERLAST : VX1_Int_Ty<1289, "vcipherlast",
+                              int_ppc_altivec_crypto_vcipherlast, v2i64>;
+def VNCIPHER : VX1_Int_Ty<1352, "vncipher",
+                          int_ppc_altivec_crypto_vncipher, v2i64>;
+def VNCIPHERLAST : VX1_Int_Ty<1353, "vncipherlast",
+                              int_ppc_altivec_crypto_vncipherlast, v2i64>;
+def VSBOX : VXBX_Int_Ty<1480, "vsbox", int_ppc_altivec_crypto_vsbox, v2i64>;
+} // HasP8Crypto

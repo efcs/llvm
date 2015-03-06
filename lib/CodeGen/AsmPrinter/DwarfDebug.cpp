@@ -189,10 +189,11 @@ static LLVM_CONSTEXPR DwarfAccelTable::Atom TypeAtoms[] = {
 
 DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
     : Asm(A), MMI(Asm->MMI), PrevLabel(nullptr), GlobalRangeCount(0),
-      InfoHolder(A, *this, "info_string", DIEValueAllocator),
+      InfoHolder(A, "info_string", DIEValueAllocator),
       UsedNonDefaultText(false),
-      SkeletonHolder(A, *this, "skel_string", DIEValueAllocator),
+      SkeletonHolder(A, "skel_string", DIEValueAllocator),
       IsDarwin(Triple(A->getTargetTriple()).isOSDarwin()),
+      IsPS4(Triple(A->getTargetTriple()).isPS4()),
       AccelNames(DwarfAccelTable::Atom(dwarf::DW_ATOM_die_offset,
                                        dwarf::DW_FORM_data4)),
       AccelObjC(DwarfAccelTable::Atom(dwarf::DW_ATOM_die_offset,
@@ -206,12 +207,11 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   DwarfLineSectionSym = nullptr;
   DwarfAddrSectionSym = nullptr;
   DwarfAbbrevDWOSectionSym = DwarfStrDWOSectionSym = nullptr;
-  FunctionBeginSym = FunctionEndSym = nullptr;
   CurFn = nullptr;
   CurMI = nullptr;
 
   // Turn on accelerator tables for Darwin by default, pubnames by
-  // default for non-Darwin, and handle split dwarf.
+  // default for non-Darwin/PS4, and handle split dwarf.
   if (DwarfAccelTables == Default)
     HasDwarfAccelTables = IsDarwin;
   else
@@ -223,13 +223,17 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
     HasSplitDwarf = SplitDwarf == Enable;
 
   if (DwarfPubSections == Default)
-    HasDwarfPubSections = !IsDarwin;
+    HasDwarfPubSections = !IsDarwin && !IsPS4;
   else
     HasDwarfPubSections = DwarfPubSections == Enable;
 
   unsigned DwarfVersionNumber = Asm->TM.Options.MCOptions.DwarfVersion;
   DwarfVersion = DwarfVersionNumber ? DwarfVersionNumber
                                     : MMI->getModule()->getDwarfVersion();
+
+  // Darwin and PS4 use the standard TLS opcode (defined in DWARF 3).
+  // Everybody else uses GNU's.
+  UseGNUTLSOpcode = !(IsDarwin || IsPS4) || DwarfVersion < 3;
 
   Asm->OutStreamer.getContext().setDwarfVersion(DwarfVersion);
 
@@ -850,7 +854,7 @@ DwarfDebug::buildLocationList(SmallVectorImpl<DebugLocEntry> &DebugLoc,
     if (End != nullptr)
       EndLabel = getLabelAfterInsn(End);
     else if (std::next(I) == Ranges.end())
-      EndLabel = FunctionEndSym;
+      EndLabel = Asm->getFunctionEnd();
     else
       EndLabel = getLabelBeforeInsn(std::next(I)->first);
     assert(EndLabel && "Forgot label after instruction ending a range!");
@@ -1141,11 +1145,6 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
   else
     Asm->OutStreamer.getContext().setDwarfCompileUnitID(TheCU->getUniqueID());
 
-  // Emit a label for the function so that we have a beginning address.
-  FunctionBeginSym = Asm->GetTempSymbol("func_begin", Asm->getFunctionNumber());
-  // Assumes in correct section after the entry point.
-  Asm->OutStreamer.EmitLabel(FunctionBeginSym);
-
   // Calculate history for local variables.
   calculateDbgValueHistory(MF, Asm->MF->getSubtarget().getRegisterInfo(),
                            DbgValues);
@@ -1156,12 +1155,12 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
     if (Ranges.empty())
       continue;
 
-    // The first mention of a function argument gets the FunctionBeginSym
+    // The first mention of a function argument gets the CurrentFnBegin
     // label, so arguments are visible when breaking at function entry.
     DIVariable DIVar(Ranges.front().first->getDebugVariable());
     if (DIVar.isVariable() && DIVar.getTag() == dwarf::DW_TAG_arg_variable &&
         getDISubprogram(DIVar.getContext()).describes(MF->getFunction())) {
-      LabelsBeforeInsn[Ranges.front().first] = FunctionBeginSym;
+      LabelsBeforeInsn[Ranges.front().first] = Asm->getFunctionBegin();
       if (Ranges.front().first->getDebugExpression().isBitPiece()) {
         // Mark all non-overlapping initial pieces.
         for (auto I = Ranges.begin(); I != Ranges.end(); ++I) {
@@ -1170,7 +1169,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
                           [&](DbgValueHistoryMap::InstrRange Pred) {
                 return !piecesOverlap(Piece, Pred.first->getDebugExpression());
               }))
-            LabelsBeforeInsn[I->first] = FunctionBeginSym;
+            LabelsBeforeInsn[I->first] = Asm->getFunctionBegin();
           else
             break;
         }
@@ -1185,7 +1184,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
   }
 
   PrevInstLoc = DebugLoc();
-  PrevLabel = FunctionBeginSym;
+  PrevLabel = Asm->getFunctionBegin();
 
   // Record beginning of function.
   PrologEndLoc = findPrologueEndLoc(MF);
@@ -1216,11 +1215,6 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
     return;
   }
 
-  // Define end label for subprogram.
-  FunctionEndSym = Asm->GetTempSymbol("func_end", Asm->getFunctionNumber());
-  // Assumes in correct section after the entry point.
-  Asm->OutStreamer.EmitLabel(FunctionEndSym);
-
   // Set DwarfDwarfCompileUnitID in MCContext to default value.
   Asm->OutStreamer.getContext().setDwarfCompileUnitID(0);
 
@@ -1232,7 +1226,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
   collectVariableInfo(TheCU, SP, ProcessedVars);
 
   // Add the range of this function to the list of ranges for the CU.
-  TheCU.addRange(RangeSpan(FunctionBeginSym, FunctionEndSym));
+  TheCU.addRange(RangeSpan(Asm->getFunctionBegin(), Asm->getFunctionEnd()));
 
   // Under -gmlt, skip building the subprogram if there are no inlined
   // subroutines inside it.
@@ -1362,49 +1356,6 @@ void DwarfDebug::emitSectionLabels() {
         emitSectionSym(Asm, TLOF.getDwarfLocSection(), "section_debug_loc");
   DwarfDebugRangeSectionSym =
       emitSectionSym(Asm, TLOF.getDwarfRangesSection(), "debug_range");
-}
-
-// Recursively emits a debug information entry.
-void DwarfDebug::emitDIE(DIE &Die) {
-  // Get the abbreviation for this DIE.
-  const DIEAbbrev &Abbrev = Die.getAbbrev();
-
-  // Emit the code (index) for the abbreviation.
-  if (Asm->isVerbose())
-    Asm->OutStreamer.AddComment("Abbrev [" + Twine(Abbrev.getNumber()) +
-                                "] 0x" + Twine::utohexstr(Die.getOffset()) +
-                                ":0x" + Twine::utohexstr(Die.getSize()) + " " +
-                                dwarf::TagString(Abbrev.getTag()));
-  Asm->EmitULEB128(Abbrev.getNumber());
-
-  const SmallVectorImpl<DIEValue *> &Values = Die.getValues();
-  const SmallVectorImpl<DIEAbbrevData> &AbbrevData = Abbrev.getData();
-
-  // Emit the DIE attribute values.
-  for (unsigned i = 0, N = Values.size(); i < N; ++i) {
-    dwarf::Attribute Attr = AbbrevData[i].getAttribute();
-    dwarf::Form Form = AbbrevData[i].getForm();
-    assert(Form && "Too many attributes for DIE (check abbreviation)");
-
-    if (Asm->isVerbose()) {
-      Asm->OutStreamer.AddComment(dwarf::AttributeString(Attr));
-      if (Attr == dwarf::DW_AT_accessibility)
-        Asm->OutStreamer.AddComment(dwarf::AccessibilityString(
-            cast<DIEInteger>(Values[i])->getValue()));
-    }
-
-    // Emit an attribute using the defined form.
-    Values[i]->EmitValue(Asm, Form);
-  }
-
-  // Emit the DIE children if any.
-  if (Abbrev.hasChildren()) {
-    for (auto &Child : Die.getChildren())
-      emitDIE(*Child);
-
-    Asm->OutStreamer.AddComment("End Of Children Mark");
-    Asm->EmitInt8(0);
-  }
 }
 
 // Emit the debug info section.

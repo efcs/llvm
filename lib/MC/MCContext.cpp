@@ -18,6 +18,7 @@
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -130,9 +131,10 @@ MCSymbol *MCContext::getOrCreateSectionSymbol(const MCSectionELF &Section) {
   return Sym;
 }
 
-MCSymbol *MCContext::getOrCreateFrameAllocSymbol(StringRef FuncName) {
-  return GetOrCreateSymbol(Twine(MAI->getPrivateGlobalPrefix()) +
-                           "frameallocation_" + FuncName);
+MCSymbol *MCContext::getOrCreateFrameAllocSymbol(StringRef FuncName,
+                                                 unsigned Idx) {
+  return GetOrCreateSymbol(Twine(MAI->getPrivateGlobalPrefix()) + FuncName +
+                           "$frame_escape_" + Twine(Idx));
 }
 
 MCSymbol *MCContext::CreateSymbol(StringRef Name) {

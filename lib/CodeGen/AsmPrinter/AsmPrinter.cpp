@@ -556,9 +556,7 @@ void AsmPrinter::EmitFunctionHeader() {
     OutStreamer.EmitLabel(DeadBlockSyms[i]);
   }
 
-  if (!MMI->getLandingPads().empty()) {
-    CurrentFnBegin = createTempSymbol("func_begin", getFunctionNumber());
-
+  if (CurrentFnBegin) {
     if (MAI->useAssignmentForEHBegin()) {
       MCSymbol *CurPos = OutContext.CreateTempSymbol();
       OutStreamer.EmitLabel(CurPos);
@@ -882,7 +880,8 @@ void AsmPrinter::EmitFunctionBody() {
   // Emit target-specific gunk after the function body.
   EmitFunctionBodyEnd();
 
-  if (!MMI->getLandingPads().empty()) {
+  if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
+      MAI->hasDotTypeDotSizeDirective()) {
     // Create a symbol for the end of function.
     CurrentFnEnd = createTempSymbol("func_end", getFunctionNumber());
     OutStreamer.EmitLabel(CurrentFnEnd);
@@ -891,13 +890,10 @@ void AsmPrinter::EmitFunctionBody() {
   // If the target wants a .size directive for the size of the function, emit
   // it.
   if (MAI->hasDotTypeDotSizeDirective()) {
-    // Create a symbol for the end of function, so we can get the size as
-    // difference between the function label and the temp label.
-    MCSymbol *FnEndLabel = OutContext.CreateTempSymbol();
-    OutStreamer.EmitLabel(FnEndLabel);
-
+    // We can get the size as difference between the function label and the
+    // temp label.
     const MCExpr *SizeExp =
-      MCBinaryExpr::CreateSub(MCSymbolRefExpr::Create(FnEndLabel, OutContext),
+      MCBinaryExpr::CreateSub(MCSymbolRefExpr::Create(CurrentFnEnd, OutContext),
                               MCSymbolRefExpr::Create(CurrentFnSymForSize,
                                                       OutContext),
                               OutContext);
@@ -1125,6 +1121,14 @@ void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   // Get the function symbol.
   CurrentFnSym = getSymbol(MF.getFunction());
   CurrentFnSymForSize = CurrentFnSym;
+  CurrentFnBegin = nullptr;
+  bool NeedsLocalForSize = MAI->needsLocalForSize();
+  if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
+      NeedsLocalForSize) {
+    CurrentFnBegin = createTempSymbol("func_begin", getFunctionNumber());
+    if (NeedsLocalForSize)
+      CurrentFnSymForSize = CurrentFnBegin;
+  }
 
   if (isVerbose())
     LI = &getAnalysis<MachineLoopInfo>();
