@@ -569,14 +569,12 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setTargetDAGCombine(ISD::LOAD);
 
     // It is legal to extload from v4i8 to v4i16 or v4i32.
-    MVT Tys[6] = {MVT::v8i8, MVT::v4i8, MVT::v2i8,
-                  MVT::v4i16, MVT::v2i16,
-                  MVT::v2i32};
-    for (unsigned i = 0; i < 6; ++i) {
+    for (MVT Ty : {MVT::v8i8, MVT::v4i8, MVT::v2i8, MVT::v4i16, MVT::v2i16,
+                   MVT::v2i32}) {
       for (MVT VT : MVT::integer_vector_valuetypes()) {
-        setLoadExtAction(ISD::EXTLOAD, VT, Tys[i], Legal);
-        setLoadExtAction(ISD::ZEXTLOAD, VT, Tys[i], Legal);
-        setLoadExtAction(ISD::SEXTLOAD, VT, Tys[i], Legal);
+        setLoadExtAction(ISD::EXTLOAD, VT, Ty, Legal);
+        setLoadExtAction(ISD::ZEXTLOAD, VT, Ty, Legal);
+        setLoadExtAction(ISD::SEXTLOAD, VT, Ty, Legal);
       }
     }
   }
@@ -10312,9 +10310,9 @@ bool ARMTargetLowering::isLegalAddressingMode(const AddrMode &AM,
 bool ARMTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
   // Thumb2 and ARM modes can use cmn for negative immediates.
   if (!Subtarget->isThumb())
-    return ARM_AM::getSOImmVal(llvm::abs64(Imm)) != -1;
+    return ARM_AM::getSOImmVal(std::abs(Imm)) != -1;
   if (Subtarget->isThumb2())
-    return ARM_AM::getT2SOImmVal(llvm::abs64(Imm)) != -1;
+    return ARM_AM::getT2SOImmVal(std::abs(Imm)) != -1;
   // Thumb1 doesn't have cmn, and only 8-bit immediates.
   return Imm >= 0 && Imm <= 255;
 }
@@ -10325,7 +10323,7 @@ bool ARMTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
 /// immediate into a register.
 bool ARMTargetLowering::isLegalAddImmediate(int64_t Imm) const {
   // Same encoding for add/sub, just flip the sign.
-  int64_t AbsImm = llvm::abs64(Imm);
+  int64_t AbsImm = std::abs(Imm);
   if (!Subtarget->isThumb())
     return ARM_AM::getSOImmVal(AbsImm) != -1;
   if (Subtarget->isThumb2())

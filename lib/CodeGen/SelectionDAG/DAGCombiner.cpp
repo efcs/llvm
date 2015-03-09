@@ -304,6 +304,7 @@ namespace {
     SDValue visitCONCAT_VECTORS(SDNode *N);
     SDValue visitEXTRACT_SUBVECTOR(SDNode *N);
     SDValue visitVECTOR_SHUFFLE(SDNode *N);
+    SDValue visitSCALAR_TO_VECTOR(SDNode *N);
     SDValue visitINSERT_SUBVECTOR(SDNode *N);
     SDValue visitMLOAD(SDNode *N);
     SDValue visitMSTORE(SDNode *N);
@@ -1371,6 +1372,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::CONCAT_VECTORS:     return visitCONCAT_VECTORS(N);
   case ISD::EXTRACT_SUBVECTOR:  return visitEXTRACT_SUBVECTOR(N);
   case ISD::VECTOR_SHUFFLE:     return visitVECTOR_SHUFFLE(N);
+  case ISD::SCALAR_TO_VECTOR:   return visitSCALAR_TO_VECTOR(N);
   case ISD::INSERT_SUBVECTOR:   return visitINSERT_SUBVECTOR(N);
   case ISD::MLOAD:              return visitMLOAD(N);
   case ISD::MSTORE:             return visitMSTORE(N);
@@ -2910,9 +2912,13 @@ SDValue DAGCombiner::visitAND(SDNode *N) {
                SplatBitSize = SplatBitSize * 2)
             SplatValue |= SplatValue.shl(SplatBitSize);
 
-        Constant = APInt::getAllOnesValue(BitWidth);
-        for (unsigned i = 0, n = SplatBitSize/BitWidth; i < n; ++i)
-          Constant &= SplatValue.lshr(i*BitWidth).zextOrTrunc(BitWidth);
+        // Make sure that variable 'Constant' is only set if 'SplatBitSize' is a
+        // multiple of 'BitWidth'. Otherwise, we could propagate a wrong value.
+        if (SplatBitSize % BitWidth == 0) {
+          Constant = APInt::getAllOnesValue(BitWidth);
+          for (unsigned i = 0, n = SplatBitSize/BitWidth; i < n; ++i)
+            Constant &= SplatValue.lshr(i*BitWidth).zextOrTrunc(BitWidth);
+        }
       }
     }
 
@@ -11322,12 +11328,10 @@ SDValue DAGCombiner::visitBUILD_VECTOR(SDNode *N) {
   if (ISD::allOperandsUndef(N))
     return DAG.getUNDEF(VT);
 
-  SDValue V = reduceBuildVecExtToExtBuildVec(N);
-  if (V.getNode())
+  if (SDValue V = reduceBuildVecExtToExtBuildVec(N))
     return V;
 
-  V = reduceBuildVecConvertToConvertBuildVec(N);
-  if (V.getNode())
+  if (SDValue V = reduceBuildVecConvertToConvertBuildVec(N))
     return V;
 
   // Check to see if this is a BUILD_VECTOR of a bunch of EXTRACT_VECTOR_ELT
@@ -12026,16 +12030,8 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
         SDValue SV1 = BC0->getOperand(1);
         bool LegalMask = TLI.isShuffleMaskLegal(NewMask, ScaleVT);
         if (!LegalMask) {
-          for (int i = 0, e = (int)NewMask.size(); i != e; ++i) {
-            int idx = NewMask[i];
-            if (idx < 0)
-              continue;
-            else if (idx < e)
-              NewMask[i] = idx + e;
-            else
-              NewMask[i] = idx - e;
-          }
           std::swap(SV0, SV1);
+          ShuffleVectorSDNode::commuteMask(NewMask);
           LegalMask = TLI.isShuffleMaskLegal(NewMask, ScaleVT);
         }
 
@@ -12159,16 +12155,7 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
 
     // Avoid introducing shuffles with illegal mask.
     if (!TLI.isShuffleMaskLegal(Mask, VT)) {
-      // Compute the commuted shuffle mask and test again.
-      for (unsigned i = 0; i != NumElts; ++i) {
-        int idx = Mask[i];
-        if (idx < 0)
-          continue;
-        else if (idx < (int)NumElts)
-          Mask[i] = idx + NumElts;
-        else
-          Mask[i] = idx - NumElts;
-      }
+      ShuffleVectorSDNode::commuteMask(Mask);
 
       if (!TLI.isShuffleMaskLegal(Mask, VT))
         return SDValue();
@@ -12183,6 +12170,34 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
     //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(A, C, M2)
     //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(B, C, M2)
     return DAG.getVectorShuffle(VT, SDLoc(N), SV0, SV1, &Mask[0]);
+  }
+
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitSCALAR_TO_VECTOR(SDNode *N) {
+  SDValue InVal = N->getOperand(0);
+  EVT VT = N->getValueType(0);
+
+  // Replace a SCALAR_TO_VECTOR(EXTRACT_VECTOR_ELT(V,C0)) pattern
+  // with a VECTOR_SHUFFLE.
+  if (InVal.getOpcode() == ISD::EXTRACT_VECTOR_ELT) {
+    SDValue InVec = InVal->getOperand(0);
+    SDValue EltNo = InVal->getOperand(1);
+
+    // FIXME: We could support implicit truncation if the shuffle can be
+    // scaled to a smaller vector scalar type.
+    ConstantSDNode *C0 = dyn_cast<ConstantSDNode>(EltNo);
+    if (C0 && VT == InVec.getValueType() &&
+        VT.getScalarType() == InVal.getValueType()) {
+      SmallVector<int, 8> NewMask(VT.getVectorNumElements(), -1);
+      int Elt = C0->getZExtValue();
+      NewMask[0] = Elt;
+
+      if (TLI.isShuffleMaskLegal(NewMask, VT))
+        return DAG.getVectorShuffle(VT, SDLoc(N), InVec, DAG.getUNDEF(VT),
+                                    NewMask);
+    }
   }
 
   return SDValue();
@@ -12271,8 +12286,9 @@ SDValue DAGCombiner::SimplifyVBinOp(SDNode *N) {
 
   SDValue LHS = N->getOperand(0);
   SDValue RHS = N->getOperand(1);
-  SDValue Shuffle = XformToShuffleWithZero(N);
-  if (Shuffle.getNode()) return Shuffle;
+
+  if (SDValue Shuffle = XformToShuffleWithZero(N))
+    return Shuffle;
 
   // If the LHS and RHS are BUILD_VECTOR nodes, see if we can constant fold
   // this operation.
