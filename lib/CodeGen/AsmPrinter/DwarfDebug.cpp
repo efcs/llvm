@@ -249,11 +249,8 @@ DwarfDebug::~DwarfDebug() { }
 // Switch to the specified MCSection and emit an assembler
 // temporary label to it if SymbolStem is specified.
 static MCSymbol *emitSectionSym(AsmPrinter *Asm, const MCSection *Section,
-                                const char *SymbolStem = nullptr) {
+                                const char *SymbolStem) {
   Asm->OutStreamer.SwitchSection(Section);
-  if (!SymbolStem)
-    return nullptr;
-
   MCSymbol *TmpSym = Asm->GetTempSymbol(SymbolStem);
   Asm->OutStreamer.EmitLabel(TmpSym);
   return TmpSym;
@@ -285,13 +282,6 @@ static void getObjCClassCategory(StringRef In, StringRef &Class,
 
 static StringRef getObjCMethodName(StringRef In) {
   return In.slice(In.find(' ') + 1, In.find(']'));
-}
-
-// Helper for sorting sections into a stable output order.
-static bool SectionSort(const MCSection *A, const MCSection *B) {
-  std::string LA = (A ? A->getLabelBeginName() : "");
-  std::string LB = (B ? B->getLabelBeginName() : "");
-  return LA < LB;
 }
 
 // Add the various names to the Dwarf accelerator table names.
@@ -1327,21 +1317,9 @@ void DwarfDebug::emitSectionLabels() {
   if (useSplitDwarf())
     DwarfAbbrevDWOSectionSym = emitSectionSym(
         Asm, TLOF.getDwarfAbbrevDWOSection(), "section_abbrev_dwo");
-  if (GenerateARangeSection)
-    emitSectionSym(Asm, TLOF.getDwarfARangesSection());
 
   DwarfLineSectionSym =
       emitSectionSym(Asm, TLOF.getDwarfLineSection(), "section_line");
-  if (GenerateGnuPubSections) {
-    DwarfGnuPubNamesSectionSym =
-        emitSectionSym(Asm, TLOF.getDwarfGnuPubNamesSection());
-    DwarfGnuPubTypesSectionSym =
-        emitSectionSym(Asm, TLOF.getDwarfGnuPubTypesSection());
-  } else if (HasDwarfPubSections) {
-    emitSectionSym(Asm, TLOF.getDwarfPubNamesSection());
-    emitSectionSym(Asm, TLOF.getDwarfPubTypesSection());
-  }
-
   DwarfStrSectionSym =
       emitSectionSym(Asm, TLOF.getDwarfStrSection(), "info_string");
   if (useSplitDwarf()) {
@@ -1739,10 +1717,7 @@ struct ArangeSpan {
 // address we can tie back to a CU.
 void DwarfDebug::emitDebugARanges() {
   // Provides a unique id per text section.
-  DenseMap<const MCSection *, SmallVector<SymbolCU, 8>> SectionMap;
-
-  // Prime section data.
-  SectionMap[Asm->getObjFileLowering().getTextSection()];
+  MapVector<const MCSection *, SmallVector<SymbolCU, 8>> SectionMap;
 
   // Filter labels by section.
   for (const SymbolCU &SCU : ArangeLabels) {
@@ -1759,20 +1734,10 @@ void DwarfDebug::emitDebugARanges() {
     }
   }
 
-  // Build a list of sections used.
-  std::vector<const MCSection *> Sections;
-  for (const auto &it : SectionMap) {
-    const MCSection *Section = it.first;
-    Sections.push_back(Section);
-  }
-
-  // Sort the sections into order.
-  // This is only done to ensure consistent output order across different runs.
-  std::sort(Sections.begin(), Sections.end(), SectionSort);
-
   // Add terminating symbols for each section.
-  for (unsigned ID = 0, E = Sections.size(); ID != E; ID++) {
-    const MCSection *Section = Sections[ID];
+  unsigned ID = 0;
+  for (const auto &I : SectionMap) {
+    const MCSection *Section = I.first;
     MCSymbol *Sym = nullptr;
 
     if (Section) {
@@ -1787,12 +1752,14 @@ void DwarfDebug::emitDebugARanges() {
 
     // Insert a final terminator.
     SectionMap[Section].push_back(SymbolCU(nullptr, Sym));
+    ++ID;
   }
 
   DenseMap<DwarfCompileUnit *, std::vector<ArangeSpan>> Spans;
 
-  for (const MCSection *Section : Sections) {
-    SmallVector<SymbolCU, 8> &List = SectionMap[Section];
+  for (auto &I : SectionMap) {
+    const MCSection *Section = I.first;
+    SmallVector<SymbolCU, 8> &List = I.second;
     if (List.size() < 2)
       continue;
 

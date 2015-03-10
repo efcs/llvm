@@ -2810,7 +2810,9 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
         }
       }
 
-      if (!Indices.empty() && !BasePointerType->getElementType()->isSized())
+      SmallPtrSet<const Type*, 4> Visited;
+      if (!Indices.empty() &&
+          !BasePointerType->getElementType()->isSized(&Visited))
         return Error(ID.Loc, "base element of getelementptr must be sized");
 
       if (!GetElementPtrInst::getIndexedType(Elts[0]->getType(), Indices))
@@ -5041,7 +5043,7 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
       ParseTypeAndValue(PersFn, PersFnLoc, PFS))
     return true;
 
-  LandingPadInst *LP = LandingPadInst::Create(Ty, PersFn, 0);
+  std::unique_ptr<LandingPadInst> LP(LandingPadInst::Create(Ty, PersFn, 0));
   LP->setCleanup(EatIfPresent(lltok::kw_cleanup));
 
   while (Lex.getKind() == lltok::kw_catch || Lex.getKind() == lltok::kw_filter){
@@ -5055,10 +5057,8 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
 
     Value *V;
     LocTy VLoc;
-    if (ParseTypeAndValue(V, VLoc, PFS)) {
-      delete LP;
+    if (ParseTypeAndValue(V, VLoc, PFS))
       return true;
-    }
 
     // A 'catch' type expects a non-array constant. A filter clause expects an
     // array constant.
@@ -5070,10 +5070,13 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
         Error(VLoc, "'filter' clause has an invalid type");
     }
 
-    LP->addClause(cast<Constant>(V));
+    Constant *CV = dyn_cast<Constant>(V);
+    if (!CV)
+      return Error(VLoc, "clause argument must be a constant");
+    LP->addClause(CV);
   }
 
-  Inst = LP;
+  Inst = LP.release();
   return false;
 }
 
@@ -5464,20 +5467,14 @@ int LLParser::ParseGetElementPtr(Instruction *&Inst, PerFunctionState &PFS) {
       ParseTypeAndValue(Ptr, Loc, PFS))
     return true;
 
-  Type *PtrTy = Ptr->getType();
-  if (VectorType *VT = dyn_cast<VectorType>(PtrTy))
-    PtrTy = VT->getElementType();
-  SequentialType *SeqPtrTy = dyn_cast<SequentialType>(PtrTy);
-  if (!SeqPtrTy)
-    return Error(Loc, "pointer type is not valid");
-  if (Ty != SeqPtrTy->getElementType())
-    return Error(ExplicitTypeLoc,
-                 "explicit pointee type doesn't match operand's pointee type");
-
   Type *BaseType = Ptr->getType();
   PointerType *BasePointerType = dyn_cast<PointerType>(BaseType->getScalarType());
   if (!BasePointerType)
     return Error(Loc, "base of getelementptr must be a pointer");
+
+  if (Ty != BasePointerType->getElementType())
+    return Error(ExplicitTypeLoc,
+                 "explicit pointee type doesn't match operand's pointee type");
 
   SmallVector<Value*, 16> Indices;
   bool AteExtraComma = false;
@@ -5501,7 +5498,9 @@ int LLParser::ParseGetElementPtr(Instruction *&Inst, PerFunctionState &PFS) {
     Indices.push_back(Val);
   }
 
-  if (!Indices.empty() && !BasePointerType->getElementType()->isSized())
+  SmallPtrSet<const Type*, 4> Visited;
+  if (!Indices.empty() &&
+      !BasePointerType->getElementType()->isSized(&Visited))
     return Error(Loc, "base element of getelementptr must be sized");
 
   if (!GetElementPtrInst::getIndexedType(BaseType, Indices))
