@@ -166,14 +166,6 @@ namespace llvm {
       /// F8RC = MFFS - This moves the FPSCR (not modeled) into the register.
       MFFS,
 
-      /// LARX = This corresponds to PPC l{w|d}arx instrcution: load and
-      /// reserve indexed. This is used to implement atomic operations.
-      LARX,
-
-      /// STCX = This corresponds to PPC stcx. instrcution: store conditional
-      /// indexed. This is used to implement atomic operations.
-      STCX,
-
       /// TC_RETURN - A tail call return.
       ///   operand #0 chain
       ///   operand #1 callee (register or absolute)
@@ -489,7 +481,8 @@ namespace llvm {
       EmitInstrWithCustomInserter(MachineInstr *MI,
                                   MachineBasicBlock *MBB) const override;
     MachineBasicBlock *EmitAtomicBinary(MachineInstr *MI,
-                                        MachineBasicBlock *MBB, bool is64Bit,
+                                        MachineBasicBlock *MBB,
+                                        unsigned AtomicSize,
                                         unsigned BinOpcode) const;
     MachineBasicBlock *EmitPartwordAtomicBinary(MachineInstr *MI,
                                                 MachineBasicBlock *MBB,
@@ -525,6 +518,12 @@ namespace llvm {
                                       std::string &Constraint,
                                       std::vector<SDValue> &Ops,
                                       SelectionDAG &DAG) const override;
+
+    unsigned getInlineAsmMemConstraint(
+        const std::string &ConstraintCode) const override {
+      // FIXME: Map different constraints differently.
+      return InlineAsm::Constraint_m;
+    }
 
     /// isLegalAddressingMode - Return true if the addressing mode represented
     /// by AM is legal for this target, for a load/store of the specified type.

@@ -66,12 +66,13 @@ void LLVMTargetMachine::initAsmInfo() {
   AsmInfo = TmpAsmInfo;
 }
 
-LLVMTargetMachine::LLVMTargetMachine(const Target &T, StringRef Triple,
-                                     StringRef CPU, StringRef FS,
-                                     TargetOptions Options,
+LLVMTargetMachine::LLVMTargetMachine(const Target &T,
+                                     StringRef DataLayoutString,
+                                     StringRef Triple, StringRef CPU,
+                                     StringRef FS, TargetOptions Options,
                                      Reloc::Model RM, CodeModel::Model CM,
                                      CodeGenOpt::Level OL)
-  : TargetMachine(T, Triple, CPU, FS, Options) {
+    : TargetMachine(T, DataLayoutString, Triple, CPU, FS, Options) {
   CodeGenInfo = T.createMCCodeGenInfo(Triple, RM, CM, OL);
 }
 
@@ -176,7 +177,7 @@ bool LLVMTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
     // Create a code emitter if asked to show the encoding.
     MCCodeEmitter *MCE = nullptr;
     if (Options.MCOptions.ShowMCEncoding)
-      MCE = getTarget().createMCCodeEmitter(MII, MRI, STI, *Context);
+      MCE = getTarget().createMCCodeEmitter(MII, MRI, *Context);
 
     MCAsmBackend *MAB = getTarget().createMCAsmBackend(MRI, getTargetTriple(),
                                                        TargetCPU);
@@ -190,8 +191,7 @@ bool LLVMTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
   case CGFT_ObjectFile: {
     // Create the code emitter for the target if it exists.  If not, .o file
     // emission fails.
-    MCCodeEmitter *MCE = getTarget().createMCCodeEmitter(MII, MRI, STI,
-                                                         *Context);
+    MCCodeEmitter *MCE = getTarget().createMCCodeEmitter(MII, MRI, *Context);
     MCAsmBackend *MAB = getTarget().createMCAsmBackend(MRI, getTargetTriple(),
                                                        TargetCPU);
     if (!MCE || !MAB)
@@ -243,7 +243,7 @@ bool LLVMTargetMachine::addPassesToEmitMC(PassManagerBase &PM,
   const MCRegisterInfo &MRI = *getSubtargetImpl()->getRegisterInfo();
   const MCSubtargetInfo &STI = getSubtarget<MCSubtargetInfo>();
   MCCodeEmitter *MCE = getTarget().createMCCodeEmitter(
-      *getSubtargetImpl()->getInstrInfo(), MRI, STI, *Ctx);
+      *getSubtargetImpl()->getInstrInfo(), MRI, *Ctx);
   MCAsmBackend *MAB = getTarget().createMCAsmBackend(MRI, getTargetTriple(),
                                                      TargetCPU);
   if (!MCE || !MAB)
