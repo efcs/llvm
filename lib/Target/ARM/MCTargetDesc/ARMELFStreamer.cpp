@@ -783,6 +783,7 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
     setAttributeItem(THUMB_ISA_use, AllowThumb32, false);
     break;
 
+  case ARM::ARMV6K:
   case ARM::ARMV6Z:
   case ARM::ARMV6ZK:
     setAttributeItem(ARM_ISA_use, Allowed, false);
@@ -1362,14 +1363,11 @@ void ARMELFStreamer::emitUnwindRaw(int64_t Offset,
 
 namespace llvm {
 
-MCStreamer *createMCAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
-                                bool isVerboseAsm, bool useDwarfDirectory,
-                                MCInstPrinter *InstPrint, MCCodeEmitter *CE,
-                                MCAsmBackend *TAB, bool ShowInst) {
-  MCStreamer *S = llvm::createAsmStreamer(
-      Ctx, OS, isVerboseAsm, useDwarfDirectory, InstPrint, CE, TAB, ShowInst);
-  new ARMTargetAsmStreamer(*S, OS, *InstPrint, isVerboseAsm);
-  return S;
+MCTargetStreamer *createARMTargetAsmStreamer(MCStreamer &S,
+                                             formatted_raw_ostream &OS,
+                                             MCInstPrinter *InstPrint,
+                                             bool isVerboseAsm) {
+  return new ARMTargetAsmStreamer(S, OS, *InstPrint, isVerboseAsm);
 }
 
 MCTargetStreamer *createARMNullTargetStreamer(MCStreamer &S) {

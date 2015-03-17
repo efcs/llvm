@@ -510,7 +510,7 @@ bool DwarfStreamer::init(Triple TheTriple, StringRef OutputFilename) {
   if (EC)
     return error(Twine(OutputFilename) + ": " + EC.message(), Context);
 
-  MS = TheTarget->createMCObjectStreamer(TripleName, *MC, *MAB, *OutFile, MCE,
+  MS = TheTarget->createMCObjectStreamer(TheTriple, *MC, *MAB, *OutFile, MCE,
                                          *MSTI, false);
   if (!MS)
     return error("no object streamer for target " + TripleName, Context);
@@ -653,8 +653,8 @@ void DwarfStreamer::emitUnitRangesEntries(CompileUnit &Unit,
   if (!Ranges.empty()) {
     MS->SwitchSection(MC->getObjectFileInfo()->getDwarfARangesSection());
 
-    MCSymbol *BeginLabel = Asm->GetTempSymbol("Barange", Unit.getUniqueID());
-    MCSymbol *EndLabel = Asm->GetTempSymbol("Earange", Unit.getUniqueID());
+    MCSymbol *BeginLabel = Asm->createTempSymbol("Barange", Unit.getUniqueID());
+    MCSymbol *EndLabel = Asm->createTempSymbol("Earange", Unit.getUniqueID());
 
     unsigned HeaderSize =
         sizeof(int32_t) + // Size of contents (w/o this field
@@ -919,9 +919,9 @@ void DwarfStreamer::emitPubSectionForUnit(
   // Start the dwarf pubnames section.
   Asm->OutStreamer.SwitchSection(Sec);
   MCSymbol *BeginLabel =
-      Asm->GetTempSymbol("pub" + SecName + "_begin", Unit.getUniqueID());
+      Asm->createTempSymbol("pub" + SecName + "_begin", Unit.getUniqueID());
   MCSymbol *EndLabel =
-      Asm->GetTempSymbol("pub" + SecName + "_end", Unit.getUniqueID());
+      Asm->createTempSymbol("pub" + SecName + "_end", Unit.getUniqueID());
 
   bool HeaderEmitted = false;
   // Emit the pubnames for this compilation unit.

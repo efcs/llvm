@@ -88,7 +88,8 @@ public:
     : Var(V), Expr(1, E), TheDIE(nullptr), DotDebugLocOffset(~0U),
       MInsn(nullptr), DD(DD) {
     FrameIndex.push_back(FI);
-    assert(Var.Verify() && E.Verify());
+    assert(Var.Verify());
+    assert(!E || E->isValid());
   }
 
   /// Construct a DbgVariable from a DEBUG_VALUE.
@@ -361,10 +362,6 @@ class DwarfDebug : public AsmPrinterHandler {
 
   /// \brief Emit the abbreviation section.
   void emitAbbreviations();
-
-  /// \brief Emit the last address of the section and the end of
-  /// the line matrix.
-  void emitEndOfLineMatrix(unsigned SectionEnd);
 
   /// \brief Emit a specified accelerator table.
   void emitAccel(DwarfAccelTable &Accel, const MCSection *Section,
