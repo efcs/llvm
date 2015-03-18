@@ -103,12 +103,12 @@ static unsigned getGVAlignmentLog2(const GlobalValue *GV, const DataLayout &DL,
 AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
     : MachineFunctionPass(ID), TM(tm), MAI(tm.getMCAsmInfo()),
       OutContext(Streamer->getContext()), OutStreamer(*Streamer.release()),
-      LastMI(nullptr), LastFn(0), Counter(~0U), SetCounter(0) {
+      LastMI(nullptr), LastFn(0), Counter(~0U) {
   DD = nullptr;
   MMI = nullptr;
   LI = nullptr;
   MF = nullptr;
-  CurrentFnSym = CurrentFnSymForSize = nullptr;
+  CurExceptionSym = CurrentFnSym = CurrentFnSymForSize = nullptr;
   CurrentFnBegin = nullptr;
   CurrentFnEnd = nullptr;
   GCMetadataPrinters = nullptr;
@@ -221,9 +221,13 @@ bool AsmPrinter::doInitialization(Module &M) {
 
   // Emit module-level inline asm if it exists.
   if (!M.getModuleInlineAsm().empty()) {
+    // We're at the module level. Construct MCSubtarget from the default CPU
+    // and target triple.
+    std::unique_ptr<MCSubtargetInfo> STI(TM.getTarget().createMCSubtargetInfo(
+        TM.getTargetTriple(), TM.getTargetCPU(), TM.getTargetFeatureString()));
     OutStreamer.AddComment("Start of file scope inline assembly");
     OutStreamer.AddBlankLine();
-    EmitInlineAsm(M.getModuleInlineAsm()+"\n");
+    EmitInlineAsm(M.getModuleInlineAsm()+"\n", *STI);
     OutStreamer.AddComment("End of file scope inline assembly");
     OutStreamer.AddBlankLine();
   }
@@ -527,7 +531,8 @@ void AsmPrinter::EmitFunctionHeader() {
   EmitVisibility(CurrentFnSym, F->getVisibility());
 
   EmitLinkage(F, CurrentFnSym);
-  EmitAlignment(MF->getAlignment(), F);
+  if (MAI->hasFunctionAlignment())
+    EmitAlignment(MF->getAlignment(), F);
 
   if (MAI->hasDotTypeDotSizeDirective())
     OutStreamer.EmitSymbolAttribute(CurrentFnSym, MCSA_ELF_TypeFunction);
@@ -777,6 +782,8 @@ void AsmPrinter::emitFrameAlloc(const MachineInstr &MI) {
 /// EmitFunctionBody - This method emits the body and trailer for a
 /// function.
 void AsmPrinter::EmitFunctionBody() {
+  EmitFunctionHeader();
+
   // Emit target-specific gunk before the function body.
   EmitFunctionBodyStart();
 
@@ -883,7 +890,7 @@ void AsmPrinter::EmitFunctionBody() {
   if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
       MAI->hasDotTypeDotSizeDirective()) {
     // Create a symbol for the end of function.
-    CurrentFnEnd = createTempSymbol("func_end", getFunctionNumber());
+    CurrentFnEnd = createTempSymbol("func_end");
     OutStreamer.EmitLabel(CurrentFnEnd);
   }
 
@@ -983,14 +990,17 @@ void AsmPrinter::emitGlobalGOTEquivs() {
   if (!getObjFileLowering().supportIndirectSymViaGOTPCRel())
     return;
 
-  while (!GlobalGOTEquivs.empty()) {
-    DenseMap<const MCSymbol *, GOTEquivUsePair>::iterator I =
-      GlobalGOTEquivs.begin();
-    const MCSymbol *S = I->first;
-    const GlobalVariable *GV = I->second.first;
-    GlobalGOTEquivs.erase(S);
-    EmitGlobalVariable(GV);
+  SmallVector<const GlobalVariable *, 8> FailedCandidates;
+  for (auto &I : GlobalGOTEquivs) {
+    const GlobalVariable *GV = I.second.first;
+    unsigned Cnt = I.second.second;
+    if (Cnt)
+      FailedCandidates.push_back(GV);
   }
+  GlobalGOTEquivs.clear();
+
+  for (auto *GV : FailedCandidates)
+    EmitGlobalVariable(GV);
 }
 
 bool AsmPrinter::doFinalization(Module &M) {
@@ -1121,16 +1131,23 @@ bool AsmPrinter::doFinalization(Module &M) {
   return false;
 }
 
+MCSymbol *AsmPrinter::getCurExceptionSym() {
+  if (!CurExceptionSym)
+    CurExceptionSym = createTempSymbol("exception");
+  return CurExceptionSym;
+}
+
 void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   this->MF = &MF;
   // Get the function symbol.
   CurrentFnSym = getSymbol(MF.getFunction());
   CurrentFnSymForSize = CurrentFnSym;
   CurrentFnBegin = nullptr;
+  CurExceptionSym = nullptr;
   bool NeedsLocalForSize = MAI->needsLocalForSize();
   if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
       NeedsLocalForSize) {
-    CurrentFnBegin = createTempSymbol("func_begin", getFunctionNumber());
+    CurrentFnBegin = createTempSymbol("func_begin");
     if (NeedsLocalForSize)
       CurrentFnSymForSize = CurrentFnBegin;
   }
@@ -1560,7 +1577,7 @@ void AsmPrinter::EmitLabelDifference(const MCSymbol *Hi, const MCSymbol *Lo,
   }
 
   // Otherwise, emit with .set (aka assignment).
-  MCSymbol *SetLabel = GetTempSymbol("set", SetCounter++);
+  MCSymbol *SetLabel = createTempSymbol("set");
   OutStreamer.EmitAssignment(SetLabel, Diff);
   OutStreamer.EmitSymbolValue(SetLabel, Size);
 }
@@ -2114,7 +2131,7 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
   //
   AsmPrinter::GOTEquivUsePair Result = AP.GlobalGOTEquivs[GOTEquivSym];
   const GlobalVariable *GV = Result.first;
-  unsigned NumUses = Result.second;
+  int NumUses = (int)Result.second;
   const GlobalValue *FinalGV = dyn_cast<GlobalValue>(GV->getOperand(0));
   const MCSymbol *FinalSym = AP.getSymbol(FinalGV);
   *ME = AP.getObjFileLowering().getIndirectSymViaGOTPCRel(
@@ -2122,10 +2139,8 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
 
   // Update GOT equivalent usage information
   --NumUses;
-  if (NumUses)
+  if (NumUses >= 0)
     AP.GlobalGOTEquivs[GOTEquivSym] = std::make_pair(GV, NumUses);
-  else
-    AP.GlobalGOTEquivs.erase(GOTEquivSym);
 }
 
 static void emitGlobalConstantImpl(const Constant *CV, AsmPrinter &AP,
@@ -2237,24 +2252,8 @@ void AsmPrinter::printOffset(int64_t Offset, raw_ostream &OS) const {
 // Symbol Lowering Routines.
 //===----------------------------------------------------------------------===//
 
-/// GetTempSymbol - Return the MCSymbol corresponding to the assembler
-/// temporary label with the specified stem and unique ID.
-MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name, unsigned ID) const {
-  const DataLayout *DL = TM.getDataLayout();
-  return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix()) +
-                                      Name + Twine(ID));
-}
-
-/// GetTempSymbol - Return an assembler temporary label with the specified
-/// stem.
-MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name) const {
-  const DataLayout *DL = TM.getDataLayout();
-  return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix())+
-                                      Name);
-}
-
-MCSymbol *AsmPrinter::createTempSymbol(const Twine &Name, unsigned ID) const {
-  return OutContext.createTempSymbol(Name + Twine(ID));
+MCSymbol *AsmPrinter::createTempSymbol(const Twine &Name) const {
+  return OutContext.createTempSymbol(Name, true);
 }
 
 MCSymbol *AsmPrinter::GetBlockAddressSymbol(const BlockAddress *BA) const {

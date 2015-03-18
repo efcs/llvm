@@ -907,6 +907,9 @@ int main(int argc, char **argv) {
       && !(IndirectSymbols && MachOOpt)
       && !(DataInCode && MachOOpt)
       && !(LinkOptHints && MachOOpt)
+      && !(InfoPlist && MachOOpt)
+      && !(DylibsUsed && MachOOpt)
+      && !(DylibId && MachOOpt)
       && !(DumpSections.size() != 0 && MachOOpt)) {
     cl::PrintHelpMessage();
     return 2;

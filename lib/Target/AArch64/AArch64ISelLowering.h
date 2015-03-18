@@ -141,6 +141,18 @@ enum {
   FCMLEz,
   FCMLTz,
 
+  // Vector across-lanes addition
+  // Only the lower result lane is defined.
+  SADDV,
+  UADDV,
+
+  // Vector across-lanes min/max
+  // Only the lower result lane is defined.
+  SMINV,
+  UMINV,
+  SMAXV,
+  UMAXV,
+
   // Vector bitwise negation
   NOT,
 
@@ -460,6 +472,12 @@ private:
   void LowerAsmOperandForConstraint(SDValue Op, std::string &Constraint,
                                     std::vector<SDValue> &Ops,
                                     SelectionDAG &DAG) const override;
+
+  unsigned getInlineAsmMemConstraint(
+      const std::string &ConstraintCode) const override {
+    // FIXME: Map different constraints differently.
+    return InlineAsm::Constraint_m;
+  }
 
   bool isUsedByReturnOnly(SDNode *N, SDValue &Chain) const override;
   bool mayBeEmittedAsTailCall(CallInst *CI) const override;

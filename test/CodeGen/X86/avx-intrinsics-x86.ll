@@ -1,4 +1,4 @@
-; RUN: llc < %s -mtriple=x86_64-apple-darwin -march=x86 -mcpu=corei7-avx | FileCheck %s
+; RUN: llc < %s -mtriple=x86_64-apple-darwin -march=x86 -mattr=avx,aes,pclmul | FileCheck %s
 
 define <2 x i64> @test_x86_aesni_aesdec(<2 x i64> %a0, <2 x i64> %a1) {
   ; CHECK: vaesdec
@@ -2163,30 +2163,6 @@ define <8 x float> @test_x86_avx_vbroadcastf128_ps_256(i8* %a0) {
 declare <8 x float> @llvm.x86.avx.vbroadcastf128.ps.256(i8*) nounwind readonly
 
 
-define <2 x double> @test_x86_avx_vextractf128_pd_256(<4 x double> %a0) {
-  ; CHECK: vextractf128
-  %res = call <2 x double> @llvm.x86.avx.vextractf128.pd.256(<4 x double> %a0, i8 7) ; <<2 x double>> [#uses=1]
-  ret <2 x double> %res
-}
-declare <2 x double> @llvm.x86.avx.vextractf128.pd.256(<4 x double>, i8) nounwind readnone
-
-
-define <4 x float> @test_x86_avx_vextractf128_ps_256(<8 x float> %a0) {
-  ; CHECK: vextractf128
-  %res = call <4 x float> @llvm.x86.avx.vextractf128.ps.256(<8 x float> %a0, i8 7) ; <<4 x float>> [#uses=1]
-  ret <4 x float> %res
-}
-declare <4 x float> @llvm.x86.avx.vextractf128.ps.256(<8 x float>, i8) nounwind readnone
-
-
-define <4 x i32> @test_x86_avx_vextractf128_si_256(<8 x i32> %a0) {
-  ; CHECK: vextractf128
-  %res = call <4 x i32> @llvm.x86.avx.vextractf128.si.256(<8 x i32> %a0, i8 7) ; <<4 x i32>> [#uses=1]
-  ret <4 x i32> %res
-}
-declare <4 x i32> @llvm.x86.avx.vextractf128.si.256(<8 x i32>, i8) nounwind readnone
-
-
 define <4 x double> @test_x86_avx_vperm2f128_pd_256(<4 x double> %a0, <4 x double> %a1) {
   ; CHECK: vperm2f128
   %res = call <4 x double> @llvm.x86.avx.vperm2f128.pd.256(<4 x double> %a0, <4 x double> %a1, i8 7) ; <<4 x double>> [#uses=1]
@@ -2484,9 +2460,10 @@ define i32 @crc32_32_32(i32 %a, i32 %b) nounwind {
 declare i32 @llvm.x86.sse42.crc32.32.32(i32, i32) nounwind
 
 ; CHECK: movntdq
-define void @movnt_dq(i8* %p, <4 x i64> %a1) nounwind {
-  %a2 = add <4 x i64> %a1, <i64 1, i64 1, i64 1, i64 1>
-  tail call void @llvm.x86.avx.movnt.dq.256(i8* %p, <4 x i64> %a2) nounwind
+define void @movnt_dq(i8* %p, <2 x i64> %a1) nounwind {
+  %a2 = add <2 x i64> %a1, <i64 1, i64 1>
+  %a3 = shufflevector <2 x i64> %a2, <2 x i64> undef, <4 x i32> <i32 0, i32 1, i32 undef, i32 undef>
+  tail call void @llvm.x86.avx.movnt.dq.256(i8* %p, <4 x i64> %a3) nounwind
   ret void
 }
 declare void @llvm.x86.avx.movnt.dq.256(i8*, <4 x i64>) nounwind
