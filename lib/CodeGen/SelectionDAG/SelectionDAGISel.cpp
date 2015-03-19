@@ -292,7 +292,8 @@ namespace llvm {
     const TargetLowering *TLI = IS->TLI;
     const TargetSubtargetInfo &ST = IS->MF->getSubtarget();
 
-    if (OptLevel == CodeGenOpt::None || ST.useMachineScheduler() ||
+    if (OptLevel == CodeGenOpt::None ||
+        (ST.enableMachineScheduler() && ST.enableMachineSchedDefaultSched()) ||
         TLI->getSchedulingPreference() == Sched::Source)
       return createSourceListDAGScheduler(IS, OptLevel);
     if (TLI->getSchedulingPreference() == Sched::RegPressure)
@@ -1778,9 +1779,23 @@ SelectInlineAsmMemoryOperands(std::vector<SDValue> &Ops) {
     } else {
       assert(InlineAsm::getNumOperandRegisters(Flags) == 1 &&
              "Memory operand with multiple values?");
+
+      unsigned TiedToOperand;
+      if (InlineAsm::isUseOperandTiedToDef(Flags, TiedToOperand)) {
+        // We need the constraint ID from the operand this is tied to.
+        unsigned CurOp = InlineAsm::Op_FirstOperand;
+        Flags = cast<ConstantSDNode>(InOps[CurOp])->getZExtValue();
+        for (; TiedToOperand; --TiedToOperand) {
+          CurOp += InlineAsm::getNumOperandRegisters(Flags)+1;
+          Flags = cast<ConstantSDNode>(InOps[CurOp])->getZExtValue();
+        }
+      }
+
       // Otherwise, this is a memory operand.  Ask the target to select it.
       std::vector<SDValue> SelOps;
-      if (SelectInlineAsmMemoryOperand(InOps[i+1], 'm', SelOps))
+      if (SelectInlineAsmMemoryOperand(InOps[i+1],
+                                       InlineAsm::getMemoryConstraintID(Flags),
+                                       SelOps))
         report_fatal_error("Could not match memory address.  Inline asm"
                            " failure!");
 
@@ -1936,7 +1951,7 @@ SDNode *SelectionDAGISel::Select_INLINEASM(SDNode *N) {
   std::vector<SDValue> Ops(N->op_begin(), N->op_end());
   SelectInlineAsmMemoryOperands(Ops);
 
-  EVT VTs[] = { MVT::Other, MVT::Glue };
+  const EVT VTs[] = {MVT::Other, MVT::Glue};
   SDValue New = CurDAG->getNode(ISD::INLINEASM, SDLoc(N), VTs, Ops);
   New->setNodeId(-1);
   return New.getNode();

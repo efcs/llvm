@@ -23,8 +23,8 @@ namespace llvm {
 
 class AArch64TargetMachine : public LLVMTargetMachine {
 protected:
-  const DataLayout DL;
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
+  AArch64RegisterInfo RI;
   AArch64Subtarget Subtarget;
   mutable StringMap<std::unique_ptr<AArch64Subtarget>> SubtargetMap;
 
@@ -36,11 +36,11 @@ public:
 
   ~AArch64TargetMachine() override;
 
-  const DataLayout *getDataLayout() const override { return &DL; }
   const AArch64Subtarget *getSubtargetImpl() const override {
     return &Subtarget;
   }
   const AArch64Subtarget *getSubtargetImpl(const Function &F) const override;
+  const AArch64RegisterInfo *getRegisterInfo() const { return &RI; }
 
   // Pass Pipeline Configuration
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;

@@ -160,7 +160,7 @@ protected:
 
 public:
   const TargetMachine &getTargetMachine() const { return TM; }
-  const DataLayout *getDataLayout() const { return DL; }
+  const DataLayout *getDataLayout() const { return TM.getDataLayout(); }
 
   bool isBigEndian() const { return !IsLittleEndian; }
   bool isLittleEndian() const { return IsLittleEndian; }
@@ -976,6 +976,15 @@ public:
     return false;
   }
 
+  /// Return true if the pointer arguments to CI should be aligned by aligning
+  /// the object whose address is being passed. If so then MinSize is set to the
+  /// minimum size the object must be to be aligned and PrefAlign is set to the
+  /// preferred alignment.
+  virtual bool shouldAlignPointerArgs(CallInst * /*CI*/, unsigned & /*MinSize*/,
+                                      unsigned & /*PrefAlign*/) const {
+    return false;
+  }
+
   //===--------------------------------------------------------------------===//
   /// \name Helpers for TargetTransformInfo implementations
   /// @{
@@ -1097,6 +1106,25 @@ public:
   virtual LoadInst *lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *RMWI) const {
     return nullptr;
   }
+
+  /// Returns true if we should normalize
+  /// select(N0&N1, X, Y) => select(N0, select(N1, X, Y), Y) and
+  /// select(N0|N1, X, Y) => select(N0, select(N1, X, Y, Y)) if it is likely
+  /// that it saves us from materializing N0 and N1 in an integer register.
+  /// Targets that are able to perform and/or on flags should return false here.
+  virtual bool shouldNormalizeToSelectSequence(LLVMContext &Context,
+                                               EVT VT) const {
+    // If a target has multiple condition registers, then it likely has logical
+    // operations on those registers.
+    if (hasMultipleConditionRegisters())
+      return false;
+    // Only do the transform if the value won't be split into multiple
+    // registers.
+    LegalizeTypeAction Action = getTypeAction(Context, VT);
+    return Action != TypeExpandInteger && Action != TypeExpandFloat &&
+      Action != TypeSplitVector;
+  }
+
   //===--------------------------------------------------------------------===//
   // TargetLowering Configuration Methods - These methods should be invoked by
   // the derived class constructor to configure this object for the target.
@@ -1465,6 +1493,33 @@ public:
 
   virtual bool isProfitableToHoist(Instruction *I) const { return true; }
 
+  /// Return true if the extension represented by \p I is free.
+  /// Unlikely the is[Z|FP]ExtFree family which is based on types,
+  /// this method can use the context provided by \p I to decide
+  /// whether or not \p I is free.
+  /// This method extends the behavior of the is[Z|FP]ExtFree family.
+  /// In other words, if is[Z|FP]Free returns true, then this method
+  /// returns true as well. The converse is not true.
+  /// The target can perform the adequate checks by overriding isExtFreeImpl.
+  /// \pre \p I must be a sign, zero, or fp extension.
+  bool isExtFree(const Instruction *I) const {
+    switch (I->getOpcode()) {
+    case Instruction::FPExt:
+      if (isFPExtFree(EVT::getEVT(I->getType())))
+        return true;
+      break;
+    case Instruction::ZExt:
+      if (isZExtFree(I->getOperand(0)->getType(), I->getType()))
+        return true;
+      break;
+    case Instruction::SExt:
+      break;
+    default:
+      llvm_unreachable("Instruction is not an extension");
+    }
+    return isExtFreeImpl(I);
+  }
+
   /// Return true if any actual instruction that defines a value of type Ty1
   /// implicitly zero-extends the value to Ty2 in the result register.
   ///
@@ -1620,7 +1675,6 @@ public:
 
 private:
   const TargetMachine &TM;
-  const DataLayout *DL;
 
   /// True if this is a little endian target.
   bool IsLittleEndian;
@@ -1829,6 +1883,11 @@ private:
   CallingConv::ID LibcallCallingConvs[RTLIB::UNKNOWN_LIBCALL];
 
 protected:
+  /// Return true if the extension represented by \p I is free.
+  /// \pre \p I is a sign, zero, or fp extension and
+  ///      is[Z|FP]ExtFree of the related types is not true.
+  virtual bool isExtFreeImpl(const Instruction *I) const { return false; }
+
   /// \brief Specify maximum number of store instructions per memset call.
   ///
   /// When lowering \@llvm.memset this field specifies the maximum number of
@@ -2574,6 +2633,15 @@ public:
   virtual std::pair<unsigned, const TargetRegisterClass *>
   getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                const std::string &Constraint, MVT VT) const;
+
+  virtual unsigned
+  getInlineAsmMemConstraint(const std::string &ConstraintCode) const {
+    if (ConstraintCode == "i")
+      return InlineAsm::Constraint_i;
+    else if (ConstraintCode == "m")
+      return InlineAsm::Constraint_m;
+    return InlineAsm::Constraint_Unknown;
+  }
 
   /// Try to replace an X constraint, which matches anything, with another that
   /// has more specific requirements based on the type of the corresponding

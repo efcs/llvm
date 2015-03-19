@@ -255,6 +255,7 @@ bool PPCLoopPreIncPrep::runOnLoop(Loop *L) {
     Value *BasePtr = GetPointerOperand(MemI);
     assert(BasePtr && "No pointer operand");
 
+    Type *I8Ty = Type::getInt8Ty(MemI->getParent()->getContext());
     Type *I8PtrTy = Type::getInt8PtrTy(MemI->getParent()->getContext(),
       BasePtr->getType()->getPointerAddressSpace());
 
@@ -274,7 +275,7 @@ bool PPCLoopPreIncPrep::runOnLoop(Loop *L) {
       MemI->hasName() ? MemI->getName() + ".phi" : "",
       Header->getFirstNonPHI());
 
-    SCEVExpander SCEVE(*SE, "pistart");
+    SCEVExpander SCEVE(*SE, Header->getModule()->getDataLayout(), "pistart");
     Value *BasePtrStart = SCEVE.expandCodeFor(BasePtrStartSCEV, I8PtrTy,
       LoopPredecessor->getTerminator());
 
@@ -289,8 +290,8 @@ bool PPCLoopPreIncPrep::runOnLoop(Loop *L) {
     }
 
     Instruction *InsPoint = Header->getFirstInsertionPt();
-    GetElementPtrInst *PtrInc =
-      GetElementPtrInst::Create(NewPHI, BasePtrIncSCEV->getValue(),
+    GetElementPtrInst *PtrInc = GetElementPtrInst::Create(
+        I8Ty, NewPHI, BasePtrIncSCEV->getValue(),
         MemI->hasName() ? MemI->getName() + ".inc" : "", InsPoint);
     PtrInc->setIsInBounds(IsPtrInBounds(BasePtr));
     for (pred_iterator PI = pred_begin(Header), PE = pred_end(Header);
@@ -335,9 +336,9 @@ bool PPCLoopPreIncPrep::runOnLoop(Loop *L) {
           PtrIP = PtrIP->getParent()->getFirstInsertionPt();
         else if (!PtrIP)
           PtrIP = I->second;
-  
-        GetElementPtrInst *NewPtr =
-          GetElementPtrInst::Create(PtrInc, Diff->getValue(),
+
+        GetElementPtrInst *NewPtr = GetElementPtrInst::Create(
+            I8Ty, PtrInc, Diff->getValue(),
             I->second->hasName() ? I->second->getName() + ".off" : "", PtrIP);
         if (!PtrIP)
           NewPtr->insertAfter(cast<Instruction>(PtrInc));

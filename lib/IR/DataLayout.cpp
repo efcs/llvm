@@ -150,8 +150,8 @@ DataLayout::InvalidPointerElem = { 0U, 0U, 0U, ~0U };
 const char *DataLayout::getManglingComponent(const Triple &T) {
   if (T.isOSBinFormatMachO())
     return "-m:o";
-  if (T.isOSWindows() && T.getArch() == Triple::x86 && T.isOSBinFormatCOFF())
-    return "-m:w";
+  if (T.isOSWindows() && T.isOSBinFormatCOFF())
+    return T.getArch() == Triple::x86 ? "-m:x" : "-m:w";
   return "-m:e";
 }
 
@@ -359,7 +359,10 @@ void DataLayout::parseSpecifier(StringRef Desc) {
         ManglingMode = MM_Mips;
         break;
       case 'w':
-        ManglingMode = MM_WINCOFF;
+        ManglingMode = MM_WinCOFF;
+        break;
+      case 'x':
+        ManglingMode = MM_WinCOFFX86;
         break;
       }
       break;
@@ -479,9 +482,7 @@ unsigned DataLayout::getAlignmentInfo(AlignTypeEnum AlignType,
     // If we didn't find an integer alignment, fall back on most conservative.
     if (AlignType == INTEGER_ALIGN) {
       BestMatchIdx = LargestInt;
-    } else {
-      assert(AlignType == VECTOR_ALIGN && "Unknown alignment type!");
-
+    } else if (AlignType == VECTOR_ALIGN) {
       // By default, use natural alignment for vector types. This is consistent
       // with what clang and llvm-gcc do.
       unsigned Align = getTypeAllocSize(cast<VectorType>(Ty)->getElementType());
@@ -492,6 +493,19 @@ unsigned DataLayout::getAlignmentInfo(AlignTypeEnum AlignType,
         Align = NextPowerOf2(Align);
       return Align;
     }
+  }
+
+  // If we still couldn't find a reasonable default alignment, fall back
+  // to a simple heuristic that the alignment is the first power of two
+  // greater-or-equal to the store size of the type.  This is a reasonable
+  // approximation of reality, and if the user wanted something less
+  // less conservative, they should have specified it explicitly in the data
+  // layout.
+  if (BestMatchIdx == -1) {
+    unsigned Align = getTypeStoreSize(Ty);
+    if (Align & (Align-1))
+      Align = NextPowerOf2(Align);
+    return Align;
   }
 
   // Since we got a "best match" index, just return it.

@@ -1016,6 +1016,24 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
   }
 }
 
+/// getCopyFromRegs - If there was virtual register allocated for the value V
+/// emit CopyFromReg of the specified type Ty. Return empty SDValue() otherwise.
+SDValue SelectionDAGBuilder::getCopyFromRegs(const Value *V, Type *Ty) {
+  DenseMap<const Value *, unsigned>::iterator It = FuncInfo.ValueMap.find(V);
+  SDValue res;
+
+  if (It != FuncInfo.ValueMap.end()) {
+    unsigned InReg = It->second;
+    RegsForValue RFV(*DAG.getContext(), DAG.getTargetLoweringInfo(), InReg,
+                     Ty);
+    SDValue Chain = DAG.getEntryNode();
+    res = RFV.getCopyFromRegs(DAG, FuncInfo, getCurSDLoc(), Chain, nullptr, V);
+    resolveDanglingDebugInfo(V, res);
+  }
+
+  return res;
+}
+
 /// getValue - Return an SDValue for the given Value.
 SDValue SelectionDAGBuilder::getValue(const Value *V) {
   // If we already have an SDValue for this value, use it. It's important
@@ -1026,15 +1044,9 @@ SDValue SelectionDAGBuilder::getValue(const Value *V) {
 
   // If there's a virtual register allocated and initialized for this
   // value, use it.
-  DenseMap<const Value *, unsigned>::iterator It = FuncInfo.ValueMap.find(V);
-  if (It != FuncInfo.ValueMap.end()) {
-    unsigned InReg = It->second;
-    RegsForValue RFV(*DAG.getContext(), DAG.getTargetLoweringInfo(), InReg,
-                     V->getType());
-    SDValue Chain = DAG.getEntryNode();
-    N = RFV.getCopyFromRegs(DAG, FuncInfo, getCurSDLoc(), Chain, nullptr, V);
-    resolveDanglingDebugInfo(V, N);
-    return N;
+  SDValue copyFromReg = getCopyFromRegs(V, V->getType());
+  if (copyFromReg.getNode()) {
+    return copyFromReg;
   }
 
   // Otherwise create a new SDValue and remember it.
@@ -2027,13 +2039,20 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
     case Intrinsic::experimental_patchpoint_i64:
       visitPatchpoint(&I, LandingPad);
       break;
+    case Intrinsic::experimental_gc_statepoint:
+      LowerStatepoint(ImmutableStatepoint(&I), LandingPad);
+      break;
     }
   } else
     LowerCallTo(&I, getValue(Callee), false, LandingPad);
 
   // If the value of the invoke is used outside of its defining block, make it
   // available as a virtual register.
-  CopyToExportRegsIfNeeded(&I);
+  // We already took care of the exported value for the statepoint instruction
+  // during call to the LowerStatepoint.
+  if (!isStatepoint(I)) {
+    CopyToExportRegsIfNeeded(&I);
+  }
 
   // Update successor info
   addSuccessorWithWeight(InvokeMBB, Return);
@@ -3429,30 +3448,21 @@ void SelectionDAGBuilder::visitGetElementPtr(const User &I) {
       Ty = StTy->getElementType(Field);
     } else {
       Ty = cast<SequentialType>(Ty)->getElementType();
+      MVT PtrTy = DAG.getTargetLoweringInfo().getPointerTy(AS);
+      unsigned PtrSize = PtrTy.getSizeInBits();
+      APInt ElementSize(PtrSize, DL->getTypeAllocSize(Ty));
 
       // If this is a constant subscript, handle it quickly.
-      const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-      if (const ConstantInt *CI = dyn_cast<ConstantInt>(Idx)) {
-        if (CI->isZero()) continue;
-        uint64_t Offs =
-            DL->getTypeAllocSize(Ty)*cast<ConstantInt>(CI)->getSExtValue();
-        SDValue OffsVal;
-        EVT PTy = TLI.getPointerTy(AS);
-        unsigned PtrBits = PTy.getSizeInBits();
-        if (PtrBits < 64)
-          OffsVal = DAG.getNode(ISD::TRUNCATE, getCurSDLoc(), PTy,
-                                DAG.getConstant(Offs, MVT::i64));
-        else
-          OffsVal = DAG.getConstant(Offs, PTy);
-
-        N = DAG.getNode(ISD::ADD, getCurSDLoc(), N.getValueType(), N,
-                        OffsVal);
+      if (const auto *CI = dyn_cast<ConstantInt>(Idx)) {
+        if (CI->isZero())
+          continue;
+        APInt Offs = ElementSize * CI->getValue().sextOrTrunc(PtrSize);
+        SDValue OffsVal = DAG.getConstant(Offs, PtrTy);
+        N = DAG.getNode(ISD::ADD, getCurSDLoc(), N.getValueType(), N, OffsVal);
         continue;
       }
 
       // N = N + Idx * ElementSize;
-      APInt ElementSize =
-          APInt(TLI.getPointerSizeInBits(AS), DL->getTypeAllocSize(Ty));
       SDValue IdxN = getValue(Idx);
 
       // If the index is smaller or larger than intptr_t, truncate or extend
@@ -4956,34 +4966,6 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     setValue(&I, Res);
     return nullptr;
   }
-  case Intrinsic::x86_avx_vinsertf128_pd_256:
-  case Intrinsic::x86_avx_vinsertf128_ps_256:
-  case Intrinsic::x86_avx_vinsertf128_si_256:
-  case Intrinsic::x86_avx2_vinserti128: {
-    EVT DestVT = TLI.getValueType(I.getType());
-    EVT ElVT = TLI.getValueType(I.getArgOperand(1)->getType());
-    uint64_t Idx = (cast<ConstantInt>(I.getArgOperand(2))->getZExtValue() & 1) *
-                   ElVT.getVectorNumElements();
-    Res =
-        DAG.getNode(ISD::INSERT_SUBVECTOR, sdl, DestVT,
-                    getValue(I.getArgOperand(0)), getValue(I.getArgOperand(1)),
-                    DAG.getConstant(Idx, TLI.getVectorIdxTy()));
-    setValue(&I, Res);
-    return nullptr;
-  }
-  case Intrinsic::x86_avx_vextractf128_pd_256:
-  case Intrinsic::x86_avx_vextractf128_ps_256:
-  case Intrinsic::x86_avx_vextractf128_si_256:
-  case Intrinsic::x86_avx2_vextracti128: {
-    EVT DestVT = TLI.getValueType(I.getType());
-    uint64_t Idx = (cast<ConstantInt>(I.getArgOperand(1))->getZExtValue() & 1) *
-                   DestVT.getVectorNumElements();
-    Res = DAG.getNode(ISD::EXTRACT_SUBVECTOR, sdl, DestVT,
-                      getValue(I.getArgOperand(0)),
-                      DAG.getConstant(Idx, TLI.getVectorIdxTy()));
-    setValue(&I, Res);
-    return nullptr;
-  }
   case Intrinsic::convertff:
   case Intrinsic::convertfsi:
   case Intrinsic::convertfui:
@@ -5381,7 +5363,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
       return nullptr;
 
     SmallVector<Value *, 4> Allocas;
-    GetUnderlyingObjects(I.getArgOperand(1), Allocas, DL);
+    GetUnderlyingObjects(I.getArgOperand(1), Allocas, *DL);
 
     for (SmallVectorImpl<Value*>::iterator Object = Allocas.begin(),
            E = Allocas.end(); Object != E; ++Object) {
@@ -5649,9 +5631,8 @@ static SDValue getMemCmpLoad(const Value *PtrVal, MVT LoadVT,
     LoadInput = ConstantExpr::getBitCast(const_cast<Constant *>(LoadInput),
                                          PointerType::getUnqual(LoadTy));
 
-    if (const Constant *LoadCst =
-          ConstantFoldLoadFromConstPtr(const_cast<Constant *>(LoadInput),
-                                       Builder.DL))
+    if (const Constant *LoadCst = ConstantFoldLoadFromConstPtr(
+            const_cast<Constant *>(LoadInput), *Builder.DL))
       return Builder.getValue(LoadCst);
   }
 
@@ -6592,10 +6573,15 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
         // Memory output, or 'other' output (e.g. 'X' constraint).
         assert(OpInfo.isIndirect && "Memory output must be indirect operand");
 
+        unsigned ConstraintID =
+            TLI.getInlineAsmMemConstraint(OpInfo.ConstraintCode);
+        assert(ConstraintID != InlineAsm::Constraint_Unknown &&
+               "Failed to convert memory constraint code to constraint id.");
+
         // Add information to the INLINEASM node to know about this output.
         unsigned OpFlags = InlineAsm::getFlagWord(InlineAsm::Kind_Mem, 1);
-        AsmNodeOperands.push_back(DAG.getTargetConstant(OpFlags,
-                                                        TLI.getPointerTy()));
+        OpFlags = InlineAsm::getFlagWordForMem(OpFlags, ConstraintID);
+        AsmNodeOperands.push_back(DAG.getTargetConstant(OpFlags, MVT::i32));
         AsmNodeOperands.push_back(OpInfo.CallOperand);
         break;
       }
@@ -6699,6 +6685,7 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
                "Unexpected number of operands");
         // Add information to the INLINEASM node to know about this input.
         // See InlineAsm.h isUseOperandTiedToDef.
+        OpFlag = InlineAsm::convertMemFlagWordToMatchingFlagWord(OpFlag);
         OpFlag = InlineAsm::getFlagWordForMatchingOp(OpFlag,
                                                     OpInfo.getMatchedOperand());
         AsmNodeOperands.push_back(DAG.getTargetConstant(OpFlag,
@@ -6738,10 +6725,15 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
         assert(InOperandVal.getValueType() == TLI.getPointerTy() &&
                "Memory operands expect pointer values");
 
+        unsigned ConstraintID =
+            TLI.getInlineAsmMemConstraint(OpInfo.ConstraintCode);
+        assert(ConstraintID != InlineAsm::Constraint_Unknown &&
+               "Failed to convert memory constraint code to constraint id.");
+
         // Add information to the INLINEASM node to know about this input.
         unsigned ResOpType = InlineAsm::getFlagWord(InlineAsm::Kind_Mem, 1);
-        AsmNodeOperands.push_back(DAG.getTargetConstant(ResOpType,
-                                                        TLI.getPointerTy()));
+        ResOpType = InlineAsm::getFlagWordForMem(ResOpType, ConstraintID);
+        AsmNodeOperands.push_back(DAG.getTargetConstant(ResOpType, MVT::i32));
         AsmNodeOperands.push_back(InOperandVal);
         break;
       }

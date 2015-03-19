@@ -385,6 +385,13 @@ void sys::PrintStackTraceOnErrorSignal() {
   RegisterHandler();
   LeaveCriticalSection(&CriticalSection);
 }
+}
+
+#if defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR)
+// Provide a prototype for RtlCaptureContext, mingw32 from mingw.org is
+// missing it but mingw-w64 has it.
+extern "C" VOID WINAPI RtlCaptureContext(PCONTEXT ContextRecord);
+#endif
 
 void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 
@@ -408,7 +415,7 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 }
 
 
-void sys::SetInterruptFunction(void (*IF)()) {
+void llvm::sys::SetInterruptFunction(void (*IF)()) {
   RegisterHandler();
   InterruptFunction = IF;
   LeaveCriticalSection(&CriticalSection);
@@ -418,13 +425,12 @@ void sys::SetInterruptFunction(void (*IF)()) {
 /// AddSignalHandler - Add a function to be called when a signal is delivered
 /// to the process.  The handler can have a cookie passed to it to identify
 /// what instance of the handler it is.
-void sys::AddSignalHandler(void (*FnPtr)(void *), void *Cookie) {
+void llvm::sys::AddSignalHandler(void (*FnPtr)(void *), void *Cookie) {
   if (CallBacksToRun == 0)
     CallBacksToRun = new std::vector<std::pair<void(*)(void*), void*> >();
   CallBacksToRun->push_back(std::make_pair(FnPtr, Cookie));
   RegisterHandler();
   LeaveCriticalSection(&CriticalSection);
-}
 }
 
 static void Cleanup() {
