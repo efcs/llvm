@@ -55,9 +55,13 @@ class TestingProgressDisplay(object):
         print('%s: %s (%d of %d)' % (test.result.code.name, test_name,
                                      self.completed, self.numTests))
 
+        showMetrics = test.result.metrics and not self.opts.succinct
+        showPassingTest = (self.opts.showOutput > 1
+            and (test.result.output or showMetrics))
+
         # Show the test output, if requested.
         if ((test.result.code.isFailure and self.opts.showOutput)
-             or self.opts.showOutput > 1):
+            or showPassingTest):
             result_str = 'FAILED' if test.result.code.isFailure else 'RESULT'
             banner = '*'*20 if test.result.code.isFailure else '*'*10
             print("%s TEST '%s' %s %s" % (banner, test.getFullName(),
@@ -66,7 +70,7 @@ class TestingProgressDisplay(object):
                 print(test.result.output)
 
             # Report test metrics, if present.
-            if test.result.metrics and not self.opts.succinct:
+            if showMetrics:
                 if test.result.output:
                     print(banner)
                 items = sorted(test.result.metrics.items())
