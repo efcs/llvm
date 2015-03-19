@@ -42,7 +42,7 @@ class TestingProgressDisplay(object):
             self.progressBar.update(float(self.completed)/self.numTests,
                                     test.getFullName())
 
-        shouldShow = test.result.code.isFailure or \
+        shouldShow = test.result.code.isFailure or self.opts.showOutput > 1 or \
             (not self.opts.quiet and not self.opts.succinct)
         if not shouldShow:
             return
@@ -55,21 +55,24 @@ class TestingProgressDisplay(object):
         print('%s: %s (%d of %d)' % (test.result.code.name, test_name,
                                      self.completed, self.numTests))
 
-        # Show the test failure output, if requested.
-        if test.result.code.isFailure and self.opts.showOutput:
-            print("%s TEST '%s' FAILED %s" % ('*'*20, test.getFullName(),
-                                              '*'*20))
-            print(test.result.output)
-            print("*" * 20)
+        # Show the test output, if requested.
+        if ((test.result.code.isFailure and self.opts.showOutput)
+             or self.opts.showOutput > 1):
+            result_str = 'FAILED' if test.result.code.isFailure else 'RESULT'
+            banner = '*'*20 if test.result.code.isFailure else '*'*10
+            print("%s TEST '%s' %s %s" % (banner, test.getFullName(),
+                                          result_str, banner))
+            if test.result.output:
+                print(test.result.output)
 
-        # Report test metrics, if present.
-        if test.result.metrics:
-            print("%s TEST '%s' RESULTS %s" % ('*'*10, test.getFullName(),
-                                               '*'*10))
-            items = sorted(test.result.metrics.items())
-            for metric_name, value in items:
-                print('%s: %s ' % (metric_name, value.format()))
-            print("*" * 10)
+            # Report test metrics, if present.
+            if test.result.metrics and not self.opts.succinct:
+                if test.result.output:
+                    print(banner)
+                items = sorted(test.result.metrics.items())
+                for metric_name, value in items:
+                    print('%s: %s ' % (metric_name, value.format()))
+            print(banner)
 
         # Ensure the output is flushed.
         sys.stdout.flush()
@@ -162,7 +165,7 @@ def main(builtinParameters = {}):
                      action="store_true", default=False)
     group.add_option("-v", "--verbose", dest="showOutput",
                      help="Show all test output",
-                     action="store_true", default=False)
+                     action="count", default=0)
     group.add_option("-o", "--output", dest="output_path",
                      help="Write test results to the provided path",
                      action="store", type=str, metavar="PATH")
