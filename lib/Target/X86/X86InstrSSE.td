@@ -4077,7 +4077,7 @@ defm PMULUDQ : PDI_binop_rm2<0xF4, "pmuludq", X86pmuludq, v2i64, v4i32, VR128,
 // SSE2 - Packed Integer Logical Instructions
 //===---------------------------------------------------------------------===//
 
-let Predicates = [HasAVX] in {
+let Predicates = [HasAVX, NoVLX] in {
 defm VPSLLW : PDI_binop_rmi<0xF1, 0x71, MRM6r, "vpsllw", X86vshl, X86vshli,
                             VR128, v8i16, v8i16, bc_v8i16, loadv2i64,
                             SSE_INTSHIFT_ITINS_P, 0>, VEX_4V;
@@ -4123,7 +4123,7 @@ let ExeDomain = SSEPackedInt, SchedRW = [WriteVecShift] in {
 }
 } // Predicates = [HasAVX]
 
-let Predicates = [HasAVX2] in {
+let Predicates = [HasAVX2, NoVLX] in {
 defm VPSLLWY : PDI_binop_rmi<0xF1, 0x71, MRM6r, "vpsllw", X86vshl, X86vshli,
                              VR256, v16i16, v8i16, bc_v8i16, loadv2i64,
                              SSE_INTSHIFT_ITINS_P, 0>, VEX_4V, VEX_L;
@@ -7833,6 +7833,11 @@ def VBROADCASTSDYrr  : avx2_broadcast_reg<0x19, "vbroadcastsd", VR256,
                                       int_x86_avx2_vbroadcast_sd_pd_256,
                                       WriteFShuffle256>, VEX_L;
 
+let Predicates = [HasAVX2] in
+def VBROADCASTI128 : avx_broadcast_no_int<0x5A, "vbroadcasti128", VR256,
+                                          i128mem, v4i64, loadv2i64,
+                                          WriteLoad>, VEX_L;
+
 let Predicates = [HasAVX] in
 def : Pat<(int_x86_avx_vbroadcastf128_ps_256 addr:$src),
           (VBROADCASTF128 addr:$src)>;
@@ -8590,9 +8595,7 @@ def : Pat<(vinsert128_insert:$ins (v16i16 VR256:$src1),
 //
 def VEXTRACTI128rr : AVX2AIi8<0x39, MRMDestReg, (outs VR128:$dst),
           (ins VR256:$src1, u8imm:$src2),
-          "vextracti128\t{$src2, $src1, $dst|$dst, $src1, $src2}",
-          [(set VR128:$dst,
-            (int_x86_avx2_vextracti128 VR256:$src1, imm:$src2))]>,
+          "vextracti128\t{$src2, $src1, $dst|$dst, $src1, $src2}", []>,
           Sched<[WriteShuffle256]>, VEX, VEX_L;
 let hasSideEffects = 0, mayStore = 1 in
 def VEXTRACTI128mr : AVX2AIi8<0x39, MRMDestMem, (outs),

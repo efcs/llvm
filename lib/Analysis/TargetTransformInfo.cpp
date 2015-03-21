@@ -143,6 +143,10 @@ bool TargetTransformInfo::shouldBuildLookupTables() const {
   return TTIImpl->shouldBuildLookupTables();
 }
 
+bool TargetTransformInfo::enableAggressiveInterleaving(bool LoopHasReductions) const {
+  return TTIImpl->enableAggressiveInterleaving(LoopHasReductions);
+}
+
 TargetTransformInfo::PopcntSupportKind
 TargetTransformInfo::getPopcntSupport(unsigned IntTyWidthInBit) const {
   return TTIImpl->getPopcntSupport(IntTyWidthInBit);
@@ -231,6 +235,11 @@ unsigned
 TargetTransformInfo::getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
                                            ArrayRef<Type *> Tys) const {
   return TTIImpl->getIntrinsicInstrCost(ID, RetTy, Tys);
+}
+
+unsigned TargetTransformInfo::getCallInstrCost(Function *F, Type *RetTy,
+                                               ArrayRef<Type *> Tys) const {
+  return TTIImpl->getCallInstrCost(F, RetTy, Tys);
 }
 
 unsigned TargetTransformInfo::getNumberOfParts(Type *Tp) const {
