@@ -111,6 +111,13 @@ private:
     OS << '\n';
   }
 
+  void Write(const NamedMDNode *NMD) {
+    if (!NMD)
+      return;
+    NMD->print(OS);
+    OS << '\n';
+  }
+
   void Write(Type *T) {
     if (!T)
       return;
@@ -561,6 +568,10 @@ void Verifier::visitNamedMDNode(const NamedMDNode &NMD) {
     MDNode *MD = NMD.getOperand(i);
     if (!MD)
       continue;
+
+    if (NMD.getName() == "llvm.dbg.cu") {
+      Assert(isa<MDCompileUnit>(MD), "invalid compile unit", &NMD, MD);
+    }
 
     visitMDNode(*MD);
   }
@@ -2556,11 +2567,9 @@ void Verifier::visitInstruction(Instruction &I) {
            &I);
   }
 
-  // Don't recurse into !dbg attachments (leave that for verifyDebugInfo()),
-  // but at least check that it's a legal type.
   if (MDNode *N = I.getDebugLoc().getAsMDNode()) {
-    Assert(isa<MDLocation>(N),
-           "invalid !dbg metadata attachment", &I, N);
+    Assert(isa<MDLocation>(N), "invalid !dbg metadata attachment", &I, N);
+    visitMDNode(*N);
   }
 
   InstsInThisBlock.insert(&I);
@@ -2896,6 +2905,13 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     auto &Entry = FrameEscapeInfo[Fn];
     Entry.second = unsigned(
         std::max(uint64_t(Entry.second), IdxArg->getLimitedValue(~0U) + 1));
+    break;
+  }
+
+  case Intrinsic::eh_unwindhelp: {
+    auto *AI = dyn_cast<AllocaInst>(CI.getArgOperand(0)->stripPointerCasts());
+    Assert(AI && AI->isStaticAlloca(),
+           "llvm.eh.unwindhelp requires a static alloca", &CI);
     break;
   }
 

@@ -190,6 +190,20 @@ class ELFObjectWriter : public MCObjectWriter {
         : MCObjectWriter(OS, IsLittleEndian), FWriter(IsLittleEndian),
           TargetObjectWriter(MOTW), NeedsGOT(false) {}
 
+    void reset() override {
+      UsedInReloc.clear();
+      WeakrefUsedInReloc.clear();
+      Renames.clear();
+      Relocations.clear();
+      ShStrTabBuilder.clear();
+      StrTabBuilder.clear();
+      FileSymbolData.clear();
+      LocalSymbolData.clear();
+      ExternalSymbolData.clear();
+      UndefinedSymbolData.clear();
+      MCObjectWriter::reset();
+    }
+
     virtual ~ELFObjectWriter();
 
     void WriteWord(uint64_t W) {
@@ -297,6 +311,8 @@ class ELFObjectWriter : public MCObjectWriter {
                                            const MCFragment &FB,
                                            bool InSet,
                                            bool IsPCRel) const override;
+
+    bool isWeak(const MCSymbolData &SD) const override;
 
     void WriteObject(MCAssembler &Asm, const MCAsmLayout &Layout) override;
     void writeSection(MCAssembler &Asm,
@@ -789,6 +805,10 @@ static const MCSymbol *getWeakRef(const MCSymbolRefExpr &Ref) {
   return nullptr;
 }
 
+static bool isWeak(const MCSymbolData &D) {
+  return D.getFlags() & ELF_STB_Weak || MCELF::GetType(D) == ELF::STT_GNU_IFUNC;
+}
+
 void ELFObjectWriter::RecordRelocation(MCAssembler &Asm,
                                        const MCAsmLayout &Layout,
                                        const MCFragment *Fragment,
@@ -829,6 +849,10 @@ void ELFObjectWriter::RecordRelocation(MCAssembler &Asm,
           Fixup.getLoc(), "Cannot represent a difference across sections");
 
     const MCSymbolData &SymBD = Asm.getSymbolData(SymB);
+    if (::isWeak(SymBD))
+      Asm.getContext().FatalError(
+          Fixup.getLoc(), "Cannot represent a subtraction with a weak symbol");
+
     uint64_t SymBOffset = Layout.getSymbolOffset(&SymBD);
     uint64_t K = SymBOffset - FixupOffset;
     IsPCRel = true;
@@ -1795,10 +1819,14 @@ ELFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(const MCAssembler &Asm,
                                                       const MCFragment &FB,
                                                       bool InSet,
                                                       bool IsPCRel) const {
-  if (DataA.getFlags() & ELF_STB_Weak || MCELF::GetType(DataA) == ELF::STT_GNU_IFUNC)
+  if (::isWeak(DataA))
     return false;
   return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
                                                  Asm, DataA, FB,InSet, IsPCRel);
+}
+
+bool ELFObjectWriter::isWeak(const MCSymbolData &SD) const {
+  return ::isWeak(SD);
 }
 
 MCObjectWriter *llvm::createELFObjectWriter(MCELFObjectTargetWriter *MOTW,
