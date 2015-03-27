@@ -22,7 +22,9 @@ public:
   PDBSymbolFuncDebugEnd(const IPDBSession &PDBSession,
                         std::unique_ptr<IPDBRawSymbol> FuncDebugEndSymbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::FuncDebugEnd)
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   FORWARD_SYMBOL_METHOD(getAddressOffset)
   FORWARD_SYMBOL_METHOD(getAddressSection)
@@ -40,10 +42,6 @@ public:
   FORWARD_SYMBOL_METHOD(getRelativeVirtualAddress)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
   FORWARD_SYMBOL_METHOD(getVirtualAddress)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::FuncDebugEnd;
-  }
 };
 
 } // namespace llvm

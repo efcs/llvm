@@ -19,7 +19,7 @@ DwarfCompileUnit::DwarfCompileUnit(unsigned UID, DICompileUnit Node,
                                    AsmPrinter *A, DwarfDebug *DW,
                                    DwarfFile *DWU)
     : DwarfUnit(UID, dwarf::DW_TAG_compile_unit, Node, A, DW, DWU),
-      Skeleton(nullptr), LabelBegin(nullptr), BaseAddress(nullptr) {
+      Skeleton(nullptr), BaseAddress(nullptr) {
   insertDIE(Node, &getUnitDie());
 }
 
@@ -164,24 +164,17 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(DIGlobalVariable GV) {
         addUInt(*Loc, dwarf::DW_FORM_udata,
                 DD->getAddressPool().getIndex(Sym, /* TLS */ true));
       }
-      // 3) followed by a custom OP to make the debugger do a TLS lookup.
-      addUInt(*Loc, dwarf::DW_FORM_data1, dwarf::DW_OP_GNU_push_tls_address);
+      // 3) followed by an OP to make the debugger do a TLS lookup.
+      addUInt(*Loc, dwarf::DW_FORM_data1,
+              DD->useGNUTLSOpcode() ? dwarf::DW_OP_GNU_push_tls_address
+                                    : dwarf::DW_OP_form_tls_address);
     } else {
       DD->addArangeLabel(SymbolCU(this, Sym));
       addOpAddress(*Loc, Sym);
     }
 
     addBlock(*VariableDIE, dwarf::DW_AT_location, Loc);
-    // Add the linkage name.
-    StringRef LinkageName = GV.getLinkageName();
-    if (!LinkageName.empty())
-      // From DWARF4: DIEs to which DW_AT_linkage_name may apply include:
-      // TAG_common_block, TAG_constant, TAG_entry_point, TAG_subprogram and
-      // TAG_variable.
-      addString(*VariableDIE,
-                DD->getDwarfVersion() >= 4 ? dwarf::DW_AT_linkage_name
-                                           : dwarf::DW_AT_MIPS_linkage_name,
-                GlobalValue::getRealLinkageName(LinkageName));
+    addLinkageName(*VariableDIE, GV.getLinkageName());
   } else if (const ConstantInt *CI =
                  dyn_cast_or_null<ConstantInt>(GV.getConstant())) {
     addConstantValue(*VariableDIE, CI, GTy);
@@ -243,7 +236,7 @@ void DwarfCompileUnit::addSectionLabel(DIE &Die, dwarf::Attribute Attribute,
     addSectionDelta(Die, Attribute, Label, Sec);
 }
 
-void DwarfCompileUnit::initStmtList(MCSymbol *DwarfLineSectionSym) {
+void DwarfCompileUnit::initStmtList() {
   // Define start line table label for each Compile Unit.
   MCSymbol *LineTableStartSym =
       Asm->OutStreamer.getDwarfLineTableSymbol(getUniqueID());
@@ -255,8 +248,9 @@ void DwarfCompileUnit::initStmtList(MCSymbol *DwarfLineSectionSym) {
   // left in the skeleton CU and so not included.
   // The line table entries are not always emitted in assembly, so it
   // is not okay to use line_table_start here.
+  const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   addSectionLabel(UnitDie, dwarf::DW_AT_stmt_list, LineTableStartSym,
-                  DwarfLineSectionSym);
+                  TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::applyStmtList(DIE &D) {
@@ -285,15 +279,14 @@ void DwarfCompileUnit::attachLowHighPC(DIE &D, const MCSymbol *Begin,
 DIE &DwarfCompileUnit::updateSubprogramScopeDIE(DISubprogram SP) {
   DIE *SPDie = getOrCreateSubprogramDIE(SP, includeMinimalInlineScopes());
 
-  attachLowHighPC(*SPDie, DD->getFunctionBeginSym(), DD->getFunctionEndSym());
+  attachLowHighPC(*SPDie, Asm->getFunctionBegin(), Asm->getFunctionEnd());
   if (!DD->getCurrentFunction()->getTarget().Options.DisableFramePointerElim(
           *DD->getCurrentFunction()))
     addFlag(*SPDie, dwarf::DW_AT_APPLE_omit_frame_ptr);
 
   // Only include DW_AT_frame_base in full debug info
   if (!includeMinimalInlineScopes()) {
-    const TargetRegisterInfo *RI =
-        Asm->TM.getSubtargetImpl()->getRegisterInfo();
+    const TargetRegisterInfo *RI = Asm->MF->getSubtarget().getRegisterInfo();
     MachineLocation Location(RI->getFrameRegister(*Asm->MF));
     if (RI->isPhysicalRegister(Location.getReg()))
       addAddress(*SPDie, dwarf::DW_AT_frame_base, Location);
@@ -379,13 +372,14 @@ void DwarfCompileUnit::addSectionDelta(DIE &Die, dwarf::Attribute Attribute,
 
 void DwarfCompileUnit::addScopeRangeList(DIE &ScopeDIE,
                                          SmallVector<RangeSpan, 2> Range) {
+  const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
+
   // Emit offset in .debug_range as a relocatable label. emitDIE will handle
   // emitting it appropriately.
-  auto *RangeSectionSym = DD->getRangeSectionSym();
+  const MCSymbol *RangeSectionSym =
+      TLOF.getDwarfRangesSection()->getBeginSymbol();
 
-  RangeSpanList List(
-      Asm->GetTempSymbol("debug_ranges", DD->getNextRangeNumber()),
-      std::move(Range));
+  RangeSpanList List(Asm->createTempSymbol("debug_ranges"), std::move(Range));
 
   // Under fission, ranges are specified by constant offsets relative to the
   // CU's DW_AT_GNU_ranges_base.
@@ -516,15 +510,23 @@ DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
   }
 
   // .. else use frame index.
-  int FI = DV.getFrameIndex();
-  if (FI != ~0) {
+  if (DV.getFrameIndex().back() == ~0)
+    return VariableDie;
+
+  auto Expr = DV.getExpression().begin();
+  DIELoc *Loc = new (DIEValueAllocator) DIELoc();
+  DIEDwarfExpression DwarfExpr(*Asm, *this, *Loc);
+  for (auto FI : DV.getFrameIndex()) {
     unsigned FrameReg = 0;
-    const TargetFrameLowering *TFI =
-        Asm->TM.getSubtargetImpl()->getFrameLowering();
+    const TargetFrameLowering *TFI = Asm->MF->getSubtarget().getFrameLowering();
     int Offset = TFI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
-    MachineLocation Location(FrameReg, Offset);
-    addVariableAddress(DV, *VariableDie, Location);
+    assert(Expr != DV.getExpression().end() &&
+           "Wrong number of expressions");
+    DwarfExpr.AddMachineRegIndirect(FrameReg, Offset);
+    DwarfExpr.AddExpression(Expr->begin(), Expr->end());
+    ++Expr;
   }
+  addBlock(*VariableDie, dwarf::DW_AT_location, Loc);
 
   return VariableDie;
 }
@@ -695,19 +697,21 @@ void DwarfCompileUnit::collectDeadVariables(DISubprogram SP) {
   for (unsigned vi = 0, ve = Variables.getNumElements(); vi != ve; ++vi) {
     DIVariable DV(Variables.getElement(vi));
     assert(DV.isVariable());
-    DbgVariable NewVar(DV, DIExpression(nullptr), DD);
+    DbgVariable NewVar(DV, DIExpression(), DD);
     auto VariableDie = constructVariableDIE(NewVar);
     applyVariableAttributes(NewVar, *VariableDie);
     SPDIE->addChild(std::move(VariableDie));
   }
 }
 
-void DwarfCompileUnit::emitHeader(const MCSymbol *ASectionSym) const {
+void DwarfCompileUnit::emitHeader(bool UseOffsets) {
   // Don't bother labeling the .dwo unit, as its offset isn't used.
-  if (!Skeleton)
+  if (!Skeleton) {
+    LabelBegin = Asm->createTempSymbol("cu_begin");
     Asm->OutStreamer.EmitLabel(LabelBegin);
+  }
 
-  DwarfUnit::emitHeader(ASectionSym);
+  DwarfUnit::emitHeader(UseOffsets);
 }
 
 /// addGlobalName - Add a new global name to the compile unit.
@@ -767,13 +771,14 @@ void DwarfCompileUnit::addComplexAddress(const DbgVariable &DV, DIE &Die,
                                          const MachineLocation &Location) {
   DIELoc *Loc = new (DIEValueAllocator) DIELoc();
   DIEDwarfExpression DwarfExpr(*Asm, *this, *Loc);
-  DIExpression Expr = DV.getExpression();
+  assert(DV.getExpression().size() == 1);
+  DIExpression Expr = DV.getExpression().back();
   bool ValidReg;
   if (Location.getOffset()) {
     ValidReg = DwarfExpr.AddMachineRegIndirect(Location.getReg(),
                                                Location.getOffset());
     if (ValidReg)
-      DwarfExpr.AddExpression(Expr);
+      DwarfExpr.AddExpression(Expr.begin(), Expr.end());
   } else
     ValidReg = DwarfExpr.AddMachineRegExpression(Expr, Location.getReg());
 

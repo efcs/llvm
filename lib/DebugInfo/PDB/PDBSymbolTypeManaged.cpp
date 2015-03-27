@@ -7,10 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbolTypeManaged.h"
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolTypeManaged.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -18,4 +20,6 @@ PDBSymbolTypeManaged::PDBSymbolTypeManaged(
     const IPDBSession &PDBSession, std::unique_ptr<IPDBRawSymbol> Symbol)
     : PDBSymbol(PDBSession, std::move(Symbol)) {}
 
-void PDBSymbolTypeManaged::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolTypeManaged::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
+}

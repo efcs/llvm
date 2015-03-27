@@ -21,6 +21,7 @@
 #include <memory>
 
 namespace llvm {
+namespace orc {
 
 /// @brief Eager IR compiling layer.
 ///
@@ -111,6 +112,13 @@ public:
     return BaseLayer.findSymbolIn(H, Name, ExportedSymbolsOnly);
   }
 
+  /// @brief Immediately emit and finalize the moduleOB set represented by the
+  ///        given handle.
+  /// @param H Handle for module set to emit/finalize.
+  void emitAndFinalize(ModuleSetHandleT H) {
+    BaseLayer.emitAndFinalize(H);
+  }
+
 private:
   object::OwningBinary<object::ObjectFile>
   tryToLoadFromObjectCache(const Module &M) {
@@ -131,6 +139,8 @@ private:
   CompileFtor Compile;
   ObjectCache *ObjCache;
 };
-}
+
+} // End namespace orc.
+} // End namespace llvm.
 
 #endif // LLVM_EXECUTIONENGINE_ORC_IRCOMPILINGLAYER_H

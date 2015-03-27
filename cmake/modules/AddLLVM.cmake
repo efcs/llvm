@@ -10,7 +10,7 @@ function(llvm_update_compile_flags name)
 
   # LLVM_REQUIRES_EH is an internal flag that individual
   # targets can use to force EH
-  if(LLVM_REQUIRES_EH OR LLVM_ENABLE_EH)
+  if((LLVM_REQUIRES_EH OR LLVM_ENABLE_EH) AND NOT CLANG_CL)
     if(NOT (LLVM_REQUIRES_RTTI OR LLVM_ENABLE_RTTI))
       message(AUTHOR_WARNING "Exception handling requires RTTI. Enabling RTTI for ${name}")
       set(LLVM_REQUIRES_RTTI ON)
@@ -21,6 +21,10 @@ function(llvm_update_compile_flags name)
     elseif(MSVC)
       list(APPEND LLVM_COMPILE_DEFINITIONS _HAS_EXCEPTIONS=0)
       list(APPEND LLVM_COMPILE_FLAGS "/EHs-c-")
+    endif()
+    if (CLANG_CL)
+      # FIXME: Remove this once clang-cl supports SEH
+      list(APPEND LLVM_COMPILE_DEFINITIONS "GTEST_HAS_SEH=0")
     endif()
   endif()
 
@@ -334,6 +338,11 @@ function(llvm_add_library name)
         PREFIX ""
         )
     endif()
+
+    set_target_properties(${name}
+      PROPERTIES
+      SOVERSION ${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}
+      VERSION ${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}${LLVM_VERSION_SUFFIX})
   endif()
 
   if(ARG_MODULE OR ARG_SHARED)
@@ -408,7 +417,16 @@ macro(add_llvm_library name)
         EXPORT LLVMExports
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-        ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX})
+        ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+        COMPONENT ${name})
+
+      if (NOT CMAKE_CONFIGURATION_TYPES)
+        add_custom_target(install-${name}
+                          DEPENDS ${name}
+                          COMMAND "${CMAKE_COMMAND}"
+                                  -DCMAKE_INSTALL_COMPONENT=${name}
+                                  -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
+      endif()
     endif()
     set_property(GLOBAL APPEND PROPERTY LLVM_EXPORTS ${name})
   endif()
@@ -472,6 +490,12 @@ macro(add_llvm_executable name)
   endif( LLVM_COMMON_DEPENDS )
 endmacro(add_llvm_executable name)
 
+function(export_executable_symbols target)
+  if (NOT MSVC) # MSVC's linker doesn't support exporting all symbols.
+    set_target_properties(${target} PROPERTIES ENABLE_EXPORTS 1)
+  endif()
+endfunction()
+
 
 set (LLVM_TOOLCHAIN_TOOLS
   llvm-ar
@@ -489,7 +513,16 @@ macro(add_llvm_tool name)
     if( LLVM_BUILD_TOOLS )
       install(TARGETS ${name}
               EXPORT LLVMExports
-              RUNTIME DESTINATION bin)
+              RUNTIME DESTINATION bin
+              COMPONENT ${name})
+
+      if (NOT CMAKE_CONFIGURATION_TYPES)
+        add_custom_target(install-${name}
+                          DEPENDS ${name}
+                          COMMAND "${CMAKE_COMMAND}"
+                                  -DCMAKE_INSTALL_COMPONENT=${name}
+                                  -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
+      endif()
     endif()
   endif()
   if( LLVM_BUILD_TOOLS )
@@ -583,12 +616,6 @@ function(add_unittest test_suite test_name)
   if( NOT LLVM_BUILD_TESTS )
     set(EXCLUDE_FROM_ALL ON)
   endif()
-
-  # Visual Studio 2012 only supports up to 8 template parameters in
-  # std::tr1::tuple by default, but gtest requires 10
-  if (MSVC AND MSVC_VERSION EQUAL 1700)
-    list(APPEND LLVM_COMPILE_DEFINITIONS _VARIADIC_MAX=10)
-  endif ()
 
   include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
   if (NOT LLVM_ENABLE_THREADS)
@@ -719,17 +746,19 @@ function(add_lit_target target comment)
   foreach(param ${ARG_PARAMS})
     list(APPEND LIT_COMMAND --param ${param})
   endforeach()
-  if( ARG_DEPENDS )
+  if (ARG_DEFAULT_ARGS)
     add_custom_target(${target}
       COMMAND ${LIT_COMMAND} ${ARG_DEFAULT_ARGS}
       COMMENT "${comment}"
       ${cmake_3_2_USES_TERMINAL}
       )
-    add_dependencies(${target} ${ARG_DEPENDS})
   else()
     add_custom_target(${target}
       COMMAND ${CMAKE_COMMAND} -E echo "${target} does nothing, no tools built.")
     message(STATUS "${target} does nothing.")
+  endif()
+  if (ARG_DEPENDS)
+    add_dependencies(${target} ${ARG_DEPENDS})
   endif()
 
   # Tests should be excluded from "Build Solution".
@@ -756,4 +785,26 @@ function(add_lit_testsuite target comment)
     DEPENDS ${ARG_DEPENDS}
     ARGS ${ARG_ARGS}
     )
+endfunction()
+
+function(add_lit_testsuites project directory)
+  if (NOT CMAKE_CONFIGURATION_TYPES)
+    parse_arguments(ARG "PARAMS;DEPENDS;ARGS" "" ${ARGN})
+    file(GLOB_RECURSE litCfg ${directory}/lit*.cfg)
+    foreach(f ${litCfg})
+      get_filename_component(dir ${f} DIRECTORY)
+      string(REPLACE ${directory} "" name_slash ${dir})
+      if (name_slash)
+        string(REPLACE "/" "-" name_slash ${name_slash})
+        string(REPLACE "\\" "-" name_dashes ${name_slash})
+        string(TOLOWER "${project}${name_dashes}" name_var)
+        add_lit_target("check-${name_var}" "Running lit suite ${dir}"
+          ${dir}
+          PARAMS ${ARG_PARAMS}
+          DEPENDS ${ARG_DEPENDS}
+          ARGS ${ARG_ARGS}
+        )
+      endif()
+    endforeach()
+  endif()
 endfunction()

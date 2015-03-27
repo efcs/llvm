@@ -31,6 +31,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetLowering.h"
@@ -133,16 +134,17 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
         ImmutableCallSite CS(I);
         if (isa<InlineAsm>(CS.getCalledValue())) {
           unsigned SP = TLI->getStackPointerRegisterToSaveRestore();
+          const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
           std::vector<TargetLowering::AsmOperandInfo> Ops =
-            TLI->ParseConstraints(CS);
+              TLI->ParseConstraints(TRI, CS);
           for (size_t I = 0, E = Ops.size(); I != E; ++I) {
             TargetLowering::AsmOperandInfo &Op = Ops[I];
             if (Op.Type == InlineAsm::isClobber) {
               // Clobbers don't have SDValue operands, hence SDValue().
               TLI->ComputeConstraintToUse(Op, SDValue(), DAG);
               std::pair<unsigned, const TargetRegisterClass *> PhysReg =
-                  TLI->getRegForInlineAsmConstraint(Op.ConstraintCode,
-                                                   Op.ConstraintVT);
+                  TLI->getRegForInlineAsmConstraint(TRI, Op.ConstraintCode,
+                                                    Op.ConstraintVT);
               if (PhysReg.first == SP)
                 MF->getFrameInfo()->setHasInlineAsmWithSPAdjust(true);
             }

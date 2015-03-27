@@ -35,7 +35,7 @@
 #include "llvm/LinkAllIR.h"
 #include "llvm/LinkAllPasses.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/PassManager.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -180,25 +180,23 @@ DefaultDataLayout("default-data-layout",
 
 
 
-static inline void addPass(PassManagerBase &PM, Pass *P) {
+static inline void addPass(legacy::PassManagerBase &PM, Pass *P) {
   // Add the pass to the pass manager...
   PM.add(P);
 
   // If we are verifying all of the intermediate steps, add the verifier...
-  if (VerifyEach) {
+  if (VerifyEach)
     PM.add(createVerifierPass());
-    PM.add(createDebugInfoVerifierPass());
-  }
 }
 
 /// This routine adds optimization passes based on selected optimization level,
 /// OptLevel.
 ///
 /// OptLevel - Optimization Level
-static void AddOptimizationPasses(PassManagerBase &MPM,FunctionPassManager &FPM,
+static void AddOptimizationPasses(legacy::PassManagerBase &MPM,
+                                  legacy::FunctionPassManager &FPM,
                                   unsigned OptLevel, unsigned SizeLevel) {
-  FPM.add(createVerifierPass());          // Verify that input is correct
-  MPM.add(createDebugInfoVerifierPass()); // Verify that debug info is correct
+  FPM.add(createVerifierPass()); // Verify that input is correct
 
   PassManagerBuilder Builder;
   Builder.OptLevel = OptLevel;
@@ -230,10 +228,9 @@ static void AddOptimizationPasses(PassManagerBase &MPM,FunctionPassManager &FPM,
   Builder.populateModulePassManager(MPM);
 }
 
-static void AddStandardLinkPasses(PassManagerBase &PM) {
+static void AddStandardLinkPasses(legacy::PassManagerBase &PM) {
   PassManagerBuilder Builder;
   Builder.VerifyInput = true;
-  Builder.StripDebug = StripDebug;
   if (DisableOptimizations)
     Builder.OptLevel = 0;
 
@@ -246,7 +243,7 @@ static void AddStandardLinkPasses(PassManagerBase &PM) {
 // CodeGen-related helper functions.
 //
 
-CodeGenOpt::Level GetCodeGenOptLevel() {
+static CodeGenOpt::Level GetCodeGenOptLevel() {
   if (OptLevelO1)
     return CodeGenOpt::Less;
   if (OptLevelO2)
@@ -324,6 +321,7 @@ int main(int argc, char **argv) {
   initializeAtomicExpandPass(Registry);
   initializeRewriteSymbolsPass(Registry);
   initializeWinEHPreparePass(Registry);
+  initializeDwarfEHPreparePass(Registry);
 
 #ifdef LINK_POLLY_INTO_TOOLS
   polly::initializePollyPasses(Registry);
@@ -406,7 +404,7 @@ int main(int argc, char **argv) {
   // Create a PassManager to hold and optimize the collection of passes we are
   // about to build.
   //
-  PassManager Passes;
+  legacy::PassManager Passes;
 
   // Add an appropriate TargetLibraryInfo pass for the module's triple.
   TargetLibraryInfoImpl TLII(ModuleTriple);
@@ -417,24 +415,18 @@ int main(int argc, char **argv) {
   Passes.add(new TargetLibraryInfoWrapperPass(TLII));
 
   // Add an appropriate DataLayout instance for this module.
-  const DataLayout *DL = M->getDataLayout();
-  if (!DL && !DefaultDataLayout.empty()) {
+  const DataLayout &DL = M->getDataLayout();
+  if (DL.isDefault() && !DefaultDataLayout.empty()) {
     M->setDataLayout(DefaultDataLayout);
-    DL = M->getDataLayout();
   }
-
-  if (DL)
-    Passes.add(new DataLayoutPass());
 
   // Add internal analysis passes from the target machine.
   Passes.add(createTargetTransformInfoWrapperPass(TM ? TM->getTargetIRAnalysis()
                                                      : TargetIRAnalysis()));
 
-  std::unique_ptr<FunctionPassManager> FPasses;
+  std::unique_ptr<legacy::FunctionPassManager> FPasses;
   if (OptLevelO1 || OptLevelO2 || OptLevelOs || OptLevelOz || OptLevelO3) {
-    FPasses.reset(new FunctionPassManager(M.get()));
-    if (DL)
-      FPasses->add(new DataLayoutPass());
+    FPasses.reset(new legacy::FunctionPassManager(M.get()));
     FPasses->add(createTargetTransformInfoWrapperPass(
         TM ? TM->getTargetIRAnalysis() : TargetIRAnalysis()));
   }
@@ -563,10 +555,8 @@ int main(int argc, char **argv) {
   }
 
   // Check that the module is well formed on completion of optimization
-  if (!NoVerify && !VerifyEach) {
+  if (!NoVerify && !VerifyEach)
     Passes.add(createVerifierPass());
-    Passes.add(createDebugInfoVerifierPass());
-  }
 
   // Write bitcode or assembly to the output as the last step...
   if (!NoOutput && !AnalyzeOnly) {

@@ -132,6 +132,16 @@ static const MCPhysReg VSFRegs[64] = {
   PPC::VF24, PPC::VF25, PPC::VF26, PPC::VF27,
   PPC::VF28, PPC::VF29, PPC::VF30, PPC::VF31
 };
+static unsigned QFRegs[32] = {
+  PPC::QF0,  PPC::QF1,  PPC::QF2,  PPC::QF3,
+  PPC::QF4,  PPC::QF5,  PPC::QF6,  PPC::QF7,
+  PPC::QF8,  PPC::QF9,  PPC::QF10, PPC::QF11,
+  PPC::QF12, PPC::QF13, PPC::QF14, PPC::QF15,
+  PPC::QF16, PPC::QF17, PPC::QF18, PPC::QF19,
+  PPC::QF20, PPC::QF21, PPC::QF22, PPC::QF23,
+  PPC::QF24, PPC::QF25, PPC::QF26, PPC::QF27,
+  PPC::QF28, PPC::QF29, PPC::QF30, PPC::QF31
+};
 static const MCPhysReg CRBITRegs[32] = {
   PPC::CR0LT, PPC::CR0GT, PPC::CR0EQ, PPC::CR0UN,
   PPC::CR1LT, PPC::CR1GT, PPC::CR1EQ, PPC::CR1UN,
@@ -261,9 +271,9 @@ class PPCAsmParser : public MCTargetAsmParser {
 
 
 public:
-  PPCAsmParser(MCSubtargetInfo &_STI, MCAsmParser &_Parser,
-               const MCInstrInfo &_MII, const MCTargetOptions &Options)
-      : MCTargetAsmParser(), STI(_STI), MII(_MII) {
+  PPCAsmParser(MCSubtargetInfo &STI, MCAsmParser &, const MCInstrInfo &MII,
+               const MCTargetOptions &Options)
+      : MCTargetAsmParser(), STI(STI), MII(MII) {
     // Check for 64-bit vs. 32-bit pointer mode.
     Triple TheTriple(STI.getTargetTriple());
     IsPPC64 = (TheTriple.getArch() == Triple::ppc64 ||
@@ -415,7 +425,9 @@ public:
 
   bool isToken() const override { return Kind == Token; }
   bool isImm() const override { return Kind == Immediate || Kind == Expression; }
+  bool isU1Imm() const { return Kind == Immediate && isUInt<1>(getImm()); }
   bool isU2Imm() const { return Kind == Immediate && isUInt<2>(getImm()); }
+  bool isU3Imm() const { return Kind == Immediate && isUInt<3>(getImm()); }
   bool isU4Imm() const { return Kind == Immediate && isUInt<4>(getImm()); }
   bool isU5Imm() const { return Kind == Immediate && isUInt<5>(getImm()); }
   bool isS5Imm() const { return Kind == Immediate && isInt<5>(getImm()); }
@@ -429,6 +441,7 @@ public:
   bool isU8ImmX8() const { return Kind == Immediate &&
                                   isUInt<8>(getImm()) &&
                                   (getImm() & 7) == 0; }
+  bool isU12Imm() const { return Kind == Immediate && isUInt<12>(getImm()); }
   bool isU16Imm() const {
     switch (Kind) {
       case Expression:
@@ -562,6 +575,21 @@ public:
   void addRegVSFRCOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     Inst.addOperand(MCOperand::CreateReg(VSFRegs[getVSReg()]));
+  }
+
+  void addRegQFRCOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    Inst.addOperand(MCOperand::CreateReg(QFRegs[getReg()]));
+  }
+
+  void addRegQSRCOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    Inst.addOperand(MCOperand::CreateReg(QFRegs[getReg()]));
+  }
+
+  void addRegQBRCOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    Inst.addOperand(MCOperand::CreateReg(QFRegs[getReg()]));
   }
 
   void addRegCRBITRCOperands(MCInst &Inst, unsigned N) const {

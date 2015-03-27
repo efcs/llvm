@@ -22,6 +22,7 @@
 #include <memory>
 
 namespace llvm {
+namespace orc {
 
 class ObjectLinkingLayerBase {
 protected:
@@ -34,8 +35,8 @@ protected:
   /// had been provided by this instance. Higher level layers are responsible
   /// for taking any action required to handle the missing symbols.
   class LinkedObjectSet {
-    LinkedObjectSet(const LinkedObjectSet&) LLVM_DELETED_FUNCTION;
-    void operator=(const LinkedObjectSet&) LLVM_DELETED_FUNCTION;
+    LinkedObjectSet(const LinkedObjectSet&) = delete;
+    void operator=(const LinkedObjectSet&) = delete;
   public:
     LinkedObjectSet(std::unique_ptr<RTDyldMemoryManager> MM)
         : MM(std::move(MM)), RTDyld(llvm::make_unique<RuntimeDyld>(&*this->MM)),
@@ -50,10 +51,8 @@ protected:
       return RTDyld->loadObject(Obj);
     }
 
-    TargetAddress getSymbolAddress(StringRef Name, bool ExportedSymbolsOnly) {
-      if (ExportedSymbolsOnly)
-        return RTDyld->getExportedSymbolLoadAddress(Name);
-      return RTDyld->getSymbolLoadAddress(Name);
+    RuntimeDyld::SymbolInfo getSymbol(StringRef Name) const {
+      return RTDyld->getSymbol(Name);
     }
 
     bool NeedsFinalization() const { return (State == Raw); }
@@ -178,12 +177,6 @@ public:
     return Handle;
   }
 
-  /// @brief Map section addresses for the objects associated with the handle H.
-  void mapSectionAddress(ObjSetHandleT H, const void *LocalAddress,
-                         TargetAddress TargetAddr) {
-    H->mapSectionAddress(LocalAddress, TargetAddr);
-  }
-
   /// @brief Remove the set of objects associated with handle H.
   ///
   ///   All memory allocated for the objects will be freed, and the sections and
@@ -219,18 +212,48 @@ public:
   ///         given object set.
   JITSymbol findSymbolIn(ObjSetHandleT H, StringRef Name,
                          bool ExportedSymbolsOnly) {
-    if (auto Addr = H->getSymbolAddress(Name, ExportedSymbolsOnly))
-      return JITSymbol(
-        [this, Addr, H](){
-          if (H->NeedsFinalization()) {
-            H->Finalize();
-            if (this->NotifyFinalized)
-              this->NotifyFinalized(H);
-          }
-          return Addr;
-        });
-
+    if (auto Sym = H->getSymbol(Name)) {
+      if (Sym.isExported() || !ExportedSymbolsOnly) {
+        auto Addr = Sym.getAddress();
+        auto Flags = Sym.getFlags();
+        if (!H->NeedsFinalization()) {
+          // If this instance has already been finalized then we can just return
+          // the address.
+          return JITSymbol(Addr, Flags);
+        } else {
+          // If this instance needs finalization return a functor that will do
+          // it. The functor still needs to double-check whether finalization is
+          // required, in case someone else finalizes this set before the
+          // functor is called.
+          auto GetAddress = 
+            [this, Addr, H]() {
+              if (H->NeedsFinalization()) {
+                H->Finalize();
+                if (NotifyFinalized)
+                  NotifyFinalized(H);
+              }
+              return Addr;
+            };
+          return JITSymbol(std::move(GetAddress), Flags);
+        }
+      }
+    }
     return nullptr;
+  }
+
+  /// @brief Map section addresses for the objects associated with the handle H.
+  void mapSectionAddress(ObjSetHandleT H, const void *LocalAddress,
+                         TargetAddress TargetAddr) {
+    H->mapSectionAddress(LocalAddress, TargetAddr);
+  }
+
+  /// @brief Immediately emit and finalize the object set represented by the
+  ///        given handle.
+  /// @param H Handle for object set to emit/finalize.
+  void emitAndFinalize(ObjSetHandleT H) {
+    H->Finalize();
+    if (NotifyFinalized)
+      NotifyFinalized(H);
   }
 
 private:
@@ -240,6 +263,7 @@ private:
   CreateRTDyldMMFtor CreateMemoryManager;
 };
 
-} // end namespace llvm
+} // End namespace orc.
+} // End namespace llvm
 
 #endif // LLVM_EXECUTIONENGINE_ORC_OBJECTLINKINGLAYER_H

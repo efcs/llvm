@@ -175,6 +175,8 @@ public:
                                               const MCFragment &FB, bool InSet,
                                               bool IsPCRel) const override;
 
+  bool isWeak(const MCSymbolData &SD) const override;
+
   void RecordRelocation(MCAssembler &Asm, const MCAsmLayout &Layout,
                         const MCFragment *Fragment, const MCFixup &Fixup,
                         MCValue Target, bool &IsPCRel,
@@ -661,6 +663,12 @@ bool WinCOFFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
                                                                 InSet, IsPCRel);
 }
 
+bool WinCOFFObjectWriter::isWeak(const MCSymbolData &SD) const {
+  // FIXME: this is for PR23025. Write a good description on
+  // why this is needed.
+  return SD.isExternal();
+}
+
 void WinCOFFObjectWriter::RecordRelocation(
     MCAssembler &Asm, const MCAsmLayout &Layout, const MCFragment *Fragment,
     const MCFixup &Fixup, MCValue Target, bool &IsPCRel, uint64_t &FixedValue) {
@@ -939,6 +947,8 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
     Sec->Header.SizeOfRawData = Layout.getSectionAddressSize(&Section);
 
     if (IsPhysicalSection(Sec)) {
+      // Align the section data to a four byte boundary.
+      offset = RoundUpToAlignment(offset, 4);
       Sec->Header.PointerToRawData = offset;
 
       offset += Sec->Header.SizeOfRawData;
@@ -1009,8 +1019,14 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
         continue;
 
       if ((*i)->Header.PointerToRawData != 0) {
-        assert(OS.tell() == (*i)->Header.PointerToRawData &&
+        assert(OS.tell() <= (*i)->Header.PointerToRawData &&
                "Section::PointerToRawData is insane!");
+
+        unsigned SectionDataPadding = (*i)->Header.PointerToRawData - OS.tell();
+        assert(SectionDataPadding < 4 &&
+               "Should only need at most three bytes of padding!");
+
+        WriteZeros(SectionDataPadding);
 
         Asm.writeSectionData(j, Layout);
       }

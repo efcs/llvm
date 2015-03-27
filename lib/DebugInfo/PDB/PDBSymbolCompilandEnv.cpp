@@ -7,11 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
+#include "llvm/DebugInfo/PDB/PDBSymbolCompilandEnv.h"
 
 #include "llvm/DebugInfo/PDB/IPDBRawSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolCompilandEnv.h"
+#include "llvm/DebugInfo/PDB/PDBSymDumper.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -24,4 +26,6 @@ std::string PDBSymbolCompilandEnv::getValue() const {
   return std::string();
 }
 
-void PDBSymbolCompilandEnv::dump(llvm::raw_ostream &OS) const {}
+void PDBSymbolCompilandEnv::dump(PDBSymDumper &Dumper) const {
+  Dumper.dump(*this);
+}

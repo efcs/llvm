@@ -103,6 +103,11 @@ def FeatureVGPRSpilling : SubtargetFeature<"vgpr-spilling",
         "true",
         "Enable spilling of VGPRs to scratch memory">;
 
+def FeatureSGPRInitBug : SubtargetFeature<"sgpr-init-bug",
+        "SGPRInitBug",
+        "true",
+        "VI SGPR initilization bug requiring a fixed SGPR allocation size">;
+
 class SubtargetFeatureFetchLimit <string Value> :
                           SubtargetFeature <"fetch"#Value,
         "TexVTXClauseSize",
@@ -167,6 +172,7 @@ def FeatureVolcanicIslands : SubtargetFeatureGeneration<"VOLCANIC_ISLANDS",
 
 def AMDGPUInstrInfo : InstrInfo {
   let guessInstructionProperties = 1;
+  let noNamedPositionallyEncodedOperands = 1;
 }
 
 def AMDGPUAsmParser : AsmParser {

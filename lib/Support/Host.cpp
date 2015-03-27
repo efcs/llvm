@@ -137,18 +137,13 @@ static bool GetX86CpuIDAndInfoEx(unsigned value, unsigned subleaf,
             "c" (subleaf));
     return false;
   #elif defined(_MSC_VER)
-    // __cpuidex was added in MSVC++ 9.0 SP1
-    #if (_MSC_VER > 1500) || (_MSC_VER == 1500 && _MSC_FULL_VER >= 150030729)
-      int registers[4];
-      __cpuidex(registers, value, subleaf);
-      *rEAX = registers[0];
-      *rEBX = registers[1];
-      *rECX = registers[2];
-      *rEDX = registers[3];
-      return false;
-    #else
-      return true;
-    #endif
+    int registers[4];
+    __cpuidex(registers, value, subleaf);
+    *rEAX = registers[0];
+    *rEBX = registers[1];
+    *rECX = registers[2];
+    *rEDX = registers[3];
+    return false;
   #else
     return true;
   #endif
@@ -362,9 +357,15 @@ StringRef sys::getHostCPUName() {
       case 63:
       case 69:
       case 70:
-        // Not all Haswell processors support AVX too (such as the Pentium
+        // Not all Haswell processors support AVX2 (such as the Pentium
         // versions instead of the i7 versions).
         return HasAVX2 ? "core-avx2" : "corei7";
+
+      // Broadwell:
+      case 61:
+        // Not all Broadwell processors support AVX2 (such as the Pentium
+        // versions instead of the i7 versions).
+        return HasAVX2 ? "broadwell" : "corei7";
 
       case 28: // Most 45 nm Intel Atom processors
       case 38: // 45 nm Atom Lincroft

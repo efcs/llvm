@@ -22,7 +22,11 @@ public:
   PDBSymbolTypeArray(const IPDBSession &PDBSession,
                      std::unique_ptr<IPDBRawSymbol> ArrayTypeSymbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::ArrayType)
+
+  std::unique_ptr<PDBSymbol> getElementType() const;
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   FORWARD_SYMBOL_METHOD(getArrayIndexTypeId)
   FORWARD_SYMBOL_METHOD(isConstType)
@@ -34,10 +38,6 @@ public:
   FORWARD_SYMBOL_METHOD(getTypeId)
   FORWARD_SYMBOL_METHOD(isUnalignedType)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::ArrayType;
-  }
 };
 
 } // namespace llvm

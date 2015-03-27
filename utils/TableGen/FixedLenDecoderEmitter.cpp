@@ -333,8 +333,8 @@ protected:
   // Parent emitter
   const FixedLenDecoderEmitter *Emitter;
 
-  FilterChooser(const FilterChooser &) LLVM_DELETED_FUNCTION;
-  void operator=(const FilterChooser &) LLVM_DELETED_FUNCTION;
+  FilterChooser(const FilterChooser &) = delete;
+  void operator=(const FilterChooser &) = delete;
 public:
 
   FilterChooser(const std::vector<const CodeGenInstruction*> &Insts,
@@ -1091,7 +1091,7 @@ unsigned FilterChooser::getDecoderIndex(DecoderSet &Decoders,
   // overkill for now, though.
 
   // Make sure the predicate is in the table.
-  Decoders.insert(Decoder.str());
+  Decoders.insert(StringRef(Decoder));
   // Now figure out the index for when we write out the table.
   DecoderSet::const_iterator P = std::find(Decoders.begin(),
                                            Decoders.end(),

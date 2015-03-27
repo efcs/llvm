@@ -137,12 +137,6 @@ static MCOperand GetSymbolRef(const MachineOperand &MO, const MCSymbol *Symbol,
     case PPCII::MO_TLS:
       RefKind = MCSymbolRefExpr::VK_PPC_TLS;
       break;
-    case PPCII::MO_TLSGD:
-      RefKind = MCSymbolRefExpr::VK_PPC_TLSGD;
-      break;
-    case PPCII::MO_TLSLD:
-      RefKind = MCSymbolRefExpr::VK_PPC_TLSLD;
-      break;
   }
 
   if (MO.getTargetFlags() == PPCII::MO_PLT_OR_STUB && !isDarwin)
@@ -190,6 +184,9 @@ void llvm::LowerPPCMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
       llvm_unreachable("unknown operand type");
     case MachineOperand::MO_Register:
       assert(!MO.getSubReg() && "Subregs should be eliminated!");
+      assert(MO.getReg() > PPC::NoRegister &&
+             MO.getReg() < PPC::NUM_TARGET_REGS &&
+             "Invalid register for this target!");
       MCOp = MCOperand::CreateReg(MO.getReg());
       break;
     case MachineOperand::MO_Immediate:

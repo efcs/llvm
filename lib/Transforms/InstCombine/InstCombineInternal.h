@@ -80,6 +80,36 @@ static inline Constant *SubOne(Constant *C) {
   return ConstantExpr::getSub(C, ConstantInt::get(C->getType(), 1));
 }
 
+/// \brief Return true if the specified value is free to invert (apply ~ to).
+/// This happens in cases where the ~ can be eliminated.  If WillInvertAllUses
+/// is true, work under the assumption that the caller intends to remove all
+/// uses of V and only keep uses of ~V.
+///
+static inline bool IsFreeToInvert(Value *V, bool WillInvertAllUses) {
+  // ~(~(X)) -> X.
+  if (BinaryOperator::isNot(V))
+    return true;
+
+  // Constants can be considered to be not'ed values.
+  if (isa<ConstantInt>(V))
+    return true;
+
+  // Compares can be inverted if all of their uses are being modified to use the
+  // ~V.
+  if (isa<CmpInst>(V))
+    return WillInvertAllUses;
+
+  // If `V` is of the form `A + Constant` then `-1 - V` can be folded into `(-1
+  // - Constant) - A` if we are willing to invert all of the uses.
+  if (BinaryOperator *BO = dyn_cast<BinaryOperator>(V))
+    if (BO->getOpcode() == Instruction::Add ||
+        BO->getOpcode() == Instruction::Sub)
+      if (isa<Constant>(BO->getOperand(0)) || isa<Constant>(BO->getOperand(1)))
+        return WillInvertAllUses;
+
+  return false;
+}
+
 /// \brief An IRBuilder inserter that adds new instructions to the instcombine
 /// worklist.
 class LLVM_LIBRARY_VISIBILITY InstCombineIRInserter
@@ -128,10 +158,10 @@ private:
   AssumptionCache *AC;
   TargetLibraryInfo *TLI;
   DominatorTree *DT;
+  const DataLayout &DL;
 
   // Optional analyses. When non-null, these can both be used to do better
   // combining and will be updated to reflect any changes.
-  const DataLayout *DL;
   LoopInfo *LI;
 
   bool MadeIRChange;
@@ -139,7 +169,7 @@ private:
 public:
   InstCombiner(InstCombineWorklist &Worklist, BuilderTy *Builder,
                bool MinimizeSize, AssumptionCache *AC, TargetLibraryInfo *TLI,
-               DominatorTree *DT, const DataLayout *DL, LoopInfo *LI)
+               DominatorTree *DT, const DataLayout &DL, LoopInfo *LI)
       : Worklist(Worklist), Builder(Builder), MinimizeSize(MinimizeSize),
         AC(AC), TLI(TLI), DT(DT), DL(DL), LI(LI), MadeIRChange(false) {}
 
@@ -150,7 +180,7 @@ public:
 
   AssumptionCache *getAssumptionCache() const { return AC; }
 
-  const DataLayout *getDataLayout() const { return DL; }
+  const DataLayout &getDataLayout() const { return DL; }
 
   DominatorTree *getDominatorTree() const { return DT; }
 
@@ -245,6 +275,7 @@ public:
   Instruction *FoldSPFofSPF(Instruction *Inner, SelectPatternFlavor SPF1,
                             Value *A, Value *B, Instruction &Outer,
                             SelectPatternFlavor SPF2, Value *C);
+  Instruction *FoldItoFPtoI(Instruction &FI);
   Instruction *visitSelectInst(SelectInst &SI);
   Instruction *visitSelectInstWithICmp(SelectInst &SI, ICmpInst *ICI);
   Instruction *visitCallInst(CallInst &CI);
@@ -299,17 +330,17 @@ private:
                           Type *Ty);
 
   Instruction *visitCallSite(CallSite CS);
-  Instruction *tryOptimizeCall(CallInst *CI, const DataLayout *DL);
+  Instruction *tryOptimizeCall(CallInst *CI);
   bool transformConstExprCastCall(CallSite CS);
   Instruction *transformCallThroughTrampoline(CallSite CS,
                                               IntrinsicInst *Tramp);
   Instruction *transformZExtICmp(ICmpInst *ICI, Instruction &CI,
                                  bool DoXform = true);
   Instruction *transformSExtICmp(ICmpInst *ICI, Instruction &CI);
-  bool WillNotOverflowSignedAdd(Value *LHS, Value *RHS, Instruction *CxtI);
-  bool WillNotOverflowSignedSub(Value *LHS, Value *RHS, Instruction *CxtI);
-  bool WillNotOverflowUnsignedSub(Value *LHS, Value *RHS, Instruction *CxtI);
-  bool WillNotOverflowSignedMul(Value *LHS, Value *RHS, Instruction *CxtI);
+  bool WillNotOverflowSignedAdd(Value *LHS, Value *RHS, Instruction &CxtI);
+  bool WillNotOverflowSignedSub(Value *LHS, Value *RHS, Instruction &CxtI);
+  bool WillNotOverflowUnsignedSub(Value *LHS, Value *RHS, Instruction &CxtI);
+  bool WillNotOverflowSignedMul(Value *LHS, Value *RHS, Instruction &CxtI);
   Value *EmitGEPOffset(User *GEP);
   Instruction *scalarizePHI(ExtractElementInst &EI, PHINode *PN);
   Value *EvaluateInDifferentElementOrder(Value *V, ArrayRef<int> Mask);
@@ -341,6 +372,10 @@ public:
   /// I to the worklist, replace all uses of I with the new value, then return
   /// I, so that the inst combiner will know that I was modified.
   Instruction *ReplaceInstUsesWith(Instruction &I, Value *V) {
+    // If there are no uses to replace, then we return nullptr to indicate that
+    // no changes were made to the program.
+    if (I.use_empty()) return nullptr;
+
     Worklist.AddUsersToWorkList(I); // Add all modified instrs to worklist.
 
     // If we are replacing the instruction with itself, this must be in a
@@ -392,7 +427,7 @@ public:
   }
 
   void computeKnownBits(Value *V, APInt &KnownZero, APInt &KnownOne,
-                        unsigned Depth = 0, Instruction *CxtI = nullptr) const {
+                        unsigned Depth, Instruction *CxtI) const {
     return llvm::computeKnownBits(V, KnownZero, KnownOne, DL, Depth, AC, CxtI,
                                   DT);
   }
@@ -437,7 +472,7 @@ private:
   /// bits.
   Value *SimplifyDemandedUseBits(Value *V, APInt DemandedMask, APInt &KnownZero,
                                  APInt &KnownOne, unsigned Depth,
-                                 Instruction *CxtI = nullptr);
+                                 Instruction *CxtI);
   bool SimplifyDemandedBits(Use &U, APInt DemandedMask, APInt &KnownZero,
                             APInt &KnownOne, unsigned Depth = 0);
   /// Helper routine of SimplifyDemandedUseBits. It tries to simplify demanded

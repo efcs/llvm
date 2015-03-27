@@ -22,15 +22,13 @@ public:
   PDBSymbolTypeDimension(const IPDBSession &PDBSession,
                          std::unique_ptr<IPDBRawSymbol> Symbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Dimension)
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   FORWARD_SYMBOL_METHOD(getLowerBoundId)
   FORWARD_SYMBOL_METHOD(getUpperBoundId)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Dimension;
-  }
 };
 
 } // namespace llvm

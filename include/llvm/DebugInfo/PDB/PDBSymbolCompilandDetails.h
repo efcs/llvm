@@ -22,7 +22,9 @@ public:
   PDBSymbolCompilandDetails(const IPDBSession &PDBSession,
                             std::unique_ptr<IPDBRawSymbol> Symbol);
 
-  void dump(llvm::raw_ostream &OS) const override;
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::CompilandDetails)
+
+  void dump(PDBSymDumper &Dumper) const override;
 
   void getFrontEndVersion(VersionInfo &Version) const {
     RawSymbol->getFrontEndVersion(Version);
@@ -46,10 +48,6 @@ public:
   FORWARD_SYMBOL_METHOD(getLexicalParentId)
   FORWARD_SYMBOL_METHOD(getPlatform)
   FORWARD_SYMBOL_METHOD(getSymIndexId)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::CompilandDetails;
-  }
 };
 
 } // namespace llvm
