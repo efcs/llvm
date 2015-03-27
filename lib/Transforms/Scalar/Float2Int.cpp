@@ -446,7 +446,7 @@ Value *Float2Int::convert(Instruction *I, Type *ToTy) {
     } else if (Instruction *VI = dyn_cast<Instruction>(V)) {
       NewOperands.push_back(convert(VI, ToTy));
     } else if (ConstantFP *CF = dyn_cast<ConstantFP>(V)) {
-      APSInt Val(ToTy->getPrimitiveSizeInBits(), true);
+      APSInt Val(ToTy->getPrimitiveSizeInBits(), /*IsUnsigned=*/false);
       bool Exact;
       CF->getValueAPF().convertToInteger(Val,
                                          APFloat::rmNearestTiesToEven,
