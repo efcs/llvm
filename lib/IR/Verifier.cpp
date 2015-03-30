@@ -296,11 +296,14 @@ private:
   void visitBasicBlock(BasicBlock &BB);
   void visitRangeMetadata(Instruction& I, MDNode* Range, Type* Ty);
 
+  template <class Ty> bool isValidMetadataArray(const MDTuple &N);
 #define HANDLE_SPECIALIZED_MDNODE_LEAF(CLASS) void visit##CLASS(const CLASS &N);
 #include "llvm/IR/Metadata.def"
   void visitMDScope(const MDScope &N);
   void visitMDDerivedTypeBase(const MDDerivedTypeBase &N);
   void visitMDVariable(const MDVariable &N);
+  void visitMDLexicalBlockBase(const MDLexicalBlockBase &N);
+  void visitMDTemplateParameter(const MDTemplateParameter &N);
 
   // InstVisitor overrides...
   using InstVisitor<Verifier>::visit;
@@ -679,6 +682,39 @@ static bool isScopeRef(const Metadata *MD) {
   return isa<MDScope>(MD);
 }
 
+/// \brief Check if a value can be a debug info ref.
+static bool isDIRef(const Metadata *MD) {
+  if (!MD)
+    return true;
+  if (auto *S = dyn_cast<MDString>(MD))
+    return !S->getString().empty();
+  return isa<DebugNode>(MD);
+}
+
+template <class Ty>
+bool isValidMetadataArrayImpl(const MDTuple &N, bool AllowNull) {
+  for (Metadata *MD : N.operands()) {
+    if (MD) {
+      if (!isa<Ty>(MD))
+        return false;
+    } else {
+      if (!AllowNull)
+        return false;
+    }
+  }
+  return true;
+}
+
+template <class Ty>
+bool isValidMetadataArray(const MDTuple &N) {
+  return isValidMetadataArrayImpl<Ty>(N, /* AllowNull */ false);
+}
+
+template <class Ty>
+bool isValidMetadataNullArray(const MDTuple &N) {
+  return isValidMetadataArrayImpl<Ty>(N, /* AllowNull */ true);
+}
+
 void Verifier::visitMDLocation(const MDLocation &N) {
   Assert(N.getRawScope() && isa<MDLocalScope>(N.getRawScope()),
          "location requires a valid scope", &N, N.getRawScope());
@@ -811,27 +847,78 @@ void Verifier::visitMDCompileUnit(const MDCompileUnit &N) {
 
 void Verifier::visitMDSubprogram(const MDSubprogram &N) {
   Assert(N.getTag() == dwarf::DW_TAG_subprogram, "invalid tag", &N);
+  Assert(isScopeRef(N.getRawScope()), "invalid scope", &N, N.getRawScope());
+  if (auto *T = N.getRawType())
+    Assert(isa<MDSubroutineType>(T), "invalid subroutine type", &N, T);
+  Assert(isTypeRef(N.getRawContainingType()), "invalid containing type", &N,
+         N.getRawContainingType());
+  if (auto *RawF = N.getRawFunction()) {
+    auto *FMD = dyn_cast<ConstantAsMetadata>(RawF);
+    auto *F = FMD ? FMD->getValue() : nullptr;
+    auto *FT = F ? dyn_cast<PointerType>(F->getType()) : nullptr;
+    Assert(F && FT && isa<FunctionType>(FT->getElementType()),
+           "invalid function", &N, F, FT);
+  }
+  if (N.getRawTemplateParams()) {
+    auto *Params = dyn_cast<MDTuple>(N.getRawTemplateParams());
+    Assert(Params, "invalid template params", &N, Params);
+    for (Metadata *Op : Params->operands()) {
+      Assert(Op && isa<MDTemplateParameter>(Op), "invalid template parameter",
+             &N, Params, Op);
+    }
+  }
+  if (auto *S = N.getRawDeclaration()) {
+    Assert(isa<MDSubprogram>(S) && !cast<MDSubprogram>(S)->isDefinition(),
+           "invalid subprogram declaration", &N, S);
+  }
+  if (N.getRawVariables()) {
+    auto *Vars = dyn_cast<MDTuple>(N.getRawVariables());
+    Assert(Vars, "invalid variable list", &N, Vars);
+    for (Metadata *Op : Vars->operands()) {
+      Assert(Op && isa<MDLocalVariable>(Op), "invalid local variable", &N, Vars,
+             Op);
+    }
+  }
+}
+
+void Verifier::visitMDLexicalBlockBase(const MDLexicalBlockBase &N) {
+  Assert(N.getTag() == dwarf::DW_TAG_lexical_block, "invalid tag", &N);
+  Assert(N.getRawScope() && isa<MDLocalScope>(N.getRawScope()),
+         "invalid local scope", &N, N.getRawScope());
 }
 
 void Verifier::visitMDLexicalBlock(const MDLexicalBlock &N) {
-  Assert(N.getTag() == dwarf::DW_TAG_lexical_block, "invalid tag", &N);
+  visitMDLexicalBlockBase(N);
+
+  Assert(N.getLine() || !N.getColumn(),
+         "cannot have column info without line info", &N);
 }
 
 void Verifier::visitMDLexicalBlockFile(const MDLexicalBlockFile &N) {
-  Assert(N.getTag() == dwarf::DW_TAG_lexical_block, "invalid tag", &N);
+  visitMDLexicalBlockBase(N);
 }
 
 void Verifier::visitMDNamespace(const MDNamespace &N) {
   Assert(N.getTag() == dwarf::DW_TAG_namespace, "invalid tag", &N);
+  if (auto *S = N.getRawScope())
+    Assert(isa<MDScope>(S), "invalid scope ref", &N, S);
+}
+
+void Verifier::visitMDTemplateParameter(const MDTemplateParameter &N) {
+  Assert(isTypeRef(N.getType()), "invalid type ref", &N, N.getType());
 }
 
 void Verifier::visitMDTemplateTypeParameter(const MDTemplateTypeParameter &N) {
+  visitMDTemplateParameter(N);
+
   Assert(N.getTag() == dwarf::DW_TAG_template_type_parameter, "invalid tag",
          &N);
 }
 
 void Verifier::visitMDTemplateValueParameter(
     const MDTemplateValueParameter &N) {
+  visitMDTemplateParameter(N);
+
   Assert(N.getTag() == dwarf::DW_TAG_template_value_parameter ||
              N.getTag() == dwarf::DW_TAG_GNU_template_template_param ||
              N.getTag() == dwarf::DW_TAG_GNU_template_parameter_pack,
@@ -882,12 +969,19 @@ void Verifier::visitMDExpression(const MDExpression &N) {
 
 void Verifier::visitMDObjCProperty(const MDObjCProperty &N) {
   Assert(N.getTag() == dwarf::DW_TAG_APPLE_property, "invalid tag", &N);
+  if (auto *T = N.getRawType())
+    Assert(isa<MDType>(T), "invalid type ref", &N, T);
+  if (auto *F = N.getRawFile())
+    Assert(isa<MDFile>(F), "invalid file", &N, F);
 }
 
 void Verifier::visitMDImportedEntity(const MDImportedEntity &N) {
   Assert(N.getTag() == dwarf::DW_TAG_imported_module ||
              N.getTag() == dwarf::DW_TAG_imported_declaration,
          "invalid tag", &N);
+  if (auto *S = N.getRawScope())
+    Assert(isa<MDScope>(S), "invalid scope for imported entity", &N, S);
+  Assert(isDIRef(N.getEntity()), "invalid imported entity", &N, N.getEntity());
 }
 
 void Verifier::visitComdat(const Comdat &C) {

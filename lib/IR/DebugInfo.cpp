@@ -343,24 +343,16 @@ bool DISubprogram::Verify() const {
   if (auto *F = getFunction()) {
     for (auto &BB : *F) {
       for (auto &I : BB) {
-        DebugLoc DL = I.getDebugLoc();
-        if (DL.isUnknown())
+        MDLocation *DL = I.getDebugLoc();
+        if (!DL)
           continue;
 
-        MDNode *Scope = nullptr;
-        MDNode *IA = nullptr;
         // walk the inlined-at scopes
-        while ((IA = DL.getInlinedAt()))
-          DL = DebugLoc::getFromDILocation(IA);
-        DL.getScopeAndInlinedAt(Scope, IA);
+        MDScope *Scope = DL->getInlinedAtScope();
         if (!Scope)
           return false;
-        assert(!IA);
-        while (!DIDescriptor(Scope).isSubprogram()) {
-          DILexicalBlockFile D(Scope);
-          Scope = D.isLexicalBlockFile()
-                      ? D.getScope()
-                      : DebugLoc::getFromDILexicalBlock(Scope).getScope();
+        while (!isa<MDSubprogram>(Scope)) {
+          Scope = cast<MDLexicalBlockBase>(Scope)->getScope();
           if (!Scope)
             return false;
         }
@@ -592,12 +584,12 @@ DISubprogram llvm::getDISubprogram(const Function *F) {
   // We look for the first instr that has a debug annotation leading back to F.
   for (auto &BB : *F) {
     auto Inst = std::find_if(BB.begin(), BB.end(), [](const Instruction &Inst) {
-      return !Inst.getDebugLoc().isUnknown();
+      return Inst.getDebugLoc();
     });
     if (Inst == BB.end())
       continue;
     DebugLoc DLoc = Inst->getDebugLoc();
-    const MDNode *Scope = DLoc.getScopeNode();
+    const MDNode *Scope = DLoc.getInlinedAtScope();
     DISubprogram Subprogram = getDISubprogram(Scope);
     return Subprogram.describes(F) ? Subprogram : DISubprogram();
   }
@@ -896,21 +888,24 @@ void DIDescriptor::print(raw_ostream &OS) const {
 
 static void printDebugLoc(DebugLoc DL, raw_ostream &CommentOS,
                           const LLVMContext &Ctx) {
-  if (!DL.isUnknown()) { // Print source line info.
-    DIScope Scope(DL.getScope(Ctx));
-    assert(Scope.isScope() && "Scope of a DebugLoc should be a DIScope.");
-    // Omit the directory, because it's likely to be long and uninteresting.
-    CommentOS << Scope.getFilename();
-    CommentOS << ':' << DL.getLine();
-    if (DL.getCol() != 0)
-      CommentOS << ':' << DL.getCol();
-    DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(DL.getInlinedAt(Ctx));
-    if (!InlinedAtDL.isUnknown()) {
-      CommentOS << " @[ ";
-      printDebugLoc(InlinedAtDL, CommentOS, Ctx);
-      CommentOS << " ]";
-    }
-  }
+  if (!DL)
+    return;
+
+  DIScope Scope(DL.getScope());
+  assert(Scope.isScope() && "Scope of a DebugLoc should be a DIScope.");
+  // Omit the directory, because it's likely to be long and uninteresting.
+  CommentOS << Scope.getFilename();
+  CommentOS << ':' << DL.getLine();
+  if (DL.getCol() != 0)
+    CommentOS << ':' << DL.getCol();
+
+  DebugLoc InlinedAtDL = DL.getInlinedAt();
+  if (!InlinedAtDL)
+    return;
+
+  CommentOS << " @[ ";
+  printDebugLoc(InlinedAtDL, CommentOS, Ctx);
+  CommentOS << " ]";
 }
 
 void DIVariable::printExtendedName(raw_ostream &OS) const {
@@ -918,9 +913,8 @@ void DIVariable::printExtendedName(raw_ostream &OS) const {
   StringRef Res = getName();
   if (!Res.empty())
     OS << Res << "," << getLineNumber();
-  if (MDNode *InlinedAt = getInlinedAt()) {
-    DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(InlinedAt);
-    if (!InlinedAtDL.isUnknown()) {
+  if (auto *InlinedAt = get()->getInlinedAt()) {
+    if (DebugLoc InlinedAtDL = InlinedAt) {
       OS << " @[";
       printDebugLoc(InlinedAtDL, OS, Ctx);
       OS << "]";
@@ -989,7 +983,7 @@ bool llvm::StripDebugInfo(Module &M) {
          ++FI)
       for (BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE;
            ++BI) {
-        if (!BI->getDebugLoc().isUnknown()) {
+        if (BI->getDebugLoc()) {
           Changed = true;
           BI->setDebugLoc(DebugLoc());
         }
