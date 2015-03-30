@@ -269,8 +269,8 @@ DIDerivedType DIBuilder::createReferenceType(unsigned Tag, DIType RTy) {
 
 DIDerivedType DIBuilder::createTypedef(DIType Ty, StringRef Name, DIFile File,
                                        unsigned LineNo, DIDescriptor Context) {
-  return MDDerivedType::get(VMContext, dwarf::DW_TAG_typedef, Name,
-                            File.getFileNode(), LineNo,
+  return MDDerivedType::get(VMContext, dwarf::DW_TAG_typedef, Name, File,
+                            LineNo,
                             DIScope(getNonCompileUnitScope(Context)).getRef(),
                             Ty.getRef(), 0, 0, 0, 0);
 }
@@ -509,7 +509,10 @@ DIType DIBuilder::createObjectPointerType(DIType Ty) {
   return createTypeWithFlags(VMContext, Ty, Flags);
 }
 
-void DIBuilder::retainType(DIType T) { AllRetainTypes.emplace_back(T); }
+void DIBuilder::retainType(DIType T) {
+  assert(T.get() && "Expected non-null type");
+  AllRetainTypes.emplace_back(T);
+}
 
 DIBasicType DIBuilder::createUnspecifiedParameter() {
   return DIBasicType();
