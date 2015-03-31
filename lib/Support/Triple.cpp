@@ -281,6 +281,7 @@ static Triple::ArchType parseARMArch(StringRef ArchName) {
     .Cases("v7", "v7a", "v7em", "v7l", arch)
     .Cases("v7m", "v7r", "v7s", arch)
     .Cases("v8", "v8a", arch)
+    .Cases("v8.1", "v8.1a", arch)
     .Default(Triple::UnknownArch);
 }
 
@@ -403,6 +404,7 @@ static Triple::SubArchType parseSubArch(StringRef SubArchName) {
     SubArchName = SubArchName.substr(0, SubArchName.size() - 2);
 
   return StringSwitch<Triple::SubArchType>(SubArchName)
+    .EndsWith("v8.1a", Triple::ARMSubArch_v8_1a)
     .EndsWith("v8", Triple::ARMSubArch_v8)
     .EndsWith("v8a", Triple::ARMSubArch_v8)
     .EndsWith("v7", Triple::ARMSubArch_v7)
@@ -439,6 +441,30 @@ static const char *getObjectFormatTypeName(Triple::ObjectFormatType Kind) {
 }
 
 static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
+  switch (T.getArch()) {
+  default:
+    break;
+  case Triple::hexagon:
+  case Triple::mips:
+  case Triple::mipsel:
+  case Triple::mips64:
+  case Triple::mips64el:
+  case Triple::r600:
+  case Triple::amdgcn:
+  case Triple::sparc:
+  case Triple::sparcv9:
+  case Triple::systemz:
+  case Triple::xcore:
+  case Triple::ppc64le:
+    return Triple::ELF;
+
+  case Triple::ppc:
+  case Triple::ppc64:
+    if (T.isOSDarwin())
+      return Triple::MachO;
+    return Triple::ELF;
+  }
+
   if (T.isOSDarwin())
     return Triple::MachO;
   else if (T.isOSWindows())
@@ -1085,6 +1111,7 @@ const char *Triple::getARMCPUForArch(StringRef MArch) const {
       .Cases("v7m", "v7-m", "cortex-m3")
       .Cases("v7em", "v7e-m", "cortex-m4")
       .Cases("v8", "v8a", "v8-a", "cortex-a53")
+      .Cases("v8.1a", "v8.1-a", "generic-armv8.1-a")
       .Default(nullptr);
   else
     result = llvm::StringSwitch<const char *>(MArch)
@@ -1110,6 +1137,8 @@ const char *Triple::getARMCPUForArch(StringRef MArch) const {
     default:
       return "strongarm";
     }
+  case llvm::Triple::NaCl:
+    return "cortex-a8";
   default:
     switch (getEnvironment()) {
     case llvm::Triple::EABIHF:
