@@ -25,6 +25,7 @@
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassNameParser.h"
@@ -38,6 +39,7 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/PluginLoader.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -265,12 +267,27 @@ static TargetMachine* GetTargetMachine(Triple TheTriple) {
 
   // Package up features to be passed to target/subtarget
   std::string FeaturesStr;
-  if (MAttrs.size()) {
+  if (MAttrs.size() || MCPU == "native") {
     SubtargetFeatures Features;
+
+    // If user asked for the 'native' CPU, we need to autodetect features.
+    // This is necessary for x86 where the CPU might not support all the
+    // features the autodetected CPU name lists in the target. For example,
+    // not all Sandybridge processors support AVX.
+    if (MCPU == "native") {
+      StringMap<bool> HostFeatures;
+      if (sys::getHostCPUFeatures(HostFeatures))
+        for (auto &F : HostFeatures)
+          Features.AddFeature(F.first(), F.second);
+    }
+
     for (unsigned i = 0; i != MAttrs.size(); ++i)
       Features.AddFeature(MAttrs[i]);
     FeaturesStr = Features.getString();
   }
+
+  if (MCPU == "native")
+    MCPU = sys::getHostCPUName();
 
   return TheTarget->createTargetMachine(TheTriple.getTriple(),
                                         MCPU, FeaturesStr,
@@ -342,6 +359,19 @@ int main(int argc, char **argv) {
 
   if (!M) {
     Err.print(argv[0], errs());
+    return 1;
+  }
+
+  // Strip debug info before running the verifier.
+  if (StripDebug)
+    StripDebugInfo(*M);
+
+  // Immediately run the verifier to catch any problems before starting up the
+  // pass pipelines.  Otherwise we can crash on broken code during
+  // doInitialization().
+  if (!NoVerify && verifyModule(*M, &errs())) {
+    errs() << argv[0] << ": " << InputFilename
+           << ": error: input module is broken!\n";
     return 1;
   }
 
@@ -448,10 +478,6 @@ int main(int argc, char **argv) {
     Passes.add(createBreakpointPrinter(Out->os()));
     NoOutput = true;
   }
-
-  // If the -strip-debug command line option was specified, add it.
-  if (StripDebug)
-    addPass(Passes, createStripSymbolsPass(true));
 
   // Create a new optimization pass for each one specified on the command line
   for (unsigned i = 0; i < PassList.size(); ++i) {
