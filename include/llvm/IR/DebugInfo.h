@@ -58,65 +58,6 @@ class DIObjCProperty;
 /// \brief Maps from type identifier to the actual MDNode.
 typedef DenseMap<const MDString *, MDNode *> DITypeIdentifierMap;
 
-class DIHeaderFieldIterator
-    : public std::iterator<std::input_iterator_tag, StringRef, std::ptrdiff_t,
-                           const StringRef *, StringRef> {
-  StringRef Header;
-  StringRef Current;
-
-public:
-  DIHeaderFieldIterator() {}
-  explicit DIHeaderFieldIterator(StringRef Header)
-      : Header(Header), Current(Header.slice(0, Header.find('\0'))) {}
-  StringRef operator*() const { return Current; }
-  const StringRef *operator->() const { return &Current; }
-  DIHeaderFieldIterator &operator++() {
-    increment();
-    return *this;
-  }
-  DIHeaderFieldIterator operator++(int) {
-    DIHeaderFieldIterator X(*this);
-    increment();
-    return X;
-  }
-  bool operator==(const DIHeaderFieldIterator &X) const {
-    return Current.data() == X.Current.data();
-  }
-  bool operator!=(const DIHeaderFieldIterator &X) const {
-    return !(*this == X);
-  }
-
-  StringRef getHeader() const { return Header; }
-  StringRef getCurrent() const { return Current; }
-  StringRef getPrefix() const {
-    if (Current.begin() == Header.begin())
-      return StringRef();
-    return Header.slice(0, Current.begin() - Header.begin() - 1);
-  }
-  StringRef getSuffix() const {
-    if (Current.end() == Header.end())
-      return StringRef();
-    return Header.slice(Current.end() - Header.begin() + 1, StringRef::npos);
-  }
-
-  /// \brief Get the current field as a number.
-  ///
-  /// Convert the current field into a number.  Return \c 0 on error.
-  template <class T> T getNumber() const {
-    T Int;
-    if (getCurrent().getAsInteger(0, Int))
-      return 0;
-    return Int;
-  }
-
-private:
-  void increment() {
-    assert(Current.data() != nullptr && "Cannot increment past the end");
-    StringRef Suffix = getSuffix();
-    Current = Suffix.slice(0, Suffix.find('\0'));
-  }
-};
-
 /// \brief A thin wraper around MDNode to access encoded debug info.
 ///
 /// This should not be stored in a container, because the underlying MDNode may
@@ -149,26 +90,13 @@ public:
 protected:
   const MDNode *DbgNode;
 
-  StringRef getStringField(unsigned Elt) const;
-  unsigned getUnsignedField(unsigned Elt) const {
-    return (unsigned)getUInt64Field(Elt);
-  }
-  uint64_t getUInt64Field(unsigned Elt) const;
-  int64_t getInt64Field(unsigned Elt) const;
   DIDescriptor getDescriptorField(unsigned Elt) const;
-
   template <typename DescTy> DescTy getFieldAs(unsigned Elt) const {
     return DescTy(getDescriptorField(Elt));
   }
 
-  GlobalVariable *getGlobalVariableField(unsigned Elt) const;
-  Constant *getConstantField(unsigned Elt) const;
-  Function *getFunctionField(unsigned Elt) const;
-
 public:
   explicit DIDescriptor(const MDNode *N = nullptr) : DbgNode(N) {}
-
-  bool Verify() const;
 
   MDNode *get() const { return const_cast<MDNode *>(DbgNode); }
   operator MDNode *() const { return get(); }
@@ -187,35 +115,6 @@ public:
 
   bool operator==(DIDescriptor Other) const { return DbgNode == Other.DbgNode; }
   bool operator!=(DIDescriptor Other) const { return !operator==(Other); }
-
-  StringRef getHeader() const { return getStringField(0); }
-
-  size_t getNumHeaderFields() const {
-    return std::distance(DIHeaderFieldIterator(getHeader()),
-                         DIHeaderFieldIterator());
-  }
-
-  DIHeaderFieldIterator header_begin() const {
-    return DIHeaderFieldIterator(getHeader());
-  }
-  DIHeaderFieldIterator header_end() const { return DIHeaderFieldIterator(); }
-
-  DIHeaderFieldIterator getHeaderIterator(unsigned Index) const {
-    // Since callers expect an empty string for out-of-range accesses, we can't
-    // use std::advance() here.
-    for (auto I = header_begin(), E = header_end(); I != E; ++I, --Index)
-      if (!Index)
-        return I;
-    return header_end();
-  }
-
-  StringRef getHeaderField(unsigned Index) const {
-    return *getHeaderIterator(Index);
-  }
-
-  template <class T> T getHeaderFieldAs(unsigned Index) const {
-    return getHeaderIterator(Index).getNumber<T>();
-  }
 
   uint16_t getTag() const {
     if (auto *N = dyn_cast_or_null<DebugNode>(get()))
@@ -287,13 +186,15 @@ public:
 
   int64_t getLo() const { return get()->getLo(); }
   int64_t getCount() const { return get()->getCount(); }
-  bool Verify() const;
 };
 
 /// \brief This descriptor holds an array of nodes with type T.
 template <typename T> class DITypedArray : public DIDescriptor {
 public:
   explicit DITypedArray(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  operator MDTuple *() const {
+    return const_cast<MDTuple *>(cast_or_null<MDTuple>(DbgNode));
+  }
   unsigned getNumElements() const {
     return DbgNode ? DbgNode->getNumOperands() : 0;
   }
@@ -323,7 +224,6 @@ public:
 
   StringRef getName() const { return get()->getName(); }
   int64_t getEnumValue() const { return get()->getValue(); }
-  bool Verify() const;
 };
 
 template <typename T> class DIRef;
@@ -389,8 +289,13 @@ template <typename T> class DIRef {
   explicit DIRef(const Metadata *V);
 
 public:
+  template <class U>
+  DIRef(const TypedDebugNodeRef<U> &Ref,
+        typename std::enable_if<std::is_convertible<U *, T>::value>::type * =
+            nullptr)
+      : Val(Ref) {}
+
   T resolve(const DITypeIdentifierMap &Map) const;
-  StringRef getName() const;
   operator Metadata *() const { return const_cast<Metadata *>(Val); }
 
   static DIRef get(const Metadata *MD) { return DIRef(MD); }
@@ -411,17 +316,6 @@ T DIRef<T>::resolve(const DITypeIdentifierMap &Map) const {
   assert(DIDescriptor(Iter->second).isType() &&
          "MDNode in DITypeIdentifierMap should be a DIType.");
   return T(Iter->second);
-}
-
-template <typename T> StringRef DIRef<T>::getName() const {
-  if (!Val)
-    return StringRef();
-
-  if (const MDNode *MD = dyn_cast<MDNode>(Val))
-    return T(MD).getName();
-
-  const MDString *MS = cast<MDString>(Val);
-  return MS->getString();
 }
 
 /// \brief Handle fields that are references to DIDescriptors.
@@ -456,14 +350,6 @@ public:
     assert(get() && "Expected valid pointer");
     return *get();
   }
-
-  operator DITypeRef() const {
-    assert(isType() &&
-           "constructing DITypeRef from an MDNode that is not a type");
-    return DITypeRef(&*getRef());
-  }
-
-  bool Verify() const;
 
   DIScopeRef getContext() const { return DIScopeRef::get(get()->getScope()); }
   StringRef getName() const { return get()->getName(); }
@@ -524,8 +410,6 @@ public:
   }
 
   unsigned getEncoding() const { return get()->getEncoding(); }
-
-  bool Verify() const;
 };
 
 /// \brief A simple derived type
@@ -573,8 +457,6 @@ public:
 
     return nullptr;
   }
-
-  bool Verify() const;
 };
 
 /// \brief Types that refer to multiple other types.
@@ -636,8 +518,6 @@ public:
     return DIArray(get()->getTemplateParams());
   }
   MDString *getIdentifier() const { return get()->getRawIdentifier(); }
-
-  bool Verify() const;
 };
 
 class DISubroutineType : public DICompositeType {
@@ -676,7 +556,6 @@ public:
 
   /// \brief Retrieve the MDNode for the directory/file pair.
   MDNode *getFileNode() const { return get(); }
-  bool Verify() const;
 };
 
 /// \brief A wrapper for a compile unit.
@@ -722,8 +601,6 @@ public:
     return get()->getSplitDebugFilename();
   }
   unsigned getEmissionKind() const { return get()->getEmissionKind(); }
-
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for a subprogram (e.g. a function).
@@ -769,8 +646,6 @@ public:
   DITypeRef getContainingType() const {
     return DITypeRef::get(get()->getContainingType());
   }
-
-  bool Verify() const;
 
   /// \brief Check if this provides debugging information for the function F.
   bool describes(const Function *F);
@@ -829,7 +704,7 @@ public:
 class DILexicalBlock : public DIScope {
 public:
   explicit DILexicalBlock(const MDNode *N = nullptr) : DIScope(N) {}
-  DILexicalBlock(const MDLexicalBlock *N) : DIScope(N) {}
+  DILexicalBlock(const MDLexicalBlockBase *N) : DIScope(N) {}
 
   MDLexicalBlockBase *get() const {
     return cast_or_null<MDLexicalBlockBase>(DIDescriptor::get());
@@ -852,7 +727,6 @@ public:
       return N->getColumn();
     return 0;
   }
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for a lexical block with a filename change.
@@ -876,7 +750,6 @@ public:
   unsigned getColumnNumber() const { return getScope().getColumnNumber(); }
   DILexicalBlock getScope() const { return DILexicalBlock(get()->getScope()); }
   unsigned getDiscriminator() const { return get()->getDiscriminator(); }
-  bool Verify() const;
 };
 
 /// \brief A wrapper for a C++ style name space.
@@ -898,7 +771,6 @@ public:
   StringRef getName() const { return get()->getName(); }
   unsigned getLineNumber() const { return get()->getLine(); }
   DIScope getContext() const { return DIScope(get()->getScope()); }
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for template type parameter.
@@ -921,7 +793,6 @@ public:
   StringRef getName() const { return get()->getName(); }
 
   DITypeRef getType() const { return DITypeRef::get(get()->getType()); }
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for template value parameter.
@@ -945,7 +816,6 @@ public:
   StringRef getName() const { return get()->getName(); }
   DITypeRef getType() const { return DITypeRef::get(get()->getType()); }
   Metadata *getValue() const { return get()->getValue(); }
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for a global variable.
@@ -988,8 +858,6 @@ public:
   DIDerivedType getStaticDataMemberDeclaration() const {
     return DIDerivedType(get()->getStaticDataMemberDeclaration());
   }
-
-  bool Verify() const;
 };
 
 /// \brief This is a wrapper for a variable (e.g. parameter, local, global etc).
@@ -1030,8 +898,6 @@ public:
   /// \brief If this variable is inlined then return inline location.
   MDNode *getInlinedAt() const { return DIDescriptor(get()->getInlinedAt()); }
 
-  bool Verify() const;
-
   /// \brief Check if this is a "__block" variable (Apple Blocks).
   bool isBlockByrefVariable(const DITypeIdentifierMap &Map) const {
     return (getType().resolve(Map)).isBlockByrefStruct();
@@ -1067,9 +933,6 @@ public:
     assert(get() && "Expected valid pointer");
     return *get();
   }
-
-  // Don't call this.  Call isValid() directly.
-  bool Verify() const = delete;
 
   /// \brief Return the number of elements in the complex expression.
   unsigned getNumElements() const { return get()->getNumElements(); }
@@ -1171,7 +1034,6 @@ public:
   }
   StringRef getFilename() const { return getScope().getFilename(); }
   StringRef getDirectory() const { return getScope().getDirectory(); }
-  bool Verify() const;
   bool atSameLineAs(const DILocation &Other) const {
     return (getLineNumber() == Other.getLineNumber() &&
             getFilename() == Other.getFilename());
@@ -1248,8 +1110,6 @@ public:
   /// \note Objective-C doesn't have an ODR, so there is no benefit in storing
   /// the type as a DITypeRef here.
   DIType getType() const { return DIType(get()->getType()); }
-
-  bool Verify() const;
 };
 
 /// \brief An imported module (C++ using directive or similar).
@@ -1275,7 +1135,6 @@ public:
   }
   unsigned getLineNumber() const { return get()->getLine(); }
   StringRef getName() const { return get()->getName(); }
-  bool Verify() const;
 };
 
 /// \brief Find subprogram that is enclosing this scope.
