@@ -88,7 +88,7 @@ public:
     : Var(V), Expr(1, E), TheDIE(nullptr), DotDebugLocOffset(~0U),
       MInsn(nullptr), DD(DD) {
     FrameIndex.push_back(FI);
-    assert(Var.Verify() && E.Verify());
+    assert(!E || E->isValid());
   }
 
   /// Construct a DbgVariable from a DEBUG_VALUE.
@@ -153,7 +153,7 @@ public:
   }
 
   bool variableHasComplexAddress() const {
-    assert(Var.isVariable() && "Invalid complex DbgVariable!");
+    assert(Var && "Invalid complex DbgVariable!");
     assert(Expr.size() == 1 &&
            "variableHasComplexAddress() invoked on multi-FI variable");
     return Expr.back().getNumElements() > 0;
@@ -243,23 +243,9 @@ class DwarfDebug : public AsmPrinterHandler {
   // If nonnull, stores the CU in which the previous subprogram was contained.
   const DwarfCompileUnit *PrevCU;
 
-  // Section Symbols: these are assembler temporary labels that are emitted at
-  // the beginning of each supported dwarf section.  These are used to form
-  // section offsets and are created by EmitSectionLabels.
-  MCSymbol *DwarfInfoSectionSym, *DwarfAbbrevSectionSym;
-  MCSymbol *DwarfStrSectionSym, *TextSectionSym, *DwarfDebugRangeSectionSym;
-  MCSymbol *DwarfDebugLocSectionSym, *DwarfLineSectionSym, *DwarfAddrSectionSym;
-  MCSymbol *DwarfInfoDWOSectionSym, *DwarfAbbrevDWOSectionSym;
-  MCSymbol *DwarfTypesDWOSectionSym;
-  MCSymbol *DwarfStrDWOSectionSym;
-  MCSymbol *DwarfGnuPubNamesSectionSym, *DwarfGnuPubTypesSectionSym;
-
   // As an optimization, there is no need to emit an entry in the directory
   // table for the same directory as DW_AT_comp_dir.
   StringRef CompilationDir;
-
-  // Counter for assigning globally unique IDs for ranges.
-  unsigned GlobalRangeCount;
 
   // Holder for the file specific debug information.
   DwarfFile InfoHolder;
@@ -350,9 +336,6 @@ class DwarfDebug : public AsmPrinterHandler {
   /// \brief Construct a DIE for this abstract scope.
   void constructAbstractSubprogramScopeDIE(LexicalScope *Scope);
 
-  /// \brief Emit initial Dwarf sections with a label at the start of each one.
-  void emitSectionLabels();
-
   /// \brief Compute the size and offset of a DIE given an incoming Offset.
   unsigned computeSizeAndOffset(DIE *Die, unsigned Offset);
 
@@ -376,13 +359,9 @@ class DwarfDebug : public AsmPrinterHandler {
   /// \brief Emit the abbreviation section.
   void emitAbbreviations();
 
-  /// \brief Emit the last address of the section and the end of
-  /// the line matrix.
-  void emitEndOfLineMatrix(unsigned SectionEnd);
-
   /// \brief Emit a specified accelerator table.
   void emitAccel(DwarfAccelTable &Accel, const MCSection *Section,
-                 StringRef TableName, StringRef SymName);
+                 StringRef TableName);
 
   /// \brief Emit visible names into a hashed accelerator table section.
   void emitAccelNames();
@@ -560,15 +539,6 @@ public:
   /// Returns the Dwarf Version.
   unsigned getDwarfVersion() const { return DwarfVersion; }
 
-  /// Returns the section symbol for the .debug_loc section.
-  MCSymbol *getDebugLocSym() const { return DwarfDebugLocSectionSym; }
-
-  /// Returns the section symbol for the .debug_str section.
-  MCSymbol *getDebugStrSym() const { return DwarfStrSectionSym; }
-
-  /// Returns the section symbol for the .debug_ranges section.
-  MCSymbol *getRangeSectionSym() const { return DwarfDebugRangeSectionSym; }
-
   /// Returns the previous CU that was being updated
   const DwarfCompileUnit *getPrevCU() const { return PrevCU; }
   void setPrevCU(const DwarfCompileUnit *PrevCU) { this->PrevCU = PrevCU; }
@@ -597,6 +567,9 @@ public:
 
   /// Find the MDNode for the given reference.
   template <typename T> T resolve(DIRef<T> Ref) const {
+    return Ref.resolve(TypeIdentifierMap);
+  }
+  template <typename T> T *resolve(TypedDebugNodeRef<T> Ref) const {
     return Ref.resolve(TypeIdentifierMap);
   }
 
@@ -644,12 +617,6 @@ public:
 
   /// \brief Return Label immediately following the instruction.
   MCSymbol *getLabelAfterInsn(const MachineInstr *MI);
-
-  // FIXME: Consider rolling ranges up into DwarfDebug since we use a single
-  // range_base anyway, so there's no need to keep them as separate per-CU range
-  // lists. (though one day we might end up with a range.dwo section, in which
-  // case it'd go to DwarfFile)
-  unsigned getNextRangeNumber() { return GlobalRangeCount++; }
 
   // FIXME: Sink these functions down into DwarfFile/Dwarf*Unit.
 

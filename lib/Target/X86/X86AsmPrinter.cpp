@@ -63,9 +63,6 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     OutStreamer.EndCOFFSymbolDef();
   }
 
-  // Have common code print out the function header with linkage info etc.
-  EmitFunctionHeader();
-
   // Emit the rest of the function body.
   EmitFunctionBody();
 
@@ -526,7 +523,6 @@ void X86AsmPrinter::EmitStartOfAsmFile(Module &M) {
       // must be registered in .sxdata.  Use of any unregistered handlers will
       // cause the process to terminate immediately.  LLVM does not know how to
       // register any SEH handlers, so its object files should be safe.
-      S->setAbsolute();
       OutStreamer.EmitSymbolAttribute(S, MCSA_Global);
       OutStreamer.EmitAssignment(
           S, MCConstantExpr::Create(int64_t(1), MMI->getContext()));

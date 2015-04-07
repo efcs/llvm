@@ -94,6 +94,10 @@ namespace ISD {
   /// all ConstantSDNode or undef.
   bool isBuildVectorOfConstantSDNodes(const SDNode *N);
 
+  /// \brief Return true if the specified node is a BUILD_VECTOR node of
+  /// all ConstantFPSDNode or undef.
+  bool isBuildVectorOfConstantFPSDNodes(const SDNode *N);
+
   /// Return true if the specified node is a
   /// ISD::SCALAR_TO_VECTOR node or a BUILD_VECTOR node where only the low
   /// element is not an undef.
@@ -1331,6 +1335,21 @@ public:
     llvm_unreachable("Splat with all undef indices?");
   }
   static bool isSplatMask(const int *Mask, EVT VT);
+
+  /// Change values in a shuffle permute mask assuming
+  /// the two vector operands have swapped position.
+  static void commuteMask(SmallVectorImpl<int> &Mask) {
+    unsigned NumElems = Mask.size();
+    for (unsigned i = 0; i != NumElems; ++i) {
+      int idx = Mask[i];
+      if (idx < 0)
+        continue;
+      else if (idx < (int)NumElems)
+        Mask[i] = idx + NumElems;
+      else
+        Mask[i] = idx - NumElems;
+    }
+  }
 
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::VECTOR_SHUFFLE;

@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "NVPTXLowerAggrCopies.h"
+#include "llvm/CodeGen/MachineFunctionAnalysis.h"
+#include "llvm/CodeGen/StackProtector.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -28,7 +30,27 @@
 
 using namespace llvm;
 
-namespace llvm { FunctionPass *createLowerAggrCopies(); }
+namespace {
+// actual analysis class, which is a functionpass
+struct NVPTXLowerAggrCopies : public FunctionPass {
+  static char ID;
+
+  NVPTXLowerAggrCopies() : FunctionPass(ID) {}
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addPreserved<MachineFunctionAnalysis>();
+    AU.addPreserved<StackProtector>();
+  }
+
+  bool runOnFunction(Function &F) override;
+
+  static const unsigned MaxAggrCopySize = 128;
+
+  const char *getPassName() const override {
+    return "Lower aggregate copies/intrinsics into loops";
+  }
+};
+} // namespace
 
 char NVPTXLowerAggrCopies::ID = 0;
 
@@ -62,9 +84,11 @@ static void convertTransferToLoop(
   ind->addIncoming(ConstantInt::get(indType, 0), origBB);
 
   // load from srcAddr+ind
-  Value *val = loop.CreateLoad(loop.CreateGEP(srcAddr, ind), srcVolatile);
+  Value *val = loop.CreateLoad(loop.CreateGEP(loop.getInt8Ty(), srcAddr, ind),
+                               srcVolatile);
   // store at dstAddr+ind
-  loop.CreateStore(val, loop.CreateGEP(dstAddr, ind), dstVolatile);
+  loop.CreateStore(val, loop.CreateGEP(loop.getInt8Ty(), dstAddr, ind),
+                   dstVolatile);
 
   // The value for ind coming from backedge is (ind + 1)
   Value *newind = loop.CreateAdd(ind, ConstantInt::get(indType, 1));
@@ -94,7 +118,7 @@ static void convertMemSetToLoop(Instruction *splitAt, Value *dstAddr,
   PHINode *ind = loop.CreatePHI(len->getType(), 0);
   ind->addIncoming(ConstantInt::get(len->getType(), 0), origBB);
 
-  loop.CreateStore(val, loop.CreateGEP(dstAddr, ind), false);
+  loop.CreateStore(val, loop.CreateGEP(val->getType(), dstAddr, ind), false);
 
   Value *newind = loop.CreateAdd(ind, ConstantInt::get(len->getType(), 1));
   ind->addIncoming(newind, loopBB);
@@ -120,7 +144,7 @@ bool NVPTXLowerAggrCopies::runOnFunction(Function &F) {
          ++II) {
       if (LoadInst *load = dyn_cast<LoadInst>(II)) {
 
-        if (load->hasOneUse() == false)
+        if (!load->hasOneUse())
           continue;
 
         if (DL.getTypeStoreSize(load->getType()) < MaxAggrCopySize)

@@ -54,6 +54,12 @@ HoistCheapInsts("hoist-cheap-insts",
                 cl::desc("MachineLICM should hoist even cheap instructions"),
                 cl::init(false), cl::Hidden);
 
+static cl::opt<bool>
+SinkInstsToAvoidSpills("sink-insts-to-avoid-spills",
+                       cl::desc("MachineLICM should sink instructions into "
+                                "loops to avoid register spills"),
+                       cl::init(false), cl::Hidden);
+
 STATISTIC(NumHoisted,
           "Number of machine instructions hoisted out of loops");
 STATISTIC(NumLowRP,
@@ -208,7 +214,8 @@ namespace {
     /// CanCauseHighRegPressure - Visit BBs from header to current BB,
     /// check if hoisting an instruction of the given cost matrix can cause high
     /// register pressure.
-    bool CanCauseHighRegPressure(DenseMap<unsigned, int> &Cost, bool Cheap);
+    bool CanCauseHighRegPressure(const DenseMap<unsigned, int> &Cost,
+                                 bool Cheap);
 
     /// UpdateBackTraceRegPressure - Traverse the back trace from header to
     /// the current block and update their register pressures to reflect the
@@ -242,6 +249,11 @@ namespace {
     ///
     void HoistOutOfLoop(MachineDomTreeNode *LoopHeaderNode);
     void HoistRegion(MachineDomTreeNode *N, bool IsHeader);
+
+    /// SinkIntoLoop - Sink instructions into loops if profitable. This
+    /// especially tries to prevent register spills caused by register pressure
+    /// if there is little to no overhead moving instructions into loops.
+    void SinkIntoLoop();
 
     /// getRegisterClassIDAndCost - For a given MI, register, and the operand
     /// index, return the ID and cost of its representative register class by
@@ -381,6 +393,9 @@ bool MachineLICM::runOnMachineFunction(MachineFunction &MF) {
       FirstInLoop = true;
       HoistOutOfLoop(N);
       CSEMap.clear();
+
+      if (SinkInstsToAvoidSpills)
+        SinkIntoLoop();
     }
   }
 
@@ -771,6 +786,53 @@ void MachineLICM::HoistOutOfLoop(MachineDomTreeNode *HeaderN) {
   }
 }
 
+void MachineLICM::SinkIntoLoop() {
+  MachineBasicBlock *Preheader = getCurPreheader();
+  if (!Preheader)
+    return;
+
+  SmallVector<MachineInstr *, 8> Candidates;
+  for (MachineBasicBlock::instr_iterator I = Preheader->instr_begin();
+       I != Preheader->instr_end(); ++I) {
+    // We need to ensure that we can safely move this instruction into the loop.
+    // As such, it must not have side-effects, e.g. such as a call has.  
+    if (IsLoopInvariantInst(*I) && !HasLoopPHIUse(I))
+      Candidates.push_back(I);
+  }
+
+  for (MachineInstr *I : Candidates) {
+    const MachineOperand &MO = I->getOperand(0);
+    if (!MO.isDef() || !MO.isReg() || !MO.getReg())
+      continue;
+    if (!MRI->hasOneDef(MO.getReg()))
+      continue;
+    bool CanSink = true;
+    MachineBasicBlock *B = nullptr;
+    for (MachineInstr &MI : MRI->use_instructions(MO.getReg())) {
+      // FIXME: Come up with a proper cost model that estimates whether sinking
+      // the instruction (and thus possibly executing it on every loop
+      // iteration) is more expensive than a register.
+      // For now assumes that copies are cheap and thus almost always worth it.
+      if (!MI.isCopy()) {
+        CanSink = false;
+        break;
+      }
+      if (!B) {
+        B = MI.getParent();
+        continue;
+      }
+      B = DT->findNearestCommonDominator(B, MI.getParent());
+      if (!B) {
+        CanSink = false;
+        break;
+      }
+    }
+    if (!CanSink || !B || B == Preheader)
+      continue;
+    B->splice(B->getFirstNonPHI(), Preheader, I);
+  }
+}
+
 static bool isOperandKill(const MachineOperand &MO, MachineRegisterInfo *MRI) {
   return MO.isKill() || MRI->hasOneNonDBGUse(MO.getReg());
 }
@@ -1064,27 +1126,23 @@ bool MachineLICM::IsCheapInstruction(MachineInstr &MI) const {
 /// CanCauseHighRegPressure - Visit BBs from header to current BB, check
 /// if hoisting an instruction of the given cost matrix can cause high
 /// register pressure.
-bool MachineLICM::CanCauseHighRegPressure(DenseMap<unsigned, int> &Cost,
+bool MachineLICM::CanCauseHighRegPressure(const DenseMap<unsigned, int>& Cost,
                                           bool CheapInstr) {
-  for (DenseMap<unsigned, int>::iterator CI = Cost.begin(), CE = Cost.end();
-       CI != CE; ++CI) {
-    if (CI->second <= 0)
+  for (const auto &ClassAndCost : Cost) {
+    if (ClassAndCost.second <= 0)
       continue;
 
-    unsigned RCId = CI->first;
-    unsigned Limit = RegLimit[RCId];
-    int Cost = CI->second;
+    unsigned Class = ClassAndCost.first;
+    int Limit = RegLimit[Class];
 
     // Don't hoist cheap instructions if they would increase register pressure,
     // even if we're under the limit.
     if (CheapInstr && !HoistCheapInsts)
       return true;
 
-    for (unsigned i = BackTrace.size(); i != 0; --i) {
-      SmallVectorImpl<unsigned> &RP = BackTrace[i-1];
-      if (RP[RCId] + Cost >= Limit)
+    for (const auto &RP : BackTrace)
+      if (static_cast<int>(RP[Class]) + ClassAndCost.second >= Limit)
         return true;
-    }
   }
 
   return false;
