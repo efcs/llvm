@@ -77,16 +77,6 @@ public:
     FlagAccessibility = DebugNode::FlagAccessibility
   };
 
-  static unsigned getFlag(StringRef Flag);
-  static const char *getFlagString(unsigned Flag);
-
-  /// \brief Split up a flags bitfield.
-  ///
-  /// Split \c Flags into \c SplitFlags, a vector of its components.  Returns
-  /// any remaining (unrecognized) bits.
-  static unsigned splitFlags(unsigned Flags,
-                             SmallVectorImpl<unsigned> &SplitFlags);
-
 protected:
   const MDNode *DbgNode;
 
@@ -97,6 +87,7 @@ protected:
 
 public:
   explicit DIDescriptor(const MDNode *N = nullptr) : DbgNode(N) {}
+  DIDescriptor(const DebugNode *N) : DbgNode(N) {}
 
   MDNode *get() const { return const_cast<MDNode *>(DbgNode); }
   operator MDNode *() const { return get(); }
@@ -122,44 +113,6 @@ public:
     return 0;
   }
 
-  bool isDerivedType() const { return get() && isa<MDDerivedTypeBase>(get()); }
-  bool isCompositeType() const {
-    return get() && isa<MDCompositeTypeBase>(get());
-  }
-  bool isSubroutineType() const {
-    return get() && isa<MDSubroutineType>(get());
-  }
-  bool isBasicType() const { return get() && isa<MDBasicType>(get()); }
-  bool isVariable() const { return get() && isa<MDLocalVariable>(get()); }
-  bool isSubprogram() const { return get() && isa<MDSubprogram>(get()); }
-  bool isGlobalVariable() const {
-    return get() && isa<MDGlobalVariable>(get());
-  }
-  bool isScope() const { return get() && isa<MDScope>(get()); }
-  bool isFile() const { return get() && isa<MDFile>(get()); }
-  bool isCompileUnit() const { return get() && isa<MDCompileUnit>(get()); }
-  bool isNameSpace() const{ return get() && isa<MDNamespace>(get()); }
-  bool isLexicalBlockFile() const {
-    return get() && isa<MDLexicalBlockFile>(get());
-  }
-  bool isLexicalBlock() const {
-    return get() && isa<MDLexicalBlockBase>(get());
-  }
-  bool isSubrange() const { return get() && isa<MDSubrange>(get()); }
-  bool isEnumerator() const { return get() && isa<MDEnumerator>(get()); }
-  bool isType() const { return get() && isa<MDType>(get()); }
-  bool isTemplateTypeParameter() const {
-    return get() && isa<MDTemplateTypeParameter>(get());
-  }
-  bool isTemplateValueParameter() const {
-    return get() && isa<MDTemplateValueParameter>(get());
-  }
-  bool isObjCProperty() const { return get() && isa<MDObjCProperty>(get()); }
-  bool isImportedEntity() const {
-    return get() && isa<MDImportedEntity>(get());
-  }
-  bool isExpression() const { return get() && isa<MDExpression>(get()); }
-
   void print(raw_ostream &OS) const;
   void dump() const;
 
@@ -168,10 +121,42 @@ public:
   void replaceAllUsesWith(MDNode *D);
 };
 
+#define DECLARE_SIMPLIFY_DESCRIPTOR(DESC)                                      \
+  class DESC;                                                                  \
+  template <> struct simplify_type<const DESC>;                                \
+  template <> struct simplify_type<DESC>;
+DECLARE_SIMPLIFY_DESCRIPTOR(DIDescriptor)
+DECLARE_SIMPLIFY_DESCRIPTOR(DISubrange)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIEnumerator)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIScope)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIType)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIBasicType)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIDerivedType)
+DECLARE_SIMPLIFY_DESCRIPTOR(DICompositeType)
+DECLARE_SIMPLIFY_DESCRIPTOR(DISubroutineType)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIFile)
+DECLARE_SIMPLIFY_DESCRIPTOR(DICompileUnit)
+DECLARE_SIMPLIFY_DESCRIPTOR(DISubprogram)
+DECLARE_SIMPLIFY_DESCRIPTOR(DILexicalBlock)
+DECLARE_SIMPLIFY_DESCRIPTOR(DILexicalBlockFile)
+DECLARE_SIMPLIFY_DESCRIPTOR(DINameSpace)
+DECLARE_SIMPLIFY_DESCRIPTOR(DITemplateTypeParameter)
+DECLARE_SIMPLIFY_DESCRIPTOR(DITemplateValueParameter)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIGlobalVariable)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIVariable)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIExpression)
+DECLARE_SIMPLIFY_DESCRIPTOR(DILocation)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIObjCProperty)
+DECLARE_SIMPLIFY_DESCRIPTOR(DIImportedEntity)
+#undef DECLARE_SIMPLIFY_DESCRIPTOR
+
+typedef DebugNodeArray DIArray;
+typedef MDTypeRefArray DITypeArray;
+
 /// \brief This is used to represent ranges, for array bounds.
 class DISubrange : public DIDescriptor {
 public:
-  explicit DISubrange(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DISubrange() = default;
   DISubrange(const MDSubrange *N) : DIDescriptor(N) {}
 
   MDSubrange *get() const {
@@ -184,24 +169,9 @@ public:
     return *get();
   }
 
-  int64_t getLo() const { return get()->getLo(); }
+  int64_t getLo() const { return get()->getLowerBound(); }
   int64_t getCount() const { return get()->getCount(); }
 };
-
-/// \brief This descriptor holds an array of nodes with type T.
-template <typename T> class DITypedArray : public DIDescriptor {
-public:
-  explicit DITypedArray(const MDNode *N = nullptr) : DIDescriptor(N) {}
-  operator MDTuple *() const {
-    return const_cast<MDTuple *>(cast_or_null<MDTuple>(DbgNode));
-  }
-  unsigned getNumElements() const {
-    return DbgNode ? DbgNode->getNumOperands() : 0;
-  }
-  T getElement(unsigned Idx) const { return getFieldAs<T>(Idx); }
-};
-
-typedef DITypedArray<DIDescriptor> DIArray;
 
 /// \brief A wrapper for an enumerator (e.g. X and Y in 'enum {X,Y}').
 ///
@@ -209,7 +179,7 @@ typedef DITypedArray<DIDescriptor> DIArray;
 /// type/precision or a file/line pair for location info.
 class DIEnumerator : public DIDescriptor {
 public:
-  explicit DIEnumerator(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DIEnumerator() = default;
   DIEnumerator(const MDEnumerator *N) : DIDescriptor(N) {}
 
   MDEnumerator *get() const {
@@ -230,7 +200,6 @@ template <typename T> class DIRef;
 typedef DIRef<DIDescriptor> DIDescriptorRef;
 typedef DIRef<DIScope> DIScopeRef;
 typedef DIRef<DIType> DITypeRef;
-typedef DITypedArray<DITypeRef> DITypeArray;
 
 /// \brief A base class for various scopes.
 ///
@@ -242,7 +211,7 @@ typedef DITypedArray<DITypeRef> DITypeArray;
 /// (DICompileUnit, DISubprogram, etc.), but not for, e.g., a DIType.
 class DIScope : public DIDescriptor {
 public:
-  explicit DIScope(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DIScope() = default;
   DIScope(const MDScope *N) : DIDescriptor(N) {}
 
   MDScope *get() const { return cast_or_null<MDScope>(DIDescriptor::get()); }
@@ -301,22 +270,11 @@ public:
   static DIRef get(const Metadata *MD) { return DIRef(MD); }
 };
 
-template <typename T>
-T DIRef<T>::resolve(const DITypeIdentifierMap &Map) const {
-  if (!Val)
-    return T();
-
-  if (const MDNode *MD = dyn_cast<MDNode>(Val))
-    return T(MD);
-
-  const MDString *MS = cast<MDString>(Val);
-  // Find the corresponding MDNode.
-  DITypeIdentifierMap::const_iterator Iter = Map.find(MS);
-  assert(Iter != Map.end() && "Identifier not in the type map?");
-  assert(DIDescriptor(Iter->second).isType() &&
-         "MDNode in DITypeIdentifierMap should be a DIType.");
-  return T(Iter->second);
-}
+template <>
+DIDescriptor DIRef<DIDescriptor>::resolve(const DITypeIdentifierMap &Map) const;
+template <>
+DIScope DIRef<DIScope>::resolve(const DITypeIdentifierMap &Map) const;
+template <> DIType DIRef<DIType>::resolve(const DITypeIdentifierMap &Map) const;
 
 /// \brief Handle fields that are references to DIDescriptors.
 template <>
@@ -340,7 +298,7 @@ template <> DIRef<DIType>::DIRef(const Metadata *V);
 /// others do not require a huge and empty descriptor full of zeros.
 class DIType : public DIScope {
 public:
-  explicit DIType(const MDNode *N = nullptr) : DIScope(N) {}
+  DIType() = default;
   DIType(const MDType *N) : DIScope(N) {}
 
   MDType *get() const { return cast_or_null<MDType>(DIDescriptor::get()); }
@@ -360,43 +318,29 @@ public:
   // carry this is just plain insane.
   uint64_t getOffsetInBits() const { return get()->getOffsetInBits(); }
   unsigned getFlags() const { return get()->getFlags(); }
-  bool isPrivate() const {
-    return (getFlags() & FlagAccessibility) == FlagPrivate;
-  }
-  bool isProtected() const {
-    return (getFlags() & FlagAccessibility) == FlagProtected;
-  }
-  bool isPublic() const {
-    return (getFlags() & FlagAccessibility) == FlagPublic;
-  }
-  bool isForwardDecl() const { return (getFlags() & FlagFwdDecl) != 0; }
-  bool isAppleBlockExtension() const {
-    return (getFlags() & FlagAppleBlock) != 0;
-  }
-  bool isBlockByrefStruct() const {
-    return (getFlags() & FlagBlockByrefStruct) != 0;
-  }
-  bool isVirtual() const { return (getFlags() & FlagVirtual) != 0; }
-  bool isArtificial() const { return (getFlags() & FlagArtificial) != 0; }
-  bool isObjectPointer() const { return (getFlags() & FlagObjectPointer) != 0; }
-  bool isObjcClassComplete() const {
-    return (getFlags() & FlagObjcClassComplete) != 0;
-  }
-  bool isVector() const { return (getFlags() & FlagVector) != 0; }
-  bool isStaticMember() const { return (getFlags() & FlagStaticMember) != 0; }
-  bool isLValueReference() const {
-    return (getFlags() & FlagLValueReference) != 0;
-  }
-  bool isRValueReference() const {
-    return (getFlags() & FlagRValueReference) != 0;
-  }
-  bool isValid() const { return DbgNode && isType(); }
+
+  bool isPrivate() const { return get()->isPrivate(); }
+  bool isProtected() const { return get()->isProtected(); }
+  bool isPublic() const { return get()->isPublic(); }
+  bool isForwardDecl() const { return get()->isForwardDecl(); }
+  bool isAppleBlockExtension() const { return get()->isAppleBlockExtension(); }
+  bool isBlockByrefStruct() const { return get()->isBlockByrefStruct(); }
+  bool isVirtual() const { return get()->isVirtual(); }
+  bool isArtificial() const { return get()->isArtificial(); }
+  bool isObjectPointer() const { return get()->isObjectPointer(); }
+  bool isObjcClassComplete() const { return get()->isObjcClassComplete(); }
+  bool isVector() const { return get()->isVector(); }
+  bool isStaticMember() const { return get()->isStaticMember(); }
+  bool isLValueReference() const { return get()->isLValueReference(); }
+  bool isRValueReference() const { return get()->isRValueReference(); }
+
+  bool isValid() const { return DbgNode && isa<MDType>(*this); }
 };
 
 /// \brief A basic type, like 'int' or 'float'.
 class DIBasicType : public DIType {
 public:
-  explicit DIBasicType(const MDNode *N = nullptr) : DIType(N) {}
+  DIBasicType() = default;
   DIBasicType(const MDBasicType *N) : DIType(N) {}
 
   MDBasicType *get() const {
@@ -418,7 +362,7 @@ public:
 /// Or, a data member of a class/struct/union.
 class DIDerivedType : public DIType {
 public:
-  explicit DIDerivedType(const MDNode *N = nullptr) : DIType(N) {}
+  DIDerivedType() = default;
   DIDerivedType(const MDDerivedTypeBase *N) : DIType(N) {}
 
   MDDerivedTypeBase *get() const {
@@ -471,11 +415,8 @@ public:
 class DICompositeType : public DIDerivedType {
   friend class DIBuilder;
 
-  /// \brief Set the array of member DITypes.
-  void setArraysHelper(MDNode *Elements, MDNode *TParams);
-
 public:
-  explicit DICompositeType(const MDNode *N = nullptr) : DIDerivedType(N) {}
+  DICompositeType() = default;
   DICompositeType(const MDCompositeTypeBase *N) : DIDerivedType(N) {}
 
   MDCompositeTypeBase *get() const {
@@ -489,31 +430,15 @@ public:
   }
 
   DIArray getElements() const {
-    assert(!isSubroutineType() && "no elements for DISubroutineType");
+    assert(!isa<MDSubroutineType>(*this) && "no elements for DISubroutineType");
     return DIArray(get()->getElements());
   }
 
-private:
-  template <typename T>
-  void setArrays(DITypedArray<T> Elements, DIArray TParams = DIArray()) {
-    assert(
-        (!TParams || DbgNode->getNumOperands() == 8) &&
-        "If you're setting the template parameters this should include a slot "
-        "for that!");
-    setArraysHelper(Elements, TParams);
-  }
-
-public:
   unsigned getRunTimeLang() const { return get()->getRuntimeLang(); }
   DITypeRef getContainingType() const {
     return DITypeRef::get(get()->getVTableHolder());
   }
 
-private:
-  /// \brief Set the containing type.
-  void setContainingType(DICompositeType ContainingType);
-
-public:
   DIArray getTemplateParams() const {
     return DIArray(get()->getTemplateParams());
   }
@@ -522,7 +447,7 @@ public:
 
 class DISubroutineType : public DICompositeType {
 public:
-  explicit DISubroutineType(const MDNode *N = nullptr) : DICompositeType(N) {}
+  DISubroutineType() = default;
   DISubroutineType(const MDSubroutineType *N) : DICompositeType(N) {}
 
   MDSubroutineType *get() const {
@@ -535,15 +460,13 @@ public:
     return *get();
   }
 
-  DITypedArray<DITypeRef> getTypeArray() const {
-    return DITypedArray<DITypeRef>(get()->getTypeArray());
-  }
+  MDTypeRefArray getTypeArray() const { return get()->getTypeArray(); }
 };
 
 /// \brief This is a wrapper for a file.
 class DIFile : public DIScope {
 public:
-  explicit DIFile(const MDNode *N = nullptr) : DIScope(N) {}
+  DIFile() = default;
   DIFile(const MDFile *N) : DIScope(N) {}
 
   MDFile *get() const { return cast_or_null<MDFile>(DIDescriptor::get()); }
@@ -561,7 +484,7 @@ public:
 /// \brief A wrapper for a compile unit.
 class DICompileUnit : public DIScope {
 public:
-  explicit DICompileUnit(const MDNode *N = nullptr) : DIScope(N) {}
+  DICompileUnit() = default;
   DICompileUnit(const MDCompileUnit *N) : DIScope(N) {}
 
   MDCompileUnit *get() const {
@@ -606,7 +529,7 @@ public:
 /// \brief This is a wrapper for a subprogram (e.g. a function).
 class DISubprogram : public DIScope {
 public:
-  explicit DISubprogram(const MDNode *N = nullptr) : DIScope(N) {}
+  DISubprogram() = default;
   DISubprogram(const MDSubprogram *N) : DIScope(N) {}
 
   MDSubprogram *get() const {
@@ -665,45 +588,20 @@ public:
   MDNode *getVariablesNodes() const { return getVariables(); }
   DIArray getVariables() const { return DIArray(get()->getVariables()); }
 
-  unsigned isArtificial() const { return (getFlags() & FlagArtificial) != 0; }
-  /// \brief Check for the "private" access specifier.
-  bool isPrivate() const {
-    return (getFlags() & FlagAccessibility) == FlagPrivate;
-  }
-  /// \brief Check for the "protected" access specifier.
-  bool isProtected() const {
-    return (getFlags() & FlagAccessibility) == FlagProtected;
-  }
-  /// \brief Check for the "public" access specifier.
-  bool isPublic() const {
-    return (getFlags() & FlagAccessibility) == FlagPublic;
-  }
-  /// \brief Check for "explicit".
-  bool isExplicit() const { return (getFlags() & FlagExplicit) != 0; }
-  /// \brief Check if this is prototyped.
-  bool isPrototyped() const { return (getFlags() & FlagPrototyped) != 0; }
-
-  /// \brief Check if this is reference-qualified.
-  ///
-  /// Return true if this subprogram is a C++11 reference-qualified non-static
-  /// member function (void foo() &).
-  unsigned isLValueReference() const {
-    return (getFlags() & FlagLValueReference) != 0;
-  }
-
-  /// \brief Check if this is rvalue-reference-qualified.
-  ///
-  /// Return true if this subprogram is a C++11 rvalue-reference-qualified
-  /// non-static member function (void foo() &&).
-  unsigned isRValueReference() const {
-    return (getFlags() & FlagRValueReference) != 0;
-  }
+  unsigned isArtificial() const { return get()->isArtificial(); }
+  bool isPrivate() const { return get()->isPrivate(); }
+  bool isProtected() const { return get()->isProtected(); }
+  bool isPublic() const { return get()->isPublic(); }
+  bool isExplicit() const { return get()->isExplicit(); }
+  bool isPrototyped() const { return get()->isPrototyped(); }
+  unsigned isLValueReference() const { return get()->isLValueReference(); }
+  unsigned isRValueReference() const { return get()->isRValueReference(); }
 };
 
 /// \brief This is a wrapper for a lexical block.
 class DILexicalBlock : public DIScope {
 public:
-  explicit DILexicalBlock(const MDNode *N = nullptr) : DIScope(N) {}
+  DILexicalBlock() = default;
   DILexicalBlock(const MDLexicalBlockBase *N) : DIScope(N) {}
 
   MDLexicalBlockBase *get() const {
@@ -732,7 +630,7 @@ public:
 /// \brief This is a wrapper for a lexical block with a filename change.
 class DILexicalBlockFile : public DIScope {
 public:
-  explicit DILexicalBlockFile(const MDNode *N = nullptr) : DIScope(N) {}
+  DILexicalBlockFile() = default;
   DILexicalBlockFile(const MDLexicalBlockFile *N) : DIScope(N) {}
 
   MDLexicalBlockFile *get() const {
@@ -745,17 +643,14 @@ public:
     return *get();
   }
 
-  DIScope getContext() const { return getScope(); }
-  unsigned getLineNumber() const { return getScope().getLineNumber(); }
-  unsigned getColumnNumber() const { return getScope().getColumnNumber(); }
-  DILexicalBlock getScope() const { return DILexicalBlock(get()->getScope()); }
+  DIScope getContext() const { return get()->getScope(); }
   unsigned getDiscriminator() const { return get()->getDiscriminator(); }
 };
 
 /// \brief A wrapper for a C++ style name space.
 class DINameSpace : public DIScope {
 public:
-  explicit DINameSpace(const MDNode *N = nullptr) : DIScope(N) {}
+  DINameSpace() = default;
   DINameSpace(const MDNamespace *N) : DIScope(N) {}
 
   MDNamespace *get() const {
@@ -776,8 +671,7 @@ public:
 /// \brief This is a wrapper for template type parameter.
 class DITemplateTypeParameter : public DIDescriptor {
 public:
-  explicit DITemplateTypeParameter(const MDNode *N = nullptr)
-      : DIDescriptor(N) {}
+  DITemplateTypeParameter() = default;
   DITemplateTypeParameter(const MDTemplateTypeParameter *N) : DIDescriptor(N) {}
 
   MDTemplateTypeParameter *get() const {
@@ -798,8 +692,7 @@ public:
 /// \brief This is a wrapper for template value parameter.
 class DITemplateValueParameter : public DIDescriptor {
 public:
-  explicit DITemplateValueParameter(const MDNode *N = nullptr)
-      : DIDescriptor(N) {}
+  DITemplateValueParameter() = default;
   DITemplateValueParameter(const MDTemplateValueParameter *N)
       : DIDescriptor(N) {}
 
@@ -823,7 +716,7 @@ class DIGlobalVariable : public DIDescriptor {
   DIFile getFile() const { return DIFile(get()->getFile()); }
 
 public:
-  explicit DIGlobalVariable(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DIGlobalVariable() = default;
   DIGlobalVariable(const MDGlobalVariable *N) : DIDescriptor(N) {}
 
   MDGlobalVariable *get() const {
@@ -865,7 +758,7 @@ class DIVariable : public DIDescriptor {
   unsigned getFlags() const { return get()->getFlags(); }
 
 public:
-  explicit DIVariable(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DIVariable() = default;
   DIVariable(const MDLocalVariable *N) : DIDescriptor(N) {}
 
   MDLocalVariable *get() const {
@@ -886,14 +779,8 @@ public:
   DIFile getFile() const { return DIFile(get()->getFile()); }
   DITypeRef getType() const { return DITypeRef::get(get()->getType()); }
 
-  /// \brief Return true if this variable is marked as "artificial".
-  bool isArtificial() const {
-    return (getFlags() & FlagArtificial) != 0;
-  }
-
-  bool isObjectPointer() const {
-    return (getFlags() & FlagObjectPointer) != 0;
-  }
+  bool isArtificial() const { return get()->isArtificial(); }
+  bool isObjectPointer() const { return get()->isObjectPointer(); }
 
   /// \brief If this variable is inlined then return inline location.
   MDNode *getInlinedAt() const { return DIDescriptor(get()->getInlinedAt()); }
@@ -921,7 +808,7 @@ public:
 /// and have DW_OP_plus consume the topmost elements on the stack.
 class DIExpression : public DIDescriptor {
 public:
-  explicit DIExpression(const MDNode *N = nullptr) : DIDescriptor(N) {}
+  DIExpression() = default;
   DIExpression(const MDExpression *N) : DIDescriptor(N) {}
 
   MDExpression *get() const {
@@ -934,78 +821,11 @@ public:
     return *get();
   }
 
-  /// \brief Return the number of elements in the complex expression.
   unsigned getNumElements() const { return get()->getNumElements(); }
-
-  /// \brief return the Idx'th complex address element.
   uint64_t getElement(unsigned I) const { return get()->getElement(I); }
-
-  /// \brief Return whether this is a piece of an aggregate variable.
-  bool isBitPiece() const;
-  /// \brief Return the offset of this piece in bits.
-  uint64_t getBitPieceOffset() const;
-  /// \brief Return the size of this piece in bits.
-  uint64_t getBitPieceSize() const;
-
-  class iterator;
-  /// \brief A lightweight wrapper around an element of a DIExpression.
-  class Operand {
-    friend class iterator;
-    MDExpression::element_iterator I;
-    Operand() {}
-    Operand(MDExpression::element_iterator I) : I(I) {}
-  public:
-    /// \brief Operands such as DW_OP_piece have explicit (non-stack) arguments.
-    /// Argument 0 is the operand itself.
-    uint64_t getArg(unsigned N) const {
-      MDExpression::element_iterator In = I;
-      std::advance(In, N);
-      return *In;
-    }
-    operator uint64_t () const { return *I; }
-    /// \brief Returns underlying MDExpression::element_iterator.
-    const MDExpression::element_iterator &getBase() const { return I; }
-    /// \brief Returns the next operand.
-    iterator getNext() const;
-  };
-
-  /// \brief An iterator for DIExpression elements.
-  class iterator : public std::iterator<std::input_iterator_tag, StringRef,
-                                        unsigned, const Operand*, Operand> {
-    friend class Operand;
-    MDExpression::element_iterator I;
-    Operand Tmp;
-
-  public:
-    iterator(MDExpression::element_iterator I) : I(I) {}
-    const Operand &operator*() { return Tmp = Operand(I); }
-    const Operand *operator->() { return &(Tmp = Operand(I)); }
-    iterator &operator++() {
-      increment();
-      return *this;
-    }
-    iterator operator++(int) {
-      iterator X(*this);
-      increment();
-      return X;
-    }
-    bool operator==(const iterator &X) const { return I == X.I; }
-    bool operator!=(const iterator &X) const { return !(*this == X); }
-
-  private:
-    void increment() {
-      switch (**this) {
-      case dwarf::DW_OP_bit_piece: std::advance(I, 3); break;
-      case dwarf::DW_OP_plus:      std::advance(I, 2); break;
-      case dwarf::DW_OP_deref:     std::advance(I, 1); break;
-      default:
-        llvm_unreachable("unsupported operand");
-      }
-    }
-  };
-
-  iterator begin() const { return get()->elements_begin(); }
-  iterator end() const { return get()->elements_end(); }
+  bool isBitPiece() const { return get()->isBitPiece(); }
+  uint64_t getBitPieceOffset() const { return get()->getBitPieceOffset(); }
+  uint64_t getBitPieceSize() const { return get()->getBitPieceSize(); }
 };
 
 /// \brief This object holds location information.
@@ -1013,7 +833,7 @@ public:
 /// This object is not associated with any DWARF tag.
 class DILocation : public DIDescriptor {
 public:
-  explicit DILocation(const MDNode *N) : DIDescriptor(N) {}
+  DILocation() = default;
   DILocation(const MDLocation *N) : DIDescriptor(N) {}
 
   MDLocation *get() const {
@@ -1050,11 +870,9 @@ public:
     // Since discriminators are associated with lexical blocks, make
     // sure this location is a lexical block before retrieving its
     // value.
-    return getScope().isLexicalBlockFile()
-               ? DILexicalBlockFile(
-                     cast<MDNode>(cast<MDLocation>(DbgNode)->getScope()))
-                     .getDiscriminator()
-               : 0;
+    if (auto *F = dyn_cast<MDLexicalBlockFile>(get()->getScope()))
+      return F->getDiscriminator();
+    return 0;
   }
 
   /// \brief Generate a new discriminator value for this location.
@@ -1066,7 +884,7 @@ public:
 
 class DIObjCProperty : public DIDescriptor {
 public:
-  explicit DIObjCProperty(const MDNode *N) : DIDescriptor(N) {}
+  DIObjCProperty() = default;
   DIObjCProperty(const MDObjCProperty *N) : DIDescriptor(N) {}
 
   MDObjCProperty *get() const {
@@ -1116,7 +934,6 @@ public:
 class DIImportedEntity : public DIDescriptor {
 public:
   DIImportedEntity() = default;
-  explicit DIImportedEntity(const MDNode *N) : DIDescriptor(N) {}
   DIImportedEntity(const MDImportedEntity *N) : DIDescriptor(N) {}
 
   MDImportedEntity *get() const {
@@ -1136,6 +953,37 @@ public:
   unsigned getLineNumber() const { return get()->getLine(); }
   StringRef getName() const { return get()->getName(); }
 };
+
+#define SIMPLIFY_DESCRIPTOR(DESC)                                              \
+  template <> struct simplify_type<const DESC> {                               \
+    typedef Metadata *SimpleType;                                              \
+    static SimpleType getSimplifiedValue(const DESC &DI) { return DI; }        \
+  };                                                                           \
+  template <> struct simplify_type<DESC> : simplify_type<const DESC> {};
+SIMPLIFY_DESCRIPTOR(DIDescriptor)
+SIMPLIFY_DESCRIPTOR(DISubrange)
+SIMPLIFY_DESCRIPTOR(DIEnumerator)
+SIMPLIFY_DESCRIPTOR(DIScope)
+SIMPLIFY_DESCRIPTOR(DIType)
+SIMPLIFY_DESCRIPTOR(DIBasicType)
+SIMPLIFY_DESCRIPTOR(DIDerivedType)
+SIMPLIFY_DESCRIPTOR(DICompositeType)
+SIMPLIFY_DESCRIPTOR(DISubroutineType)
+SIMPLIFY_DESCRIPTOR(DIFile)
+SIMPLIFY_DESCRIPTOR(DICompileUnit)
+SIMPLIFY_DESCRIPTOR(DISubprogram)
+SIMPLIFY_DESCRIPTOR(DILexicalBlock)
+SIMPLIFY_DESCRIPTOR(DILexicalBlockFile)
+SIMPLIFY_DESCRIPTOR(DINameSpace)
+SIMPLIFY_DESCRIPTOR(DITemplateTypeParameter)
+SIMPLIFY_DESCRIPTOR(DITemplateValueParameter)
+SIMPLIFY_DESCRIPTOR(DIGlobalVariable)
+SIMPLIFY_DESCRIPTOR(DIVariable)
+SIMPLIFY_DESCRIPTOR(DIExpression)
+SIMPLIFY_DESCRIPTOR(DILocation)
+SIMPLIFY_DESCRIPTOR(DIObjCProperty)
+SIMPLIFY_DESCRIPTOR(DIImportedEntity)
+#undef SIMPLIFY_DESCRIPTOR
 
 /// \brief Find subprogram that is enclosing this scope.
 DISubprogram getDISubprogram(const MDNode *Scope);
