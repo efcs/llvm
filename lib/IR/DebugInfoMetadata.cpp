@@ -66,6 +66,23 @@ MDLocation *MDLocation::getImpl(LLVMContext &Context, unsigned Line,
                    Storage, Context.pImpl->MDLocations);
 }
 
+unsigned MDLocation::computeNewDiscriminator() const {
+  // FIXME: This seems completely wrong.
+  //
+  //  1. If two modules are generated in the same context, then the second
+  //     Module will get different discriminators than it would have if it were
+  //     generated in its own context.
+  //  2. If this function is called after round-tripping to bitcode instead of
+  //     before, it will give a different (and potentially incorrect!) return.
+  //
+  // The discriminator should instead be calculated from local information
+  // where it's actually needed.  This logic should be moved to
+  // AddDiscriminators::runOnFunction(), where it doesn't pollute the
+  // LLVMContext.
+  std::pair<const char *, unsigned> Key(getFilename().data(), getLine());
+  return ++getContext().pImpl->DiscriminatorTable[Key];
+}
+
 unsigned DebugNode::getFlag(StringRef Flag) {
   return StringSwitch<unsigned>(Flag)
 #define HANDLE_DI_FLAG(ID, NAME) .Case("DIFlag" #NAME, Flag##NAME)
@@ -108,6 +125,36 @@ unsigned DebugNode::splitFlags(unsigned Flags,
   return Flags;
 }
 
+MDScopeRef MDScope::getScope() const {
+  if (auto *T = dyn_cast<MDType>(this))
+    return T->getScope();
+
+  if (auto *SP = dyn_cast<MDSubprogram>(this))
+    return SP->getScope();
+
+  if (auto *LB = dyn_cast<MDLexicalBlockBase>(this))
+    return MDScopeRef(LB->getScope());
+
+  if (auto *NS = dyn_cast<MDNamespace>(this))
+    return MDScopeRef(NS->getScope());
+
+  assert((isa<MDFile>(this) || isa<MDCompileUnit>(this)) &&
+         "Unhandled type of scope.");
+  return nullptr;
+}
+
+StringRef MDScope::getName() const {
+  if (auto *T = dyn_cast<MDType>(this))
+    return T->getName();
+  if (auto *SP = dyn_cast<MDSubprogram>(this))
+    return SP->getName();
+  if (auto *NS = dyn_cast<MDNamespace>(this))
+    return NS->getName();
+  assert((isa<MDLexicalBlockBase>(this) || isa<MDFile>(this) ||
+          isa<MDCompileUnit>(this)) &&
+         "Unhandled type of scope.");
+  return "";
+}
 
 static StringRef getString(const MDString *S) {
   if (S)
@@ -313,6 +360,21 @@ MDSubprogram *MDSubprogram::getImpl(
                        Ops);
 }
 
+Function *MDSubprogram::getFunction() const {
+  // FIXME: Should this be looking through bitcasts?
+  return dyn_cast_or_null<Function>(getFunctionConstant());
+}
+
+bool MDSubprogram::describes(const Function *F) const {
+  assert(F && "Invalid function");
+  if (F == getFunction())
+    return true;
+  StringRef Name = getLinkageName();
+  if (Name.empty())
+    Name = getName();
+  return F->getName() == Name;
+}
+
 void MDSubprogram::replaceFunction(Function *F) {
   replaceFunction(F ? ConstantAsMetadata::get(F)
                     : static_cast<ConstantAsMetadata *>(nullptr));
@@ -388,10 +450,12 @@ MDGlobalVariable::getImpl(LLVMContext &Context, Metadata *Scope, MDString *Name,
                        Ops);
 }
 
-MDLocalVariable *MDLocalVariable::getImpl(
-    LLVMContext &Context, unsigned Tag, Metadata *Scope, MDString *Name,
-    Metadata *File, unsigned Line, Metadata *Type, unsigned Arg, unsigned Flags,
-    Metadata *InlinedAt, StorageType Storage, bool ShouldCreate) {
+MDLocalVariable *MDLocalVariable::getImpl(LLVMContext &Context, unsigned Tag,
+                                          Metadata *Scope, MDString *Name,
+                                          Metadata *File, unsigned Line,
+                                          Metadata *Type, unsigned Arg,
+                                          unsigned Flags, StorageType Storage,
+                                          bool ShouldCreate) {
   // Truncate Arg to 8 bits.
   //
   // FIXME: This is gross (and should be changed to an assert or removed), but
@@ -401,8 +465,8 @@ MDLocalVariable *MDLocalVariable::getImpl(
   assert(Scope && "Expected scope");
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(MDLocalVariable, (Tag, Scope, getString(Name), File,
-                                          Line, Type, Arg, Flags, InlinedAt));
-  Metadata *Ops[] = {Scope, Name, File, Type, InlinedAt};
+                                          Line, Type, Arg, Flags));
+  Metadata *Ops[] = {Scope, Name, File, Type};
   DEFINE_GETIMPL_STORE(MDLocalVariable, (Tag, Line, Arg, Flags), Ops);
 }
 

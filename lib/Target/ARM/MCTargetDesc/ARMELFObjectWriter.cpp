@@ -32,7 +32,7 @@ namespace {
   public:
     ARMELFObjectWriter(uint8_t OSABI);
 
-    virtual ~ARMELFObjectWriter();
+    ~ARMELFObjectWriter() override;
 
     unsigned GetRelocType(const MCValue &Target, const MCFixup &Fixup,
                           bool IsPCRel) const override;
@@ -251,7 +251,7 @@ unsigned ARMELFObjectWriter::GetRelocTypeInner(const MCValue &Target,
   return Type;
 }
 
-MCObjectWriter *llvm::createARMELFObjectWriter(raw_ostream &OS,
+MCObjectWriter *llvm::createARMELFObjectWriter(raw_pwrite_stream &OS,
                                                uint8_t OSABI,
                                                bool IsLittleEndian) {
   MCELFObjectTargetWriter *MOTW = new ARMELFObjectWriter(OSABI);

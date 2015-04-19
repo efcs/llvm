@@ -2143,6 +2143,7 @@ CreateCopyOfByValArgument(SDValue Src, SDValue Dst, SDValue Chain,
 
   return DAG.getMemcpy(Chain, dl, Dst, Src, SizeNode, Flags.getByValAlign(),
                        /*isVolatile*/false, /*AlwaysInline=*/true,
+                       /*isTailCall*/false,
                        MachinePointerInfo(), MachinePointerInfo());
 }
 
@@ -11970,7 +11971,7 @@ static  SDValue LowerZERO_EXTEND_AVX512(SDValue Op,
   // Now we have only mask extension
   assert(InVT.getVectorElementType() == MVT::i1);
   SDValue Cst = DAG.getTargetConstant(1, ExtVT.getScalarType());
-  const Constant *C = (dyn_cast<ConstantSDNode>(Cst))->getConstantIntValue();
+  const Constant *C = cast<ConstantSDNode>(Cst)->getConstantIntValue();
   SDValue CP = DAG.getConstantPool(C, TLI.getPointerTy());
   unsigned Alignment = cast<ConstantPoolSDNode>(CP)->getAlignment();
   SDValue Ld = DAG.getLoad(Cst.getValueType(), DL, DAG.getEntryNode(), CP,
@@ -12046,7 +12047,7 @@ SDValue X86TargetLowering::LowerTRUNCATE(SDValue Op, SelectionDAG &DAG) const {
     }
 
     SDValue Cst = DAG.getTargetConstant(1, InVT.getVectorElementType());
-    const Constant *C = (dyn_cast<ConstantSDNode>(Cst))->getConstantIntValue();
+    const Constant *C = cast<ConstantSDNode>(Cst)->getConstantIntValue();
     SDValue CP = DAG.getConstantPool(C, getPointerTy());
     unsigned Alignment = cast<ConstantPoolSDNode>(CP)->getAlignment();
     SDValue Ld = DAG.getLoad(Cst.getValueType(), DL, DAG.getEntryNode(), CP,
@@ -12815,6 +12816,16 @@ SDValue X86TargetLowering::getRecipEstimate(SDValue Op,
     return DCI.DAG.getNode(X86ISD::FRCP, SDLoc(Op), VT, Op);
   }
   return SDValue();
+}
+
+/// If we have at least two divisions that use the same divisor, convert to
+/// multplication by a reciprocal. This may need to be adjusted for a given
+/// CPU if a division's cost is not at least twice the cost of a multiplication.
+/// This is because we still need one division to calculate the reciprocal and
+/// then we need two multiplies by that reciprocal as replacements for the
+/// original divisions.
+bool X86TargetLowering::combineRepeatedFPDivisors(unsigned NumUsers) const {
+  return NumUsers > 1;
 }
 
 static bool isAllOnes(SDValue V) {
@@ -14494,7 +14505,7 @@ static SDValue LowerVACOPY(SDValue Op, const X86Subtarget *Subtarget,
 
   return DAG.getMemcpy(Chain, DL, DstPtr, SrcPtr,
                        DAG.getIntPtrConstant(24), 8, /*isVolatile*/false,
-                       false,
+                       false, false,
                        MachinePointerInfo(DstSV), MachinePointerInfo(SrcSV));
 }
 
@@ -15287,10 +15298,8 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
   }
   case PREFETCH: {
     SDValue Hint = Op.getOperand(6);
-    unsigned HintVal;
-    if (dyn_cast<ConstantSDNode> (Hint) == nullptr ||
-        (HintVal = dyn_cast<ConstantSDNode> (Hint)->getZExtValue()) > 1)
-      llvm_unreachable("Wrong prefetch hint in intrinsic: should be 0 or 1");
+    unsigned HintVal = cast<ConstantSDNode>(Hint)->getZExtValue();
+    assert(HintVal < 2 && "Wrong prefetch hint in intrinsic: should be 0 or 1");
     unsigned Opcode = (HintVal ? IntrData->Opc1 : IntrData->Opc0);
     SDValue Chain = Op.getOperand(0);
     SDValue Mask  = Op.getOperand(2);
@@ -24242,7 +24251,7 @@ TargetLowering::ConstraintWeight
     break;
   case 'G':
   case 'C':
-    if (dyn_cast<ConstantFP>(CallOperandVal)) {
+    if (isa<ConstantFP>(CallOperandVal)) {
       weight = CW_Constant;
     }
     break;

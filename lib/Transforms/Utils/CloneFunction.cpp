@@ -157,7 +157,8 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
 // Find the MDNode which corresponds to the DISubprogram data that described F.
 static MDNode* FindSubprogram(const Function *F, DebugInfoFinder &Finder) {
   for (DISubprogram Subprogram : Finder.subprograms()) {
-    if (Subprogram.describes(F)) return Subprogram;
+    if (Subprogram->describes(F))
+      return Subprogram;
   }
   return nullptr;
 }
@@ -170,7 +171,7 @@ static void AddOperand(DICompileUnit CU, MDSubprogramArray SPs, Metadata *NewSP)
   for (auto *SP : SPs)
     NewSPs.push_back(SP);
   NewSPs.push_back(NewSP);
-  CU.replaceSubprograms(DIArray(MDNode::get(CU->getContext(), NewSPs)));
+  CU->replaceSubprograms(MDTuple::get(CU->getContext(), NewSPs));
 }
 
 // Clone the module-level debug info associated with OldFunc. The cloned data
@@ -395,7 +396,7 @@ void PruningFunctionCloner::CloneBlock(const BasicBlock *BB,
     if (Action == CloningDirector::CloneSuccessors) {
       // If the director says to skip with a terminate instruction, we still
       // need to clone this block's successors.
-      const TerminatorInst *TI = BB->getTerminator();
+      const TerminatorInst *TI = NewBB->getTerminator();
       for (unsigned i = 0, e = TI->getNumSuccessors(); i != e; ++i)
         ToClone.push_back(TI->getSuccessor(i));
       return;

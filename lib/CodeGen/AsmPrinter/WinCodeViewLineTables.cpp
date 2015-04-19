@@ -24,9 +24,9 @@ StringRef WinCodeViewLineTables::getFullFilepath(const MDNode *S) {
           isa<MDLexicalBlockBase>(S)) &&
          "Unexpected scope info");
 
-  DIScope Scope = cast<MDScope>(S);
-  StringRef Dir = Scope.getDirectory(),
-            Filename = Scope.getFilename();
+  auto *Scope = cast<MDScope>(S);
+  StringRef Dir = Scope->getDirectory(),
+            Filename = Scope->getFilename();
   char *&Result = DirAndFilenameToFilepathMap[std::make_pair(Dir, Filename)];
   if (Result)
     return Result;
@@ -192,7 +192,7 @@ void WinCodeViewLineTables::emitDebugInfoForFunction(const Function *GV) {
   StringRef GVName = GV->getName();
   StringRef FuncName;
   if (DISubprogram SP = getDISubprogram(GV))
-    FuncName = SP.getDisplayName();
+    FuncName = SP->getDisplayName();
 
   // FIXME Clang currently sets DisplayName to "bar" for a C++
   // "namespace_foo::bar" function, see PR21528.  Luckily, dbghelp.dll is trying
