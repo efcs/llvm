@@ -307,11 +307,8 @@ bool StripDeadDebugInfo::runOnModule(Module &M) {
 
   for (MDCompileUnit *DIC : F.compile_units()) {
     // Create our live subprogram list.
-    MDSubprogramArray SPs = DIC->getSubprograms();
     bool SubprogramChange = false;
-    for (unsigned i = 0, e = SPs.size(); i != e; ++i) {
-      DISubprogram DISP = SPs[i];
-
+    for (MDSubprogram *DISP : DIC->getSubprograms()) {
       // Make sure we visit each subprogram only once.
       if (!VisitedSet.insert(DISP).second)
         continue;
@@ -324,11 +321,8 @@ bool StripDeadDebugInfo::runOnModule(Module &M) {
     }
 
     // Create our live global variable list.
-    MDGlobalVariableArray GVs = DIC->getGlobalVariables();
     bool GlobalVariableChange = false;
-    for (unsigned i = 0, e = GVs.size(); i != e; ++i) {
-      DIGlobalVariable DIG = GVs[i];
-
+    for (MDGlobalVariable *DIG : DIC->getGlobalVariables()) {
       // Make sure we only visit each global variable only once.
       if (!VisitedSet.insert(DIG).second)
         continue;
