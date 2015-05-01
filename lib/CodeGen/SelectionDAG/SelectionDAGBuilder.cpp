@@ -999,8 +999,8 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
     const DbgValueInst *DI = DDI.getDI();
     DebugLoc dl = DDI.getdl();
     unsigned DbgSDNodeOrder = DDI.getSDNodeOrder();
-    MDLocalVariable *Variable = DI->getVariable();
-    MDExpression *Expr = DI->getExpression();
+    DILocalVariable *Variable = DI->getVariable();
+    DIExpression *Expr = DI->getExpression();
     assert(Variable->isValidLocationForIntrinsic(dl) &&
            "Expected inlined-at fields to agree");
     uint64_t Offset = DI->getOffset();
@@ -3980,8 +3980,8 @@ static unsigned getTruncatedArgReg(const SDValue &N) {
 /// argument, create the corresponding DBG_VALUE machine instruction for it now.
 /// At the end of instruction selection, they will be inserted to the entry BB.
 bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
-    const Value *V, MDLocalVariable *Variable, MDExpression *Expr,
-    MDLocation *DL, int64_t Offset, bool IsIndirect, const SDValue &N) {
+    const Value *V, DILocalVariable *Variable, DIExpression *Expr,
+    DILocation *DL, int64_t Offset, bool IsIndirect, const SDValue &N) {
   const Argument *Arg = dyn_cast<Argument>(V);
   if (!Arg)
     return false;
@@ -4175,8 +4175,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
   case Intrinsic::dbg_declare: {
     const DbgDeclareInst &DI = cast<DbgDeclareInst>(I);
-    MDLocalVariable *Variable = DI.getVariable();
-    MDExpression *Expression = DI.getExpression();
+    DILocalVariable *Variable = DI.getVariable();
+    DIExpression *Expression = DI.getExpression();
     const Value *Address = DI.getAddress();
     assert(Variable && "Missing variable");
     if (!Address) {
@@ -4257,8 +4257,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     const DbgValueInst &DI = cast<DbgValueInst>(I);
     assert(DI.getVariable() && "Missing variable");
 
-    MDLocalVariable *Variable = DI.getVariable();
-    MDExpression *Expression = DI.getExpression();
+    DILocalVariable *Variable = DI.getVariable();
+    DIExpression *Expression = DI.getExpression();
     uint64_t Offset = DI.getOffset();
     const Value *V = DI.getValue();
     if (!V)
@@ -7983,17 +7983,43 @@ void SelectionDAGBuilder::splitWorkItem(SwitchWorkList &WorkList,
   assert(W.FirstCluster->Low->getValue().slt(W.LastCluster->Low->getValue()) &&
          "Clusters not sorted?");
 
-  unsigned NumClusters = W.LastCluster - W.FirstCluster + 1;
-  assert(NumClusters >= 2 && "Too small to split!");
+  assert(W.LastCluster - W.FirstCluster + 1 >= 2 && "Too small to split!");
 
-  // FIXME: When we have profile info, we might want to balance the tree based
-  // on weights instead of node count.
+  // Balance the tree based on branch weights to create a near-optimal (in terms
+  // of search time given key frequency) binary search tree. See e.g. Kurt
+  // Mehlhorn "Nearly Optimal Binary Search Trees" (1975).
+  CaseClusterIt LastLeft = W.FirstCluster;
+  CaseClusterIt FirstRight = W.LastCluster;
+  uint32_t LeftWeight = LastLeft->Weight;
+  uint32_t RightWeight = FirstRight->Weight;
 
-  CaseClusterIt PivotCluster = W.FirstCluster + NumClusters / 2;
+  // Move LastLeft and FirstRight towards each other from opposite directions to
+  // find a partitioning of the clusters which balances the weight on both
+  // sides.
+  while (LastLeft + 1 < FirstRight) {
+    // Zero-weight nodes would cause skewed trees since they don't affect
+    // LeftWeight or RightWeight.
+    assert(LastLeft->Weight != 0);
+    assert(FirstRight->Weight != 0);
+
+    if (LeftWeight < RightWeight)
+      LeftWeight += (++LastLeft)->Weight;
+    else
+      RightWeight += (--FirstRight)->Weight;
+  }
+  assert(LastLeft + 1 == FirstRight);
+  assert(LastLeft >= W.FirstCluster);
+  assert(FirstRight <= W.LastCluster);
+
+  // Use the first element on the right as pivot since we will make less-than
+  // comparisons against it.
+  CaseClusterIt PivotCluster = FirstRight;
+  assert(PivotCluster > W.FirstCluster);
+  assert(PivotCluster <= W.LastCluster);
+
   CaseClusterIt FirstLeft = W.FirstCluster;
-  CaseClusterIt LastLeft = PivotCluster - 1;
-  CaseClusterIt FirstRight = PivotCluster;
   CaseClusterIt LastRight = W.LastCluster;
+
   const ConstantInt *Pivot = PivotCluster->Low;
 
   // New blocks will be inserted immediately after the current one.
@@ -8032,7 +8058,8 @@ void SelectionDAGBuilder::splitWorkItem(SwitchWorkList &WorkList,
   }
 
   // Create the CaseBlock record that will be used to lower the branch.
-  CaseBlock CB(ISD::SETLT, Cond, Pivot, nullptr, LeftMBB, RightMBB, W.MBB);
+  CaseBlock CB(ISD::SETLT, Cond, Pivot, nullptr, LeftMBB, RightMBB, W.MBB,
+               LeftWeight, RightWeight);
 
   if (W.MBB == SwitchMBB)
     visitSwitchCase(CB, SwitchMBB);
@@ -8048,7 +8075,7 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
   for (auto I : SI.cases()) {
     MachineBasicBlock *Succ = FuncInfo.MBBMap[I.getCaseSuccessor()];
     const ConstantInt *CaseVal = I.getCaseValue();
-    uint32_t Weight = 0; // FIXME: Use 1 instead?
+    uint32_t Weight = 1;
     if (BPI) {
       Weight = BPI->getEdgeWeight(SI.getParent(), I.getSuccessorIndex());
       assert(Weight <= UINT32_MAX / SI.getNumSuccessors());

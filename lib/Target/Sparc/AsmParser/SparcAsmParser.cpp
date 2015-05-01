@@ -682,6 +682,7 @@ SparcAsmParser::parseSparcAsmOperand(std::unique_ptr<SparcOperand> &Op,
 
   case AsmToken::Minus:
   case AsmToken::Integer:
+  case AsmToken::LParen:
     if (!getParser().parseExpression(EVal, E))
       Op = SparcOperand::CreateImm(EVal, S, E);
     break;
@@ -906,10 +907,10 @@ bool SparcAsmParser::matchSparcAsmModifiers(const MCExpr *&EVal,
   return true;
 }
 
-
 extern "C" void LLVMInitializeSparcAsmParser() {
   RegisterMCAsmParser<SparcAsmParser> A(TheSparcTarget);
   RegisterMCAsmParser<SparcAsmParser> B(TheSparcV9Target);
+  RegisterMCAsmParser<SparcAsmParser> C(TheSparcelTarget);
 }
 
 #define GET_REGISTER_MATCHER
