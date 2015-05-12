@@ -437,7 +437,7 @@ void Verifier::visitGlobalValue(const GlobalValue &GV) {
 
   if (GV.hasAppendingLinkage()) {
     const GlobalVariable *GVar = dyn_cast<GlobalVariable>(&GV);
-    Assert(GVar && GVar->getType()->getElementType()->isArrayTy(),
+    Assert(GVar && GVar->getValueType()->isArrayTy(),
            "Only global arrays can have appending linkage!", GVar);
   }
 }
@@ -469,7 +469,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
            "invalid linkage for intrinsic global variable", &GV);
     // Don't worry about emitting an error for it not being an array,
     // visitGlobalValue will complain on appending non-array.
-    if (ArrayType *ATy = dyn_cast<ArrayType>(GV.getType()->getElementType())) {
+    if (ArrayType *ATy = dyn_cast<ArrayType>(GV.getValueType())) {
       StructType *STy = dyn_cast<StructType>(ATy->getElementType());
       PointerType *FuncPtrTy =
           FunctionType::get(Type::getVoidTy(*Context), false)->getPointerTo();
@@ -1350,9 +1350,10 @@ void Verifier::VerifyParameterAttrs(AttributeSet Attrs, unsigned Idx, Type *Ty,
          V);
 
   Assert(!AttrBuilder(Attrs, Idx)
-              .hasAttributes(AttributeFuncs::typeIncompatible(Ty, Idx), Idx),
+              .overlaps(AttributeFuncs::typeIncompatible(Ty)),
          "Wrong types for attribute: " +
-             AttributeFuncs::typeIncompatible(Ty, Idx).getAsString(Idx),
+         AttributeSet::get(*Context, Idx,
+                        AttributeFuncs::typeIncompatible(Ty)).getAsString(Idx),
          V);
 
   if (PointerType *PTy = dyn_cast<PointerType>(Ty)) {
@@ -1528,9 +1529,12 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
     Assert(NumCallArgs == NumParams,
            "gc.statepoint mismatch in number of call args", &CI);
 
-  const Value *Unused = CS.getArgument(2);
-  Assert(isa<ConstantInt>(Unused) && cast<ConstantInt>(Unused)->isNullValue(),
-         "gc.statepoint parameter #3 must be zero", &CI);
+  const Value *FlagsV = CS.getArgument(2);
+  Assert(isa<ConstantInt>(FlagsV),
+         "gc.statepoint flags must be constant integer", &CI);
+  const uint64_t Flags = cast<ConstantInt>(FlagsV)->getZExtValue();
+  Assert((Flags & ~(uint64_t)StatepointFlags::MaskAll) == 0,
+         "unknown flag used in gc.statepoint flags argument", &CI);
 
   // Verify that the types of the call parameter arguments match
   // the type of the wrapped callee.
@@ -1543,7 +1547,19 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
            &CI);
   }
   const int EndCallArgsInx = 2+NumCallArgs;
-  const Value *NumDeoptArgsV = CS.getArgument(EndCallArgsInx+1);
+
+  const Value *NumTransitionArgsV = CS.getArgument(EndCallArgsInx+1);
+  Assert(isa<ConstantInt>(NumTransitionArgsV),
+         "gc.statepoint number of transition arguments "
+         "must be constant integer",
+         &CI);
+  const int NumTransitionArgs =
+      cast<ConstantInt>(NumTransitionArgsV)->getZExtValue();
+  Assert(NumTransitionArgs >= 0,
+         "gc.statepoint number of transition arguments must be positive", &CI);
+  const int EndTransitionArgsInx = EndCallArgsInx + 1 + NumTransitionArgs;
+
+  const Value *NumDeoptArgsV = CS.getArgument(EndTransitionArgsInx+1);
   Assert(isa<ConstantInt>(NumDeoptArgsV),
          "gc.statepoint number of deoptimization arguments "
          "must be constant integer",
@@ -1553,7 +1569,9 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
                             "must be positive",
          &CI);
 
-  Assert(4 + NumCallArgs + NumDeoptArgs <= (int)CS.arg_size(),
+  const int ExpectedNumArgs =
+      5 + NumCallArgs + NumTransitionArgs + NumDeoptArgs;
+  Assert(ExpectedNumArgs <= (int)CS.arg_size(),
          "gc.statepoint too few arguments according to length fields", &CI);
 
   // Check that the only uses of this gc.statepoint are gc.result or 
@@ -3047,8 +3065,8 @@ bool Verifier::VerifyIntrinsicType(Type *Ty,
       dyn_cast<PointerType>(ThisArgVecTy->getVectorElementType());
     if (!ThisArgEltTy)
       return true;
-    return (!(ThisArgEltTy->getElementType() ==
-            ReferenceType->getVectorElementType()));
+    return ThisArgEltTy->getElementType() !=
+           ReferenceType->getVectorElementType();
   }
   }
   llvm_unreachable("unhandled");
@@ -3174,7 +3192,7 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
       Assert(AI, "llvm.gcroot parameter #1 must be an alloca.", &CI);
       Assert(isa<Constant>(CI.getArgOperand(1)),
              "llvm.gcroot parameter #2 must be a constant.", &CI);
-      if (!AI->getType()->getElementType()->isPointerTy()) {
+      if (!AI->getAllocatedType()->isPointerTy()) {
         Assert(!isa<ConstantPointerNull>(CI.getArgOperand(1)),
                "llvm.gcroot parameter #1 must either be a pointer alloca, "
                "or argument #2 must be a non-null constant.",
@@ -3291,17 +3309,17 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
              "gc relocate on unwind path incorrectly linked to the statepoint",
              &CI);
 
-      const BasicBlock *invokeBB =
+      const BasicBlock *InvokeBB =
         ExtractValue->getParent()->getUniquePredecessor();
 
       // Landingpad relocates should have only one predecessor with invoke
       // statepoint terminator
-      Assert(invokeBB, "safepoints should have unique landingpads",
+      Assert(InvokeBB, "safepoints should have unique landingpads",
              ExtractValue->getParent());
-      Assert(invokeBB->getTerminator(), "safepoint block should be well formed",
-             invokeBB);
-      Assert(isStatepoint(invokeBB->getTerminator()),
-             "gc relocate should be linked to a statepoint", invokeBB);
+      Assert(InvokeBB->getTerminator(), "safepoint block should be well formed",
+             InvokeBB);
+      Assert(isStatepoint(InvokeBB->getTerminator()),
+             "gc relocate should be linked to a statepoint", InvokeBB);
     }
     else {
       // In all other cases relocate should be tied to the statepoint directly.
@@ -3314,8 +3332,8 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
 
     // Verify rest of the relocate arguments
 
-    GCRelocateOperands ops(&CI);
-    ImmutableCallSite StatepointCS(ops.statepoint());
+    GCRelocateOperands Ops(&CI);
+    ImmutableCallSite StatepointCS(Ops.getStatepoint());
 
     // Both the base and derived must be piped through the safepoint
     Value* Base = CI.getArgOperand(1);
@@ -3345,11 +3363,17 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     Assert(StatepointCS.arg_size() > NumCallArgs+3,
            "gc.statepoint: mismatch in number of call arguments");
     Assert(isa<ConstantInt>(StatepointCS.getArgument(NumCallArgs+3)),
+           "gc.statepoint: number of transition arguments must be "
+           "a constant integer");
+    const int NumTransitionArgs =
+      cast<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 3))->getZExtValue();
+    const int DeoptArgsStart = 2 + NumCallArgs + 1 + NumTransitionArgs + 1;
+    Assert(isa<ConstantInt>(StatepointCS.getArgument(DeoptArgsStart)),
            "gc.statepoint: number of deoptimization arguments must be "
            "a constant integer");
     const int NumDeoptArgs =
-      cast<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 3))->getZExtValue();
-    const int GCParamArgsStart = NumCallArgs + NumDeoptArgs + 4;
+      cast<ConstantInt>(StatepointCS.getArgument(DeoptArgsStart))->getZExtValue();
+    const int GCParamArgsStart = DeoptArgsStart + 1 + NumDeoptArgs;
     const int GCParamArgsEnd = StatepointCS.arg_size();
     Assert(GCParamArgsStart <= BaseIndex && BaseIndex < GCParamArgsEnd,
            "gc.relocate: statepoint base index doesn't fall within the "
@@ -3360,10 +3384,8 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
            "'gc parameters' section of the statepoint call",
            &CI);
 
-    // Assert that the result type matches the type of the relocated pointer
-    GCRelocateOperands Operands(&CI);
-    Assert(Operands.derivedPtr()->getType() == CI.getType(),
-           "gc.relocate: relocating a pointer shouldn't change its type", &CI);
+    // gc_relocate does not need to be the same type as the relocated pointer.
+    // It can casted to the correct type later if it's desired
     break;
   }
   };

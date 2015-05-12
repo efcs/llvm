@@ -15,8 +15,6 @@
 #include "ARMAsmPrinter.h"
 #include "ARM.h"
 #include "ARMConstantPoolValue.h"
-#include "ARMFPUName.h"
-#include "ARMArchExtName.h"
 #include "ARMMachineFunctionInfo.h"
 #include "ARMTargetMachine.h"
 #include "ARMTargetObjectFile.h"
@@ -45,6 +43,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ARMBuildAttributes.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -592,7 +591,7 @@ void ARMAsmPrinter::emitAttributes() {
       // We consider krait as a "cortex-a9" + hwdiv CPU
       // Enable hwdiv through ".arch_extension idiv"
       if (STI.hasDivide() || STI.hasDivideInARMMode())
-        ATS.emitArchExtension(ARM::HWDIV);
+        ATS.emitArchExtension(ARM::AEK_HWDIV);
     } else
       ATS.emitTextAttribute(ARMBuildAttrs::CPU_name, CPUString);
   }
@@ -629,13 +628,13 @@ void ARMAsmPrinter::emitAttributes() {
      * neon/neon-fp-armv8/neon-vfpv4/vfpv3/vfpv2 for .fpu parameters */
     if (STI.hasFPARMv8()) {
       if (STI.hasCrypto())
-        ATS.emitFPU(ARM::CRYPTO_NEON_FP_ARMV8);
+        ATS.emitFPU(ARM::FK_CRYPTO_NEON_FP_ARMV8);
       else
-        ATS.emitFPU(ARM::NEON_FP_ARMV8);
+        ATS.emitFPU(ARM::FK_NEON_FP_ARMV8);
     } else if (STI.hasVFP4())
-      ATS.emitFPU(ARM::NEON_VFPV4);
+      ATS.emitFPU(ARM::FK_NEON_VFPV4);
     else
-      ATS.emitFPU(ARM::NEON);
+      ATS.emitFPU(ARM::FK_NEON);
     // Emit Tag_Advanced_SIMD_arch for ARMv8 architecture
     if (STI.hasV8Ops())
       ATS.emitAttribute(ARMBuildAttrs::Advanced_SIMD_arch,
@@ -645,13 +644,13 @@ void ARMAsmPrinter::emitAttributes() {
     if (STI.hasFPARMv8())
       // FPv5 and FP-ARMv8 have the same instructions, so are modeled as one
       // FPU, but there are two different names for it depending on the CPU.
-      ATS.emitFPU(STI.hasD16() ? ARM::FPV5_D16 : ARM::FP_ARMV8);
+      ATS.emitFPU(STI.hasD16() ? ARM::FK_FPV5_D16 : ARM::FK_FP_ARMV8);
     else if (STI.hasVFP4())
-      ATS.emitFPU(STI.hasD16() ? ARM::VFPV4_D16 : ARM::VFPV4);
+      ATS.emitFPU(STI.hasD16() ? ARM::FK_VFPV4_D16 : ARM::FK_VFPV4);
     else if (STI.hasVFP3())
-      ATS.emitFPU(STI.hasD16() ? ARM::VFPV3_D16 : ARM::VFPV3);
+      ATS.emitFPU(STI.hasD16() ? ARM::FK_VFPV3_D16 : ARM::FK_VFPV3);
     else if (STI.hasVFP2())
-      ATS.emitFPU(ARM::VFPV2);
+      ATS.emitFPU(ARM::FK_VFPV2);
   }
 
   if (TM.getRelocationModel() == Reloc::PIC_) {
