@@ -14,13 +14,14 @@ This library is intended primarily for in-process coverage-guided fuzz testing
 * Build the Fuzzer library as a static archive (or just a set of .o files).
   Note that the Fuzzer contains the main() function.
   Preferably do *not* use sanitizers while building the Fuzzer.
-* Build the library you are going to test with -fsanitize-coverage=[234]
+* Build the library you are going to test with
+  `-fsanitize-coverage={bb,edge}[,indirect-calls]`
   and one of the sanitizers. We recommend to build the library in several
   different modes (e.g. asan, msan, lsan, ubsan, etc) and even using different
   optimizations options (e.g. -O0, -O1, -O2) to diversify testing.
 * Build a test driver using the same options as the library.
   The test driver is a C/C++ file containing interesting calls to the library
-  inside a single function  ``extern "C" void TestOneInput(const uint8_t *Data, size_t Size);``
+  inside a single function  ``extern "C" void LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size);``
 * Link the Fuzzer, the library and the driver together into an executable
   using the same sanitizer options as for the library.
 * Collect the initial corpus of inputs for the
@@ -32,7 +33,7 @@ This library is intended primarily for in-process coverage-guided fuzz testing
   the sanitizer (asan, etc) it will be reported as usual and the reproducer
   will be written to disk.
   Each Fuzzer process is single-threaded (unless the library starts its own
-  threads). You can run the Fuzzer on the same corpus in multiple processes.
+  threads). You can run the Fuzzer on the same corpus in multiple processes
   in parallel. For run-time options run the Fuzzer binary with '-help=1'.
 
 
@@ -56,7 +57,7 @@ Toy example
 A simple function that does something interesting if it receives the input "HI!"::
 
   cat << EOF >> test_fuzzer.cc
-  extern "C" void TestOneInput(const unsigned char *data, unsigned long size) {
+  extern "C" void LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) {
     if (size > 0 && data[0] == 'H')
       if (size > 1 && data[1] == 'I')
          if (size > 2 && data[2] == '!')
@@ -68,7 +69,7 @@ A simple function that does something interesting if it receives the input "HI!"
   # Build lib/Fuzzer files.
   clang -c -g -O2 -std=c++11 Fuzzer/*.cpp -IFuzzer
   # Build test_fuzzer.cc with asan and link against lib/Fuzzer.
-  clang++ -fsanitize=address -fsanitize-coverage=3 test_fuzzer.cc Fuzzer*.o
+  clang++ -fsanitize=address -fsanitize-coverage=edge test_fuzzer.cc Fuzzer*.o
   # Run the fuzzer with no corpus.
   ./a.out
 
@@ -79,7 +80,7 @@ PCRE2
 
 Here we show how to use lib/Fuzzer on something real, yet simple: pcre2_::
 
-  COV_FLAGS=" -fsanitize-coverage=4 -mllvm -sanitizer-coverage-8bit-counters=1"
+  COV_FLAGS=" -fsanitize-coverage=edge,indirect-calls,8bit-counters"
   # Get PCRE2
   svn co svn://vcs.exim.org/pcre2/code/trunk pcre
   # Get lib/Fuzzer. Assuming that you already have fresh clang in PATH.
@@ -92,7 +93,7 @@ Here we show how to use lib/Fuzzer on something real, yet simple: pcre2_::
   cat << EOF > pcre_fuzzer.cc
   #include <string.h>
   #include "pcre2posix.h"
-  extern "C" void TestOneInput(const unsigned char *data, size_t size) {
+  extern "C" void LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) {
     if (size < 1) return;
     char *str = new char[size+1];
     memcpy(str, data, size);
@@ -155,13 +156,11 @@ You may run ``N`` independent fuzzer jobs in parallel on ``M`` CPUs::
 
   N=100; M=4; ./pcre_fuzzer ./CORPUS -jobs=$N -workers=$M
 
-This is useful when you already have an exhaustive test corpus.
-If you've just started fuzzing with no good corpus running independent
-jobs will create a corpus with too many duplicates.
-One way to avoid this and still use all of your CPUs is to use the flag ``-exit_on_first=1``
-which will cause the fuzzer to exit on the first new synthesised input::
+By default (``-reload=1``) the fuzzer processes will periodically scan the CORPUS directory
+and reload any new tests. This way the test inputs found by one process will be picked up
+by all others.
 
-  N=100; M=4; ./pcre_fuzzer ./CORPUS -jobs=$N -workers=$M -exit_on_first=1
+If ``-workers=$M`` is not supplied, ``min($N,NumberOfCpuCore/2)`` will be used.
 
 Heartbleed
 ----------
@@ -172,7 +171,7 @@ to find Heartbleed with LibFuzzer::
 
   wget https://www.openssl.org/source/openssl-1.0.1f.tar.gz
   tar xf openssl-1.0.1f.tar.gz
-  COV_FLAGS="-fsanitize-coverage=4" # -mllvm -sanitizer-coverage-8bit-counters=1"
+  COV_FLAGS="-fsanitize-coverage=edge,indirect-calls" # -fsanitize-coverage=8bit-counters
   (cd openssl-1.0.1f/ && ./config &&
     make -j 32 CC="clang -g -fsanitize=address $COV_FLAGS")
   # Get and build LibFuzzer
@@ -196,7 +195,7 @@ to find Heartbleed with LibFuzzer::
     assert (SSL_CTX_use_PrivateKey_file(sctx, "server.key", SSL_FILETYPE_PEM));
     return 0;
   }
-  extern "C" void TestOneInput(unsigned char *Data, size_t Size) {
+  extern "C" void LLVMFuzzerTestOneInput(unsigned char *Data, size_t Size) {
     static int unused = Init();
     SSL *server = SSL_new(sctx);
     BIO *sinbio = BIO_new(BIO_s_mem());
@@ -259,7 +258,7 @@ Periodically restart both fuzzers so that they can use each other's findings.
 How good is my fuzzer?
 ----------------------
 
-Once you implement your target function ``TestOneInput`` and fuzz it to death,
+Once you implement your target function ``LLVMFuzzerTestOneInput`` and fuzz it to death,
 you will want to know whether the function or the corpus can be improved further.
 One easy to use metric is, of course, code coverage.
 You can get the coverage for your corpus like this::
@@ -359,6 +358,6 @@ Examples: regular expression matchers, text or binary format parsers.
 
 .. _AFL: http://lcamtuf.coredump.cx/afl/
 
-.. _SanitizerCoverage: https://code.google.com/p/address-sanitizer/wiki/AsanCoverage
+.. _SanitizerCoverage: http://clang.llvm.org/docs/SanitizerCoverage.html
 
 .. _Heartbleed: http://en.wikipedia.org/wiki/Heartbleed

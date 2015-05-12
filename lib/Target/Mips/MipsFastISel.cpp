@@ -390,8 +390,10 @@ bool MipsFastISel::computeAddress(const Value *Obj, Address &Addr) {
       Opcode = I->getOpcode();
       U = I;
     }
-  } else if (isa<ConstantExpr>(Obj))
-    return false;
+  } else if (const ConstantExpr *C = dyn_cast<ConstantExpr>(Obj)) {
+    Opcode = C->getOpcode();
+    U = C;
+  }
   switch (Opcode) {
   default:
     break;
@@ -998,7 +1000,9 @@ bool MipsFastISel::processCallArgs(CallLoweringInfo &CLI,
         }
       }
     }
-    if (((ArgVT == MVT::i32) || (ArgVT == MVT::f32)) && VA.isMemLoc()) {
+    if (((ArgVT == MVT::i32) || (ArgVT == MVT::f32) || (ArgVT == MVT::i16) ||
+         (ArgVT == MVT::i8)) &&
+        VA.isMemLoc()) {
       switch (VA.getLocMemOffset()) {
       case 0:
         VA.convertToReg(Mips::A0);
@@ -1112,6 +1116,8 @@ bool MipsFastISel::finishCall(CallLoweringInfo &CLI, MVT RetVT,
       CopyVT = MVT::i32;
 
     unsigned ResultReg = createResultReg(TLI.getRegClassFor(CopyVT));
+    if (!ResultReg)
+      return false;
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
             TII.get(TargetOpcode::COPY),
             ResultReg).addReg(RVLocs[0].getLocReg());
@@ -1142,7 +1148,7 @@ bool MipsFastISel::fastLowerCall(CallLoweringInfo &CLI) {
   MVT RetVT;
   if (CLI.RetTy->isVoidTy())
     RetVT = MVT::isVoid;
-  else if (!isTypeLegal(CLI.RetTy, RetVT))
+  else if (!isTypeSupported(CLI.RetTy, RetVT))
     return false;
 
   for (auto Flag : CLI.OutFlags)
@@ -1260,13 +1266,12 @@ bool MipsFastISel::selectRet(const Instruction *I) {
       if (RVVT != MVT::i1 && RVVT != MVT::i8 && RVVT != MVT::i16)
         return false;
 
-      if (!Outs[0].Flags.isZExt() && !Outs[0].Flags.isSExt())
-        return false;
-
-      bool IsZExt = Outs[0].Flags.isZExt();
-      SrcReg = emitIntExt(RVVT, SrcReg, DestVT, IsZExt);
-      if (SrcReg == 0)
-        return false;
+      if (Outs[0].Flags.isZExt() || Outs[0].Flags.isSExt()) {
+        bool IsZExt = Outs[0].Flags.isZExt();
+        SrcReg = emitIntExt(RVVT, SrcReg, DestVT, IsZExt);
+        if (SrcReg == 0)
+          return false;
+      }
     }
 
     // Make the copy.
@@ -1395,6 +1400,13 @@ bool MipsFastISel::emitIntZExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
 
 bool MipsFastISel::emitIntExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
                               unsigned DestReg, bool IsZExt) {
+  // FastISel does not have plumbing to deal with extensions where the SrcVT or
+  // DestVT are odd things, so test to make sure that they are both types we can
+  // handle (i1/i8/i16/i32 for SrcVT and i8/i16/i32/i64 for DestVT), otherwise
+  // bail out to SelectionDAG.
+  if (((DestVT != MVT::i8) && (DestVT != MVT::i16) && (DestVT != MVT::i32)) ||
+      ((SrcVT != MVT::i1) && (SrcVT != MVT::i8) && (SrcVT != MVT::i16)))
+    return false;
   if (IsZExt)
     return emitIntZExt(SrcVT, SrcReg, DestVT, DestReg);
   return emitIntSExt(SrcVT, SrcReg, DestVT, DestReg);
