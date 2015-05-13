@@ -119,9 +119,11 @@ class MachObjectWriter : public MCObjectWriter {
   MachSymbolData *findSymbolData(const MCSymbol &Sym);
 
 public:
-  MachObjectWriter(MCMachObjectTargetWriter *MOTW, raw_ostream &OS,
+  MachObjectWriter(MCMachObjectTargetWriter *MOTW, raw_pwrite_stream &OS,
                    bool IsLittleEndian)
       : MCObjectWriter(OS, IsLittleEndian), TargetObjectWriter(MOTW) {}
+
+  const MCSymbol &findAliasedSymbol(const MCSymbol &Sym) const;
 
   /// @name Lifetime management Methods
   /// @{
@@ -278,7 +280,8 @@ public:
 /// \param OS - The stream to write to.
 /// \returns The constructed object writer.
 MCObjectWriter *createMachObjectWriter(MCMachObjectTargetWriter *MOTW,
-                                       raw_ostream &OS, bool IsLittleEndian);
+                                       raw_pwrite_stream &OS,
+                                       bool IsLittleEndian);
 
 } // End llvm namespace
 
