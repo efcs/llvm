@@ -132,6 +132,25 @@ static const MCPhysReg VSFRegs[64] = {
   PPC::VF24, PPC::VF25, PPC::VF26, PPC::VF27,
   PPC::VF28, PPC::VF29, PPC::VF30, PPC::VF31
 };
+static const MCPhysReg VSSRegs[64] = {
+  PPC::F0,  PPC::F1,  PPC::F2,  PPC::F3,
+  PPC::F4,  PPC::F5,  PPC::F6,  PPC::F7,
+  PPC::F8,  PPC::F9,  PPC::F10, PPC::F11,
+  PPC::F12, PPC::F13, PPC::F14, PPC::F15,
+  PPC::F16, PPC::F17, PPC::F18, PPC::F19,
+  PPC::F20, PPC::F21, PPC::F22, PPC::F23,
+  PPC::F24, PPC::F25, PPC::F26, PPC::F27,
+  PPC::F28, PPC::F29, PPC::F30, PPC::F31,
+
+  PPC::VF0,  PPC::VF1,  PPC::VF2,  PPC::VF3,
+  PPC::VF4,  PPC::VF5,  PPC::VF6,  PPC::VF7,
+  PPC::VF8,  PPC::VF9,  PPC::VF10, PPC::VF11,
+  PPC::VF12, PPC::VF13, PPC::VF14, PPC::VF15,
+  PPC::VF16, PPC::VF17, PPC::VF18, PPC::VF19,
+  PPC::VF20, PPC::VF21, PPC::VF22, PPC::VF23,
+  PPC::VF24, PPC::VF25, PPC::VF26, PPC::VF27,
+  PPC::VF28, PPC::VF29, PPC::VF30, PPC::VF31
+};
 static unsigned QFRegs[32] = {
   PPC::QF0,  PPC::QF1,  PPC::QF2,  PPC::QF3,
   PPC::QF4,  PPC::QF5,  PPC::QF6,  PPC::QF7,
@@ -577,6 +596,11 @@ public:
     Inst.addOperand(MCOperand::CreateReg(VSFRegs[getVSReg()]));
   }
 
+  void addRegVSSRCOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    Inst.addOperand(MCOperand::CreateReg(VSSRegs[getVSReg()]));
+  }
+
   void addRegQFRCOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     Inst.addOperand(MCOperand::CreateReg(QFRegs[getReg()]));
@@ -801,6 +825,40 @@ void PPCAsmParser::ProcessInstruction(MCInst &Inst,
                                       const OperandVector &Operands) {
   int Opcode = Inst.getOpcode();
   switch (Opcode) {
+  case PPC::DCBTx:
+  case PPC::DCBTT:
+  case PPC::DCBTSTx:
+  case PPC::DCBTSTT: {
+    MCInst TmpInst;
+    TmpInst.setOpcode((Opcode == PPC::DCBTx || Opcode == PPC::DCBTT) ?
+                      PPC::DCBT : PPC::DCBTST);
+    TmpInst.addOperand(MCOperand::CreateImm(
+      (Opcode == PPC::DCBTx || Opcode == PPC::DCBTSTx) ? 0 : 16));
+    TmpInst.addOperand(Inst.getOperand(0));
+    TmpInst.addOperand(Inst.getOperand(1));
+    Inst = TmpInst;
+    break;
+  }
+  case PPC::DCBTCT:
+  case PPC::DCBTDS: {
+    MCInst TmpInst;
+    TmpInst.setOpcode(PPC::DCBT);
+    TmpInst.addOperand(Inst.getOperand(2));
+    TmpInst.addOperand(Inst.getOperand(0));
+    TmpInst.addOperand(Inst.getOperand(1));
+    Inst = TmpInst;
+    break;
+  }
+  case PPC::DCBTSTCT:
+  case PPC::DCBTSTDS: {
+    MCInst TmpInst;
+    TmpInst.setOpcode(PPC::DCBTST);
+    TmpInst.addOperand(Inst.getOperand(2));
+    TmpInst.addOperand(Inst.getOperand(0));
+    TmpInst.addOperand(Inst.getOperand(1));
+    Inst = TmpInst;
+    break;
+  }
   case PPC::LAx: {
     MCInst TmpInst;
     TmpInst.setOpcode(PPC::LA);
@@ -1185,9 +1243,17 @@ MatchRegisterName(const AsmToken &Tok, unsigned &RegNo, int64_t &IntVal) {
                !Name.substr(1).getAsInteger(10, IntVal) && IntVal < 32) {
       RegNo = FRegs[IntVal];
       return false;
+    } else if (Name.startswith_lower("vs") &&
+               !Name.substr(2).getAsInteger(10, IntVal) && IntVal < 64) {
+      RegNo = VSRegs[IntVal];
+      return false;
     } else if (Name.startswith_lower("v") &&
                !Name.substr(1).getAsInteger(10, IntVal) && IntVal < 32) {
       RegNo = VRegs[IntVal];
+      return false;
+    } else if (Name.startswith_lower("q") &&
+               !Name.substr(1).getAsInteger(10, IntVal) && IntVal < 32) {
+      RegNo = QFRegs[IntVal];
       return false;
     } else if (Name.startswith_lower("cr") &&
                !Name.substr(2).getAsInteger(10, IntVal) && IntVal < 8) {
@@ -1604,6 +1670,21 @@ bool PPCAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     // Parse the next operand
     if (ParseOperand(Operands))
       return true;
+  }
+
+  // We'll now deal with an unfortunate special case: the syntax for the dcbt
+  // and dcbtst instructions differs for server vs. embedded cores.
+  //  The syntax for dcbt is:
+  //    dcbt ra, rb, th [server]
+  //    dcbt th, ra, rb [embedded]
+  //  where th can be omitted when it is 0. dcbtst is the same. We take the
+  //  server form to be the default, so swap the operands if we're parsing for
+  //  an embedded core (they'll be swapped again upon printing).
+  if ((STI.getFeatureBits() & PPC::FeatureBookE) != 0 &&
+      Operands.size() == 4 &&
+      (Name == "dcbt" || Name == "dcbtst")) {
+    std::swap(Operands[1], Operands[3]);
+    std::swap(Operands[2], Operands[1]);
   }
 
   return false;

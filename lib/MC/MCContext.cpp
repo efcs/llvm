@@ -150,6 +150,9 @@ MCSymbol *MCContext::CreateSymbol(StringRef Name, bool AlwaysAddSuffix) {
   if (AllowTemporaryLabels)
     IsTemporary = Name.startswith(MAI->getPrivateGlobalPrefix());
 
+  if (IsTemporary && AlwaysAddSuffix && !UseNamesOnTempLabels)
+    return new (*this) MCSymbol("", true);
+
   SmallString<128> NewName = Name;
   bool AddSuffix = AlwaysAddSuffix;
   unsigned &NextUniqueID = NextID[Name];
@@ -337,10 +340,10 @@ const MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
   return Result;
 }
 
-const MCSectionELF *MCContext::CreateELFGroupSection() {
+const MCSectionELF *MCContext::createELFGroupSection(const MCSymbol *Group) {
   MCSectionELF *Result = new (*this)
       MCSectionELF(".group", ELF::SHT_GROUP, 0, SectionKind::getReadOnly(), 4,
-                   nullptr, ~0, nullptr, nullptr);
+                   Group, ~0, nullptr, nullptr);
   return Result;
 }
 

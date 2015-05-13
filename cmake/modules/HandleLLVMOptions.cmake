@@ -88,6 +88,9 @@ elseif( uppercase_LLVM_ABI_BREAKING_CHECKS STREQUAL "FORCE_ON" )
   set( LLVM_ENABLE_ABI_BREAKING_CHECKS 1 )
 elseif( uppercase_LLVM_ABI_BREAKING_CHECKS STREQUAL "FORCE_OFF" )
   # We don't need to do anything special to turn off ABI breaking checks.
+elseif( NOT DEFINED LLVM_ABI_BREAKING_CHECKS )
+  # Treat LLVM_ABI_BREAKING_CHECKS like "FORCE_OFF" when it has not been
+  # defined.
 else()
   message(FATAL_ERROR "Unknown value for LLVM_ABI_BREAKING_CHECKS: \"${LLVM_ABI_BREAKING_CHECKS}\"!")
 endif()
@@ -304,7 +307,15 @@ if( MSVC )
     -wd4611 # Suppress 'interaction between '_setjmp' and C++ object destruction is non-portable'
     -wd4805 # Suppress 'unsafe mix of type <type> and type <type> in operation'
     -wd4204 # Suppress 'nonstandard extension used : non-constant aggregate initializer'
-    
+
+	# Idelly, we'd like this warning to be enabled, but MSVC 2013 doesn't
+	# support the 'aligned' attribute in the way that clang sources requires (for
+	# any code that uses the LLVM_ALIGNAS marco), so this is must be disabled to
+	# avoid unwanted alignment warnings.
+	# When we switch to requiring a version of MSVC that supports the 'alignas'
+	# specifier (MSVC 2015?) this warning can be re-enabled.
+    -wd4324 # Suppress 'structure was padded due to __declspec(align())'
+	    
     # Promoted warnings.
     -w14062 # Promote 'enumerator in switch of enum is not handled' to level 1 warning.
 
@@ -468,7 +479,7 @@ if(LLVM_USE_SANITIZER)
     message(WARNING "LLVM_USE_SANITIZER is not supported on this platform.")
   endif()
   if (LLVM_USE_SANITIZE_COVERAGE)
-    append("-fsanitize-coverage=4 -mllvm -sanitizer-coverage-8bit-counters=1" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    append("-fsanitize-coverage=edge,indirect-calls,8bit-counters,trace-cmp" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
   endif()
 endif()
 

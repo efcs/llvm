@@ -273,9 +273,9 @@ void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
                                     MachineInstr::const_mop_iterator MOE,
                                     bool recordResult) {
 
-  MCContext &OutContext = AP.OutStreamer.getContext();
+  MCContext &OutContext = AP.OutStreamer->getContext();
   MCSymbol *MILabel = OutContext.CreateTempSymbol();
-  AP.OutStreamer.EmitLabel(MILabel);
+  AP.OutStreamer->EmitLabel(MILabel);
 
   LocationVec Locations;
   LiveOutVec LiveOuts;
@@ -370,9 +370,8 @@ void StackMaps::recordStatepoint(const MachineInstr &MI) {
   // Record all the deopt and gc operands (they're contiguous and run from the
   // initial index to the end of the operand list)
   const unsigned StartIdx = opers.getVarIdx();
-  recordStackMapOpers(MI, 0xABCDEF00,
-                      MI.operands_begin() + StartIdx, MI.operands_end(),
-                      false);
+  recordStackMapOpers(MI, opers.getID(), MI.operands_begin() + StartIdx,
+                      MI.operands_end(), false);
 }
 
 /// Emit the stackmap header.
@@ -521,8 +520,8 @@ void StackMaps::serializeToStackMapSection() {
   if (CSInfos.empty())
     return;
 
-  MCContext &OutContext = AP.OutStreamer.getContext();
-  MCStreamer &OS = AP.OutStreamer;
+  MCContext &OutContext = AP.OutStreamer->getContext();
+  MCStreamer &OS = *AP.OutStreamer;
 
   // Create the section.
   const MCSection *StackMapSection =

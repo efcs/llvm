@@ -60,7 +60,7 @@ EnableJoining("join-liveintervals",
 
 static cl::opt<bool> UseTerminalRule("terminal-rule",
                                      cl::desc("Apply the terminal rule"),
-                                     cl::init(false));
+                                     cl::init(false), cl::Hidden);
 
 /// Temporary flag to test critical edge unsplitting.
 static cl::opt<bool>
@@ -194,7 +194,7 @@ namespace {
 
     /// If the source of a copy is defined by a
     /// trivial computation, replace the copy by rematerialize the definition.
-    bool reMaterializeTrivialDef(CoalescerPair &CP, MachineInstr *CopyMI,
+    bool reMaterializeTrivialDef(const CoalescerPair &CP, MachineInstr *CopyMI,
                                  bool &IsDefCopy);
 
     /// Return true if a copy involving a physreg should be joined.
@@ -223,6 +223,32 @@ namespace {
     /// with Src. Since Dst2 exposes more coalescing opportunities than
     /// Dst, we can drop \p Copy.
     bool applyTerminalRule(const MachineInstr &Copy) const;
+
+    /// Check whether or not \p LI is composed by multiple connected
+    /// components and if that is the case, fix that.
+    void splitNewRanges(LiveInterval *LI) {
+      ConnectedVNInfoEqClasses ConEQ(*LIS);
+      unsigned NumComps = ConEQ.Classify(LI);
+      if (NumComps <= 1)
+        return;
+      SmallVector<LiveInterval*, 8> NewComps(1, LI);
+      for (unsigned i = 1; i != NumComps; ++i) {
+        unsigned VReg = MRI->createVirtualRegister(MRI->getRegClass(LI->reg));
+        NewComps.push_back(&LIS->createEmptyInterval(VReg));
+      }
+
+      ConEQ.Distribute(&NewComps[0], *MRI);
+    }
+
+    /// Wrapper method for \see LiveIntervals::shrinkToUses.
+    /// This method does the proper fixing of the live-ranges when the afore
+    /// mentioned method returns true.
+    void shrinkToUses(LiveInterval *LI,
+                      SmallVectorImpl<MachineInstr * > *Dead = nullptr) {
+      if (LIS->shrinkToUses(LI, Dead))
+        // We may have created multiple connected components, split them.
+        splitNewRanges(LI);
+    }
 
   public:
     static char ID; ///< Class identification, replacement for typeinfo
@@ -556,7 +582,7 @@ bool RegisterCoalescer::adjustCopiesBackFrom(const CoalescerPair &CP,
   // will also add the isKill marker.
   CopyMI->substituteRegister(IntA.reg, IntB.reg, 0, *TRI);
   if (AS->end == CopyIdx)
-    LIS->shrinkToUses(&IntA);
+    shrinkToUses(&IntA);
 
   ++numExtends;
   return true;
@@ -851,7 +877,7 @@ static bool definesFullReg(const MachineInstr &MI, unsigned Reg) {
   return false;
 }
 
-bool RegisterCoalescer::reMaterializeTrivialDef(CoalescerPair &CP,
+bool RegisterCoalescer::reMaterializeTrivialDef(const CoalescerPair &CP,
                                                 MachineInstr *CopyMI,
                                                 bool &IsDefCopy) {
   IsDefCopy = false;
@@ -929,6 +955,29 @@ bool RegisterCoalescer::reMaterializeTrivialDef(CoalescerPair &CP,
   TII->reMaterialize(*MBB, MII, DstReg, SrcIdx, DefMI, *TRI);
   MachineInstr *NewMI = std::prev(MII);
 
+  // A situation like the following:
+  //     %vreg0:subX = instr           ; DefMI
+  //     %vregY      = copy %vreg:subX ; CopyMI
+  // does not need subregisters/regclass widening after rematerialization, just
+  // do:
+  //     %vregY = instr
+  const TargetRegisterClass *NewRC = CP.getNewRC();
+  if (DstIdx != 0) {
+    MachineOperand &DefMO = NewMI->getOperand(0);
+    if (DefMO.getSubReg() == DstIdx) {
+      assert(SrcIdx == 0 && CP.isFlipped()
+             && "Shouldn't have SrcIdx+DstIdx at this point");
+      const TargetRegisterClass *DstRC = MRI->getRegClass(DstReg);
+      const TargetRegisterClass *CommonRC =
+        TRI->getCommonSubClass(DefRC, DstRC);
+      if (CommonRC != nullptr) {
+        NewRC = CommonRC;
+        DstIdx = 0;
+        DefMO.setSubReg(0);
+      }
+    }
+  }
+
   LIS->ReplaceMachineInstrInMaps(CopyMI, NewMI);
   CopyMI->eraseFromParent();
   ErasedInstrs.insert(CopyMI);
@@ -940,15 +989,14 @@ bool RegisterCoalescer::reMaterializeTrivialDef(CoalescerPair &CP,
   for (unsigned i = NewMI->getDesc().getNumOperands(),
          e = NewMI->getNumOperands(); i != e; ++i) {
     MachineOperand &MO = NewMI->getOperand(i);
-    if (MO.isReg()) {
-      assert(MO.isDef() && MO.isImplicit() && MO.isDead() &&
+    if (MO.isReg() && MO.isDef()) {
+      assert(MO.isImplicit() && MO.isDead() &&
              TargetRegisterInfo::isPhysicalRegister(MO.getReg()));
       NewMIImplDefs.push_back(MO.getReg());
     }
   }
 
   if (TargetRegisterInfo::isVirtualRegister(DstReg)) {
-    const TargetRegisterClass *NewRC = CP.getNewRC();
     unsigned NewIdx = NewMI->getOperand(0).getSubReg();
 
     if (DefRC != nullptr) {
@@ -1024,7 +1072,7 @@ bool RegisterCoalescer::reMaterializeTrivialDef(CoalescerPair &CP,
   ++NumReMats;
 
   // The source interval can become smaller because we removed a use.
-  LIS->shrinkToUses(&SrcInt, &DeadDefs);
+  shrinkToUses(&SrcInt, &DeadDefs);
   if (!DeadDefs.empty()) {
     // If the virtual SrcReg is completely eliminated, update all DBG_VALUEs
     // to describe DstReg instead.
@@ -1405,7 +1453,7 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
   }
   if (ShrinkMainRange) {
     LiveInterval &LI = LIS->getInterval(CP.getDstReg());
-    LIS->shrinkToUses(&LI);
+    shrinkToUses(&LI);
   }
 
   // SrcReg is guaranteed to be the register whose live interval that is
@@ -2613,7 +2661,7 @@ bool RegisterCoalescer::joinVirtRegs(CoalescerPair &CP) {
   LHSVals.eraseInstrs(ErasedInstrs, ShrinkRegs);
   RHSVals.eraseInstrs(ErasedInstrs, ShrinkRegs);
   while (!ShrinkRegs.empty())
-    LIS->shrinkToUses(&LIS->getInterval(ShrinkRegs.pop_back_val()));
+    shrinkToUses(&LIS->getInterval(ShrinkRegs.pop_back_val()));
 
   // Join RHS into LHS.
   LHS.join(RHS, LHSVals.getAssignments(), RHSVals.getAssignments(), NewVNInfo);

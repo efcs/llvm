@@ -141,6 +141,28 @@ void MachineOperand::ChangeToFPImmediate(const ConstantFP *FPImm) {
   Contents.CFP = FPImm;
 }
 
+void MachineOperand::ChangeToES(const char *SymName, unsigned char TargetFlags) {
+  assert((!isReg() || !isTied()) &&
+         "Cannot change a tied operand into an external symbol");
+
+  removeRegFromUses();
+
+  OpKind = MO_ExternalSymbol;
+  Contents.OffsetedInfo.Val.SymbolName = SymName;
+  setOffset(0); // Offset is always 0.
+  setTargetFlags(TargetFlags);
+}
+
+void MachineOperand::ChangeToMCSymbol(MCSymbol *Sym) {
+  assert((!isReg() || !isTied()) &&
+         "Cannot change a tied operand into an MCSymbol");
+
+  removeRegFromUses();
+
+  OpKind = MO_MCSymbol;
+  Contents.Sym = Sym;
+}
+
 /// ChangeToRegister - Replace this operand with a new register operand of
 /// the specified value.  If an operand is known to be an register already,
 /// the setReg method should be used.
@@ -1619,7 +1641,7 @@ void MachineInstr::print(raw_ostream &OS, bool SkipOpers) const {
     }
     if (isDebugValue() && MO.isMetadata()) {
       // Pretty print DBG_VALUE instructions.
-      DIVariable DIV = dyn_cast<MDLocalVariable>(MO.getMetadata());
+      auto *DIV = dyn_cast<DILocalVariable>(MO.getMetadata());
       if (DIV && !DIV->getName().empty())
         OS << "!\"" << DIV->getName() << '\"';
       else
@@ -1710,7 +1732,7 @@ void MachineInstr::print(raw_ostream &OS, bool SkipOpers) const {
   // Print debug location information.
   if (isDebugValue() && getOperand(e - 2).isMetadata()) {
     if (!HaveSemi) OS << ";";
-    DIVariable DV = cast<MDLocalVariable>(getOperand(e - 2).getMetadata());
+    auto *DV = cast<DILocalVariable>(getOperand(e - 2).getMetadata());
     OS << " line no:" <<  DV->getLine();
     if (auto *InlinedAt = debugLoc->getInlinedAt()) {
       DebugLoc InlinedAtDL(InlinedAt);

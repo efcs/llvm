@@ -7,10 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ARMFPUName.h"
 #include "ARMFeatures.h"
 #include "MCTargetDesc/ARMAddressingModes.h"
-#include "MCTargetDesc/ARMArchName.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
 #include "MCTargetDesc/ARMMCExpr.h"
 #include "llvm/ADT/STLExtras.h"
@@ -39,6 +37,7 @@
 #include "llvm/MC/MCTargetAsmParser.h"
 #include "llvm/Support/ARMBuildAttributes.h"
 #include "llvm/Support/ARMEHABI.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ELF.h"
@@ -9040,15 +9039,9 @@ bool ARMAsmParser::parseDirectiveUnreq(SMLoc L) {
 bool ARMAsmParser::parseDirectiveArch(SMLoc L) {
   StringRef Arch = getParser().parseStringToEndOfStatement().trim();
 
-  unsigned ID = StringSwitch<unsigned>(Arch)
-#define ARM_ARCH_NAME(NAME, ID, DEFAULT_CPU_NAME, DEFAULT_CPU_ARCH) \
-    .Case(NAME, ARM::ID)
-#define ARM_ARCH_ALIAS(NAME, ID) \
-    .Case(NAME, ARM::ID)
-#include "MCTargetDesc/ARMArchName.def"
-    .Default(ARM::INVALID_ARCH);
+  unsigned ID = ARMTargetParser::parseArch(Arch);
 
-  if (ID == ARM::INVALID_ARCH) {
+  if (ID == ARM::AK_INVALID) {
     Error(L, "Unknown arch name");
     return false;
   }
@@ -9197,49 +9190,49 @@ static const struct {
   const uint64_t Enabled;
   const uint64_t Disabled;
 } FPUs[] = {
-    {/* ID */ ARM::VFP,
+    {/* ID */ ARM::FK_VFP,
      /* Enabled */ ARM::FeatureVFP2,
      /* Disabled */ ARM::FeatureNEON},
-    {/* ID */ ARM::VFPV2,
+    {/* ID */ ARM::FK_VFPV2,
      /* Enabled */ ARM::FeatureVFP2,
      /* Disabled */ ARM::FeatureNEON},
-    {/* ID */ ARM::VFPV3,
+    {/* ID */ ARM::FK_VFPV3,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3,
      /* Disabled */ ARM::FeatureNEON | ARM::FeatureD16},
-    {/* ID */ ARM::VFPV3_D16,
+    {/* ID */ ARM::FK_VFPV3_D16,
      /* Enable */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureD16,
      /* Disabled */ ARM::FeatureNEON},
-    {/* ID */ ARM::VFPV4,
+    {/* ID */ ARM::FK_VFPV4,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4,
      /* Disabled */ ARM::FeatureNEON | ARM::FeatureD16},
-    {/* ID */ ARM::VFPV4_D16,
+    {/* ID */ ARM::FK_VFPV4_D16,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureD16,
      /* Disabled */ ARM::FeatureNEON},
-    {/* ID */ ARM::FPV5_D16,
+    {/* ID */ ARM::FK_FPV5_D16,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureFPARMv8 | ARM::FeatureD16,
      /* Disabled */ ARM::FeatureNEON | ARM::FeatureCrypto},
-    {/* ID */ ARM::FP_ARMV8,
+    {/* ID */ ARM::FK_FP_ARMV8,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureFPARMv8,
      /* Disabled */ ARM::FeatureNEON | ARM::FeatureCrypto | ARM::FeatureD16},
-    {/* ID */ ARM::NEON,
+    {/* ID */ ARM::FK_NEON,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureNEON,
      /* Disabled */ ARM::FeatureD16},
-    {/* ID */ ARM::NEON_VFPV4,
+    {/* ID */ ARM::FK_NEON_VFPV4,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureNEON,
      /* Disabled */ ARM::FeatureD16},
-    {/* ID */ ARM::NEON_FP_ARMV8,
+    {/* ID */ ARM::FK_NEON_FP_ARMV8,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureFPARMv8 | ARM::FeatureNEON,
      /* Disabled */ ARM::FeatureCrypto | ARM::FeatureD16},
-    {/* ID */ ARM::CRYPTO_NEON_FP_ARMV8,
+    {/* ID */ ARM::FK_CRYPTO_NEON_FP_ARMV8,
      /* Enabled */ ARM::FeatureVFP2 | ARM::FeatureVFP3 | ARM::FeatureVFP4 |
          ARM::FeatureFPARMv8 | ARM::FeatureNEON | ARM::FeatureCrypto,
      /* Disabled */ ARM::FeatureD16},
-    {ARM::SOFTVFP, 0, 0},
+    {ARM::FK_SOFTVFP, 0, 0},
 };
 
 /// parseDirectiveFPU
@@ -9248,12 +9241,9 @@ bool ARMAsmParser::parseDirectiveFPU(SMLoc L) {
   SMLoc FPUNameLoc = getTok().getLoc();
   StringRef FPU = getParser().parseStringToEndOfStatement().trim();
 
-  unsigned ID = StringSwitch<unsigned>(FPU)
-#define ARM_FPU_NAME(NAME, ID) .Case(NAME, ARM::ID)
-#include "ARMFPUName.def"
-    .Default(ARM::INVALID_FPU);
+  unsigned ID = ARMTargetParser::parseFPU(FPU);
 
-  if (ID == ARM::INVALID_FPU) {
+  if (ID == ARM::FK_INVALID) {
     Error(FPUNameLoc, "Unknown FPU name");
     return false;
   }
@@ -9905,17 +9895,9 @@ bool ARMAsmParser::parseDirectiveObjectArch(SMLoc L) {
   SMLoc ArchLoc = Parser.getTok().getLoc();
   getLexer().Lex();
 
-  unsigned ID = StringSwitch<unsigned>(Arch)
-#define ARM_ARCH_NAME(NAME, ID, DEFAULT_CPU_NAME, DEFAULT_CPU_ARCH) \
-    .Case(NAME, ARM::ID)
-#define ARM_ARCH_ALIAS(NAME, ID) \
-    .Case(NAME, ARM::ID)
-#include "MCTargetDesc/ARMArchName.def"
-#undef ARM_ARCH_NAME
-#undef ARM_ARCH_ALIAS
-    .Default(ARM::INVALID_ARCH);
+  unsigned ID = ARMTargetParser::parseArch(Arch);
 
-  if (ID == ARM::INVALID_ARCH) {
+  if (ID == ARM::AK_INVALID) {
     Error(ArchLoc, "unknown architecture '" + Arch + "'");
     Parser.eatToEndOfStatement();
     return false;
