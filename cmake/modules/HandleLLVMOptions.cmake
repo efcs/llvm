@@ -88,6 +88,9 @@ elseif( uppercase_LLVM_ABI_BREAKING_CHECKS STREQUAL "FORCE_ON" )
   set( LLVM_ENABLE_ABI_BREAKING_CHECKS 1 )
 elseif( uppercase_LLVM_ABI_BREAKING_CHECKS STREQUAL "FORCE_OFF" )
   # We don't need to do anything special to turn off ABI breaking checks.
+elseif( NOT DEFINED LLVM_ABI_BREAKING_CHECKS )
+  # Treat LLVM_ABI_BREAKING_CHECKS like "FORCE_OFF" when it has not been
+  # defined.
 else()
   message(FATAL_ERROR "Unknown value for LLVM_ABI_BREAKING_CHECKS: \"${LLVM_ABI_BREAKING_CHECKS}\"!")
 endif()
@@ -476,7 +479,7 @@ if(LLVM_USE_SANITIZER)
     message(WARNING "LLVM_USE_SANITIZER is not supported on this platform.")
   endif()
   if (LLVM_USE_SANITIZE_COVERAGE)
-    append("-fsanitize-coverage=4 -mllvm -sanitizer-coverage-8bit-counters=1" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    append("-fsanitize-coverage=edge,indirect-calls,8bit-counters,trace-cmp" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
   endif()
 endif()
 
