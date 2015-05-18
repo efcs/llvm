@@ -138,6 +138,21 @@ void llvm::computeKnownBits(Value *V, APInt &KnownZero, APInt &KnownOne,
                      Query(AC, safeCxtI(V, CxtI), DT));
 }
 
+bool llvm::haveNoCommonBitsSet(Value *LHS, Value *RHS, const DataLayout &DL,
+                               AssumptionCache *AC, const Instruction *CxtI,
+                               const DominatorTree *DT) {
+  assert(LHS->getType() == RHS->getType() &&
+         "LHS and RHS should have the same type");
+  assert(LHS->getType()->isIntOrIntVectorTy() &&
+         "LHS and RHS should be integers");
+  IntegerType *IT = cast<IntegerType>(LHS->getType()->getScalarType());
+  APInt LHSKnownZero(IT->getBitWidth(), 0), LHSKnownOne(IT->getBitWidth(), 0);
+  APInt RHSKnownZero(IT->getBitWidth(), 0), RHSKnownOne(IT->getBitWidth(), 0);
+  computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, DL, 0, AC, CxtI, DT);
+  computeKnownBits(RHS, RHSKnownZero, RHSKnownOne, DL, 0, AC, CxtI, DT);
+  return (LHSKnownZero | RHSKnownZero).isAllOnesValue();
+}
+
 static void ComputeSignBit(Value *V, bool &KnownZero, bool &KnownOne,
                            const DataLayout &DL, unsigned Depth,
                            const Query &Q);
@@ -3205,20 +3220,10 @@ OverflowResult llvm::computeOverflowForUnsignedAdd(Value *LHS, Value *RHS,
   return OverflowResult::MayOverflow;
 }
 
-SelectPatternFlavor llvm::matchSelectPattern(Value *V,
-                                             Value *&LHS, Value *&RHS) {
-  SelectInst *SI = dyn_cast<SelectInst>(V);
-  if (!SI) return SPF_UNKNOWN;
-
-  ICmpInst *ICI = dyn_cast<ICmpInst>(SI->getCondition());
-  if (!ICI) return SPF_UNKNOWN;
-
-  ICmpInst::Predicate Pred = ICI->getPredicate();
-  Value *CmpLHS = ICI->getOperand(0);
-  Value *CmpRHS = ICI->getOperand(1);
-  Value *TrueVal = SI->getTrueValue();
-  Value *FalseVal = SI->getFalseValue();
-
+static SelectPatternFlavor matchSelectPattern(ICmpInst::Predicate Pred,
+                                              Value *CmpLHS, Value *CmpRHS,
+                                              Value *TrueVal, Value *FalseVal,
+                                              Value *&LHS, Value *&RHS) {
   LHS = CmpLHS;
   RHS = CmpRHS;
 
@@ -3284,4 +3289,56 @@ SelectPatternFlavor llvm::matchSelectPattern(Value *V,
   // TODO: (X > 4) ? X : 5   -->  (X >= 5) ? X : 5  -->  MAX(X, 5)
 
   return SPF_UNKNOWN;
+}
+
+static Constant *lookThroughCast(ICmpInst *CmpI, Value *V1, Value *V2,
+                                 Instruction::CastOps *CastOp) {
+  CastInst *CI = dyn_cast<CastInst>(V1);
+  Constant *C = dyn_cast<Constant>(V2);
+  if (!CI || !C)
+    return nullptr;
+  *CastOp = CI->getOpcode();
+
+  if ((isa<SExtInst>(CI) && CmpI->isSigned()) ||
+      (isa<ZExtInst>(CI) && CmpI->isUnsigned()))
+    return ConstantExpr::getTrunc(C, CI->getSrcTy());
+
+  if (isa<TruncInst>(CI))
+    return ConstantExpr::getIntegerCast(C, CI->getSrcTy(), CmpI->isSigned());
+
+  return nullptr;
+}
+
+SelectPatternFlavor llvm::matchSelectPattern(Value *V,
+                                             Value *&LHS, Value *&RHS,
+                                             Instruction::CastOps *CastOp) {
+  SelectInst *SI = dyn_cast<SelectInst>(V);
+  if (!SI) return SPF_UNKNOWN;
+
+  ICmpInst *CmpI = dyn_cast<ICmpInst>(SI->getCondition());
+  if (!CmpI) return SPF_UNKNOWN;
+
+  ICmpInst::Predicate Pred = CmpI->getPredicate();
+  Value *CmpLHS = CmpI->getOperand(0);
+  Value *CmpRHS = CmpI->getOperand(1);
+  Value *TrueVal = SI->getTrueValue();
+  Value *FalseVal = SI->getFalseValue();
+
+  // Bail out early.
+  if (CmpI->isEquality())
+    return SPF_UNKNOWN;
+
+  // Deal with type mismatches.
+  if (CastOp && CmpLHS->getType() != TrueVal->getType()) {
+    if (Constant *C = lookThroughCast(CmpI, TrueVal, FalseVal, CastOp))
+      return ::matchSelectPattern(Pred, CmpLHS, CmpRHS,
+                                  cast<CastInst>(TrueVal)->getOperand(0), C,
+                                  LHS, RHS);
+    if (Constant *C = lookThroughCast(CmpI, FalseVal, TrueVal, CastOp))
+      return ::matchSelectPattern(Pred, CmpLHS, CmpRHS,
+                                  C, cast<CastInst>(FalseVal)->getOperand(0),
+                                  LHS, RHS);
+  }
+  return ::matchSelectPattern(Pred, CmpLHS, CmpRHS, TrueVal, FalseVal,
+                              LHS, RHS);
 }
