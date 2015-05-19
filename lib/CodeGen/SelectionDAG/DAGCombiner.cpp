@@ -8280,25 +8280,22 @@ SDValue DAGCombiner::visitFDIV(SDNode *N) {
 
     SmallVector<SDNode *, 4> Users;
     // Find all FDIV users of the same divisor.
-    for (SDNode::use_iterator UI = N1.getNode()->use_begin(),
-                              UE = N1.getNode()->use_end();
-         UI != UE; ++UI) {
-      SDNode *User = UI.getUse().getUser();
-      if (User->getOpcode() == ISD::FDIV && User->getOperand(1) == N1)
-        Users.push_back(User);
+    for (auto *U : N1->uses()) {
+      if (U->getOpcode() == ISD::FDIV && U->getOperand(1) == N1)
+        Users.push_back(U);
     }
 
     if (TLI.combineRepeatedFPDivisors(Users.size())) {
-      SDLoc DL(N);
-      SDValue FPOne = DAG.getConstantFP(1.0, DL, VT); // floating point 1.0
+      SDValue FPOne = DAG.getConstantFP(1.0, DL, VT);
       SDValue Reciprocal = DAG.getNode(ISD::FDIV, DL, VT, FPOne, N1);
 
       // Dividend / Divisor -> Dividend * Reciprocal
-      for (auto I = Users.begin(), E = Users.end(); I != E; ++I) {
-        if ((*I)->getOperand(0) != FPOne) {
-          SDValue NewNode = DAG.getNode(ISD::FMUL, SDLoc(*I), VT,
-                                        (*I)->getOperand(0), Reciprocal);
-          DAG.ReplaceAllUsesWith(*I, NewNode.getNode());
+      for (auto *U : Users) {
+        SDValue Dividend = U->getOperand(0);
+        if (Dividend != FPOne) {
+          SDValue NewNode = DAG.getNode(ISD::FMUL, SDLoc(U), VT, Dividend,
+                                        Reciprocal);
+          DAG.ReplaceAllUsesWith(U, NewNode.getNode());
         }
       }
       return SDValue();
