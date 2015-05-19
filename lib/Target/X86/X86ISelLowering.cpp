@@ -2000,9 +2000,8 @@ X86TargetLowering::LowerReturn(SDValue Chain,
     RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
   }
 
-  // The x86-64 ABIs require that for returning structs by value we copy
+  // All x86 ABIs require that for returning structs by value we copy
   // the sret argument into %rax/%eax (depending on ABI) for the return.
-  // Win32 requires us to put the sret argument to %eax as well.
   // We saved the argument into a virtual register in the entry block,
   // so now we copy the value out and into %rax/%eax.
   //
@@ -2011,8 +2010,6 @@ X86TargetLowering::LowerReturn(SDValue Chain,
   // false, then an sret argument may be implicitly inserted in the SelDAG. In
   // either case FuncInfo->setSRetReturnReg() will have been called.
   if (unsigned SRetReg = FuncInfo->getSRetReturnReg()) {
-    assert((Subtarget->is64Bit() || Subtarget->isTargetKnownWindowsMSVC()) &&
-           "No need for an sret register");
     SDValue Val = DAG.getCopyFromReg(Chain, dl, SRetReg, getPointerTy());
 
     unsigned RetValReg
@@ -2442,24 +2439,21 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
     InVals.push_back(ArgValue);
   }
 
-  if (Subtarget->is64Bit() || Subtarget->isTargetKnownWindowsMSVC()) {
-    for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
-      // The x86-64 ABIs require that for returning structs by value we copy
-      // the sret argument into %rax/%eax (depending on ABI) for the return.
-      // Win32 requires us to put the sret argument to %eax as well.
-      // Save the argument into a virtual register so that we can access it
-      // from the return points.
-      if (Ins[i].Flags.isSRet()) {
-        unsigned Reg = FuncInfo->getSRetReturnReg();
-        if (!Reg) {
-          MVT PtrTy = getPointerTy();
-          Reg = MF.getRegInfo().createVirtualRegister(getRegClassFor(PtrTy));
-          FuncInfo->setSRetReturnReg(Reg);
-        }
-        SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), dl, Reg, InVals[i]);
-        Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Copy, Chain);
-        break;
+  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
+    // All x86 ABIs require that for returning structs by value we copy the
+    // sret argument into %rax/%eax (depending on ABI) for the return. Save
+    // the argument into a virtual register so that we can access it from the
+    // return points.
+    if (Ins[i].Flags.isSRet()) {
+      unsigned Reg = FuncInfo->getSRetReturnReg();
+      if (!Reg) {
+        MVT PtrTy = getPointerTy();
+        Reg = MF.getRegInfo().createVirtualRegister(getRegClassFor(PtrTy));
+        FuncInfo->setSRetReturnReg(Reg);
       }
+      SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), dl, Reg, InVals[i]);
+      Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Copy, Chain);
+      break;
     }
   }
 
@@ -16985,21 +16979,21 @@ X86TargetLowering::lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *AI) const {
   // otherwise, we might be able to be more agressive on relaxed idempotent
   // rmw. In practice, they do not look useful, so we don't try to be
   // especially clever.
-  if (SynchScope == SingleThread) {
+  if (SynchScope == SingleThread)
     // FIXME: we could just insert an X86ISD::MEMBARRIER here, except we are at
     // the IR level, so we must wrap it in an intrinsic.
     return nullptr;
-  } else if (hasMFENCE(*Subtarget)) {
-    Function *MFence = llvm::Intrinsic::getDeclaration(M,
-            Intrinsic::x86_sse2_mfence);
-    Builder.CreateCall(MFence);
-  } else {
+
+  if (!hasMFENCE(*Subtarget))
     // FIXME: it might make sense to use a locked operation here but on a
     // different cache-line to prevent cache-line bouncing. In practice it
     // is probably a small win, and x86 processors without mfence are rare
     // enough that we do not bother.
     return nullptr;
-  }
+
+  Function *MFence =
+      llvm::Intrinsic::getDeclaration(M, Intrinsic::x86_sse2_mfence);
+  Builder.CreateCall(MFence, {});
 
   // Finally we can emit the atomic load.
   LoadInst *Loaded = Builder.CreateAlignedLoad(Ptr,
