@@ -99,13 +99,15 @@ void Fuzzer::RereadOutputCorpus() {
   for (auto &X : AdditionalCorpus) {
     if (X.size() > (size_t)Options.MaxLen)
       X.resize(Options.MaxLen);
-    if (UnitsAddedAfterInitialLoad.insert(X).second) {
-      Corpus.push_back(X);
+    if (UnitHashesAddedToCorpus.insert(Hash(X)).second) {
       CurrentUnit.clear();
       CurrentUnit.insert(CurrentUnit.begin(), X.begin(), X.end());
       size_t NewCoverage = RunOne(CurrentUnit);
-      if (NewCoverage && Options.Verbosity >= 1)
-        PrintStats("RELOAD", NewCoverage);
+      if (NewCoverage) {
+        Corpus.push_back(X);
+        if (Options.Verbosity >= 1)
+          PrintStats("RELOAD", NewCoverage);
+      }
     }
   }
 }
@@ -142,6 +144,8 @@ void Fuzzer::ShuffleAndMinimize() {
     }
   }
   Corpus = NewCorpus;
+  for (auto &X : Corpus)
+    UnitHashesAddedToCorpus.insert(Hash(X));
   PrintStats("INITED", MaxCov);
 }
 
@@ -292,7 +296,7 @@ void Fuzzer::SaveCorpus() {
 void Fuzzer::ReportNewCoverage(size_t NewCoverage, const Unit &U) {
   if (!NewCoverage) return;
   Corpus.push_back(U);
-  UnitsAddedAfterInitialLoad.insert(U);
+  UnitHashesAddedToCorpus.insert(Hash(U));
   PrintStats("NEW   ", NewCoverage, "");
   if (Options.Verbosity) {
     std::cerr << " L: " << U.size();
@@ -315,8 +319,8 @@ void Fuzzer::MutateAndTestOne(Unit *U) {
     RunOneAndUpdateCorpus(*U);
     size_t NumTraceBasedMutations = StopTraceRecording();
     for (size_t j = 0; j < NumTraceBasedMutations; j++) {
-        ApplyTraceBasedMutation(j, U);
-        RunOneAndUpdateCorpus(*U);
+      ApplyTraceBasedMutation(j, U);
+      RunOneAndUpdateCorpus(*U);
     }
   }
 }
@@ -324,6 +328,7 @@ void Fuzzer::MutateAndTestOne(Unit *U) {
 void Fuzzer::Loop(size_t NumIterations) {
   for (size_t i = 1; i <= NumIterations; i++) {
     for (size_t J1 = 0; J1 < Corpus.size(); J1++) {
+      SyncCorpus();
       RereadOutputCorpus();
       if (TotalNumberOfRuns >= Options.MaxNumberOfRuns)
         return;
@@ -340,6 +345,16 @@ void Fuzzer::Loop(size_t NumIterations) {
       }
     }
   }
+}
+
+void Fuzzer::SyncCorpus() {
+  if (Options.SyncCommand.empty() || Options.OutputCorpus.empty()) return;
+  auto Now = system_clock::now();
+  if (duration_cast<seconds>(Now - LastExternalSync).count() <
+      Options.SyncTimeout)
+    return;
+  LastExternalSync = Now;
+  ExecuteCommand(Options.SyncCommand + " " + Options.OutputCorpus);
 }
 
 }  // namespace fuzzer

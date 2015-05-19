@@ -1101,7 +1101,7 @@ static bool isConstantOrUndef(int Op, int Val) {
 /// VPKUHUM instruction.
 /// The ShuffleKind distinguishes between big-endian operations with
 /// two different inputs (0), either-endian operations with two identical
-/// inputs (1), and little-endian operantion with two different inputs (2).
+/// inputs (1), and little-endian operations with two different inputs (2).
 /// For the latter, the input operands are swapped (see PPCInstrAltivec.td).
 bool PPC::isVPKUHUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
                                SelectionDAG &DAG) {
@@ -1132,7 +1132,7 @@ bool PPC::isVPKUHUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
 /// VPKUWUM instruction.
 /// The ShuffleKind distinguishes between big-endian operations with
 /// two different inputs (0), either-endian operations with two identical
-/// inputs (1), and little-endian operantion with two different inputs (2).
+/// inputs (1), and little-endian operations with two different inputs (2).
 /// For the latter, the input operands are swapped (see PPCInstrAltivec.td).
 bool PPC::isVPKUWUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
                                SelectionDAG &DAG) {
@@ -1158,6 +1158,49 @@ bool PPC::isVPKUWUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
           !isConstantOrUndef(N->getMaskElt(i+1),  i*2+j+1) ||
           !isConstantOrUndef(N->getMaskElt(i+8),  i*2+j)   ||
           !isConstantOrUndef(N->getMaskElt(i+9),  i*2+j+1))
+        return false;
+  }
+  return true;
+}
+
+/// isVPKUDUMShuffleMask - Return true if this is the shuffle mask for a
+/// VPKUDUM instruction.
+/// The ShuffleKind distinguishes between big-endian operations with
+/// two different inputs (0), either-endian operations with two identical
+/// inputs (1), and little-endian operations with two different inputs (2).
+/// For the latter, the input operands are swapped (see PPCInstrAltivec.td).
+bool PPC::isVPKUDUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
+                               SelectionDAG &DAG) {
+  bool IsLE = DAG.getTarget().getDataLayout()->isLittleEndian();
+  if (ShuffleKind == 0) {
+    if (IsLE)
+      return false;
+    for (unsigned i = 0; i != 16; i += 4)
+      if (!isConstantOrUndef(N->getMaskElt(i  ),  i*2+4) ||
+          !isConstantOrUndef(N->getMaskElt(i+1),  i*2+5) ||
+          !isConstantOrUndef(N->getMaskElt(i+2),  i*2+6) ||
+          !isConstantOrUndef(N->getMaskElt(i+3),  i*2+7))
+        return false;
+  } else if (ShuffleKind == 2) {
+    if (!IsLE)
+      return false;
+    for (unsigned i = 0; i != 16; i += 4)
+      if (!isConstantOrUndef(N->getMaskElt(i  ),  i*2) ||
+          !isConstantOrUndef(N->getMaskElt(i+1),  i*2+1) ||
+          !isConstantOrUndef(N->getMaskElt(i+2),  i*2+2) ||
+          !isConstantOrUndef(N->getMaskElt(i+3),  i*2+3))
+        return false;
+  } else if (ShuffleKind == 1) {
+    unsigned j = IsLE ? 0 : 4;
+    for (unsigned i = 0; i != 8; i += 4)
+      if (!isConstantOrUndef(N->getMaskElt(i  ),  i*2+j)   ||
+          !isConstantOrUndef(N->getMaskElt(i+1),  i*2+j+1) ||
+          !isConstantOrUndef(N->getMaskElt(i+2),  i*2+j+2) ||
+          !isConstantOrUndef(N->getMaskElt(i+3),  i*2+j+3) ||
+          !isConstantOrUndef(N->getMaskElt(i+8),  i*2+j)   ||
+          !isConstantOrUndef(N->getMaskElt(i+9),  i*2+j+1) ||
+          !isConstantOrUndef(N->getMaskElt(i+10), i*2+j+2) ||
+          !isConstantOrUndef(N->getMaskElt(i+11), i*2+j+3))
         return false;
   }
   return true;
@@ -6993,6 +7036,7 @@ SDValue PPCTargetLowering::LowerVECTOR_SHUFFLE(SDValue Op,
         PPC::isSplatShuffleMask(SVOp, 4) ||
         PPC::isVPKUWUMShuffleMask(SVOp, 1, DAG) ||
         PPC::isVPKUHUMShuffleMask(SVOp, 1, DAG) ||
+        PPC::isVPKUDUMShuffleMask(SVOp, 1, DAG) ||
         PPC::isVSLDOIShuffleMask(SVOp, 1, DAG) != -1 ||
         PPC::isVMRGLShuffleMask(SVOp, 1, 1, DAG) ||
         PPC::isVMRGLShuffleMask(SVOp, 2, 1, DAG) ||
@@ -7010,6 +7054,7 @@ SDValue PPCTargetLowering::LowerVECTOR_SHUFFLE(SDValue Op,
   unsigned int ShuffleKind = isLittleEndian ? 2 : 0;
   if (PPC::isVPKUWUMShuffleMask(SVOp, ShuffleKind, DAG) ||
       PPC::isVPKUHUMShuffleMask(SVOp, ShuffleKind, DAG) ||
+      PPC::isVPKUDUMShuffleMask(SVOp, ShuffleKind, DAG) ||
       PPC::isVSLDOIShuffleMask(SVOp, ShuffleKind, DAG) != -1 ||
       PPC::isVMRGLShuffleMask(SVOp, 1, ShuffleKind, DAG) ||
       PPC::isVMRGLShuffleMask(SVOp, 2, ShuffleKind, DAG) ||
@@ -7835,7 +7880,7 @@ void PPCTargetLowering::ReplaceNodeResults(SDNode *N,
 static Instruction* callIntrinsic(IRBuilder<> &Builder, Intrinsic::ID Id) {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
   Function *Func = Intrinsic::getDeclaration(M, Id);
-  return Builder.CreateCall(Func);
+  return Builder.CreateCall(Func, {});
 }
 
 // The mappings for emitLeading/TrailingFence is taken from
@@ -7845,10 +7890,9 @@ Instruction* PPCTargetLowering::emitLeadingFence(IRBuilder<> &Builder,
                                          bool IsLoad) const {
   if (Ord == SequentiallyConsistent)
     return callIntrinsic(Builder, Intrinsic::ppc_sync);
-  else if (isAtLeastRelease(Ord))
+  if (isAtLeastRelease(Ord))
     return callIntrinsic(Builder, Intrinsic::ppc_lwsync);
-  else
-    return nullptr;
+  return nullptr;
 }
 
 Instruction* PPCTargetLowering::emitTrailingFence(IRBuilder<> &Builder,
@@ -7860,8 +7904,7 @@ Instruction* PPCTargetLowering::emitTrailingFence(IRBuilder<> &Builder,
   // See http://www.cl.cam.ac.uk/~pes20/cpp/cpp0xmappings.html and
   // http://www.rdrop.com/users/paulmck/scalability/paper/N2745r.2011.03.04a.html
   // and http://www.cl.cam.ac.uk/~pes20/cppppc/ for justification.
-  else
-    return nullptr;
+  return nullptr;
 }
 
 MachineBasicBlock *

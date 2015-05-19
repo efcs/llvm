@@ -163,6 +163,8 @@ class ELFObjectWriter : public MCObjectWriter {
       LocalSymbolData.clear();
       ExternalSymbolData.clear();
       UndefinedSymbolData.clear();
+      NeedsGOT = false;
+      SectionTable.clear();
       MCObjectWriter::reset();
     }
 
@@ -242,12 +244,11 @@ class ELFObjectWriter : public MCObjectWriter {
 
     void writeRelocations(const MCAssembler &Asm, const MCSectionELF &Sec);
 
-    bool
-    IsSymbolRefDifferenceFullyResolvedImpl(const MCAssembler &Asm,
-                                           const MCSymbolData &DataA,
-                                           const MCFragment &FB,
-                                           bool InSet,
-                                           bool IsPCRel) const override;
+    bool IsSymbolRefDifferenceFullyResolvedImpl(const MCAssembler &Asm,
+                                                const MCSymbol &SymA,
+                                                const MCFragment &FB,
+                                                bool InSet,
+                                                bool IsPCRel) const override;
 
     bool isWeak(const MCSymbolData &SD) const override;
 
@@ -420,8 +421,8 @@ void ELFObjectWriter::ExecutePostLayoutBinding(MCAssembler &Asm,
   // The presence of symbol versions causes undefined symbols and
   // versions declared with @@@ to be renamed.
 
-  for (MCSymbolData &OriginalData : Asm.symbols()) {
-    const MCSymbol &Alias = OriginalData.getSymbol();
+  for (const MCSymbol &Alias : Asm.symbols()) {
+    MCSymbolData &OriginalData = Alias.getData();
 
     // Not an alias.
     if (!Alias.isVariable())
@@ -781,14 +782,14 @@ void ELFObjectWriter::RecordRelocation(MCAssembler &Asm,
     // or (A + C - R). If B = R + K and the relocation is not pcrel, we can
     // replace B to implement it: (A - R - K + C)
     if (IsPCRel)
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           "No relocation available to represent this relative expression");
 
     const MCSymbol &SymB = RefB->getSymbol();
 
     if (SymB.isUndefined())
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           Twine("symbol '") + SymB.getName() +
               "' can not be undefined in a subtraction expression");
@@ -796,12 +797,12 @@ void ELFObjectWriter::RecordRelocation(MCAssembler &Asm,
     assert(!SymB.isAbsolute() && "Should have been folded");
     const MCSection &SecB = SymB.getSection();
     if (&SecB != &FixupSection)
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(), "Cannot represent a difference across sections");
 
     const MCSymbolData &SymBD = Asm.getSymbolData(SymB);
     if (::isWeak(SymBD))
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(), "Cannot represent a subtraction with a weak symbol");
 
     uint64_t SymBOffset = Layout.getSymbolOffset(&SymBD);
@@ -927,15 +928,15 @@ void ELFObjectWriter::computeSymbolTable(
   // FIXME: Why is an undefined reference to _GLOBAL_OFFSET_TABLE_ needed?
   if (NeedsGOT) {
     StringRef Name = "_GLOBAL_OFFSET_TABLE_";
-    MCSymbol *Sym = Asm.getContext().GetOrCreateSymbol(Name);
+    MCSymbol *Sym = Asm.getContext().getOrCreateSymbol(Name);
     MCSymbolData &Data = Asm.getOrCreateSymbolData(*Sym);
     Data.setExternal(true);
     MCELF::SetBinding(Data, ELF::STB_GLOBAL);
   }
 
   // Add the data for the symbols.
-  for (MCSymbolData &SD : Asm.symbols()) {
-    const MCSymbol &Symbol = SD.getSymbol();
+  for (const MCSymbol &Symbol : Asm.symbols()) {
+    MCSymbolData &SD = Symbol.getData();
 
     bool Used = UsedInReloc.count(&Symbol);
     bool WeakrefUsed = WeakrefUsedInReloc.count(&Symbol);
@@ -1467,14 +1468,14 @@ void ELFObjectWriter::WriteObject(MCAssembler &Asm,
 }
 
 bool ELFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
-    const MCAssembler &Asm, const MCSymbolData &DataA, const MCFragment &FB,
+    const MCAssembler &Asm, const MCSymbol &SymA, const MCFragment &FB,
     bool InSet, bool IsPCRel) const {
   if (IsPCRel) {
     assert(!InSet);
-    if (::isWeak(DataA))
+    if (::isWeak(SymA.getData()))
       return false;
   }
-  return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(Asm, DataA, FB,
+  return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(Asm, SymA, FB,
                                                                 InSet, IsPCRel);
 }
 

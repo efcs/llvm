@@ -28,7 +28,6 @@
 #include "llvm/CodeGen/RegisterPressure.h"
 #include "llvm/CodeGen/ScheduleDFS.h"
 #include "llvm/IR/Operator.h"
-#include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
@@ -1113,6 +1112,12 @@ static void toggleBundleKillFlag(MachineInstr *MI, unsigned Reg,
   while (Begin != End) {
     for (MIOperands MO(--End); MO.isValid(); ++MO) {
       if (!MO->isReg() || MO->isDef() || Reg != MO->getReg())
+        continue;
+
+      // DEBUG_VALUE nodes do not contribute to code generation and should
+      // always be ignored.  Failure to do so may result in trying to modify
+      // KILL flags on DEBUG_VALUE nodes, which is distressing.
+      if (MO->isDebug())
         continue;
 
       // If the register has the internal flag then it could be killing an

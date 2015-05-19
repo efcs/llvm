@@ -400,6 +400,8 @@ private:
                             bool isReturnValue, const Value *V);
   void VerifyFunctionAttrs(FunctionType *FT, AttributeSet Attrs,
                            const Value *V);
+  void VerifyFunctionMetadata(
+      const SmallVector<std::pair<unsigned, MDNode *>, 4> MDs);
 
   void VerifyConstantExprBitcastType(const ConstantExpr *CE);
   void VerifyStatepoint(ImmutableCallSite CS);
@@ -1463,6 +1465,36 @@ void Verifier::VerifyFunctionAttrs(FunctionType *FT, AttributeSet Attrs,
   }
 }
 
+void Verifier::VerifyFunctionMetadata(
+    const SmallVector<std::pair<unsigned, MDNode *>, 4> MDs) {
+  if (MDs.empty())
+    return;
+
+  for (unsigned i = 0; i < MDs.size(); i++) {
+    if (MDs[i].first == LLVMContext::MD_prof) {
+      MDNode *MD = MDs[i].second;
+      Assert(MD->getNumOperands() == 2,
+             "!prof annotations should have exactly 2 operands", MD);
+
+      // Check first operand.
+      Assert(MD->getOperand(0) != nullptr, "first operand should not be null",
+             MD);
+      Assert(isa<MDString>(MD->getOperand(0)),
+             "expected string with name of the !prof annotation", MD);
+      MDString *MDS = cast<MDString>(MD->getOperand(0));
+      StringRef ProfName = MDS->getString();
+      Assert(ProfName.equals("function_entry_count"),
+             "first operand should be 'function_entry_count'", MD);
+
+      // Check second operand.
+      Assert(MD->getOperand(1) != nullptr, "second operand should not be null",
+             MD);
+      Assert(isa<ConstantAsMetadata>(MD->getOperand(1)),
+             "expected integer argument to function_entry_count", MD);
+    }
+  }
+}
+
 void Verifier::VerifyConstantExprBitcastType(const ConstantExpr *CE) {
   if (CE->getOpcode() != Instruction::BitCast)
     return;
@@ -1499,13 +1531,34 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
          "reordering restrictions required by safepoint semantics",
          &CI);
 
-  const Value *Target = CS.getArgument(0);
+  const Value *IDV = CS.getArgument(0);
+  Assert(isa<ConstantInt>(IDV), "gc.statepoint ID must be a constant integer",
+         &CI);
+
+  const Value *NumPatchBytesV = CS.getArgument(1);
+  Assert(isa<ConstantInt>(NumPatchBytesV),
+         "gc.statepoint number of patchable bytes must be a constant integer",
+         &CI);
+  const int64_t NumPatchBytes =
+      cast<ConstantInt>(NumPatchBytesV)->getSExtValue();
+  assert(isInt<32>(NumPatchBytes) && "NumPatchBytesV is an i32!");
+  Assert(NumPatchBytes >= 0, "gc.statepoint number of patchable bytes must be "
+                             "positive",
+         &CI);
+
+  const Value *Target = CS.getArgument(2);
   const PointerType *PT = dyn_cast<PointerType>(Target->getType());
   Assert(PT && PT->getElementType()->isFunctionTy(),
          "gc.statepoint callee must be of function pointer type", &CI, Target);
   FunctionType *TargetFuncType = cast<FunctionType>(PT->getElementType());
 
-  const Value *NumCallArgsV = CS.getArgument(1);
+  if (NumPatchBytes)
+    Assert(isa<ConstantPointerNull>(Target->stripPointerCasts()),
+           "gc.statepoint must have null as call target if number of patchable "
+           "bytes is non zero",
+           &CI);
+
+  const Value *NumCallArgsV = CS.getArgument(3);
   Assert(isa<ConstantInt>(NumCallArgsV),
          "gc.statepoint number of arguments to underlying call "
          "must be constant integer",
@@ -1529,7 +1582,7 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
     Assert(NumCallArgs == NumParams,
            "gc.statepoint mismatch in number of call args", &CI);
 
-  const Value *FlagsV = CS.getArgument(2);
+  const Value *FlagsV = CS.getArgument(4);
   Assert(isa<ConstantInt>(FlagsV),
          "gc.statepoint flags must be constant integer", &CI);
   const uint64_t Flags = cast<ConstantInt>(FlagsV)->getZExtValue();
@@ -1540,13 +1593,14 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
   // the type of the wrapped callee.
   for (int i = 0; i < NumParams; i++) {
     Type *ParamType = TargetFuncType->getParamType(i);
-    Type *ArgType = CS.getArgument(3+i)->getType();
+    Type *ArgType = CS.getArgument(5 + i)->getType();
     Assert(ArgType == ParamType,
            "gc.statepoint call argument does not match wrapped "
            "function type",
            &CI);
   }
-  const int EndCallArgsInx = 2+NumCallArgs;
+
+  const int EndCallArgsInx = 4 + NumCallArgs;
 
   const Value *NumTransitionArgsV = CS.getArgument(EndCallArgsInx+1);
   Assert(isa<ConstantInt>(NumTransitionArgsV),
@@ -1570,7 +1624,7 @@ void Verifier::VerifyStatepoint(ImmutableCallSite CS) {
          &CI);
 
   const int ExpectedNumArgs =
-      5 + NumCallArgs + NumTransitionArgs + NumDeoptArgs;
+      7 + NumCallArgs + NumTransitionArgs + NumDeoptArgs;
   Assert(ExpectedNumArgs <= (int)CS.arg_size(),
          "gc.statepoint too few arguments according to length fields", &CI);
 
@@ -1691,6 +1745,7 @@ void Verifier::visitFunction(const Function &F) {
   SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
   F.getAllMetadata(MDs);
   assert(F.hasMetadata() != MDs.empty() && "Bit out-of-sync");
+  VerifyFunctionMetadata(MDs);
 
   if (F.isMaterializable()) {
     // Function has a body somewhere we can't see.
@@ -3289,7 +3344,7 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
            CI.getArgOperand(0));
 
     // Assert that result type matches wrapped callee.
-    const Value *Target = StatepointCS.getArgument(0);
+    const Value *Target = StatepointCS.getArgument(2);
     const PointerType *PT = cast<PointerType>(Target->getType());
     const FunctionType *TargetFuncType =
       cast<FunctionType>(PT->getElementType());
@@ -3356,18 +3411,19 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     // section of the statepoint's argument
     Assert(StatepointCS.arg_size() > 0,
            "gc.statepoint: insufficient arguments");
-    Assert(isa<ConstantInt>(StatepointCS.getArgument(1)),
+    Assert(isa<ConstantInt>(StatepointCS.getArgument(3)),
            "gc.statement: number of call arguments must be constant integer");
     const unsigned NumCallArgs =
-      cast<ConstantInt>(StatepointCS.getArgument(1))->getZExtValue();
-    Assert(StatepointCS.arg_size() > NumCallArgs+3,
+        cast<ConstantInt>(StatepointCS.getArgument(3))->getZExtValue();
+    Assert(StatepointCS.arg_size() > NumCallArgs + 5,
            "gc.statepoint: mismatch in number of call arguments");
-    Assert(isa<ConstantInt>(StatepointCS.getArgument(NumCallArgs+3)),
+    Assert(isa<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 5)),
            "gc.statepoint: number of transition arguments must be "
            "a constant integer");
     const int NumTransitionArgs =
-      cast<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 3))->getZExtValue();
-    const int DeoptArgsStart = 2 + NumCallArgs + 1 + NumTransitionArgs + 1;
+        cast<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 5))
+            ->getZExtValue();
+    const int DeoptArgsStart = 4 + NumCallArgs + 1 + NumTransitionArgs + 1;
     Assert(isa<ConstantInt>(StatepointCS.getArgument(DeoptArgsStart)),
            "gc.statepoint: number of deoptimization arguments must be "
            "a constant integer");
@@ -3384,8 +3440,18 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
            "'gc parameters' section of the statepoint call",
            &CI);
 
-    // gc_relocate does not need to be the same type as the relocated pointer.
-    // It can casted to the correct type later if it's desired
+    // Relocated value must be a pointer type, but gc_relocate does not need to return the
+    // same pointer type as the relocated pointer. It can be casted to the correct type later
+    // if it's desired. However, they must have the same address space.
+    GCRelocateOperands Operands(&CI);
+    Assert(Operands.getDerivedPtr()->getType()->isPointerTy(),
+           "gc.relocate: relocated value must be a gc pointer", &CI);
+
+    // gc_relocate return type must be a pointer type, and is verified earlier in
+    // VerifyIntrinsicType().
+    Assert(cast<PointerType>(CI.getType())->getAddressSpace() ==
+           cast<PointerType>(Operands.getDerivedPtr()->getType())->getAddressSpace(),
+           "gc.relocate: relocating a pointer shouldn't change its address space", &CI);
     break;
   }
   };

@@ -185,8 +185,8 @@ struct PlaceSafepoints : public FunctionPass {
 // Insert a safepoint poll immediately before the given instruction.  Does
 // not handle the parsability of state at the runtime call, that's the
 // callers job.
-static void
-InsertSafepointPoll(DominatorTree &DT, Instruction *after,
+static void 
+InsertSafepointPoll(Instruction *after,
                     std::vector<CallSite> &ParsePointsNeeded /*rval*/);
 
 static bool isGCLeafFunction(const CallSite &CS);
@@ -450,11 +450,7 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
   }
 
   BasicBlock *BB = cursor->getParent();
-  SplitBlock(BB, cursor, nullptr);
-
-  // Note: SplitBlock modifies the DT.  Simply passing a Pass (which is a
-  // module pass) is not enough.
-  DT.recalculate(F);
+  SplitBlock(BB, cursor, &DT);
 
   // SplitBlock updates the DT
   DEBUG(DT.verifyDomTree());
@@ -567,10 +563,10 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
   // actually insert parse points yet.  That will be done for all polls and
   // calls in a single pass.
 
-  // Note: With the migration, we need to recompute this for each 'pass'.  Once
-  // we merge these, we'll do it once before the analysis
   DominatorTree DT;
+  DT.recalculate(F);
 
+  SmallVector<Instruction *, 16> PollsNeeded;
   std::vector<CallSite> ParsePointNeeded;
 
   if (enableBackedgeSafepoints(F)) {
@@ -606,14 +602,11 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
                         PollLocations.end());
 
     // Insert a poll at each point the analysis pass identified
-    for (size_t i = 0; i < PollLocations.size(); i++) {
+    // The poll location must be the terminator of a loop latch block.
+    for (TerminatorInst *Term : PollLocations) {
       // We are inserting a poll, the function is modified
       modified = true;
-
-      // The poll location must be the terminator of a loop latch block.
-      TerminatorInst *Term = PollLocations[i];
-
-      std::vector<CallSite> ParsePoints;
+      
       if (SplitBackedge) {
         // Split the backedge of the loop and insert the poll within that new
         // basic block.  This creates a loop with two latches per original
@@ -639,50 +632,43 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
         // date and use a more natural merged loop.
         SetVector<BasicBlock *> SplitBackedges;
         for (BasicBlock *Header : Headers) {
-          BasicBlock *NewBB = SplitEdge(Term->getParent(), Header, nullptr);
-          SplitBackedges.insert(NewBB);
-        }
-        DT.recalculate(F);
-        for (BasicBlock *NewBB : SplitBackedges) {
-          std::vector<CallSite> RuntimeCalls;
-          InsertSafepointPoll(DT, NewBB->getTerminator(), RuntimeCalls);
+          BasicBlock *NewBB = SplitEdge(Term->getParent(), Header, &DT);
+          PollsNeeded.push_back(NewBB->getTerminator());
           NumBackedgeSafepoints++;
-          ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
-                                  RuntimeCalls.end());
         }
-
       } else {
         // Split the latch block itself, right before the terminator.
-        std::vector<CallSite> RuntimeCalls;
-        InsertSafepointPoll(DT, Term, RuntimeCalls);
+        PollsNeeded.push_back(Term);
         NumBackedgeSafepoints++;
-        ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
-                                RuntimeCalls.end());
       }
-
-      // Record the parse points for later use
-      ParsePointNeeded.insert(ParsePointNeeded.end(), ParsePoints.begin(),
-                              ParsePoints.end());
     }
   }
 
   if (enableEntrySafepoints(F)) {
-    DT.recalculate(F);
-    Instruction *term = findLocationForEntrySafepoint(F, DT);
-    if (!term) {
+    Instruction *Location = findLocationForEntrySafepoint(F, DT);
+    if (!Location) {
       // policy choice not to insert?
     } else {
-      std::vector<CallSite> RuntimeCalls;
-      InsertSafepointPoll(DT, term, RuntimeCalls);
+      PollsNeeded.push_back(Location);
       modified = true;
       NumEntrySafepoints++;
-      ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
-                              RuntimeCalls.end());
     }
   }
 
+  // Now that we've identified all the needed safepoint poll locations, insert
+  // safepoint polls themselves.
+  for (Instruction *PollLocation : PollsNeeded) {
+    std::vector<CallSite> RuntimeCalls;
+    InsertSafepointPoll(PollLocation, RuntimeCalls);
+    ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
+                            RuntimeCalls.end());
+  }
+  PollsNeeded.clear(); // make sure we don't accidentally use
+  // The dominator tree has been invalidated by the inlining performed in the
+  // above loop.  TODO: Teach the inliner how to update the dom tree?
+  DT.recalculate(F);
+  
   if (enableCallSafepoints(F)) {
-    DT.recalculate(F);
     std::vector<CallSite> Calls;
     findCallSafepoints(F, Calls);
     NumCallSafepoints += Calls.size();
@@ -697,7 +683,6 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
   unique_unsorted(ParsePointNeeded);
 
   // Any parse point (no matter what source) will be handled here
-  DT.recalculate(F); // Needed?
 
   // We're about to start modifying the function
   if (!ParsePointNeeded.empty())
@@ -731,8 +716,8 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
     CallSite &CS = ParsePointNeeded[i];
     Value *GCResult = Results[i];
     if (GCResult) {
-      // Can not RAUW for the gc result in case of phi nodes preset.
-      assert(!isa<PHINode>(cast<Instruction>(GCResult)->getParent()->begin()));
+      // Can not RAUW for the invoke gc result in case of phi nodes preset.
+      assert(CS.isCall() || !isa<PHINode>(cast<Instruction>(GCResult)->getParent()->begin()));
 
       // Replace all uses with the new call
       CS.getInstruction()->replaceAllUsesWith(GCResult);
@@ -793,7 +778,7 @@ static bool isGCLeafFunction(const CallSite &CS) {
 }
 
 static void
-InsertSafepointPoll(DominatorTree &DT, Instruction *term,
+InsertSafepointPoll(Instruction *term,
                     std::vector<CallSite> &ParsePointsNeeded /*rval*/) {
   Module *M = term->getParent()->getParent()->getParent();
   assert(M);
@@ -823,7 +808,6 @@ InsertSafepointPoll(DominatorTree &DT, Instruction *term,
   }
   after++;
   assert(after != poll->getParent()->end() && "must have successor");
-  assert(DT.dominates(before, after) && "trivially true");
 
   // do the actual inlining
   InlineFunctionInfo IFI;
@@ -852,13 +836,6 @@ InsertSafepointPoll(DominatorTree &DT, Instruction *term,
          "malformed poll function");
 
   scanInlinedCode(&*(start), &*(after), calls, BBs);
-
-  // Recompute since we've invalidated cached data.  Conceptually we
-  // shouldn't need to do this, but implementation wise we appear to.  Needed
-  // so we can insert safepoints correctly.
-  // TODO: update more cheaply
-  DT.recalculate(*after->getParent()->getParent());
-
   assert(!calls.empty() && "slow path not found for safepoint poll");
 
   // Record the fact we need a parsable state at the runtime call contained in
@@ -904,19 +881,51 @@ static Value *ReplaceWithStatepoint(const CallSite &CS, /* to replace */
 
   // Create the statepoint given all the arguments
   Instruction *Token = nullptr;
-  AttributeSet OriginalAttrs;
+
+  uint64_t ID;
+  uint32_t NumPatchBytes;
+
+  AttributeSet OriginalAttrs = CS.getAttributes();
+  Attribute AttrID =
+      OriginalAttrs.getAttribute(AttributeSet::FunctionIndex, "statepoint-id");
+  Attribute AttrNumPatchBytes = OriginalAttrs.getAttribute(
+      AttributeSet::FunctionIndex, "statepoint-num-patch-bytes");
+
+  AttrBuilder AttrsToRemove;
+  bool HasID = AttrID.isStringAttribute() &&
+               !AttrID.getValueAsString().getAsInteger(10, ID);
+
+  if (HasID)
+    AttrsToRemove.addAttribute("statepoint-id");
+  else
+    ID = 0xABCDEF00;
+
+  bool HasNumPatchBytes =
+      AttrNumPatchBytes.isStringAttribute() &&
+      !AttrNumPatchBytes.getValueAsString().getAsInteger(10, NumPatchBytes);
+
+  if (HasNumPatchBytes)
+    AttrsToRemove.addAttribute("statepoint-num-patch-bytes");
+  else
+    NumPatchBytes = 0;
+
+  OriginalAttrs = OriginalAttrs.removeAttributes(
+      CS.getInstruction()->getContext(), AttributeSet::FunctionIndex,
+      AttrsToRemove);
+
+  Value *StatepointTarget = NumPatchBytes == 0
+                                ? CS.getCalledValue()
+                                : ConstantPointerNull::get(cast<PointerType>(
+                                      CS.getCalledValue()->getType()));
 
   if (CS.isCall()) {
     CallInst *ToReplace = cast<CallInst>(CS.getInstruction());
     CallInst *Call = Builder.CreateGCStatepointCall(
-        CS.getCalledValue(), makeArrayRef(CS.arg_begin(), CS.arg_end()), None,
-        None, "safepoint_token");
+        ID, NumPatchBytes, StatepointTarget,
+        makeArrayRef(CS.arg_begin(), CS.arg_end()), None, None,
+        "safepoint_token");
     Call->setTailCall(ToReplace->isTailCall());
     Call->setCallingConv(ToReplace->getCallingConv());
-
-    // Before we have to worry about GC semantics, all attributes are legal
-    // TODO: handle param attributes
-    OriginalAttrs = ToReplace->getAttributes();
 
     // In case if we can handle this set of attributes - set up function
     // attributes directly on statepoint and return attributes later for
@@ -938,13 +947,11 @@ static Value *ReplaceWithStatepoint(const CallSite &CS, /* to replace */
     // original block.
     Builder.SetInsertPoint(ToReplace->getParent());
     InvokeInst *Invoke = Builder.CreateGCStatepointInvoke(
-        CS.getCalledValue(), ToReplace->getNormalDest(),
+        ID, NumPatchBytes, StatepointTarget, ToReplace->getNormalDest(),
         ToReplace->getUnwindDest(), makeArrayRef(CS.arg_begin(), CS.arg_end()),
-        Builder.getInt32(0), None, "safepoint_token");
+        None, None, "safepoint_token");
 
-    // Currently we will fail on parameter attributes and on certain
-    // function attributes.
-    OriginalAttrs = ToReplace->getAttributes();
+    Invoke->setCallingConv(ToReplace->getCallingConv());
 
     // In case if we can handle this set of attributes - set up function
     // attributes directly on statepoint and return attributes later for

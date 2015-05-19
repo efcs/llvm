@@ -244,7 +244,7 @@ bool PPCMachObjectWriter::RecordScatteredRelocation(
     if (FixupOffset > 0xffffff) {
       char Buffer[32];
       format("0x%x", FixupOffset).print(Buffer, sizeof(Buffer));
-      Asm.getContext().FatalError(Fixup.getLoc(),
+      Asm.getContext().reportFatalError(Fixup.getLoc(),
                                   Twine("Section too large, can't encode "
                                         "r_address (") +
                                       Buffer + ") into 24 bits of scattered "
@@ -333,7 +333,7 @@ void PPCMachObjectWriter::RecordPPCRelocation(
   unsigned Index = 0;
   unsigned Type = RelocType;
 
-  const MCSymbolData *RelSymbol = nullptr;
+  const MCSymbol *RelSymbol = nullptr;
   if (Target.isAbsolute()) { // constant
                              // SymbolNum of 0 indicates the absolute section.
                              //
@@ -355,7 +355,7 @@ void PPCMachObjectWriter::RecordPPCRelocation(
 
     // Check whether we need an external or internal relocation.
     if (Writer->doesSymbolRequireExternRelocation(SD)) {
-      RelSymbol = SD;
+      RelSymbol = &SD->getSymbol();
       // For external relocations, make sure to offset the fixup value to
       // compensate for the addend of the symbol address, if it was
       // undefined. This occurs with weak definitions, for example.

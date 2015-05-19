@@ -27,6 +27,7 @@
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/LEB128.h"
@@ -769,8 +770,8 @@ void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
                                          unsigned PointerSize) {
   // Switch to the section where the table will be emitted into.
   MS->SwitchSection(MC->getObjectFileInfo()->getDwarfLineSection());
-  MCSymbol *LineStartSym = MC->CreateTempSymbol();
-  MCSymbol *LineEndSym = MC->CreateTempSymbol();
+  MCSymbol *LineStartSym = MC->createTempSymbol();
+  MCSymbol *LineEndSym = MC->createTempSymbol();
 
   // The first 4 bytes is the total length of the information for this
   // compilation unit (not including these 4 bytes for the length).

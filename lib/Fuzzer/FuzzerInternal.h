@@ -16,7 +16,6 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
-#include <set>
 
 #include "FuzzerInterface.h"
 
@@ -43,6 +42,12 @@ void PrintASCII(const Unit &U, const char *PrintAfter = "");
 std::string Hash(const Unit &U);
 void SetTimer(int Seconds);
 void PrintFileAsBase64(const std::string &Path);
+void ExecuteCommand(const std::string &Command);
+
+// Private copy of SHA1 implementation.
+static const int kSHA1NumBytes = 20;
+// Computes SHA1 hash of 'Len' bytes in 'Data', writes kSHA1NumBytes to 'Out'.
+void ComputeSHA1(const uint8_t *Data, size_t Len, uint8_t *Out);
 
 int NumberOfCpuCores();
 
@@ -61,7 +66,9 @@ class Fuzzer {
     bool Reload = true;
     int PreferSmallDuringInitialShuffle = -1;
     size_t MaxNumberOfRuns = ULONG_MAX;
+    int SyncTimeout = 600;
     std::string OutputCorpus;
+    std::string SyncCommand;
     std::vector<std::string> Tokens;
   };
   Fuzzer(UserCallback Callback, FuzzingOptions Options);
@@ -103,6 +110,8 @@ class Fuzzer {
   void PrintStats(const char *Where, size_t Cov, const char *End = "\n");
   void PrintUnitInASCIIOrTokens(const Unit &U, const char *PrintAfter = "");
 
+  void SyncCorpus();
+
   // Trace-based fuzzing: we run a unit with some kind of tracing
   // enabled and record potentially useful mutations. Then
   // We apply these mutations one by one to the unit and run it again.
@@ -122,7 +131,7 @@ class Fuzzer {
   size_t TotalNumberOfRuns = 0;
 
   std::vector<Unit> Corpus;
-  std::set<Unit> UnitsAddedAfterInitialLoad;
+  std::unordered_set<std::string> UnitHashesAddedToCorpus;
   std::unordered_set<uintptr_t> FullCoverageSets;
   std::unordered_set<uint64_t>  CoveragePairs;
 
@@ -137,6 +146,7 @@ class Fuzzer {
   UserCallback Callback;
   FuzzingOptions Options;
   system_clock::time_point ProcessStartTime = system_clock::now();
+  system_clock::time_point LastExternalSync = system_clock::now();
   system_clock::time_point UnitStartTime;
   long TimeOfLongestUnitInSeconds = 0;
   long EpochOfLastReadOfOutputCorpus = 0;

@@ -171,7 +171,7 @@ public:
                                 const MCAsmLayout &Layout) override;
 
   bool IsSymbolRefDifferenceFullyResolvedImpl(const MCAssembler &Asm,
-                                              const MCSymbolData &DataA,
+                                              const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,
                                               bool IsPCRel) const override;
 
@@ -642,21 +642,22 @@ void WinCOFFObjectWriter::ExecutePostLayoutBinding(MCAssembler &Asm,
   for (const auto &Section : Asm)
     DefineSection(Section);
 
-  for (MCSymbolData &SD : Asm.symbols())
-    if (ExportSymbol(SD.getSymbol(), Asm))
-      DefineSymbol(SD, Asm, Layout);
+  for (const MCSymbol &Symbol : Asm.symbols())
+    if (ExportSymbol(Symbol, Asm))
+      DefineSymbol(Symbol.getData(), Asm, Layout);
 }
 
 bool WinCOFFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
-    const MCAssembler &Asm, const MCSymbolData &DataA, const MCFragment &FB,
+    const MCAssembler &Asm, const MCSymbol &SymA, const MCFragment &FB,
     bool InSet, bool IsPCRel) const {
   // MS LINK expects to be able to replace all references to a function with a
   // thunk to implement their /INCREMENTAL feature.  Make sure we don't optimize
   // away any relocations to functions.
-  if ((((DataA.getFlags() & COFF::SF_TypeMask) >> COFF::SF_TypeShift) >>
+  if ((((SymA.getData().getFlags() & COFF::SF_TypeMask) >>
+        COFF::SF_TypeShift) >>
        COFF::SCT_COMPLEX_TYPE_SHIFT) == COFF::IMAGE_SYM_DTYPE_FUNCTION)
     return false;
-  return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(Asm, DataA, FB,
+  return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(Asm, SymA, FB,
                                                                 InSet, IsPCRel);
 }
 
@@ -686,7 +687,7 @@ void WinCOFFObjectWriter::RecordRelocation(
   const MCSymbol &Symbol = Target.getSymA()->getSymbol();
   const MCSymbol &A = Symbol;
   if (!Asm.hasSymbolData(A))
-    Asm.getContext().FatalError(
+    Asm.getContext().reportFatalError(
         Fixup.getLoc(),
         Twine("symbol '") + A.getName() + "' can not be undefined");
 
@@ -709,13 +710,13 @@ void WinCOFFObjectWriter::RecordRelocation(
     const MCSymbol *B = &SymB->getSymbol();
     const MCSymbolData &B_SD = Asm.getSymbolData(*B);
     if (!B_SD.getFragment())
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           Twine("symbol '") + B->getName() +
               "' can not be undefined in a subtraction expression");
 
     if (!A_SD.getFragment())
-      Asm.getContext().FatalError(
+      Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           Twine("symbol '") + Symbol.getName() +
               "' can not be undefined in a subtraction expression");
@@ -738,7 +739,7 @@ void WinCOFFObjectWriter::RecordRelocation(
     int64_t OffsetOfRelocation =
         Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
 
-    FixedValue = OffsetOfRelocation - OffsetOfB;
+    FixedValue = (OffsetOfRelocation - OffsetOfB) + Target.getConstant();
   } else {
     FixedValue = Target.getConstant();
   }
