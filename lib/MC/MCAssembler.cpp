@@ -132,13 +132,10 @@ static bool getLabelOffset(const MCAsmLayout &Layout, const MCSymbolData &SD,
   return true;
 }
 
-static bool getSymbolOffsetImpl(const MCAsmLayout &Layout,
-                                const MCSymbolData *SD, bool ReportError,
-                                uint64_t &Val) {
-  const MCSymbol &S = SD->getSymbol();
-
+static bool getSymbolOffsetImpl(const MCAsmLayout &Layout, const MCSymbol &S,
+                                bool ReportError, uint64_t &Val) {
   if (!S.isVariable())
-    return getLabelOffset(Layout, *SD, ReportError, Val);
+    return getLabelOffset(Layout, S.getData(), ReportError, Val);
 
   // If SD is a variable, evaluate it.
   MCValue Target;
@@ -172,13 +169,13 @@ static bool getSymbolOffsetImpl(const MCAsmLayout &Layout,
   return true;
 }
 
-bool MCAsmLayout::getSymbolOffset(const MCSymbolData *SD, uint64_t &Val) const {
-  return getSymbolOffsetImpl(*this, SD, false, Val);
+bool MCAsmLayout::getSymbolOffset(const MCSymbol &S, uint64_t &Val) const {
+  return getSymbolOffsetImpl(*this, S, false, Val);
 }
 
-uint64_t MCAsmLayout::getSymbolOffset(const MCSymbolData *SD) const {
+uint64_t MCAsmLayout::getSymbolOffset(const MCSymbol &S) const {
   uint64_t Val;
-  getSymbolOffsetImpl(*this, SD, true, Val);
+  getSymbolOffsetImpl(*this, S, true, Val);
   return Val;
 }
 
@@ -193,7 +190,7 @@ const MCSymbol *MCAsmLayout::getBaseSymbol(const MCSymbol &Symbol) const {
 
   const MCSymbolRefExpr *RefB = Value.getSymB();
   if (RefB)
-    Assembler.getContext().FatalError(
+    Assembler.getContext().reportFatalError(
         SMLoc(), Twine("symbol '") + RefB->getSymbol().getName() +
                      "' could not be evaluated in a subtraction expression");
 
@@ -206,7 +203,7 @@ const MCSymbol *MCAsmLayout::getBaseSymbol(const MCSymbol &Symbol) const {
   const MCSymbolData &ASD = Asm.getSymbolData(ASym);
   if (ASD.isCommon()) {
     // FIXME: we should probably add a SMLoc to MCExpr.
-    Asm.getContext().FatalError(SMLoc(),
+    Asm.getContext().reportFatalError(SMLoc(),
                                 "Common symbol " + ASym.getName() +
                                     " cannot be used in assignment expr");
   }
@@ -360,12 +357,17 @@ void MCSectionData::setBundleLockState(BundleLockStateType NewState) {
 
 MCSymbolData::MCSymbolData() : Symbol(nullptr) {}
 
-MCSymbolData::MCSymbolData(const MCSymbol &Symbol, MCFragment *Fragment,
-                           uint64_t Offset, MCAssembler *A)
-    : Symbol(&Symbol), Fragment(Fragment), Offset(Offset), SymbolSize(nullptr),
-      CommonAlign(-1U), Flags(0), Index(0) {
-  if (A)
-    A->getSymbolList().push_back(this);
+void MCSymbolData::initialize(const MCSymbol &Symbol, MCFragment *Fragment,
+                              uint64_t Offset) {
+  assert(!isInitialized() && "Expected uninitialized symbol");
+
+  this->Symbol = &Symbol;
+  this->Fragment.setPointer(Fragment);
+  this->Offset = Offset;
+  this->SymbolSize = nullptr;
+  this->CommonAlign = -1U;
+  this->Flags = 0;
+  this->Index = 0;
 }
 
 /* *** */
@@ -386,7 +388,6 @@ void MCAssembler::reset() {
   Sections.clear();
   Symbols.clear();
   SectionMap.clear();
-  SymbolMap.clear();
   IndirectSymbols.clear();
   DataRegions.clear();
   LinkerOptions.clear();
@@ -456,10 +457,10 @@ bool MCAssembler::isSymbolLinkerVisible(const MCSymbol &Symbol) const {
   return false;
 }
 
-const MCSymbolData *MCAssembler::getAtom(const MCSymbolData *SD) const {
+const MCSymbol *MCAssembler::getAtom(const MCSymbolData *SD) const {
   // Linker visible symbols define atoms.
   if (isSymbolLinkerVisible(SD->getSymbol()))
-    return SD;
+    return &SD->getSymbol();
 
   // Absolute and undefined symbols have no defining atom.
   if (!SD->getFragment())
@@ -485,7 +486,7 @@ bool MCAssembler::evaluateFixup(const MCAsmLayout &Layout,
   // fixup and records a relocation if one is needed.
   const MCExpr *Expr = Fixup.getValue();
   if (!Expr->EvaluateAsRelocatable(Target, &Layout, &Fixup))
-    getContext().FatalError(Fixup.getLoc(), "expected relocatable expression");
+    getContext().reportFatalError(Fixup.getLoc(), "expected relocatable expression");
 
   bool IsPCRel = Backend.getFixupKindInfo(
     Fixup.getKind()).Flags & MCFixupKindInfo::FKF_IsPCRel;
@@ -502,9 +503,8 @@ bool MCAssembler::evaluateFixup(const MCAsmLayout &Layout,
       if (A->getKind() != MCSymbolRefExpr::VK_None || SA.isUndefined()) {
         IsResolved = false;
       } else {
-        const MCSymbolData &DataA = getSymbolData(SA);
         IsResolved = getWriter().IsSymbolRefDifferenceFullyResolvedImpl(
-            *this, DataA, *DF, false, true);
+            *this, SA, *DF, false, true);
       }
     }
   } else {
@@ -516,12 +516,12 @@ bool MCAssembler::evaluateFixup(const MCAsmLayout &Layout,
   if (const MCSymbolRefExpr *A = Target.getSymA()) {
     const MCSymbol &Sym = A->getSymbol();
     if (Sym.isDefined())
-      Value += Layout.getSymbolOffset(&getSymbolData(Sym));
+      Value += Layout.getSymbolOffset(Sym);
   }
   if (const MCSymbolRefExpr *B = Target.getSymB()) {
     const MCSymbol &Sym = B->getSymbol();
     if (Sym.isDefined())
-      Value -= Layout.getSymbolOffset(&getSymbolData(Sym));
+      Value -= Layout.getSymbolOffset(Sym);
   }
 
 
@@ -1020,7 +1020,7 @@ bool MCAssembler::relaxInstruction(MCAsmLayout &Layout,
   SmallVector<MCFixup, 4> Fixups;
   SmallString<256> Code;
   raw_svector_ostream VecOS(Code);
-  getEmitter().EncodeInstruction(Relaxed, VecOS, Fixups, F.getSubtargetInfo());
+  getEmitter().encodeInstruction(Relaxed, VecOS, Fixups, F.getSubtargetInfo());
   VecOS.flush();
 
   // Update the fragment.

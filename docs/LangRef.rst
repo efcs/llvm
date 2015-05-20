@@ -2961,7 +2961,7 @@ DIFile
 Files are sometimes used in ``scope:`` fields, and are the only valid target
 for ``file:`` fields.
 
-.. _DILocation:
+.. _DIBasicType:
 
 DIBasicType
 """""""""""
@@ -3224,6 +3224,8 @@ discriminate between control flow within a single block in the source language.
     !0 = !DILexicalBlock(scope: !3, file: !4, line: 7, column: 35)
     !1 = !DILexicalBlockFile(scope: !0, file: !4, discriminator: 0)
     !2 = !DILexicalBlockFile(scope: !0, file: !4, discriminator: 1)
+
+.. _DILocation:
 
 DILocation
 """"""""""
@@ -5656,7 +5658,7 @@ Syntax:
 
 ::
 
-      <result> = load [volatile] <ty>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>][, !nonnull !<index>]
+      <result> = load [volatile] <ty>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>][, !nonnull !<index>][, !dereferenceable !<index>][, !dereferenceable_or_null !<index>]
       <result> = load atomic [volatile] <ty>* <pointer> [singlethread] <ordering>, align <alignment>
       !<index> = !{ i32 1 }
 
@@ -5719,6 +5721,25 @@ entries. The existence of the ``!nonnull`` metadata on the
 instruction tells the optimizer that the value loaded is known to
 never be null.  This is analogous to the ''nonnull'' attribute
 on parameters and return values.  This metadata can only be applied
+to loads of a pointer type.
+
+The optional ``!dereferenceable`` metadata must reference a single
+metadata name ``<index>`` corresponding to a metadata node with one ``i64``
+entry. The existence of the ``!dereferenceable`` metadata on the instruction 
+tells the optimizer that the value loaded is known to be dereferenceable.
+The number of bytes known to be dereferenceable is specified by the integer 
+value in the metadata node. This is analogous to the ''dereferenceable'' 
+attribute on parameters and return values.  This metadata can only be applied 
+to loads of a pointer type.
+
+The optional ``!dereferenceable_or_null`` metadata must reference a single
+metadata name ``<index>`` corresponding to a metadata node with one ``i64``
+entry. The existence of the ``!dereferenceable_or_null`` metadata on the 
+instruction tells the optimizer that the value loaded is known to be either
+dereferenceable or null.
+The number of bytes known to be dereferenceable is specified by the integer 
+value in the metadata node. This is analogous to the ''dereferenceable_or_null'' 
+attribute on parameters and return values.  This metadata can only be applied 
 to loads of a pointer type.
 
 Semantics:

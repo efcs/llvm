@@ -72,8 +72,6 @@ void TargetMachine::resetTargetOptions(const Function &F) const {
   RESET_OPTION(NoInfsFPMath, "no-infs-fp-math");
   RESET_OPTION(NoNaNsFPMath, "no-nans-fp-math");
   RESET_OPTION(DisableTailCalls, "disable-tail-calls");
-
-  Options.MCOptions.SanitizeAddress = F.hasFnAttribute(Attribute::SanitizeAddress);
 }
 
 /// getRelocationModel - Returns the code generation relocation model. The
@@ -191,5 +189,5 @@ MCSymbol *TargetMachine::getSymbol(const GlobalValue *GV, Mangler &Mang) const {
   SmallString<60> NameStr;
   getNameWithPrefix(NameStr, GV, Mang);
   const TargetLoweringObjectFile *TLOF = getObjFileLowering();
-  return TLOF->getContext().GetOrCreateSymbol(NameStr);
+  return TLOF->getContext().getOrCreateSymbol(NameStr);
 }

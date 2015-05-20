@@ -230,7 +230,7 @@ Init *IntRecTy::convertValue(BitsInit *BI) {
   int64_t Result = 0;
   for (unsigned i = 0, e = BI->getNumBits(); i != e; ++i)
     if (BitInit *Bit = dyn_cast<BitInit>(BI->getBit(i)))
-      Result |= Bit->getValue() << i;
+      Result |= static_cast<int64_t>(Bit->getValue()) << i;
     else
       return nullptr;
   return IntInit::get(Result);
@@ -778,36 +778,25 @@ Init *UnOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
   }
   case HEAD: {
     if (ListInit *LHSl = dyn_cast<ListInit>(LHS)) {
-      assert(LHSl->getSize() != 0 && "Empty list in car");
+      assert(!LHSl->empty() && "Empty list in head");
       return LHSl->getElement(0);
     }
     break;
   }
   case TAIL: {
     if (ListInit *LHSl = dyn_cast<ListInit>(LHS)) {
-      assert(LHSl->getSize() != 0 && "Empty list in cdr");
+      assert(!LHSl->empty() && "Empty list in tail");
       // Note the +1.  We can't just pass the result of getValues()
       // directly.
-      ArrayRef<Init *>::iterator begin = LHSl->getValues().begin()+1;
-      ArrayRef<Init *>::iterator end   = LHSl->getValues().end();
-      ListInit *Result =
-        ListInit::get(ArrayRef<Init *>(begin, end - begin),
-                      LHSl->getType());
-      return Result;
+      return ListInit::get(LHSl->getValues().slice(1), LHSl->getType());
     }
     break;
   }
   case EMPTY: {
-    if (ListInit *LHSl = dyn_cast<ListInit>(LHS)) {
-      if (LHSl->getSize() == 0)
-        return IntInit::get(1);
-      return IntInit::get(0);
-    }
-    if (StringInit *LHSs = dyn_cast<StringInit>(LHS)) {
-      if (LHSs->getValue().empty())
-        return IntInit::get(1);
-      return IntInit::get(0);
-    }
+    if (ListInit *LHSl = dyn_cast<ListInit>(LHS))
+      return IntInit::get(LHSl->empty());
+    if (StringInit *LHSs = dyn_cast<StringInit>(LHS))
+      return IntInit::get(LHSs->getValue().empty());
 
     break;
   }
@@ -1105,43 +1094,39 @@ Init *TernOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
     VarInit *RHSv = dyn_cast<VarInit>(RHS);
     StringInit *RHSs = dyn_cast<StringInit>(RHS);
 
-    if ((LHSd && MHSd && RHSd) ||
-        (LHSv && MHSv && RHSv) ||
-        (LHSs && MHSs && RHSs)) {
-      if (RHSd) {
-        Record *Val = RHSd->getDef();
-        if (LHSd->getAsString() == RHSd->getAsString())
-          Val = MHSd->getDef();
-        return DefInit::get(Val);
-      }
-      if (RHSv) {
-        std::string Val = RHSv->getName();
-        if (LHSv->getAsString() == RHSv->getAsString())
-          Val = MHSv->getName();
-        return VarInit::get(Val, getType());
-      }
-      if (RHSs) {
-        std::string Val = RHSs->getValue();
+    if (LHSd && MHSd && RHSd) {
+      Record *Val = RHSd->getDef();
+      if (LHSd->getAsString() == RHSd->getAsString())
+        Val = MHSd->getDef();
+      return DefInit::get(Val);
+    }
+    if (LHSv && MHSv && RHSv) {
+      std::string Val = RHSv->getName();
+      if (LHSv->getAsString() == RHSv->getAsString())
+        Val = MHSv->getName();
+      return VarInit::get(Val, getType());
+    }
+    if (LHSs && MHSs && RHSs) {
+      std::string Val = RHSs->getValue();
 
-        std::string::size_type found;
-        std::string::size_type idx = 0;
-        do {
-          found = Val.find(LHSs->getValue(), idx);
-          if (found != std::string::npos)
-            Val.replace(found, LHSs->getValue().size(), MHSs->getValue());
-          idx = found +  MHSs->getValue().size();
-        } while (found != std::string::npos);
-
-        return StringInit::get(Val);
+      std::string::size_type found;
+      std::string::size_type idx = 0;
+      while (true) {
+        found = Val.find(LHSs->getValue(), idx);
+        if (found == std::string::npos)
+          break;
+        Val.replace(found, LHSs->getValue().size(), MHSs->getValue());
+        idx = found + MHSs->getValue().size();
       }
+
+      return StringInit::get(Val);
     }
     break;
   }
 
   case FOREACH: {
-    Init *Result = ForeachHelper(LHS, MHS, RHS, getType(),
-                                 CurRec, CurMultiClass);
-    if (Result)
+    if (Init *Result = ForeachHelper(LHS, MHS, RHS, getType(),
+                                     CurRec, CurMultiClass))
       return Result;
     break;
   }
