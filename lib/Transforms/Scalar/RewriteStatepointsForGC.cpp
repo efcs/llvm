@@ -19,6 +19,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Dominators.h"
@@ -1876,7 +1877,7 @@ chainToBasePointerCost(SmallVectorImpl<Instruction*> &Chain,
 static void rematerializeLiveValues(CallSite CS,
                                     PartiallyConstructedSafepointRecord &Info,
                                     TargetTransformInfo &TTI) {
-  const int ChainLengthThreshold = 10;
+  const unsigned int ChainLengthThreshold = 10;
   
   // Record values we are going to delete from this statepoint live set.
   // We can not di this in following loop due to iterator invalidation.
@@ -1943,12 +1944,12 @@ static void rematerializeLiveValues(CallSite CS,
           assert(LastValue);
           ClonedValue->replaceUsesOfWith(LastValue, LastClonedValue);
 #ifndef NDEBUG
-          // Assert that cloned instruction does not use any instructions
-          // other than LastClonedValue
-          for (auto OpValue: ClonedValue->operand_values()) {
-            if (isa<Instruction>(OpValue))
-              assert(OpValue == LastClonedValue &&
-                     "unexpected use found in rematerialized value");
+          // Assert that cloned instruction does not use any instructions from
+          // this chain other than LastClonedValue
+          for (auto OpValue : ClonedValue->operand_values()) {
+            assert(std::find(ChainToBase.begin(), ChainToBase.end(), OpValue) ==
+                       ChainToBase.end() &&
+                   "incorrect use in rematerialization chain");
           }
 #endif
         }
@@ -2201,9 +2202,13 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
 static bool shouldRewriteStatepointsIn(Function &F) {
   // TODO: This should check the GCStrategy
   if (F.hasGC()) {
-    const std::string StatepointExampleName("statepoint-example");
-    return StatepointExampleName == F.getGC();
-  } else
+    const char *FunctionGCName = F.getGC();
+    const StringRef StatepointExampleName("statepoint-example");
+    const StringRef CoreCLRName("coreclr");
+    return (StatepointExampleName == FunctionGCName) ||
+      (CoreCLRName == FunctionGCName);
+  }
+  else
     return false;
 }
 

@@ -64,7 +64,7 @@ static inline uint64_t ScaleAddrDelta(MCContext &Context, uint64_t AddrDelta) {
 // and if there is information from the last .loc directive that has yet to have
 // a line entry made for it is made.
 //
-void MCLineEntry::Make(MCObjectStreamer *MCOS, const MCSection *Section) {
+void MCLineEntry::Make(MCObjectStreamer *MCOS, MCSection *Section) {
   if (!MCOS->getContext().getDwarfLocSeen())
     return;
 
@@ -115,7 +115,7 @@ static inline const MCExpr *MakeStartMinusEndExpr(const MCStreamer &MCOS,
 // in the LineSection.
 //
 static inline void
-EmitDwarfLineTable(MCObjectStreamer *MCOS, const MCSection *Section,
+EmitDwarfLineTable(MCObjectStreamer *MCOS, MCSection *Section,
                    const MCLineSection::MCLineEntryCollection &LineEntries) {
   unsigned FileNum = 1;
   unsigned LastLine = 1;
@@ -360,8 +360,10 @@ unsigned MCDwarfLineTableHeader::getFile(StringRef &Directory,
     FileNumber = SourceIdMap.size() + 1;
     assert((MCDwarfFiles.empty() || FileNumber == MCDwarfFiles.size()) &&
            "Don't mix autonumbered and explicit numbered line table usage");
+    SmallString<256> Buffer;
     auto IterBool = SourceIdMap.insert(
-        std::make_pair((Directory + Twine('\0') + FileName).str(), FileNumber));
+        std::make_pair((Directory + Twine('\0') + FileName).toStringRef(Buffer),
+                       FileNumber));
     if (!IterBool.second)
       return IterBool.first->second;
   }
@@ -608,9 +610,9 @@ static void EmitGenDwarfAranges(MCStreamer *MCOS,
 
   // Now emit the table of pairs of PointerSize'ed values for the section
   // addresses and sizes.
-  for (const auto &sec : Sections) {
-    MCSymbol *StartSymbol = sec.second.first;
-    MCSymbol *EndSymbol = sec.second.second;
+  for (MCSection *Sec : Sections) {
+    const MCSymbol *StartSymbol = Sec->getBeginSymbol();
+    MCSymbol *EndSymbol = Sec->getEndSymbol(context);
     assert(StartSymbol && "StartSymbol must not be NULL");
     assert(EndSymbol && "EndSymbol must not be NULL");
 
@@ -697,8 +699,8 @@ static void EmitGenDwarfInfo(MCStreamer *MCOS,
     const auto TextSection = Sections.begin();
     assert(TextSection != Sections.end() && "No text section found");
 
-    MCSymbol *StartSymbol = TextSection->second.first;
-    MCSymbol *EndSymbol = TextSection->second.second;
+    MCSymbol *StartSymbol = (*TextSection)->getBeginSymbol();
+    MCSymbol *EndSymbol = (*TextSection)->getEndSymbol(context);
     assert(StartSymbol && "StartSymbol must not be NULL");
     assert(EndSymbol && "EndSymbol must not be NULL");
 
@@ -803,10 +805,9 @@ static void EmitGenDwarfRanges(MCStreamer *MCOS) {
 
   MCOS->SwitchSection(context.getObjectFileInfo()->getDwarfRangesSection());
 
-  for (const auto &sec : Sections) {
-
-    MCSymbol *StartSymbol = sec.second.first;
-    MCSymbol *EndSymbol = sec.second.second;
+  for (MCSection *Sec : Sections) {
+    const MCSymbol *StartSymbol = Sec->getBeginSymbol();
+    MCSymbol *EndSymbol = Sec->getEndSymbol(context);
     assert(StartSymbol && "StartSymbol must not be NULL");
     assert(EndSymbol && "EndSymbol must not be NULL");
 
@@ -1519,9 +1520,9 @@ void MCDwarfFrameEmitter::Emit(MCObjectStreamer &Streamer, MCAsmBackend *MAB,
 
   if (!NeedsEHFrameSection) return;
 
-  const MCSection &Section =
-    IsEH ? *const_cast<MCObjectFileInfo*>(MOFI)->getEHFrameSection() :
-           *MOFI->getDwarfFrameSection();
+  MCSection &Section =
+      IsEH ? *const_cast<MCObjectFileInfo *>(MOFI)->getEHFrameSection()
+           : *MOFI->getDwarfFrameSection();
 
   Streamer.SwitchSection(&Section);
   MCSymbol *SectionStart = Context.createTempSymbol();

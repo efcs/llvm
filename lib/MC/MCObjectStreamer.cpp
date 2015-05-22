@@ -53,6 +53,29 @@ void MCObjectStreamer::flushPendingLabels(MCFragment *F, uint64_t FOffset) {
   }
 }
 
+bool MCObjectStreamer::emitAbsoluteSymbolDiff(const MCSymbol *Hi,
+                                              const MCSymbol *Lo,
+                                              unsigned Size) {
+  // Must have symbol data.
+  if (!Assembler->hasSymbolData(*Hi) || !Assembler->hasSymbolData(*Lo))
+    return false;
+  auto &HiD = Assembler->getSymbolData(*Hi);
+  auto &LoD = Assembler->getSymbolData(*Lo);
+
+  // Must both be assigned to the same (valid) fragment.
+  if (!HiD.getFragment() || HiD.getFragment() != LoD.getFragment())
+    return false;
+
+  // Must be a data fragment.
+  if (!isa<MCDataFragment>(HiD.getFragment()))
+    return false;
+
+  assert(HiD.getOffset() >= LoD.getOffset() &&
+         "Expected Hi to be greater than Lo");
+  EmitIntValue(HiD.getOffset() - LoD.getOffset(), Size);
+  return true;
+}
+
 void MCObjectStreamer::reset() {
   if (Assembler)
     Assembler->reset();
@@ -178,12 +201,12 @@ void MCObjectStreamer::EmitWeakReference(MCSymbol *Alias,
   report_fatal_error("This file format doesn't support weak aliases.");
 }
 
-void MCObjectStreamer::ChangeSection(const MCSection *Section,
+void MCObjectStreamer::ChangeSection(MCSection *Section,
                                      const MCExpr *Subsection) {
   changeSectionImpl(Section, Subsection);
 }
 
-bool MCObjectStreamer::changeSectionImpl(const MCSection *Section,
+bool MCObjectStreamer::changeSectionImpl(MCSection *Section,
                                          const MCExpr *Subsection) {
   assert(Section && "Cannot switch to a null section!");
   flushPendingLabels(nullptr);
@@ -357,8 +380,9 @@ void MCObjectStreamer::EmitValueToAlignment(unsigned ByteAlignment,
   insert(new MCAlignFragment(ByteAlignment, Value, ValueSize, MaxBytesToEmit));
 
   // Update the maximum alignment on the current section if necessary.
-  if (ByteAlignment > getCurrentSectionData()->getAlignment())
-    getCurrentSectionData()->setAlignment(ByteAlignment);
+  MCSection *CurSec = getCurrentSection().first;
+  if (ByteAlignment > CurSec->getAlignment())
+    CurSec->setAlignment(ByteAlignment);
 }
 
 void MCObjectStreamer::EmitCodeAlignment(unsigned ByteAlignment,
