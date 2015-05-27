@@ -219,10 +219,10 @@ void MCWinCOFFStreamer::EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                               unsigned ByteAlignment) {
   assert(!Symbol->isInSection() && "Symbol must not already have a section!");
 
-  const MCSection *Section = getContext().getObjectFileInfo()->getBSSSection();
-  MCSectionData &SectionData = getAssembler().getOrCreateSectionData(*Section);
-  if (SectionData.getAlignment() < ByteAlignment)
-    SectionData.setAlignment(ByteAlignment);
+  MCSection *Section = getContext().getObjectFileInfo()->getBSSSection();
+  getAssembler().registerSection(*Section);
+  if (Section->getAlignment() < ByteAlignment)
+    Section->setAlignment(ByteAlignment);
 
   MCSymbolData &SD = getAssembler().getOrCreateSymbolData(*Symbol);
   SD.setExternal(false);
@@ -231,22 +231,20 @@ void MCWinCOFFStreamer::EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
 
   if (ByteAlignment != 1)
     new MCAlignFragment(ByteAlignment, /*Value=*/0, /*ValueSize=*/0,
-                        ByteAlignment, &SectionData);
+                        ByteAlignment, Section);
 
-  MCFillFragment *Fragment =
-      new MCFillFragment(/*Value=*/0, /*ValueSize=*/0, Size, &SectionData);
+  MCFillFragment *Fragment = new MCFillFragment(
+      /*Value=*/0, /*ValueSize=*/0, Size, Section);
   SD.setFragment(Fragment);
 }
 
-void MCWinCOFFStreamer::EmitZerofill(const MCSection *Section,
-                                     MCSymbol *Symbol, uint64_t Size,
-                                     unsigned ByteAlignment) {
+void MCWinCOFFStreamer::EmitZerofill(MCSection *Section, MCSymbol *Symbol,
+                                     uint64_t Size, unsigned ByteAlignment) {
   llvm_unreachable("not implemented");
 }
 
-void MCWinCOFFStreamer::EmitTBSSSymbol(const MCSection *Section,
-                                       MCSymbol *Symbol, uint64_t Size,
-                                       unsigned ByteAlignment) {
+void MCWinCOFFStreamer::EmitTBSSSymbol(MCSection *Section, MCSymbol *Symbol,
+                                       uint64_t Size, unsigned ByteAlignment) {
   llvm_unreachable("not implemented");
 }
 

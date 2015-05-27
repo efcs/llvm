@@ -143,13 +143,13 @@ void X86MachObjectWriter::RecordX86_64Relocation(
     if (A->isTemporary())
       A = &Writer->findAliasedSymbol(*A);
     const MCSymbolData &A_SD = Asm.getSymbolData(*A);
-    const MCSymbol *A_Base = Asm.getAtom(&A_SD);
+    const MCSymbol *A_Base = Asm.getAtom(*A);
 
     const MCSymbol *B = &Target.getSymB()->getSymbol();
     if (B->isTemporary())
       B = &Writer->findAliasedSymbol(*B);
     const MCSymbolData &B_SD = Asm.getSymbolData(*B);
-    const MCSymbol *B_Base = Asm.getAtom(&B_SD);
+    const MCSymbol *B_Base = Asm.getAtom(*B);
 
     // Neither symbol can be modified.
     if (Target.getSymA()->getKind() != MCSymbolRefExpr::VK_None ||
@@ -212,15 +212,15 @@ void X86MachObjectWriter::RecordX86_64Relocation(
         Asm.addLocalUsedInReloc(*Symbol);
     }
     const MCSymbolData &SD = Asm.getSymbolData(*Symbol);
-    RelSymbol = Asm.getAtom(&SD);
+    RelSymbol = Asm.getAtom(*Symbol);
 
     // Relocations inside debug sections always use local relocations when
     // possible. This seems to be done because the debugger doesn't fully
     // understand x86_64 relocation entries, and expects to find values that
     // have already been fixed up.
     if (Symbol->isInSection()) {
-      const MCSectionMachO &Section = static_cast<const MCSectionMachO&>(
-        Fragment->getParent()->getSection());
+      const MCSectionMachO &Section =
+          static_cast<const MCSectionMachO &>(*Fragment->getParent());
       if (Section.hasAttribute(MachO::S_ATTR_DEBUG))
         RelSymbol = nullptr;
     }
@@ -362,7 +362,8 @@ bool X86MachObjectWriter::RecordScatteredRelocation(MachObjectWriter *Writer,
                        false);
 
   uint32_t Value = Writer->getSymbolAddress(*A, Layout);
-  uint64_t SecAddr = Writer->getSectionAddress(A_SD->getFragment()->getParent());
+  uint64_t SecAddr =
+      Writer->getSectionAddress(A_SD->getFragment()->getParent());
   FixedValue += SecAddr;
   uint32_t Value2 = 0;
 
@@ -504,9 +505,9 @@ void X86MachObjectWriter::RecordX86Relocation(MachObjectWriter *Writer,
   }
 
   // Get the symbol data, if any.
-  const MCSymbolData *SD = nullptr;
+  const MCSymbol *A = nullptr;
   if (Target.getSymA())
-    SD = &Asm.getSymbolData(Target.getSymA()->getSymbol());
+    A = &Target.getSymA()->getSymbol();
 
   // If this is an internal relocation with an offset, it also needs a scattered
   // relocation entry.
@@ -516,9 +517,9 @@ void X86MachObjectWriter::RecordX86Relocation(MachObjectWriter *Writer,
   // Try to record the scattered relocation if needed. Fall back to non
   // scattered if necessary (see comments in RecordScatteredRelocation()
   // for details).
-  if (Offset && SD && !Writer->doesSymbolRequireExternRelocation(SD) &&
-      RecordScatteredRelocation(Writer, Asm, Layout, Fragment, Fixup,
-                                Target, Log2Size, FixedValue))
+  if (Offset && A && !Writer->doesSymbolRequireExternRelocation(*A) &&
+      RecordScatteredRelocation(Writer, Asm, Layout, Fragment, Fixup, Target,
+                                Log2Size, FixedValue))
     return;
 
   // See <reloc.h>.
@@ -535,29 +536,28 @@ void X86MachObjectWriter::RecordX86Relocation(MachObjectWriter *Writer,
     Type = MachO::GENERIC_RELOC_VANILLA;
   } else {
     // Resolve constant variables.
-    if (SD->getSymbol().isVariable()) {
+    if (A->isVariable()) {
       int64_t Res;
-      if (SD->getSymbol().getVariableValue()->EvaluateAsAbsolute(
-            Res, Layout, Writer->getSectionAddressMap())) {
+      if (A->getVariableValue()->EvaluateAsAbsolute(
+              Res, Layout, Writer->getSectionAddressMap())) {
         FixedValue = Res;
         return;
       }
     }
 
     // Check whether we need an external or internal relocation.
-    if (Writer->doesSymbolRequireExternRelocation(SD)) {
-      RelSymbol = &SD->getSymbol();
+    if (Writer->doesSymbolRequireExternRelocation(*A)) {
+      RelSymbol = A;
       // For external relocations, make sure to offset the fixup value to
       // compensate for the addend of the symbol address, if it was
       // undefined. This occurs with weak definitions, for example.
-      if (!SD->getSymbol().isUndefined())
-        FixedValue -= Layout.getSymbolOffset(SD->getSymbol());
+      if (!A->isUndefined())
+        FixedValue -= Layout.getSymbolOffset(*A);
     } else {
       // The index is the section ordinal (1-based).
-      const MCSectionData &SymSD = Asm.getSectionData(
-        SD->getSymbol().getSection());
-      Index = SymSD.getOrdinal() + 1;
-      FixedValue += Writer->getSectionAddress(&SymSD);
+      const MCSection &Sec = A->getSection();
+      Index = Sec.getOrdinal() + 1;
+      FixedValue += Writer->getSectionAddress(&Sec);
     }
     if (IsPCRel)
       FixedValue -= Writer->getSectionAddress(Fragment->getParent());
