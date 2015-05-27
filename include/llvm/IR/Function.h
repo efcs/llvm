@@ -144,7 +144,7 @@ public:
   /// zero to allow easy checking for whether a function is intrinsic or not.
   /// The particular intrinsic functions which correspond to this value are
   /// defined in llvm/Intrinsics.h.
-  unsigned getIntrinsicID() const LLVM_READONLY { return IntID; }
+  Intrinsic::ID getIntrinsicID() const LLVM_READONLY { return IntID; }
   bool isIntrinsic() const { return getName().startswith("llvm."); }
 
   /// \brief Recalculate the ID for this function if it is an Intrinsic defined
@@ -307,6 +307,16 @@ public:
   void setCannotDuplicate() {
     addFnAttr(Attribute::NoDuplicate);
   }
+
+  /// @brief Determine if the call is convergent.
+  bool isConvergent() const {
+    return AttributeSets.hasAttribute(AttributeSet::FunctionIndex,
+                                      Attribute::Convergent);
+  }
+  void setConvergent() {
+    addFnAttr(Attribute::Convergent);
+  }
+
 
   /// @brief True if the ABI mandates (or the user requested) that this
   /// function be in a unwind table.
@@ -590,9 +600,6 @@ inline ValueSymbolTable *
 ilist_traits<Argument>::getSymTab(Function *F) {
   return F ? &F->getValueSymbolTable() : nullptr;
 }
-
-/// \brief Overwrite attribute Kind in function F.
-void overrideFunctionAttribute(StringRef Kind, StringRef Value, Function &F);
 
 } // End llvm namespace
 

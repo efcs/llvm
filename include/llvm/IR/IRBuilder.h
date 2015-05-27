@@ -21,6 +21,7 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/ConstantFolder.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
@@ -499,7 +500,7 @@ public:
 private:
   /// \brief Create a call to a masked intrinsic with given Id.
   /// Masked intrinsic has only one overloaded type - data type.
-  CallInst *CreateMaskedIntrinsic(unsigned Id, ArrayRef<Value *> Ops,
+  CallInst *CreateMaskedIntrinsic(Intrinsic::ID Id, ArrayRef<Value *> Ops,
                                   Type *DataTy, const Twine &Name = "");
 
   Value *getCastedInt8PtrValue(Value *Ptr);
@@ -992,6 +993,9 @@ public:
   LoadInst *CreateLoad(Value *Ptr, const Twine &Name = "") {
     return Insert(new LoadInst(Ptr), Name);
   }
+  LoadInst *CreateLoad(Type *Ty, Value *Ptr, const Twine &Name = "") {
+    return Insert(new LoadInst(Ty, Ptr), Name);
+  }
   LoadInst *CreateLoad(Value *Ptr, bool isVolatile, const Twine &Name = "") {
     return Insert(new LoadInst(Ptr, nullptr, isVolatile), Name);
   }
@@ -1464,6 +1468,16 @@ public:
   CallInst *CreateCall(Value *Callee, ArrayRef<Value *> Args,
                        const Twine &Name = "") {
     return Insert(CallInst::Create(Callee, Args), Name);
+  }
+
+  CallInst *CreateCall(llvm::FunctionType *FTy, Value *Callee,
+                       ArrayRef<Value *> Args, const Twine &Name = "") {
+    return Insert(CallInst::Create(FTy, Callee, Args), Name);
+  }
+
+  CallInst *CreateCall(Function *Callee, ArrayRef<Value *> Args,
+                       const Twine &Name = "") {
+    return CreateCall(Callee->getFunctionType(), Callee, Args, Name);
   }
 
   Value *CreateSelect(Value *C, Value *True, Value *False,
