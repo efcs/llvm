@@ -35,7 +35,6 @@ class raw_pwrite_stream;
 /// implementation.
 class MCObjectStreamer : public MCStreamer {
   MCAssembler *Assembler;
-  MCSection *CurSectionData;
   MCSection::iterator CurInsertionPoint;
   bool EmitEHFrame;
   bool EmitDebugFrame;
@@ -64,14 +63,13 @@ public:
   void EmitCFISections(bool EH, bool Debug) override;
 
 protected:
-  MCSection *getCurrentSectionData() const { return CurSectionData; }
-
   MCFragment *getCurrentFragment() const;
 
   void insert(MCFragment *F) {
     flushPendingLabels(F);
-    CurSectionData->getFragmentList().insert(CurInsertionPoint, F);
-    F->setParent(CurSectionData);
+    MCSection *CurSection = getCurrentSectionOnly();
+    CurSection->getFragmentList().insert(CurInsertionPoint, F);
+    F->setParent(CurSection);
   }
 
   /// Get a data fragment to write into, creating a new one if the current
