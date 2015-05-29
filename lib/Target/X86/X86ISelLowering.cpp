@@ -2780,6 +2780,19 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   if (MF.getTarget().Options.DisableTailCalls)
     isTailCall = false;
 
+  if (Subtarget->isPICStyleGOT() &&
+      !MF.getTarget().Options.GuaranteedTailCallOpt) {
+    // If we are using a GOT, disable tail calls to external symbols with
+    // default visibility. Tail calling such a symbol requires using a GOT
+    // relocation, which forces early binding of the symbol. This breaks code
+    // that require lazy function symbol resolution. Using musttail or
+    // GuaranteedTailCallOpt will override this.
+    GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee);
+    if (!G || (!G->getGlobal()->hasLocalLinkage() &&
+               G->getGlobal()->hasDefaultVisibility()))
+      isTailCall = false;
+  }
+
   bool IsMustTail = CLI.CS && CLI.CS->isMustTailCall();
   if (IsMustTail) {
     // Force this to be a tail call.  The verifier rules are enough to ensure
@@ -2964,8 +2977,8 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
       // Note: The actual moving to ECX is done further down.
       GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee);
-      if (G && !G->getGlobal()->hasHiddenVisibility() &&
-          !G->getGlobal()->hasProtectedVisibility())
+      if (G && !G->getGlobal()->hasLocalLinkage() &&
+          G->getGlobal()->hasDefaultVisibility())
         Callee = LowerGlobalAddress(Callee, DAG);
       else if (isa<ExternalSymbolSDNode>(Callee))
         Callee = LowerExternalSymbol(Callee, DAG);
@@ -15378,7 +15391,6 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget
     // Compute the symbol for the LSDA. We know it'll get emitted later.
     MachineFunction &MF = DAG.getMachineFunction();
     SDValue Op1 = Op.getOperand(1);
-    Op1->dump();
     auto *Fn = cast<Function>(cast<GlobalAddressSDNode>(Op1)->getGlobal());
     MCSymbol *LSDASym = MF.getMMI().getContext().getOrCreateLSDASymbol(
         GlobalValue::getRealLinkageName(Fn->getName()));

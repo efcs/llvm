@@ -414,7 +414,7 @@ void WinCOFFObjectWriter::DefineSymbol(const MCSymbol &Symbol,
 
     coff_symbol->MC = &Symbol;
   } else {
-    const MCSymbolData &ResSymData = Assembler.getSymbolData(Symbol);
+    const MCSymbolData &ResSymData = Symbol.getData();
     const MCSymbol *Base = Layout.getBaseSymbol(Symbol);
     coff_symbol->Data.Value = getSymbolValue(Symbol, Layout);
 
@@ -434,7 +434,7 @@ void WinCOFFObjectWriter::DefineSymbol(const MCSymbol &Symbol,
     if (!Base) {
       coff_symbol->Data.SectionNumber = COFF::IMAGE_SYM_ABSOLUTE;
     } else {
-      const MCSymbolData &BaseData = Assembler.getSymbolData(*Base);
+      const MCSymbolData &BaseData = Base->getData();
       if (BaseData.getFragment()) {
         COFFSection *Sec = SectionMap[BaseData.getFragment()->getParent()];
 
@@ -702,7 +702,7 @@ void WinCOFFObjectWriter::RecordRelocation(
                                       Twine("symbol '") + A.getName() +
                                           "' can not be undefined");
 
-  const MCSymbolData &A_SD = Asm.getSymbolData(A);
+  const MCSymbolData &A_SD = A.getData();
 
   MCSection *Section = Fragment->getParent();
 
@@ -719,7 +719,7 @@ void WinCOFFObjectWriter::RecordRelocation(
 
   if (SymB) {
     const MCSymbol *B = &SymB->getSymbol();
-    const MCSymbolData &B_SD = Asm.getSymbolData(*B);
+    const MCSymbolData &B_SD = B->getData();
     if (!B_SD.getFragment())
       Asm.getContext().reportFatalError(
           Fixup.getLoc(),
@@ -853,11 +853,10 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
   Header.NumberOfSections = NumberOfSections;
   Header.NumberOfSymbols = 0;
 
-  for (auto FI = Asm.file_names_begin(), FE = Asm.file_names_end(); FI != FE;
-       ++FI) {
+  for (const std::string &Name : Asm.getFileNames()) {
     // round up to calculate the number of auxiliary symbols required
     unsigned SymbolSize = UseBigObj ? COFF::Symbol32Size : COFF::Symbol16Size;
-    unsigned Count = (FI->size() + SymbolSize - 1) / SymbolSize;
+    unsigned Count = (Name.size() + SymbolSize - 1) / SymbolSize;
 
     COFFSymbol *file = createSymbol(".file");
     file->Data.SectionNumber = COFF::IMAGE_SYM_DEBUG;
@@ -865,15 +864,15 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
     file->Aux.resize(Count);
 
     unsigned Offset = 0;
-    unsigned Length = FI->size();
+    unsigned Length = Name.size();
     for (auto &Aux : file->Aux) {
       Aux.AuxType = ATFile;
 
       if (Length > SymbolSize) {
-        memcpy(&Aux.Aux, FI->c_str() + Offset, SymbolSize);
+        memcpy(&Aux.Aux, Name.c_str() + Offset, SymbolSize);
         Length = Length - SymbolSize;
       } else {
-        memcpy(&Aux.Aux, FI->c_str() + Offset, Length);
+        memcpy(&Aux.Aux, Name.c_str() + Offset, Length);
         memset((char *)&Aux.Aux + Length, 0, SymbolSize - Length);
         break;
       }

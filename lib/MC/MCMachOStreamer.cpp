@@ -162,9 +162,10 @@ void MCMachOStreamer::ChangeSection(MCSection *Section,
 
   // Output a linker-local symbol so we don't need section-relative local
   // relocations. The linker hates us when we do that.
-  if (LabelSections && !HasSectionLabel[Section]) {
+  if (LabelSections && !HasSectionLabel[Section] &&
+      !Section->getBeginSymbol()) {
     MCSymbol *Label = getContext().createLinkerPrivateTempSymbol();
-    EmitLabel(Label);
+    Section->setBeginSymbol(Label);
     HasSectionLabel[Section] = true;
   }
 }
@@ -193,7 +194,7 @@ void MCMachOStreamer::EmitLabel(MCSymbol *Symbol) {
 
   MCObjectStreamer::EmitLabel(Symbol);
 
-  MCSymbolData &SD = getAssembler().getSymbolData(*Symbol);
+  MCSymbolData &SD = Symbol->getData();
   // This causes the reference type flag to be cleared. Darwin 'as' was "trying"
   // to clear the weak reference and weak definition bits too, but the
   // implementation was buggy. For now we just try to match 'as', for
@@ -287,7 +288,7 @@ bool MCMachOStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
     // important for matching the string table that 'as' generates.
     IndirectSymbolData ISD;
     ISD.Symbol = Symbol;
-    ISD.Section = getCurrentSectionData();
+    ISD.Section = getCurrentSectionOnly();
     getAssembler().getIndirectSymbols().push_back(ISD);
     return true;
   }
