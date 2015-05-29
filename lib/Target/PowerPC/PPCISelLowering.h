@@ -275,6 +275,16 @@ namespace llvm {
       /// operand identifies the operating system entry point.
       SC,
 
+      /// CHAIN = CLRBHRB CHAIN - Clear branch history rolling buffer.
+      CLRBHRB,
+
+      /// GPRC, CHAIN = MFBHRBE CHAIN, Entry, Dummy - Move from branch
+      /// history rolling buffer entry.
+      MFBHRBE,
+
+      /// CHAIN = RFEBB CHAIN, State - Return from event-based branch.
+      RFEBB,
+
       /// VSRC, CHAIN = XXSWAPD CHAIN, VSRC - Occurs only for little
       /// endian.  Maps to an xxswapd instruction that corrects an lxvd2x
       /// or stxvd2x instruction.  The chain is necessary because the
@@ -355,6 +365,11 @@ namespace llvm {
     /// isVPKUWUMShuffleMask - Return true if this is the shuffle mask for a
     /// VPKUWUM instruction.
     bool isVPKUWUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
+                              SelectionDAG &DAG);
+
+    /// isVPKUDUMShuffleMask - Return true if this is the shuffle mask for a
+    /// VPKUDUM instruction.
+    bool isVPKUDUMShuffleMask(ShuffleVectorSDNode *N, unsigned ShuffleKind,
                               SelectionDAG &DAG);
 
     /// isVMRGLShuffleMask - Return true if this is a shuffle mask suitable for

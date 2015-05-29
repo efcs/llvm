@@ -98,10 +98,6 @@ X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
                         RM, CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
       Subtarget(TT, CPU, FS, *this, Options.StackAlignmentOverride) {
-  // default to hard float ABI
-  if (Options.FloatABIType == FloatABI::Default)
-    this->Options.FloatABIType = FloatABI::Hard;
-
   // Windows stack unwinder gets confused when execution flow "falls through"
   // after a call to 'noreturn' function.
   // To prevent that, we emit a trap for 'unreachable' IR instructions.
@@ -191,6 +187,7 @@ public:
   void addPreRegAlloc() override;
   void addPostRegAlloc() override;
   void addPreEmitPass() override;
+  void addPreSched2() override;
 };
 } // namespace
 
@@ -238,6 +235,8 @@ void X86PassConfig::addPreRegAlloc() {
 void X86PassConfig::addPostRegAlloc() {
   addPass(createX86FloatingPointStackifierPass());
 }
+
+void X86PassConfig::addPreSched2() { addPass(createX86ExpandPseudoPass()); }
 
 void X86PassConfig::addPreEmitPass() {
   if (getOptLevel() != CodeGenOpt::None)

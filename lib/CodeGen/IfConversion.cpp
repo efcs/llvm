@@ -24,7 +24,6 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetSchedule.h"
-#include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -1520,10 +1519,9 @@ bool IfConverter::IfConvertDiamond(BBInfo &BBI, IfcvtKind Kind,
 }
 
 static bool MaySpeculate(const MachineInstr *MI,
-                         SmallSet<unsigned, 4> &LaterRedefs,
-                         const TargetInstrInfo *TII) {
+                         SmallSet<unsigned, 4> &LaterRedefs) {
   bool SawStore = true;
-  if (!MI->isSafeToMove(TII, nullptr, SawStore))
+  if (!MI->isSafeToMove(nullptr, SawStore))
     return false;
 
   for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
@@ -1554,7 +1552,7 @@ void IfConverter::PredicateBlock(BBInfo &BBI,
     // It may be possible not to predicate an instruction if it's the 'true'
     // side of a diamond and the 'false' side may re-define the instruction's
     // defs.
-    if (MaySpec && MaySpeculate(I, *LaterRedefs, TII)) {
+    if (MaySpec && MaySpeculate(I, *LaterRedefs)) {
       AnyUnpred = true;
       continue;
     }

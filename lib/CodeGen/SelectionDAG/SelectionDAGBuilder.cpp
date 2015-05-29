@@ -2139,8 +2139,6 @@ void SelectionDAGBuilder::visitBinary(const User &I, unsigned OpCode) {
   bool nuw = false;
   bool nsw = false;
   bool exact = false;
-  FastMathFlags FMF;
-  
   if (const OverflowingBinaryOperator *OFBinOp =
           dyn_cast<const OverflowingBinaryOperator>(&I)) {
     nuw = OFBinOp->hasNoUnsignedWrap();
@@ -2149,20 +2147,9 @@ void SelectionDAGBuilder::visitBinary(const User &I, unsigned OpCode) {
   if (const PossiblyExactOperator *ExactOp =
           dyn_cast<const PossiblyExactOperator>(&I))
     exact = ExactOp->isExact();
-  if (const FPMathOperator *FPOp = dyn_cast<const FPMathOperator>(&I))
-    FMF = FPOp->getFastMathFlags();
-  
-  SDNodeFlags Flags;
-  Flags.setExact(exact);
-  Flags.setNoSignedWrap(nsw);
-  Flags.setNoUnsignedWrap(nuw);
-  Flags.setAllowReciprocal(FMF.allowReciprocal());
-  Flags.setNoInfs(FMF.noInfs());
-  Flags.setNoNaNs(FMF.noNaNs());
-  Flags.setNoSignedZeros(FMF.noSignedZeros());
-  Flags.setUnsafeAlgebra(FMF.unsafeAlgebra());
+
   SDValue BinNodeValue = DAG.getNode(OpCode, getCurSDLoc(), Op1.getValueType(),
-                                     Op1, Op2, &Flags);
+                                     Op1, Op2, nuw, nsw, exact);
   setValue(&I, BinNodeValue);
 }
 
@@ -2210,12 +2197,9 @@ void SelectionDAGBuilder::visitShift(const User &I, unsigned Opcode) {
             dyn_cast<const PossiblyExactOperator>(&I))
       exact = ExactOp->isExact();
   }
-  SDNodeFlags Flags;
-  Flags.setExact(exact);
-  Flags.setNoSignedWrap(nsw);
-  Flags.setNoUnsignedWrap(nuw);
+
   SDValue Res = DAG.getNode(Opcode, getCurSDLoc(), Op1.getValueType(), Op1, Op2,
-                            &Flags);
+                            nuw, nsw, exact);
   setValue(&I, Res);
 }
 
@@ -2273,19 +2257,47 @@ void SelectionDAGBuilder::visitSelect(const User &I) {
 
   SmallVector<SDValue, 4> Values(NumValues);
   SDValue Cond     = getValue(I.getOperand(0));
-  SDValue TrueVal  = getValue(I.getOperand(1));
-  SDValue FalseVal = getValue(I.getOperand(2));
+  SDValue LHSVal   = getValue(I.getOperand(1));
+  SDValue RHSVal   = getValue(I.getOperand(2));
+  auto BaseOps = {Cond};
   ISD::NodeType OpCode = Cond.getValueType().isVector() ?
     ISD::VSELECT : ISD::SELECT;
 
-  for (unsigned i = 0; i != NumValues; ++i)
+  // Min/max matching is only viable if all output VTs are the same.
+  if (std::equal(ValueVTs.begin(), ValueVTs.end(), ValueVTs.begin())) {
+    Value *LHS, *RHS;
+    SelectPatternFlavor SPF = matchSelectPattern(const_cast<User*>(&I), LHS, RHS);
+    ISD::NodeType Opc = ISD::DELETED_NODE;
+    switch (SPF) {
+    case SPF_UMAX: Opc = ISD::UMAX; break;
+    case SPF_UMIN: Opc = ISD::UMIN; break;
+    case SPF_SMAX: Opc = ISD::SMAX; break;
+    case SPF_SMIN: Opc = ISD::SMIN; break;
+    default: break;
+    }
+
+    EVT VT = ValueVTs[0];
+    LLVMContext &Ctx = *DAG.getContext();
+    auto &TLI = DAG.getTargetLoweringInfo();
+    while (TLI.getTypeAction(Ctx, VT) == TargetLoweringBase::TypeSplitVector)
+      VT = TLI.getTypeToTransformTo(Ctx, VT);
+
+    if (Opc != ISD::DELETED_NODE && TLI.isOperationLegalOrCustom(Opc, VT)) {
+      OpCode = Opc;
+      LHSVal = getValue(LHS);
+      RHSVal = getValue(RHS);
+      BaseOps = {};
+    }
+  }
+
+  for (unsigned i = 0; i != NumValues; ++i) {
+    SmallVector<SDValue, 3> Ops(BaseOps.begin(), BaseOps.end());
+    Ops.push_back(SDValue(LHSVal.getNode(), LHSVal.getResNo() + i));
+    Ops.push_back(SDValue(RHSVal.getNode(), RHSVal.getResNo() + i));
     Values[i] = DAG.getNode(OpCode, getCurSDLoc(),
-                            TrueVal.getNode()->getValueType(TrueVal.getResNo()+i),
-                            Cond,
-                            SDValue(TrueVal.getNode(),
-                                    TrueVal.getResNo() + i),
-                            SDValue(FalseVal.getNode(),
-                                    FalseVal.getResNo() + i));
+                            LHSVal.getNode()->getValueType(LHSVal.getResNo()+i),
+                            Ops);
+  }
 
   setValue(&I, DAG.getNode(ISD::MERGE_VALUES, getCurSDLoc(),
                            DAG.getVTList(ValueVTs), Values));
@@ -4033,16 +4045,20 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     return nullptr;
   case Intrinsic::read_register: {
     Value *Reg = I.getArgOperand(0);
+    SDValue Chain = getRoot();
     SDValue RegName =
         DAG.getMDNode(cast<MDNode>(cast<MetadataAsValue>(Reg)->getMetadata()));
     EVT VT = TLI.getValueType(I.getType());
-    setValue(&I, DAG.getNode(ISD::READ_REGISTER, sdl, VT, RegName));
+    Res = DAG.getNode(ISD::READ_REGISTER, sdl,
+      DAG.getVTList(VT, MVT::Other), Chain, RegName);
+    setValue(&I, Res);
+    DAG.setRoot(Res.getValue(1));
     return nullptr;
   }
   case Intrinsic::write_register: {
     Value *Reg = I.getArgOperand(0);
     Value *RegValue = I.getArgOperand(1);
-    SDValue Chain = getValue(RegValue).getOperand(0);
+    SDValue Chain = getRoot();
     SDValue RegName =
         DAG.getMDNode(cast<MDNode>(cast<MetadataAsValue>(Reg)->getMetadata()));
     DAG.setRoot(DAG.getNode(ISD::WRITE_REGISTER, sdl, MVT::Other, Chain,
@@ -4963,7 +4979,7 @@ SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
   if (LandingPad) {
     // Insert a label before the invoke call to mark the try range.  This can be
     // used to detect deletion of the invoke via the MachineModuleInfo.
-    BeginLabel = MMI.getContext().CreateTempSymbol();
+    BeginLabel = MMI.getContext().createTempSymbol();
 
     // For SjLj, keep track of which landing pads go with which invokes
     // so as to maintain the ordering of pads in the LSDA.
@@ -5006,7 +5022,7 @@ SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
   if (LandingPad) {
     // Insert a label at the end of the invoke call to mark the try range.  This
     // can be used to detect deletion of the invoke via the MachineModuleInfo.
-    MCSymbol *EndLabel = MMI.getContext().CreateTempSymbol();
+    MCSymbol *EndLabel = MMI.getContext().createTempSymbol();
     DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
 
     // Inform MachineModuleInfo of range.
@@ -5434,7 +5450,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
             return;
         }
       }
-      if (unsigned IID = F->getIntrinsicID()) {
+      if (Intrinsic::ID IID = F->getIntrinsicID()) {
         RenameFn = visitIntrinsicCall(I, IID);
         if (!RenameFn)
           return;

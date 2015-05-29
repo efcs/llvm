@@ -109,3 +109,101 @@ class POOL32A_FM_MMR6<bits<10> funct> : MipsR6Inst {
   let Inst{10}    = 0;
   let Inst{9-0}   = funct;
 }
+
+class POOL32A_2R_FM_MMR6<bits<10> funct> : MipsR6Inst {
+  bits<5> rs;
+  bits<5> rt;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000000;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = rs;
+  let Inst{15-6}  = funct;
+  let Inst{5-0}   = 0b111100;
+}
+
+class SPECIAL_2R_FM_MMR6<bits<6> funct> : MipsR6Inst {
+  bits<5> rs;
+  bits<5> rt;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000000;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = 0b00000;
+  let Inst{15-11} = rt;
+  let Inst{10-6}  = 0b00001;
+  let Inst{5-0}   = funct;
+}
+
+class POOL32A_ALIGN_FM_MMR6<bits<6> funct> : MipsR6Inst {
+  bits<5> rd;
+  bits<5> rs;
+  bits<5> rt;
+  bits<2> bp;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000000;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = rt;
+  let Inst{15-11} = rd;
+  let Inst{10-9}  = bp;
+  let Inst{8-6}   = 0b000;
+  let Inst{5-0}   = funct;
+}
+
+class AUI_FM_MMR6 : MipsR6Inst {
+  bits<5> rs;
+  bits<5> rt;
+  bits<16> imm;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000100;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = rs;
+  let Inst{15-0} = imm;
+}
+
+class POOL32A_LSA_FM<bits<6> funct> : MipsR6Inst {
+  bits<5> rd;
+  bits<5> rs;
+  bits<5> rt;
+  bits<2> imm2;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000000;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = rs;
+  let Inst{15-11} = rd;
+  let Inst{10-9}  = imm2;
+  let Inst{8-6}   = 0b000;
+  let Inst{5-0}   = funct;
+}
+
+class CMP_BRANCH_1R_RT_OFF16_FM_MMR6<bits<6> funct> : MipsR6Inst {
+  bits<5> rt;
+  bits<16> offset;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = funct;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = 0b00000;
+  let Inst{15-0}  = offset;
+}
+
+class CMP_BRANCH_1R_BOTH_OFF16_FM_MMR6<bits<6> funct> : MipsR6Inst {
+  bits<5> rt;
+  bits<16> offset;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = funct;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = rt;
+  let Inst{15-0}  = offset;
+}

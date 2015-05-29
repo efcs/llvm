@@ -107,8 +107,7 @@ public:
 };
 
 void parseEHActions(const IntrinsicInst *II,
-  SmallVectorImpl<ActionHandler *> &Actions);
-
+                    SmallVectorImpl<std::unique_ptr<ActionHandler>> &Actions);
 
 // The following structs respresent the .xdata for functions using C++
 // exceptions on Windows.
@@ -132,6 +131,10 @@ struct WinEHTryBlockMapEntry {
 };
 
 struct WinEHFuncInfo {
+  DenseMap<const Function *, const LandingPadInst *> RootLPad;
+  DenseMap<const Function *, const InvokeInst *> LastInvoke;
+  DenseMap<const Function *, int> HandlerEnclosedState;
+  DenseMap<const Function *, bool> LastInvokeVisited;
   DenseMap<const LandingPadInst *, int> LandingPadStateMap;
   DenseMap<const Function *, int> CatchHandlerParentFrameObjIdx;
   DenseMap<const Function *, int> CatchHandlerParentFrameObjOffset;

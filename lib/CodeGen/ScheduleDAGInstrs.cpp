@@ -28,7 +28,6 @@
 #include "llvm/CodeGen/RegisterPressure.h"
 #include "llvm/CodeGen/ScheduleDFS.h"
 #include "llvm/IR/Operator.h"
-#include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
@@ -168,10 +167,7 @@ static void getUnderlyingObjectsForInstr(const MachineInstr *MI,
   SmallVector<Value *, 4> Objs;
   getUnderlyingObjects(V, Objs, DL);
 
-  for (SmallVectorImpl<Value *>::iterator I = Objs.begin(), IE = Objs.end();
-         I != IE; ++I) {
-    V = *I;
-
+  for (Value *V : Objs) {
     if (!isIdentifiedObject(V)) {
       Objects.clear();
       return;
@@ -503,10 +499,9 @@ static inline bool isUnsafeMemoryObject(MachineInstr *MI,
 
   SmallVector<Value *, 4> Objs;
   getUnderlyingObjects(V, Objs, DL);
-  for (SmallVectorImpl<Value *>::iterator I = Objs.begin(),
-         IE = Objs.end(); I != IE; ++I) {
+  for (Value *V : Objs) {
     // Does this pointer refer to a distinct and identifiable object?
-    if (!isIdentifiedObject(*I))
+    if (!isIdentifiedObject(V))
       return true;
   }
 

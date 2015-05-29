@@ -51,7 +51,10 @@ TEST(Fuzzer, CrossOver) {
   for (size_t Len = 1; Len < 8; Len++) {
     std::set<Unit> FoundUnits, ExpectedUnitsWitThisLength;
     for (int Iter = 0; Iter < 3000; Iter++) {
-      CrossOver(A, B, &C, Len);
+      C.resize(Len);
+      size_t NewSize = CrossOver(A.data(), A.size(), B.data(), B.size(),
+                                 C.data(), C.size());
+      C.resize(NewSize);
       FoundUnits.insert(C);
     }
     for (const Unit &U : Expected)
@@ -59,4 +62,12 @@ TEST(Fuzzer, CrossOver) {
         ExpectedUnitsWitThisLength.insert(U);
     EXPECT_EQ(ExpectedUnitsWitThisLength, FoundUnits);
   }
+}
+
+TEST(Fuzzer, Hash) {
+  uint8_t A[] = {'a', 'b', 'c'};
+  fuzzer::Unit U(A, A + sizeof(A));
+  EXPECT_EQ("a9993e364706816aba3e25717850c26c9cd0d89d", fuzzer::Hash(U));
+  U.push_back('d');
+  EXPECT_EQ("81fe8bfe87576c3ecb22426f8e57847382917acf", fuzzer::Hash(U));
 }

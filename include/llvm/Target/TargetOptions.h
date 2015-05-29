@@ -20,14 +20,14 @@
 
 namespace llvm {
   class MachineFunction;
+  class Module;
   class StringRef;
 
-  // Possible float ABI settings. Used with FloatABIType in TargetOptions.h.
   namespace FloatABI {
     enum ABIType {
-      Default, // Target-specific (either soft or hard depending on triple,etc).
-      Soft, // Soft float.
-      Hard  // Hard float.
+      Default, // Target-specific (either soft or hard depending on triple, etc).
+      Soft,    // Soft float.
+      Hard     // Hard float.
     };
   }
 
@@ -60,7 +60,7 @@ namespace llvm {
   class TargetOptions {
   public:
     TargetOptions()
-        : PrintMachineCode(false), NoFramePointerElim(false),
+        : PrintMachineCode(false),
           LessPreciseFPMADOption(false), UnsafeFPMath(false),
           NoInfsFPMath(false), NoNaNsFPMath(false),
           HonorSignDependentRoundingFPMathOption(false),
@@ -79,11 +79,6 @@ namespace llvm {
     /// option is specified on the command line, and should enable debugging
     /// output from the code generator.
     unsigned PrintMachineCode : 1;
-
-    /// NoFramePointerElim - This flag is enabled when the -disable-fp-elim is
-    /// specified on the command line.  If the target supports the frame pointer
-    /// elimination optimization, this option should disable it.
-    unsigned NoFramePointerElim : 1;
 
     /// DisableFramePointerElim - This returns true if frame pointer elimination
     /// optimization should be disabled for the given machine function.

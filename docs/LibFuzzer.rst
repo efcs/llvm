@@ -15,7 +15,7 @@ This library is intended primarily for in-process coverage-guided fuzz testing
   Note that the Fuzzer contains the main() function.
   Preferably do *not* use sanitizers while building the Fuzzer.
 * Build the library you are going to test with
-  `-fsanitize-coverage={bb,edge}[,indirect-calls]`
+  `-fsanitize-coverage={bb,edge}[,indirect-calls,8bit-counters]`
   and one of the sanitizers. We recommend to build the library in several
   different modes (e.g. asan, msan, lsan, ubsan, etc) and even using different
   optimizations options (e.g. -O0, -O1, -O2) to diversify testing.
@@ -28,13 +28,15 @@ This library is intended primarily for in-process coverage-guided fuzz testing
   fuzzer (a directory with test inputs, one file per input).
   The better your inputs are the faster you will find something interesting.
   Also try to keep your inputs small, otherwise the Fuzzer will run too slow.
+  By default, the Fuzzer limits the size of every input to 64 bytes
+  (use ``-max_len=N`` to override).
 * Run the fuzzer with the test corpus. As new interesting test cases are
   discovered they will be added to the corpus. If a bug is discovered by
   the sanitizer (asan, etc) it will be reported as usual and the reproducer
   will be written to disk.
   Each Fuzzer process is single-threaded (unless the library starts its own
   threads). You can run the Fuzzer on the same corpus in multiple processes
-  in parallel. For run-time options run the Fuzzer binary with '-help=1'.
+  in parallel.
 
 
 The Fuzzer is similar in concept to AFL_,
@@ -47,6 +49,27 @@ The code resides in the LLVM repository, requires the fresh Clang compiler to bu
 and is used to fuzz various parts of LLVM,
 but the Fuzzer itself does not (and should not) depend on any
 part of LLVM and can be used for other projects w/o requiring the rest of LLVM.
+
+Flags
+=====
+The most important flags are::
+
+  seed                               	0	Random seed. If 0, seed is generated.
+  runs                               	-1	Number of individual test runs (-1 for infinite runs).
+  max_len                            	64	Maximum length of the test input.
+  cross_over                         	1	If 1, cross over inputs.
+  mutate_depth                       	5	Apply this number of consecutive mutations to each input.
+  timeout                            	1200	Timeout in seconds (if positive). If one unit runs more than this number of seconds the process will abort.
+  help                               	0	Print help.
+  save_minimized_corpus              	0	If 1, the minimized corpus is saved into the first input directory
+  jobs                               	0	Number of jobs to run. If jobs >= 1 we spawn this number of jobs in separate worker processes with stdout/stderr redirected to fuzz-JOB.log.
+  workers                            	0	Number of simultaneous worker processes to run the jobs. If zero, "min(jobs,NumberOfCpuCores()/2)" is used.
+  tokens                             	0	Use the file with tokens (one token per line) to fuzz a token based input language.
+  apply_tokens                       	0	Read the given input file, substitute bytes  with tokens and write the result to stdout.
+  sync_command                       	0	Execute an external command "<sync_command> <test_corpus>" to synchronize the test corpus.
+  sync_timeout                       	600	Minimum timeout between syncs.
+
+For the full list of flags run the fuzzer binary with ``-help=1``.
 
 Usage examples
 ==============
@@ -151,6 +174,12 @@ Now, interrupt the fuzzer and run it again the same way. You will see::
 
 This time you were running the fuzzer with a non-empty input corpus (564 items).
 As the first step, the fuzzer minimized the set to produce 344 interesting items (the ``INITED`` line)
+
+It is quite convenient to store test corpuses in git.
+As an example, here is a git repository with test inputs for the above PCRE2 fuzzer::
+
+  git clone https://github.com/kcc/fuzzing-with-sanitizers.git
+  ./pcre_fuzzer ./fuzzing-with-sanitizers/pcre2/C1/
 
 You may run ``N`` independent fuzzer jobs in parallel on ``M`` CPUs::
 
@@ -270,6 +299,12 @@ and dump covered PCs to disk before exiting.
 Then you can subtract the set of covered PCs from the set of all instrumented PCs in the binary,
 see SanitizerCoverage_ for details.
 
+User-supplied mutators
+----------------------
+
+LibFuzzer allows to use custom (user-supplied) mutators,
+see FuzzerInterface.h_
+
 Fuzzing components of LLVM
 ==========================
 
@@ -297,6 +332,24 @@ The default behavior is very similar to ``clang-format-fuzzer``.
 Clang can also be fuzzed with Tokens_ using ``-tokens=$LLVM/lib/Fuzzer/cxx_fuzzer_tokens.txt`` option.
 
 Tracking bug: https://llvm.org/bugs/show_bug.cgi?id=23057
+
+Buildbot
+--------
+
+We have a buildbot that runs the above fuzzers for LLVM components
+24/7/365 at http://lab.llvm.org:8011/builders/sanitizer-x86_64-linux-fuzzer .
+
+Pre-fuzzed test inputs in git
+-----------------------------
+
+The buildbot occumulates large test corpuses over time.
+The corpuses are stored in git on github and can be used like this::
+
+  git clone https://github.com/kcc/fuzzing-with-sanitizers.git
+  bin/clang-format-fuzzer fuzzing-with-sanitizers/llvm/clang-format/C1
+  bin/clang-fuzzer        fuzzing-with-sanitizers/llvm/clang/C1/
+  bin/clang-fuzzer        fuzzing-with-sanitizers/llvm/clang/TOK1  -tokens=$LLVM/llvm/lib/Fuzzer/cxx_fuzzer_tokens.txt
+
 
 FAQ
 =========================
@@ -361,3 +414,5 @@ Examples: regular expression matchers, text or binary format parsers.
 .. _SanitizerCoverage: http://clang.llvm.org/docs/SanitizerCoverage.html
 
 .. _Heartbleed: http://en.wikipedia.org/wiki/Heartbleed
+
+.. _FuzzerInterface.h: https://github.com/llvm-mirror/llvm/blob/master/lib/Fuzzer/FuzzerInterface.h

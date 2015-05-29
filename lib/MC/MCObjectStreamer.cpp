@@ -53,11 +53,34 @@ void MCObjectStreamer::flushPendingLabels(MCFragment *F, uint64_t FOffset) {
   }
 }
 
+bool MCObjectStreamer::emitAbsoluteSymbolDiff(const MCSymbol *Hi,
+                                              const MCSymbol *Lo,
+                                              unsigned Size) {
+  // Must have symbol data.
+  if (!Assembler->hasSymbolData(*Hi) || !Assembler->hasSymbolData(*Lo))
+    return false;
+  auto &HiD = Assembler->getSymbolData(*Hi);
+  auto &LoD = Assembler->getSymbolData(*Lo);
+
+  // Must both be assigned to the same (valid) fragment.
+  if (!HiD.getFragment() || HiD.getFragment() != LoD.getFragment())
+    return false;
+
+  // Must be a data fragment.
+  if (!isa<MCDataFragment>(HiD.getFragment()))
+    return false;
+
+  assert(HiD.getOffset() >= LoD.getOffset() &&
+         "Expected Hi to be greater than Lo");
+  EmitIntValue(HiD.getOffset() - LoD.getOffset(), Size);
+  return true;
+}
+
 void MCObjectStreamer::reset() {
   if (Assembler)
     Assembler->reset();
   CurSectionData = nullptr;
-  CurInsertionPoint = MCSectionData::iterator();
+  CurInsertionPoint = MCSection::iterator();
   EmitEHFrame = true;
   EmitDebugFrame = false;
   PendingLabels.clear();
@@ -120,19 +143,19 @@ void MCObjectStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
     return;
   }
   DF->getFixups().push_back(
-      MCFixup::Create(DF->getContents().size(), Value,
+      MCFixup::create(DF->getContents().size(), Value,
                       MCFixup::getKindForSize(Size, false), Loc));
   DF->getContents().resize(DF->getContents().size() + Size, 0);
 }
 
 void MCObjectStreamer::EmitCFIStartProcImpl(MCDwarfFrameInfo &Frame) {
   // We need to create a local symbol to avoid relocations.
-  Frame.Begin = getContext().CreateTempSymbol();
+  Frame.Begin = getContext().createTempSymbol();
   EmitLabel(Frame.Begin);
 }
 
 void MCObjectStreamer::EmitCFIEndProcImpl(MCDwarfFrameInfo &Frame) {
-  Frame.End = getContext().CreateTempSymbol();
+  Frame.End = getContext().createTempSymbol();
   EmitLabel(Frame.End);
 }
 
@@ -178,18 +201,18 @@ void MCObjectStreamer::EmitWeakReference(MCSymbol *Alias,
   report_fatal_error("This file format doesn't support weak aliases.");
 }
 
-void MCObjectStreamer::ChangeSection(const MCSection *Section,
+void MCObjectStreamer::ChangeSection(MCSection *Section,
                                      const MCExpr *Subsection) {
   changeSectionImpl(Section, Subsection);
 }
 
-bool MCObjectStreamer::changeSectionImpl(const MCSection *Section,
+bool MCObjectStreamer::changeSectionImpl(MCSection *Section,
                                          const MCExpr *Subsection) {
   assert(Section && "Cannot switch to a null section!");
   flushPendingLabels(nullptr);
 
-  bool Created;
-  CurSectionData = &getAssembler().getOrCreateSectionData(*Section, &Created);
+  bool Created = getAssembler().registerSection(*Section);
+  CurSectionData = Section;
 
   int64_t IntSubsection = 0;
   if (Subsection &&
@@ -198,7 +221,7 @@ bool MCObjectStreamer::changeSectionImpl(const MCSection *Section,
   if (IntSubsection < 0 || IntSubsection > 8192)
     report_fatal_error("Subsection number out of range");
   CurInsertionPoint =
-    CurSectionData->getSubsectionInsertionPoint(unsigned(IntSubsection));
+      CurSectionData->getSubsectionInsertionPoint(unsigned(IntSubsection));
   return Created;
 }
 
@@ -207,12 +230,16 @@ void MCObjectStreamer::EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
   MCStreamer::EmitAssignment(Symbol, Value);
 }
 
+bool MCObjectStreamer::mayHaveInstructions(MCSection &Sec) const {
+  return Sec.hasInstructions();
+}
+
 void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
                                        const MCSubtargetInfo &STI) {
   MCStreamer::EmitInstruction(Inst, STI);
 
-  MCSectionData *SD = getCurrentSectionData();
-  SD->setHasInstructions(true);
+  MCSection *Sec = getCurrentSectionData();
+  Sec->setHasInstructions(true);
 
   // Now that a machine instruction has been assembled into this section, make
   // a line entry for any .loc directive that has been seen.
@@ -231,7 +258,7 @@ void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
   //   group. We want to emit all such instructions into the same data
   //   fragment.
   if (Assembler.getRelaxAll() ||
-      (Assembler.isBundlingEnabled() && SD->isBundleLocked())) {
+      (Assembler.isBundlingEnabled() && Sec->isBundleLocked())) {
     MCInst Relaxed;
     getAssembler().getBackend().relaxInstruction(Inst, Relaxed);
     while (getAssembler().getBackend().mayNeedRelaxation(Relaxed))
@@ -256,7 +283,7 @@ void MCObjectStreamer::EmitInstToFragment(const MCInst &Inst,
 
   SmallString<128> Code;
   raw_svector_ostream VecOS(Code);
-  getAssembler().getEmitter().EncodeInstruction(Inst, VecOS, IF->getFixups(),
+  getAssembler().getEmitter().encodeInstruction(Inst, VecOS, IF->getFixups(),
                                                 STI);
   VecOS.flush();
   IF->getContents().append(Code.begin(), Code.end());
@@ -357,8 +384,9 @@ void MCObjectStreamer::EmitValueToAlignment(unsigned ByteAlignment,
   insert(new MCAlignFragment(ByteAlignment, Value, ValueSize, MaxBytesToEmit));
 
   // Update the maximum alignment on the current section if necessary.
-  if (ByteAlignment > getCurrentSectionData()->getAlignment())
-    getCurrentSectionData()->setAlignment(ByteAlignment);
+  MCSection *CurSec = getCurrentSection().first;
+  if (ByteAlignment > CurSec->getAlignment())
+    CurSec->setAlignment(ByteAlignment);
 }
 
 void MCObjectStreamer::EmitCodeAlignment(unsigned ByteAlignment,
@@ -375,7 +403,7 @@ bool MCObjectStreamer::EmitValueToOffset(const MCExpr *Offset,
     return false;
   }
 
-  MCSymbol *CurrentPos = getContext().CreateTempSymbol();
+  MCSymbol *CurrentPos = getContext().createTempSymbol();
   EmitLabel(CurrentPos);
   MCSymbolRefExpr::VariantKind Variant = MCSymbolRefExpr::VK_None;
   const MCExpr *Ref =
@@ -393,7 +421,7 @@ bool MCObjectStreamer::EmitValueToOffset(const MCExpr *Offset,
 void MCObjectStreamer::EmitGPRel32Value(const MCExpr *Value) {
   MCDataFragment *DF = getOrCreateDataFragment();
 
-  DF->getFixups().push_back(MCFixup::Create(DF->getContents().size(), 
+  DF->getFixups().push_back(MCFixup::create(DF->getContents().size(), 
                                             Value, FK_GPRel_4));
   DF->getContents().resize(DF->getContents().size() + 4, 0);
 }
@@ -402,7 +430,7 @@ void MCObjectStreamer::EmitGPRel32Value(const MCExpr *Value) {
 void MCObjectStreamer::EmitGPRel64Value(const MCExpr *Value) {
   MCDataFragment *DF = getOrCreateDataFragment();
 
-  DF->getFixups().push_back(MCFixup::Create(DF->getContents().size(), 
+  DF->getFixups().push_back(MCFixup::create(DF->getContents().size(), 
                                             Value, FK_GPRel_4));
   DF->getContents().resize(DF->getContents().size() + 8, 0);
 }

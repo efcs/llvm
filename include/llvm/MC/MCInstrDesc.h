@@ -15,12 +15,14 @@
 #ifndef LLVM_MC_MCINSTRDESC_H
 #define LLVM_MC_MCINSTRDESC_H
 
-#include "llvm/MC/MCInst.h"
-#include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/DataTypes.h"
+#include <string>
 
 namespace llvm {
+  class MCInst;
+  class MCRegisterInfo;
+  class MCSubtargetInfo;
+  class FeatureBitset;
 
 //===----------------------------------------------------------------------===//
 // Machine Operand Flags and Description
@@ -144,8 +146,11 @@ public:
   const uint16_t *ImplicitUses; // Registers implicitly read by this instr
   const uint16_t *ImplicitDefs; // Registers implicitly defined by this instr
   const MCOperandInfo *OpInfo;  // 'NumOperands' entries about operands
-  uint64_t
-      DeprecatedFeatureMask; // Feature bits that this is deprecated on, if any
+  // Subtarget feature that this is deprecated on, if any
+  // -1 implies this is not deprecated by any single feature. It may still be 
+  // deprecated due to a "complex" reason, below.
+  int64_t DeprecatedFeature;
+
   // A complex method to determine is a certain is deprecated or not, and return
   // the reason for deprecation.
   bool (*ComplexDeprecationInfo)(MCInst &, MCSubtargetInfo &, std::string &);
@@ -165,16 +170,7 @@ public:
   /// \brief Returns true if a certain instruction is deprecated and if so
   /// returns the reason in \p Info.
   bool getDeprecatedInfo(MCInst &MI, MCSubtargetInfo &STI,
-                         std::string &Info) const {
-    if (ComplexDeprecationInfo)
-      return ComplexDeprecationInfo(MI, STI, Info);
-    if ((DeprecatedFeatureMask & STI.getFeatureBits()) != 0) {
-      // FIXME: it would be nice to include the subtarget feature here.
-      Info = "deprecated";
-      return true;
-    }
-    return false;
-  }
+                         std::string &Info) const;
 
   /// \brief Return the opcode number for this descriptor.
   unsigned getOpcode() const { return Opcode; }
@@ -257,25 +253,7 @@ public:
   /// \brief Return true if this is a branch or an instruction which directly
   /// writes to the program counter. Considered 'may' affect rather than
   /// 'does' affect as things like predication are not taken into account.
-  bool mayAffectControlFlow(const MCInst &MI, const MCRegisterInfo &RI) const {
-    if (isBranch() || isCall() || isReturn() || isIndirectBranch())
-      return true;
-    unsigned PC = RI.getProgramCounter();
-    if (PC == 0)
-      return false;
-    if (hasDefOfPhysReg(MI, PC, RI))
-      return true;
-    // A variadic instruction may define PC in the variable operand list.
-    // There's currently no indication of which entries in a variable
-    // list are defs and which are uses. While that's the case, this function
-    // needs to assume they're defs in order to be conservatively correct.
-    for (int i = NumOperands, e = MI.getNumOperands(); i != e; ++i) {
-      if (MI.getOperand(i).isReg() &&
-          RI.isSubRegisterEq(PC, MI.getOperand(i).getReg()))
-        return true;
-    }
-    return false;
-  }
+  bool mayAffectControlFlow(const MCInst &MI, const MCRegisterInfo &RI) const;
 
   /// \brief Return true if this instruction has a predicate operand
   /// that controls execution. It may be set to 'always', or may be set to other
@@ -532,24 +510,7 @@ public:
   /// \brief Return true if this instruction implicitly
   /// defines the specified physical register.
   bool hasImplicitDefOfPhysReg(unsigned Reg,
-                               const MCRegisterInfo *MRI = nullptr) const {
-    if (const uint16_t *ImpDefs = ImplicitDefs)
-      for (; *ImpDefs; ++ImpDefs)
-        if (*ImpDefs == Reg || (MRI && MRI->isSubRegister(Reg, *ImpDefs)))
-          return true;
-    return false;
-  }
-
-  /// \brief Return true if this instruction defines the specified physical
-  /// register, either explicitly or implicitly.
-  bool hasDefOfPhysReg(const MCInst &MI, unsigned Reg,
-                       const MCRegisterInfo &RI) const {
-    for (int i = 0, e = NumDefs; i != e; ++i)
-      if (MI.getOperand(i).isReg() &&
-          RI.isSubRegisterEq(Reg, MI.getOperand(i).getReg()))
-        return true;
-    return hasImplicitDefOfPhysReg(Reg, &RI);
-  }
+                               const MCRegisterInfo *MRI = nullptr) const;
 
   /// \brief Return the scheduling class for this instruction.  The
   /// scheduling class is an index into the InstrItineraryData table.  This
@@ -572,6 +533,13 @@ public:
     }
     return -1;
   }
+
+private:
+
+  /// \brief Return true if this instruction defines the specified physical
+  /// register, either explicitly or implicitly.
+  bool hasDefOfPhysReg(const MCInst &MI, unsigned Reg,
+                       const MCRegisterInfo &RI) const;
 };
 
 } // end namespace llvm
