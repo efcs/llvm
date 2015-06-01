@@ -340,11 +340,11 @@ private:
     new (reinterpret_cast<void *>(Val.buffer)) T(V);
   }
 
-  template <class T> T &get() { return *reinterpret_cast<T *>(Val.buffer); }
-  template <class T> const T &get() const {
-    return *reinterpret_cast<const T *>(Val.buffer);
+  template <class T> T *get() { return reinterpret_cast<T *>(Val.buffer); }
+  template <class T> const T *get() const {
+    return reinterpret_cast<const T *>(Val.buffer);
   }
-  template <class T> void destruct() { get<T>().~T(); }
+  template <class T> void destruct() { get<T>()->~T(); }
 
   /// Destroy the underlying value.
   ///
@@ -378,11 +378,11 @@ private:
       return;
 #define HANDLE_DIEVALUE_SMALL(T)                                               \
   case is##T:                                                                  \
-    construct<DIE##T>(X.get<DIE##T>());                                        \
+    construct<DIE##T>(*X.get<DIE##T>());                                       \
     return;
 #define HANDLE_DIEVALUE_LARGE(T)                                               \
   case is##T:                                                                  \
-    construct<const DIE##T *>(X.get<const DIE##T *>());                        \
+    construct<const DIE##T *>(*X.get<const DIE##T *>());                       \
     return;
 #include "llvm/CodeGen/DIEValue.def"
     }
@@ -425,12 +425,12 @@ public:
 #define HANDLE_DIEVALUE_SMALL(T)                                               \
   const DIE##T &getDIE##T() const {                                            \
     assert(getType() == is##T && "Expected " #T);                              \
-    return get<DIE##T>();                                                      \
+    return *get<DIE##T>();                                                     \
   }
 #define HANDLE_DIEVALUE_LARGE(T)                                               \
   const DIE##T &getDIE##T() const {                                            \
     assert(getType() == is##T && "Expected " #T);                              \
-    return *get<const DIE##T *>();                                             \
+    return **get<const DIE##T *>();                                            \
   }
 #include "llvm/CodeGen/DIEValue.def"
 
@@ -496,17 +496,21 @@ public:
   unsigned getOffset() const { return Offset; }
   unsigned getSize() const { return Size; }
   bool hasChildren() const { return !Children.empty(); }
-  const std::vector<std::unique_ptr<DIE>> &getChildren() const {
-    return Children;
+
+  typedef std::vector<std::unique_ptr<DIE>>::const_iterator child_iterator;
+  typedef iterator_range<child_iterator> child_range;
+
+  child_range children() const {
+    return llvm::make_range(Children.begin(), Children.end());
   }
 
   typedef SmallVectorImpl<DIEValue>::const_iterator value_iterator;
   typedef iterator_range<value_iterator> value_range;
 
-  value_iterator begin_values() const { return Values.begin(); }
-  value_iterator end_values() const { return Values.end(); }
+  value_iterator values_begin() const { return Values.begin(); }
+  value_iterator values_end() const { return Values.end(); }
   value_range values() const {
-    return llvm::make_range(begin_values(), end_values());
+    return llvm::make_range(values_begin(), values_end());
   }
 
   void setValue(unsigned I, DIEValue New) {

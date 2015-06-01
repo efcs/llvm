@@ -16,7 +16,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/AsmParser/Parser.h"
+#include "llvm/CodeGen/MIRYamlMapping.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/LineIterator.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -38,10 +40,21 @@ public:
   MIRParserImpl(std::unique_ptr<MemoryBuffer> Contents, StringRef Filename,
                 LLVMContext &Context);
 
-  /// Try to parse the optional LLVM module in the MIR file.
+  /// Try to parse the optional LLVM module and the machine functions in the MIR
+  /// file.
   ///
-  /// Return null if an error occurred while parsing the LLVM module.
-  std::unique_ptr<Module> parseLLVMModule(SMDiagnostic &Error);
+  /// Return null if an error occurred.
+  std::unique_ptr<Module> parse(SMDiagnostic &Error);
+
+  /// Parse the machine function in the current YAML document.
+  ///
+  /// Return true if an error occurred.
+  bool parseMachineFunction(yaml::Input &In);
+
+private:
+  /// Return a MIR diagnostic converted from an LLVM assembly diagnostic.
+  SMDiagnostic diagFromLLVMAssemblyDiag(const SMDiagnostic &Error,
+                                        SMRange SourceRange);
 };
 
 } // end anonymous namespace
@@ -52,21 +65,89 @@ MIRParserImpl::MIRParserImpl(std::unique_ptr<MemoryBuffer> Contents,
   SM.AddNewSourceBuffer(std::move(Contents), SMLoc());
 }
 
-std::unique_ptr<Module> MIRParserImpl::parseLLVMModule(SMDiagnostic &Error) {
-  yaml::Input In(SM.getMemoryBuffer(SM.getMainFileID())->getBuffer());
+static void handleYAMLDiag(const SMDiagnostic &Diag, void *Context) {
+  *reinterpret_cast<SMDiagnostic *>(Context) = Diag;
+}
 
+std::unique_ptr<Module> MIRParserImpl::parse(SMDiagnostic &Error) {
+  yaml::Input In(SM.getMemoryBuffer(SM.getMainFileID())->getBuffer(),
+                 /*Ctxt=*/nullptr, handleYAMLDiag, &Error);
+
+  if (!In.setCurrentDocument()) {
+    if (!Error.getMessage().empty())
+      return nullptr;
+    // Create an empty module when the MIR file is empty.
+    return llvm::make_unique<Module>(Filename, Context);
+  }
+
+  std::unique_ptr<Module> M;
   // Parse the block scalar manually so that we can return unique pointer
   // without having to go trough YAML traits.
-  if (In.setCurrentDocument()) {
-    if (const auto *BSN =
-            dyn_cast_or_null<yaml::BlockScalarNode>(In.getCurrentNode())) {
-      return parseAssembly(MemoryBufferRef(BSN->getValue(), Filename), Error,
-                           Context);
+  if (const auto *BSN =
+          dyn_cast_or_null<yaml::BlockScalarNode>(In.getCurrentNode())) {
+    M = parseAssembly(MemoryBufferRef(BSN->getValue(), Filename), Error,
+                      Context);
+    if (!M) {
+      Error = diagFromLLVMAssemblyDiag(Error, BSN->getSourceRange());
+      return M;
+    }
+    In.nextDocument();
+    if (!In.setCurrentDocument())
+      return M;
+  } else {
+    // Create an new, empty module.
+    M = llvm::make_unique<Module>(Filename, Context);
+  }
+
+  // Parse the machine functions.
+  do {
+    if (parseMachineFunction(In))
+      return nullptr;
+    In.nextDocument();
+  } while (In.setCurrentDocument());
+
+  return M;
+}
+
+bool MIRParserImpl::parseMachineFunction(yaml::Input &In) {
+  yaml::MachineFunction MF;
+  yaml::yamlize(In, MF, false);
+  if (In.error())
+    return true;
+  // TODO: Initialize the real machine function with the state in the yaml
+  // machine function later on.
+  return false;
+}
+
+SMDiagnostic MIRParserImpl::diagFromLLVMAssemblyDiag(const SMDiagnostic &Error,
+                                                     SMRange SourceRange) {
+  assert(SourceRange.isValid());
+
+  // Translate the location of the error from the location in the llvm IR string
+  // to the corresponding location in the MIR file.
+  auto LineAndColumn = SM.getLineAndColumn(SourceRange.Start);
+  unsigned Line = LineAndColumn.first + Error.getLineNo() - 1;
+  unsigned Column = Error.getColumnNo();
+  StringRef LineStr = Error.getLineContents();
+  SMLoc Loc = Error.getLoc();
+
+  // Get the full line and adjust the column number by taking the indentation of
+  // LLVM IR into account.
+  for (line_iterator L(*SM.getMemoryBuffer(SM.getMainFileID()), false), E;
+       L != E; ++L) {
+    if (L.line_number() == Line) {
+      LineStr = *L;
+      Loc = SMLoc::getFromPointer(LineStr.data());
+      auto Indent = LineStr.find(Error.getLineContents());
+      if (Indent != StringRef::npos)
+        Column += Indent;
+      break;
     }
   }
 
-  // Create an new, empty module.
-  return llvm::make_unique<Module>(Filename, Context);
+  return SMDiagnostic(SM, Loc, Filename, Line, Column, Error.getKind(),
+                      Error.getMessage(), LineStr, Error.getRanges(),
+                      Error.getFixIts());
 }
 
 std::unique_ptr<Module> llvm::parseMIRFile(StringRef Filename,
@@ -86,5 +167,5 @@ std::unique_ptr<Module> llvm::parseMIR(std::unique_ptr<MemoryBuffer> Contents,
                                        LLVMContext &Context) {
   auto Filename = Contents->getBufferIdentifier();
   MIRParserImpl Parser(std::move(Contents), Filename, Context);
-  return Parser.parseLLVMModule(Error);
+  return Parser.parse(Error);
 }

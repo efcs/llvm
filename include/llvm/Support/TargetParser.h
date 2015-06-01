@@ -92,8 +92,15 @@ namespace ARM {
     AEK_FP,
     AEK_HWDIV,
     AEK_MP,
+    AEK_SIMD,
     AEK_SEC,
     AEK_VIRT,
+    // Unsupported extensions.
+    AEK_OS,
+    AEK_IWMMXT,
+    AEK_IWMMXT2,
+    AEK_MAVERICK,
+    AEK_XSCALE,
     AEK_LAST
   };
 
@@ -135,6 +142,7 @@ public:
   static const char * getArchName(unsigned ArchKind);
   static   unsigned   getArchAttr(unsigned ArchKind);
   static const char * getCPUAttr(unsigned ArchKind);
+  static const char * getSubArch(unsigned ArchKind);
   static const char * getArchExtName(unsigned ArchExtKind);
   static const char * getDefaultCPU(StringRef Arch);
 
