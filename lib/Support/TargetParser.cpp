@@ -106,8 +106,14 @@ struct {
   { "fp",       ARM::AEK_FP },
   { "idiv",     ARM::AEK_HWDIV },
   { "mp",       ARM::AEK_MP },
+  { "simd",     ARM::AEK_SIMD },
   { "sec",      ARM::AEK_SEC },
-  { "virt",     ARM::AEK_VIRT }
+  { "virt",     ARM::AEK_VIRT },
+  { "os",       ARM::AEK_OS },
+  { "iwmmxt",   ARM::AEK_IWMMXT },
+  { "iwmmxt2",  ARM::AEK_IWMMXT2 },
+  { "maverick", ARM::AEK_MAVERICK },
+  { "xscale",   ARM::AEK_XSCALE }
 };
 // List of CPU names and their arches.
 // The same CPU can have multiple arches and can be default on multiple arches.
@@ -287,16 +293,14 @@ StringRef ARMTargetParser::getFPUSynonym(StringRef FPU) {
 
 StringRef ARMTargetParser::getArchSynonym(StringRef Arch) {
   return StringSwitch<StringRef>(Arch)
-    .Cases("armv6sm",  "v6sm",  "armv6s-m")
-    .Cases("armv6m",   "v6m",   "armv6-m")
-    .Cases("armv7a",   "v7a",   "armv7-a")
-    .Cases("armv7r",   "v7r",   "armv7-r")
-    .Cases("armv7m",   "v7m",   "armv7-m")
-    .Cases("armv7em",  "v7em",  "armv7e-m")
-    .Cases("armv8",    "v8",    "armv8-a")
-    .Cases("armv8a",   "v8a",   "armv8-a")
-    .Cases("armv8.1a", "v8.1a", "armv8.1-a")
-    .Cases("aarch64",  "arm64", "armv8-a")
+    .Case("v6sm", "v6s-m")
+    .Case("v6m", "v6-m")
+    .Case("v7a", "v7-a")
+    .Case("v7r", "v7-r")
+    .Case("v7m", "v7-m")
+    .Case("v7em", "v7e-m")
+    .Cases("v8", "v8a", "aarch64", "arm64", "armv8-a")
+    .Case("v8.1a", "v8.1-a")
     .Default(Arch);
 }
 
@@ -364,6 +368,7 @@ unsigned ARMTargetParser::parseFPU(StringRef FPU) {
 
 // Allows partial match, ex. "v7a" matches "armv7a".
 unsigned ARMTargetParser::parseArch(StringRef Arch) {
+  Arch = getCanonicalArchName(Arch);
   StringRef Syn = getArchSynonym(Arch);
   for (const auto A : ARCHNames) {
     if (StringRef(A.Name).endswith(Syn))
