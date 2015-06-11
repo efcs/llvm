@@ -141,19 +141,19 @@ static void
 getSectionNameIndex(const ELFO &Obj, typename ELFO::Elf_Sym_Iter Symbol,
                     StringRef &SectionName, unsigned &SectionIndex) {
   SectionIndex = Symbol->st_shndx;
-  if (SectionIndex == SHN_UNDEF) {
+  if (Symbol->isUndefined())
     SectionName = "Undefined";
-  } else if (SectionIndex >= SHN_LOPROC && SectionIndex <= SHN_HIPROC) {
+  else if (Symbol->isProcessorSpecific())
     SectionName = "Processor Specific";
-  } else if (SectionIndex >= SHN_LOOS && SectionIndex <= SHN_HIOS) {
+  else if (Symbol->isOSSpecific())
     SectionName = "Operating System Specific";
-  } else if (SectionIndex > SHN_HIOS && SectionIndex < SHN_ABS) {
+  else if (Symbol->isReserved())
     SectionName = "Reserved";
-  } else if (SectionIndex == SHN_ABS) {
+  else if (Symbol->isAbsolute())
     SectionName = "Absolute";
-  } else if (SectionIndex == SHN_COMMON) {
+  else if (Symbol->isCommon())
     SectionName = "Common";
-  } else {
+  else {
     if (SectionIndex == SHN_XINDEX)
       SectionIndex = Obj.getSymbolTableIndex(&*Symbol);
     assert(SectionIndex != SHN_XINDEX &&
@@ -705,26 +705,30 @@ void ELFDumper<ELFT>::printRelocation(const Elf_Shdr *Sec,
                                       typename ELFO::Elf_Rela Rel) {
   SmallString<32> RelocName;
   Obj->getRelocationTypeName(Rel.getType(Obj->isMips64EL()), RelocName);
-  StringRef SymbolName;
+  StringRef TargetName;
   std::pair<const Elf_Shdr *, const Elf_Sym *> Sym =
       Obj->getRelocationSymbol(Sec, &Rel);
-  if (Sym.first)
-    SymbolName = errorOrDefault(Obj->getSymbolName(Sym.first, Sym.second));
+  if (Sym.second && Sym.second->getType() == ELF::STT_SECTION) {
+    const Elf_Shdr *Sec = Obj->getSection(Sym.second);
+    ErrorOr<StringRef> SecName = Obj->getSectionName(Sec);
+    if (SecName)
+      TargetName = SecName.get();
+  } else if (Sym.first) {
+    TargetName = errorOrDefault(Obj->getSymbolName(Sym.first, Sym.second));
+  }
 
   if (opts::ExpandRelocs) {
     DictScope Group(W, "Relocation");
     W.printHex("Offset", Rel.r_offset);
     W.printNumber("Type", RelocName, (int)Rel.getType(Obj->isMips64EL()));
-    W.printNumber("Symbol", SymbolName.size() > 0 ? SymbolName : "-",
+    W.printNumber("Symbol", TargetName.size() > 0 ? TargetName : "-",
                   Rel.getSymbol(Obj->isMips64EL()));
     W.printHex("Addend", Rel.r_addend);
   } else {
     raw_ostream& OS = W.startLine();
-    OS << W.hex(Rel.r_offset)
-       << " " << RelocName
-       << " " << (SymbolName.size() > 0 ? SymbolName : "-")
-       << " " << W.hex(Rel.r_addend)
-       << "\n";
+    OS << W.hex(Rel.r_offset) << " " << RelocName << " "
+       << (TargetName.size() > 0 ? TargetName : "-") << " "
+       << W.hex(Rel.r_addend) << "\n";
   }
 }
 

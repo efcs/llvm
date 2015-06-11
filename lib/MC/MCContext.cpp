@@ -20,7 +20,9 @@
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSymbolCOFF.h"
 #include "llvm/MC/MCSymbolELF.h"
+#include "llvm/MC/MCSymbolMachO.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
@@ -114,7 +116,7 @@ MCSymbol *MCContext::getOrCreateSymbol(const Twine &Name) {
 
   MCSymbol *&Sym = Symbols[NameRef];
   if (!Sym)
-    Sym = CreateSymbol(NameRef, false);
+    Sym = createSymbol(NameRef, false, false);
 
   return Sym;
 }
@@ -133,7 +135,7 @@ MCSymbolELF *MCContext::getOrCreateSectionSymbol(const MCSectionELF &Section) {
   }
 
   auto NameIter = UsedNames.insert(std::make_pair(Name, true)).first;
-  Sym = new (*this) MCSymbolELF(&*NameIter, /*isTemporary*/ false);
+  Sym = new (&*NameIter, *this) MCSymbolELF(&*NameIter, /*isTemporary*/ false);
 
   if (!OldSym)
     OldSym = Sym;
@@ -159,20 +161,30 @@ MCSymbol *MCContext::getOrCreateLSDASymbol(StringRef FuncName) {
 
 MCSymbol *MCContext::createSymbolImpl(const StringMapEntry<bool> *Name,
                                       bool IsTemporary) {
-  bool IsELF = MOFI && MOFI->getObjectFileType() == MCObjectFileInfo::IsELF;
-  if (IsELF)
-    return new (*this) MCSymbolELF(Name, IsTemporary);
-  return new (*this) MCSymbol(false, Name, IsTemporary);
+  if (MOFI) {
+    switch (MOFI->getObjectFileType()) {
+    case MCObjectFileInfo::IsCOFF:
+      return new (Name, *this) MCSymbolCOFF(Name, IsTemporary);
+    case MCObjectFileInfo::IsELF:
+      return new (Name, *this) MCSymbolELF(Name, IsTemporary);
+    case MCObjectFileInfo::IsMachO:
+      return new (Name, *this) MCSymbolMachO(Name, IsTemporary);
+    }
+  }
+  return new (Name, *this) MCSymbol(MCSymbol::SymbolKindUnset, Name,
+                                    IsTemporary);
 }
 
-MCSymbol *MCContext::CreateSymbol(StringRef Name, bool AlwaysAddSuffix) {
-  // Determine whether this is an assembler temporary or normal label, if used.
-  bool IsTemporary = false;
+MCSymbol *MCContext::createSymbol(StringRef Name, bool AlwaysAddSuffix,
+                                  bool IsTemporary) {
+  if (IsTemporary && !UseNamesOnTempLabels)
+    return createSymbolImpl(nullptr, true);
+
+  // Determine whether this is an user writter assembler temporary or normal
+  // label, if used.
+  IsTemporary = false;
   if (AllowTemporaryLabels)
     IsTemporary = Name.startswith(MAI->getPrivateGlobalPrefix());
-
-  if (IsTemporary && AlwaysAddSuffix && !UseNamesOnTempLabels)
-    return createSymbolImpl(nullptr, true);
 
   SmallString<128> NewName = Name;
   bool AddSuffix = AlwaysAddSuffix;
@@ -197,13 +209,13 @@ MCSymbol *MCContext::CreateSymbol(StringRef Name, bool AlwaysAddSuffix) {
 MCSymbol *MCContext::createTempSymbol(const Twine &Name, bool AlwaysAddSuffix) {
   SmallString<128> NameSV;
   raw_svector_ostream(NameSV) << MAI->getPrivateGlobalPrefix() << Name;
-  return CreateSymbol(NameSV, AlwaysAddSuffix);
+  return createSymbol(NameSV, AlwaysAddSuffix, true);
 }
 
 MCSymbol *MCContext::createLinkerPrivateTempSymbol() {
   SmallString<128> NameSV;
   raw_svector_ostream(NameSV) << MAI->getLinkerPrivateGlobalPrefix() << "tmp";
-  return CreateSymbol(NameSV, true);
+  return createSymbol(NameSV, true, false);
 }
 
 MCSymbol *MCContext::createTempSymbol() {
@@ -302,7 +314,7 @@ void MCContext::renameELFSection(MCSectionELF *Section, StringRef Name) {
 
 MCSectionELF *MCContext::createELFRelSection(StringRef Name, unsigned Type,
                                              unsigned Flags, unsigned EntrySize,
-                                             const MCSymbol *Group,
+                                             const MCSymbolELF *Group,
                                              const MCSectionELF *Associated) {
   StringMap<bool>::iterator I;
   bool Inserted;
@@ -317,9 +329,9 @@ MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
                                        unsigned Flags, unsigned EntrySize,
                                        StringRef Group, unsigned UniqueID,
                                        const char *BeginSymName) {
-  MCSymbol *GroupSym = nullptr;
+  MCSymbolELF *GroupSym = nullptr;
   if (!Group.empty())
-    GroupSym = getOrCreateSymbol(Group);
+    GroupSym = cast<MCSymbolELF>(getOrCreateSymbol(Group));
 
   return getELFSection(Section, Type, Flags, EntrySize, GroupSym, UniqueID,
                        BeginSymName, nullptr);
@@ -327,7 +339,7 @@ MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
 
 MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
                                        unsigned Flags, unsigned EntrySize,
-                                       const MCSymbol *GroupSym,
+                                       const MCSymbolELF *GroupSym,
                                        unsigned UniqueID,
                                        const char *BeginSymName,
                                        const MCSectionELF *Associated) {
@@ -360,7 +372,7 @@ MCSectionELF *MCContext::getELFSection(StringRef Section, unsigned Type,
   return Result;
 }
 
-MCSectionELF *MCContext::createELFGroupSection(const MCSymbol *Group) {
+MCSectionELF *MCContext::createELFGroupSection(const MCSymbolELF *Group) {
   MCSectionELF *Result = new (*this)
       MCSectionELF(".group", ELF::SHT_GROUP, 0, SectionKind::getReadOnly(), 4,
                    Group, ~0, nullptr, nullptr);

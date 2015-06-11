@@ -49,7 +49,7 @@
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ELF.h"
@@ -181,14 +181,14 @@ void PPCAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
     return;
 
   case MachineOperand::MO_MachineBasicBlock:
-    O << *MO.getMBB()->getSymbol();
+    MO.getMBB()->getSymbol()->print(O, MAI);
     return;
   case MachineOperand::MO_ConstantPoolIndex:
     O << DL->getPrivateGlobalPrefix() << "CPI" << getFunctionNumber()
       << '_' << MO.getIndex();
     return;
   case MachineOperand::MO_BlockAddress:
-    O << *GetBlockAddressSymbol(MO.getBlockAddress());
+    GetBlockAddressSymbol(MO.getBlockAddress())->print(O, MAI);
     return;
   case MachineOperand::MO_GlobalAddress: {
     // Computing the address of a global symbol, not calling it.
@@ -222,8 +222,8 @@ void PPCAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
     } else {
       SymToPrint = getSymbol(GV);
     }
-    
-    O << *SymToPrint;
+
+    SymToPrint->print(O, MAI);
 
     printOffset(MO.getOffset(), O);
     return;
@@ -1166,7 +1166,7 @@ void PPCLinuxAsmPrinter::EmitFunctionBodyStart() {
       static_cast<PPCTargetStreamer *>(OutStreamer->getTargetStreamer());
 
     if (TS)
-      TS->emitLocalEntry(CurrentFnSym, LocalOffsetExp);
+      TS->emitLocalEntry(cast<MCSymbolELF>(CurrentFnSym), LocalOffsetExp);
   }
 }
 
