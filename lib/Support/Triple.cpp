@@ -25,8 +25,8 @@ const char *Triple::getArchTypeName(ArchType Kind) {
   case aarch64_be:  return "aarch64_be";
   case arm:         return "arm";
   case armeb:       return "armeb";
-  case bpf_le:      return "bpf_le";
-  case bpf_be:      return "bpf_be";
+  case bpfel:       return "bpfel";
+  case bpfeb:       return "bpfeb";
   case hexagon:     return "hexagon";
   case mips:        return "mips";
   case mipsel:      return "mipsel";
@@ -59,6 +59,7 @@ const char *Triple::getArchTypeName(ArchType Kind) {
   case spir:        return "spir";
   case spir64:      return "spir64";
   case kalimba:     return "kalimba";
+  case shave:       return "shave";
   }
 
   llvm_unreachable("Invalid ArchType!");
@@ -91,8 +92,8 @@ const char *Triple::getArchTypePrefix(ArchType Kind) {
   case amdgcn:
   case r600:        return "amdgpu";
 
-  case bpf_le:
-  case bpf_be:      return "bpf";
+  case bpfel:
+  case bpfeb:       return "bpf";
 
   case sparcv9:
   case sparcel:
@@ -120,6 +121,7 @@ const char *Triple::getArchTypePrefix(ArchType Kind) {
   case spir:
   case spir64:      return "spir";
   case kalimba:     return "kalimba";
+  case shave:       return "shave";
   }
 }
 
@@ -198,13 +200,13 @@ const char *Triple::getEnvironmentTypeName(EnvironmentType Kind) {
 static Triple::ArchType parseBPFArch(StringRef ArchName) {
   if (ArchName.equals("bpf")) {
     if (sys::IsLittleEndianHost)
-      return Triple::bpf_le;
+      return Triple::bpfel;
     else
-      return Triple::bpf_be;
-  } else if (ArchName.equals("bpf_be")) {
-    return Triple::bpf_be;
-  } else if (ArchName.equals("bpf_le")) {
-    return Triple::bpf_le;
+      return Triple::bpfeb;
+  } else if (ArchName.equals("bpf_be") || ArchName.equals("bpfeb")) {
+    return Triple::bpfeb;
+  } else if (ArchName.equals("bpf_le") || ArchName.equals("bpfel")) {
+    return Triple::bpfel;
   } else {
     return Triple::UnknownArch;
   }
@@ -252,6 +254,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("spir", spir)
     .Case("spir64", spir64)
     .Case("kalimba", kalimba)
+    .Case("shave", shave)
     .Default(UnknownArch);
 }
 
@@ -356,6 +359,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .Case("spir", Triple::spir)
     .Case("spir64", Triple::spir64)
     .StartsWith("kalimba", Triple::kalimba)
+    .Case("shave", Triple::shave)
     .Default(Triple::UnknownArch);
 }
 
@@ -1004,13 +1008,14 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::hsail:
   case llvm::Triple::spir:
   case llvm::Triple::kalimba:
+  case llvm::Triple::shave:
     return 32;
 
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
   case llvm::Triple::amdgcn:
-  case llvm::Triple::bpf_le:
-  case llvm::Triple::bpf_be:
+  case llvm::Triple::bpfel:
+  case llvm::Triple::bpfeb:
   case llvm::Triple::le64:
   case llvm::Triple::mips64:
   case llvm::Triple::mips64el:
@@ -1047,8 +1052,8 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::aarch64:
   case Triple::aarch64_be:
   case Triple::amdgcn:
-  case Triple::bpf_le:
-  case Triple::bpf_be:
+  case Triple::bpfel:
+  case Triple::bpfeb:
   case Triple::msp430:
   case Triple::systemz:
   case Triple::ppc64le:
@@ -1075,6 +1080,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::thumbeb:
   case Triple::x86:
   case Triple::xcore:
+  case Triple::shave:
     // Already 32-bit.
     break;
 
@@ -1107,13 +1113,14 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::thumbeb:
   case Triple::xcore:
   case Triple::sparcel:
+  case Triple::shave:
     T.setArch(UnknownArch);
     break;
 
   case Triple::aarch64:
   case Triple::aarch64_be:
-  case Triple::bpf_le:
-  case Triple::bpf_be:
+  case Triple::bpfel:
+  case Triple::bpfeb:
   case Triple::le64:
   case Triple::amdil64:
   case Triple::amdgcn:
