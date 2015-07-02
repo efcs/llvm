@@ -511,7 +511,7 @@ bool X86AsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
 }
 
 void X86AsmPrinter::EmitStartOfAsmFile(Module &M) {
-  Triple TT(TM.getTargetTriple());
+  const Triple &TT = TM.getTargetTriple();
 
   if (TT.isOSBinFormatMachO())
     OutStreamer->SwitchSection(getObjFileLowering().getTextSection());
@@ -581,36 +581,8 @@ MCSymbol *X86AsmPrinter::GetCPISymbol(unsigned CPID) const {
   return AsmPrinter::GetCPISymbol(CPID);
 }
 
-void X86AsmPrinter::GenerateExportDirective(const MCSymbol *Sym, bool IsData) {
-  SmallString<128> Directive;
-  raw_svector_ostream OS(Directive);
-  StringRef Name = Sym->getName();
-  Triple TT(TM.getTargetTriple());
-
-  if (TT.isKnownWindowsMSVCEnvironment())
-    OS << " /EXPORT:";
-  else
-    OS << " -export:";
-
-  if ((TT.isWindowsGNUEnvironment() || TT.isWindowsCygwinEnvironment()) &&
-      (Name[0] == getDataLayout().getGlobalPrefix()))
-    Name = Name.drop_front();
-
-  OS << Name;
-
-  if (IsData) {
-    if (TT.isKnownWindowsMSVCEnvironment())
-      OS << ",DATA";
-    else
-      OS << ",data";
-  }
-
-  OS.flush();
-  OutStreamer->EmitBytes(Directive);
-}
-
 void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
-  Triple TT(TM.getTargetTriple());
+  const Triple &TT = TM.getTargetTriple();
 
   if (TT.isOSBinFormatMachO()) {
     // All darwin targets use mach-o.
@@ -674,6 +646,7 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
     }
 
     SM.serializeToStackMapSection();
+    FM.serializeToFaultMapSection();
 
     // Funny Darwin hack: This flag tells the linker that no global symbols
     // contain code that falls through to other global symbols (e.g. the obvious
@@ -691,43 +664,34 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
   }
 
   if (TT.isOSBinFormatCOFF()) {
-    // Necessary for dllexport support
-    std::vector<const MCSymbol*> DLLExportedFns, DLLExportedGlobals;
-
-    for (const auto &Function : M)
-      if (Function.hasDLLExportStorageClass() && !Function.isDeclaration())
-        DLLExportedFns.push_back(getSymbol(&Function));
-
-    for (const auto &Global : M.globals())
-      if (Global.hasDLLExportStorageClass() && !Global.isDeclaration())
-        DLLExportedGlobals.push_back(getSymbol(&Global));
-
-    for (const auto &Alias : M.aliases()) {
-      if (!Alias.hasDLLExportStorageClass())
-        continue;
-
-      if (Alias.getType()->getElementType()->isFunctionTy())
-        DLLExportedFns.push_back(getSymbol(&Alias));
-      else
-        DLLExportedGlobals.push_back(getSymbol(&Alias));
-    }
-
-    // Output linker support code for dllexported globals on windows.
-    if (!DLLExportedGlobals.empty() || !DLLExportedFns.empty()) {
-      const TargetLoweringObjectFileCOFF &TLOFCOFF =
+    const TargetLoweringObjectFileCOFF &TLOFCOFF =
         static_cast<const TargetLoweringObjectFileCOFF&>(getObjFileLowering());
 
-      OutStreamer->SwitchSection(TLOFCOFF.getDrectveSection());
+    std::string Flags;
+    raw_string_ostream FlagsOS(Flags);
 
-      for (auto & Symbol : DLLExportedGlobals)
-        GenerateExportDirective(Symbol, /*IsData=*/true);
-      for (auto & Symbol : DLLExportedFns)
-        GenerateExportDirective(Symbol, /*IsData=*/false);
+    for (const auto &Function : M)
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Function, *Mang);
+    for (const auto &Global : M.globals())
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Global, *Mang);
+    for (const auto &Alias : M.aliases())
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Alias, *Mang);
+
+    FlagsOS.flush();
+
+    // Output collected flags.
+    if (!Flags.empty()) {
+      OutStreamer->SwitchSection(TLOFCOFF.getDrectveSection());
+      OutStreamer->EmitBytes(Flags);
     }
+
+    SM.serializeToStackMapSection();
   }
 
-  if (TT.isOSBinFormatELF())
+  if (TT.isOSBinFormatELF()) {
     SM.serializeToStackMapSection();
+    FM.serializeToFaultMapSection();
+  }
 }
 
 //===----------------------------------------------------------------------===//
