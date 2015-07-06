@@ -1449,6 +1449,7 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
                    << format("%04X", S.LaneMask) << ")\n");
       LIS->shrinkToUses(S, LI.reg);
     }
+    LI.removeEmptySubRanges();
   }
   if (ShrinkMainRange) {
     LiveInterval &LI = LIS->getInterval(CP.getDstReg());
@@ -1834,12 +1835,12 @@ public:
 unsigned JoinVals::computeWriteLanes(const MachineInstr *DefMI, bool &Redef)
   const {
   unsigned L = 0;
-  for (ConstMIOperands MO(DefMI); MO.isValid(); ++MO) {
-    if (!MO->isReg() || MO->getReg() != Reg || !MO->isDef())
+  for (const MachineOperand &MO : DefMI->operands()) {
+    if (!MO.isReg() || MO.getReg() != Reg || !MO.isDef())
       continue;
     L |= TRI->getSubRegIndexLaneMask(
-           TRI->composeSubRegIndices(SubIdx, MO->getSubReg()));
-    if (MO->readsReg())
+           TRI->composeSubRegIndices(SubIdx, MO.getSubReg()));
+    if (MO.readsReg())
       Redef = true;
   }
   return L;
@@ -2224,13 +2225,13 @@ bool JoinVals::usesLanes(const MachineInstr *MI, unsigned Reg, unsigned SubIdx,
                          unsigned Lanes) const {
   if (MI->isDebugValue())
     return false;
-  for (ConstMIOperands MO(MI); MO.isValid(); ++MO) {
-    if (!MO->isReg() || MO->isDef() || MO->getReg() != Reg)
+  for (const MachineOperand &MO : MI->operands()) {
+    if (!MO.isReg() || MO.isDef() || MO.getReg() != Reg)
       continue;
-    if (!MO->readsReg())
+    if (!MO.readsReg())
       continue;
     if (Lanes & TRI->getSubRegIndexLaneMask(
-                  TRI->composeSubRegIndices(SubIdx, MO->getSubReg())))
+                  TRI->composeSubRegIndices(SubIdx, MO.getSubReg())))
       return true;
   }
   return false;
@@ -2339,11 +2340,11 @@ void JoinVals::pruneValues(JoinVals &Other,
           // Remove <def,read-undef> flags. This def is now a partial redef.
           // Also remove <def,dead> flags since the joined live range will
           // continue past this instruction.
-          for (MIOperands MO(Indexes->getInstructionFromIndex(Def));
-               MO.isValid(); ++MO) {
-            if (MO->isReg() && MO->isDef() && MO->getReg() == Reg) {
-              MO->setIsUndef(EraseImpDef);
-              MO->setIsDead(false);
+          for (MachineOperand &MO :
+               Indexes->getInstructionFromIndex(Def)->operands()) {
+            if (MO.isReg() && MO.isDef() && MO.getReg() == Reg) {
+              MO.setIsUndef(EraseImpDef);
+              MO.setIsDead(false);
             }
           }
         }
@@ -2633,7 +2634,8 @@ bool RegisterCoalescer::joinVirtRegs(CoalescerPair &CP) {
       // "overflow bit" 32. As a workaround we drop all subregister ranges
       // which means we loose some precision but are back to a well defined
       // state.
-      assert((CP.getNewRC()->getLaneMask() & 0x80000000u)
+      assert(TargetRegisterInfo::isImpreciseLaneMask(
+             CP.getNewRC()->getLaneMask())
              && "SubRange merge should only fail when merging into bit 32.");
       DEBUG(dbgs() << "\tSubrange join aborted!\n");
       LHS.clearSubRanges();

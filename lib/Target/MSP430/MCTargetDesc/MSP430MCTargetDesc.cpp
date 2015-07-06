@@ -37,20 +37,21 @@ static MCInstrInfo *createMSP430MCInstrInfo() {
   return X;
 }
 
-static MCRegisterInfo *createMSP430MCRegisterInfo(StringRef TT) {
+static MCRegisterInfo *createMSP430MCRegisterInfo(const Triple &TT) {
   MCRegisterInfo *X = new MCRegisterInfo();
   InitMSP430MCRegisterInfo(X, MSP430::PC);
   return X;
 }
 
-static MCSubtargetInfo *createMSP430MCSubtargetInfo(StringRef TT, StringRef CPU,
-                                                    StringRef FS) {
+static MCSubtargetInfo *
+createMSP430MCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
   MCSubtargetInfo *X = new MCSubtargetInfo();
   InitMSP430MCSubtargetInfo(X, TT, CPU, FS);
   return X;
 }
 
-static MCCodeGenInfo *createMSP430MCCodeGenInfo(StringRef TT, Reloc::Model RM,
+static MCCodeGenInfo *createMSP430MCCodeGenInfo(const Triple &TT,
+                                                Reloc::Model RM,
                                                 CodeModel::Model CM,
                                                 CodeGenOpt::Level OL) {
   MCCodeGenInfo *X = new MCCodeGenInfo();

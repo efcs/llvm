@@ -30,6 +30,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Statepoint.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/Verifier.h"
@@ -74,13 +75,27 @@ static cl::opt<bool, true> ClobberNonLiveOverride("rs4gc-clobber-non-live",
                                                   cl::Hidden);
 
 namespace {
-struct RewriteStatepointsForGC : public FunctionPass {
+struct RewriteStatepointsForGC : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
 
-  RewriteStatepointsForGC() : FunctionPass(ID) {
+  RewriteStatepointsForGC() : ModulePass(ID) {
     initializeRewriteStatepointsForGCPass(*PassRegistry::getPassRegistry());
   }
-  bool runOnFunction(Function &F) override;
+  bool runOnFunction(Function &F);
+  bool runOnModule(Module &M) override {
+    bool Changed = false;
+    for (Function &F : M)
+      Changed |= runOnFunction(F);
+
+    if (Changed) {
+      // stripDereferenceabilityInfo asserts that shouldRewriteStatepointsIn
+      // returns true for at least one function in the module.  Since at least
+      // one function changed, we know that the precondition is satisfied.
+      stripDereferenceabilityInfo(M);
+    }
+
+    return Changed;
+  }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     // We add and rewrite a bunch of instructions, but don't really do much
@@ -88,12 +103,26 @@ struct RewriteStatepointsForGC : public FunctionPass {
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<TargetTransformInfoWrapperPass>();
   }
+
+  /// The IR fed into RewriteStatepointsForGC may have had attributes implying
+  /// dereferenceability that are no longer valid/correct after
+  /// RewriteStatepointsForGC has run.  This is because semantically, after
+  /// RewriteStatepointsForGC runs, all calls to gc.statepoint "free" the entire
+  /// heap.  stripDereferenceabilityInfo (conservatively) restores correctness
+  /// by erasing all attributes in the module that externally imply
+  /// dereferenceability.
+  ///
+  void stripDereferenceabilityInfo(Module &M);
+
+  // Helpers for stripDereferenceabilityInfo
+  void stripDereferenceabilityInfoFromBody(Function &F);
+  void stripDereferenceabilityInfoFromPrototype(Function &F);
 };
 } // namespace
 
 char RewriteStatepointsForGC::ID = 0;
 
-FunctionPass *llvm::createRewriteStatepointsForGCPass() {
+ModulePass *llvm::createRewriteStatepointsForGCPass() {
   return new RewriteStatepointsForGC();
 }
 
@@ -265,12 +294,17 @@ static void analyzeParsePointLiveness(
 
 static Value *findBaseDefiningValue(Value *I);
 
-/// If we can trivially determine that the index specified in the given vector
-/// is a base pointer, return it.  In cases where the entire vector is known to
-/// consist of base pointers, the entire vector will be returned.  This
-/// indicates that the relevant extractelement is a valid base pointer and
-/// should be used directly.
-static Value *findBaseOfVector(Value *I, Value *Index) {
+/// Return a base defining value for the 'Index' element of the given vector
+/// instruction 'I'.  If Index is null, returns a BDV for the entire vector
+/// 'I'.  As an optimization, this method will try to determine when the 
+/// element is known to already be a base pointer.  If this can be established,
+/// the second value in the returned pair will be true.  Note that either a
+/// vector or a pointer typed value can be returned.  For the former, the
+/// vector returned is a BDV (and possibly a base) of the entire vector 'I'.
+/// If the later, the return pointer is a BDV (or possibly a base) for the
+/// particular element in 'I'.  
+static std::pair<Value *, bool>
+findBaseDefiningValueOfVector(Value *I, Value *Index = nullptr) {
   assert(I->getType()->isVectorTy() &&
          cast<VectorType>(I->getType())->getElementType()->isPointerTy() &&
          "Illegal to ask for the base pointer of a non-pointer type");
@@ -280,7 +314,7 @@ static Value *findBaseOfVector(Value *I, Value *Index) {
 
   if (isa<Argument>(I))
     // An incoming argument to the function is a base pointer
-    return I;
+    return std::make_pair(I, true);
 
   // We shouldn't see the address of a global as a vector value?
   assert(!isa<GlobalVariable>(I) &&
@@ -291,7 +325,7 @@ static Value *findBaseOfVector(Value *I, Value *Index) {
   if (isa<UndefValue>(I))
     // utterly meaningless, but useful for dealing with partially optimized
     // code.
-    return I;
+    return std::make_pair(I, true);
 
   // Due to inheritance, this must be _after_ the global variable and undef
   // checks
@@ -299,38 +333,56 @@ static Value *findBaseOfVector(Value *I, Value *Index) {
     assert(!isa<GlobalVariable>(I) && !isa<UndefValue>(I) &&
            "order of checks wrong!");
     assert(Con->isNullValue() && "null is the only case which makes sense");
-    return Con;
+    return std::make_pair(Con, true);
   }
-
+  
   if (isa<LoadInst>(I))
-    return I;
-
+    return std::make_pair(I, true);
+  
   // For an insert element, we might be able to look through it if we know
-  // something about the indexes, but if the indices are arbitrary values, we
-  // can't without much more extensive scalarization.
+  // something about the indexes.
   if (InsertElementInst *IEI = dyn_cast<InsertElementInst>(I)) {
-    Value *InsertIndex = IEI->getOperand(2);
-    // This index is inserting the value, look for it's base
-    if (InsertIndex == Index)
-      return findBaseDefiningValue(IEI->getOperand(1));
-    // Both constant, and can't be equal per above. This insert is definitely
-    // not relevant, look back at the rest of the vector and keep trying.
-    if (isa<ConstantInt>(Index) && isa<ConstantInt>(InsertIndex))
-      return findBaseOfVector(IEI->getOperand(0), Index);
+    if (Index) {
+      Value *InsertIndex = IEI->getOperand(2);
+      // This index is inserting the value, look for its BDV
+      if (InsertIndex == Index)
+        return std::make_pair(findBaseDefiningValue(IEI->getOperand(1)), false);
+      // Both constant, and can't be equal per above. This insert is definitely
+      // not relevant, look back at the rest of the vector and keep trying.
+      if (isa<ConstantInt>(Index) && isa<ConstantInt>(InsertIndex))
+        return findBaseDefiningValueOfVector(IEI->getOperand(0), Index);
+    }
+    
+    // We don't know whether this vector contains entirely base pointers or
+    // not.  To be conservatively correct, we treat it as a BDV and will
+    // duplicate code as needed to construct a parallel vector of bases.
+    return std::make_pair(IEI, false);
   }
 
-  // Note: This code is currently rather incomplete.  We are essentially only
-  // handling cases where the vector element is trivially a base pointer.  We
-  // need to update the entire base pointer construction algorithm to know how
-  // to track vector elements and potentially scalarize, but the case which
-  // would motivate the work hasn't shown up in real workloads yet.
-  llvm_unreachable("no base found for vector element");
+  if (isa<ShuffleVectorInst>(I))
+    // We don't know whether this vector contains entirely base pointers or
+    // not.  To be conservatively correct, we treat it as a BDV and will
+    // duplicate code as needed to construct a parallel vector of bases.
+    // TODO: There a number of local optimizations which could be applied here
+    // for particular sufflevector patterns.
+    return std::make_pair(I, false);
+
+  // A PHI or Select is a base defining value.  The outer findBasePointer
+  // algorithm is responsible for constructing a base value for this BDV.
+  assert((isa<SelectInst>(I) || isa<PHINode>(I)) &&
+         "unknown vector instruction - no base found for vector element");
+  return std::make_pair(I, false);
 }
+
+static bool isKnownBaseResult(Value *V);
 
 /// Helper function for findBasePointer - Will return a value which either a)
 /// defines the base pointer for the input or b) blocks the simple search
 /// (i.e. a PHI or Select of two derived pointers)
 static Value *findBaseDefiningValue(Value *I) {
+  if (I->getType()->isVectorTy())
+    return findBaseDefiningValueOfVector(I).first;
+  
   assert(I->getType()->isPointerTy() &&
          "Illegal to ask for the base pointer of a non-pointer type");
 
@@ -341,16 +393,39 @@ static Value *findBaseDefiningValue(Value *I) {
   if (auto *EEI = dyn_cast<ExtractElementInst>(I)) {
     Value *VectorOperand = EEI->getVectorOperand();
     Value *Index = EEI->getIndexOperand();
-    Value *VectorBase = findBaseOfVector(VectorOperand, Index);
-    // If the result returned is a vector, we know the entire vector must
-    // contain base pointers.  In that case, the extractelement is a valid base
-    // for this value.
-    if (VectorBase->getType()->isVectorTy())
-      return EEI;
-    // Otherwise, we needed to look through the vector to find the base for
-    // this particular element.
-    assert(VectorBase->getType()->isPointerTy());
-    return VectorBase;
+    std::pair<Value *, bool> pair =
+      findBaseDefiningValueOfVector(VectorOperand, Index);
+    Value *VectorBase = pair.first;
+    if (VectorBase->getType()->isPointerTy())
+      // We found a BDV for this specific element with the vector.  This is an
+      // optimization, but in practice it covers most of the useful cases
+      // created via scalarization.
+      return VectorBase;
+    else {
+      assert(VectorBase->getType()->isVectorTy());
+      if (pair.second)
+        // If the entire vector returned is known to be entirely base pointers,
+        // then the extractelement is valid base for this value.
+        return EEI;
+      else {
+        // Otherwise, we have an instruction which potentially produces a
+        // derived pointer and we need findBasePointers to clone code for us
+        // such that we can create an instruction which produces the
+        // accompanying base pointer.
+        // Note: This code is currently rather incomplete.  We don't currently
+        // support the general form of shufflevector of insertelement.
+        // Conceptually, these are just 'base defining values' of the same
+        // variety as phi or select instructions.  We need to update the
+        // findBasePointers algorithm to insert new 'base-only' versions of the
+        // original instructions. This is relative straight forward to do, but
+        // the case which would motivate the work hasn't shown up in real
+        // workloads yet.  
+        assert((isa<PHINode>(VectorBase) || isa<SelectInst>(VectorBase)) &&
+               "need to extend findBasePointers for generic vector"
+               "instruction cases");
+        return VectorBase;
+      }
+    }
   }
 
   if (isa<Argument>(I))
@@ -1031,14 +1106,11 @@ static void recomputeLiveInValues(
 // goes through the statepoint.  We might need to split an edge to make this
 // possible.
 static BasicBlock *
-normalizeForInvokeSafepoint(BasicBlock *BB, BasicBlock *InvokeParent, Pass *P) {
-  DominatorTree *DT = nullptr;
-  if (auto *DTP = P->getAnalysisIfAvailable<DominatorTreeWrapperPass>())
-    DT = &DTP->getDomTree();
-
+normalizeForInvokeSafepoint(BasicBlock *BB, BasicBlock *InvokeParent,
+                            DominatorTree &DT) {
   BasicBlock *Ret = BB;
   if (!BB->getUniquePredecessor()) {
-    Ret = SplitBlockPredecessors(BB, InvokeParent, "", nullptr, DT);
+    Ret = SplitBlockPredecessors(BB, InvokeParent, "", nullptr, &DT);
   }
 
   // Now that 'ret' has unique predecessor we can safely remove all phi nodes
@@ -1633,17 +1705,10 @@ static void relocationViaAlloca(
 /// vector.  Doing so has the effect of changing the output of a couple of
 /// tests in ways which make them less useful in testing fused safepoints.
 template <typename T> static void unique_unsorted(SmallVectorImpl<T> &Vec) {
-  DenseSet<T> Seen;
-  SmallVector<T, 128> TempVec;
-  TempVec.reserve(Vec.size());
-  for (auto Element : Vec)
-    TempVec.push_back(Element);
-  Vec.clear();
-  for (auto V : TempVec) {
-    if (Seen.insert(V).second) {
-      Vec.push_back(V);
-    }
-  }
+  SmallSet<T, 8> Seen;
+  Vec.erase(std::remove_if(Vec.begin(), Vec.end(), [&](const T &V) {
+              return !Seen.insert(V).second;
+            }), Vec.end());
 }
 
 /// Insert holders so that each Value is obviously live through the entire
@@ -1693,7 +1758,9 @@ static void findLiveReferences(
 /// slightly non-trivial since it requires a format change.  Given how rare
 /// such cases are (for the moment?) scalarizing is an acceptable comprimise.
 static void splitVectorValues(Instruction *StatepointInst,
-                              StatepointLiveSetTy &LiveSet, DominatorTree &DT) {
+                              StatepointLiveSetTy &LiveSet,
+                              DenseMap<Value *, Value *>& PointerToBase,
+                              DominatorTree &DT) {
   SmallVector<Value *, 16> ToSplit;
   for (Value *V : LiveSet)
     if (isa<VectorType>(V->getType()))
@@ -1702,14 +1769,14 @@ static void splitVectorValues(Instruction *StatepointInst,
   if (ToSplit.empty())
     return;
 
+  DenseMap<Value *, SmallVector<Value *, 16>> ElementMapping;
+
   Function &F = *(StatepointInst->getParent()->getParent());
 
   DenseMap<Value *, AllocaInst *> AllocaMap;
   // First is normal return, second is exceptional return (invoke only)
   DenseMap<Value *, std::pair<Value *, Value *>> Replacements;
   for (Value *V : ToSplit) {
-    LiveSet.erase(V);
-
     AllocaInst *Alloca =
         new AllocaInst(V->getType(), "", F.getEntryBlock().getFirstNonPHI());
     AllocaMap[V] = Alloca;
@@ -1719,7 +1786,7 @@ static void splitVectorValues(Instruction *StatepointInst,
     SmallVector<Value *, 16> Elements;
     for (unsigned i = 0; i < VT->getNumElements(); i++)
       Elements.push_back(Builder.CreateExtractElement(V, Builder.getInt32(i)));
-    LiveSet.insert(Elements.begin(), Elements.end());
+    ElementMapping[V] = Elements;
 
     auto InsertVectorReform = [&](Instruction *IP) {
       Builder.SetInsertPoint(IP);
@@ -1752,6 +1819,7 @@ static void splitVectorValues(Instruction *StatepointInst,
       Replacements[V].second = InsertVectorReform(IP);
     }
   }
+
   for (Value *V : ToSplit) {
     AllocaInst *Alloca = AllocaMap[V];
 
@@ -1795,6 +1863,25 @@ static void splitVectorValues(Instruction *StatepointInst,
   for (Value *V : ToSplit)
     Allocas.push_back(AllocaMap[V]);
   PromoteMemToReg(Allocas, DT);
+
+  // Update our tracking of live pointers and base mappings to account for the
+  // changes we just made.
+  for (Value *V : ToSplit) {
+    auto &Elements = ElementMapping[V];
+
+    LiveSet.erase(V);
+    LiveSet.insert(Elements.begin(), Elements.end());
+    // We need to update the base mapping as well.
+    assert(PointerToBase.count(V));
+    Value *OldBase = PointerToBase[V];
+    auto &BaseElements = ElementMapping[OldBase];
+    PointerToBase.erase(V);
+    assert(Elements.size() == BaseElements.size());
+    for (unsigned i = 0; i < Elements.size(); i++) {
+      Value *Elem = Elements[i];
+      PointerToBase[Elem] = BaseElements[i];
+    }
+  }
 }
 
 // Helper function for the "rematerializeLiveValues". It walks use chain
@@ -2016,9 +2103,9 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
       continue;
     InvokeInst *invoke = cast<InvokeInst>(CS.getInstruction());
     normalizeForInvokeSafepoint(invoke->getNormalDest(), invoke->getParent(),
-                                P);
+                                DT);
     normalizeForInvokeSafepoint(invoke->getUnwindDest(), invoke->getParent(),
-                                P);
+                                DT);
   }
 
   // A list of dummy calls added to the IR to keep various values obviously
@@ -2055,17 +2142,6 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
   // A) Identify all gc pointers which are staticly live at the given call
   // site.
   findLiveReferences(F, DT, P, toUpdate, records);
-
-  // Do a limited scalarization of any live at safepoint vector values which
-  // contain pointers.  This enables this pass to run after vectorization at
-  // the cost of some possible performance loss.  TODO: it would be nice to
-  // natively support vectors all the way through the backend so we don't need
-  // to scalarize here.
-  for (size_t i = 0; i < records.size(); i++) {
-    struct PartiallyConstructedSafepointRecord &info = records[i];
-    Instruction *statepoint = toUpdate[i].getInstruction();
-    splitVectorValues(cast<Instruction>(statepoint), info.liveset, DT);
-  }
 
   // B) Find the base pointers for each live pointer
   /* scope for caching */ {
@@ -2126,6 +2202,18 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
     holders[i] = nullptr;
   }
   holders.clear();
+
+  // Do a limited scalarization of any live at safepoint vector values which
+  // contain pointers.  This enables this pass to run after vectorization at
+  // the cost of some possible performance loss.  TODO: it would be nice to
+  // natively support vectors all the way through the backend so we don't need
+  // to scalarize here.
+  for (size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord &info = records[i];
+    Instruction *statepoint = toUpdate[i].getInstruction();
+    splitVectorValues(cast<Instruction>(statepoint), info.liveset,
+                      info.PointerToBase, DT);
+  }
 
   // In order to reduce live set of statepoint we might choose to rematerialize
   // some values instead of relocating them. This is purelly an optimization and
@@ -2197,6 +2285,72 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
   return !records.empty();
 }
 
+// Handles both return values and arguments for Functions and CallSites.
+template <typename AttrHolder>
+static void RemoveDerefAttrAtIndex(LLVMContext &Ctx, AttrHolder &AH,
+                                   unsigned Index) {
+  AttrBuilder R;
+  if (AH.getDereferenceableBytes(Index))
+    R.addAttribute(Attribute::get(Ctx, Attribute::Dereferenceable,
+                                  AH.getDereferenceableBytes(Index)));
+  if (AH.getDereferenceableOrNullBytes(Index))
+    R.addAttribute(Attribute::get(Ctx, Attribute::DereferenceableOrNull,
+                                  AH.getDereferenceableOrNullBytes(Index)));
+
+  if (!R.empty())
+    AH.setAttributes(AH.getAttributes().removeAttributes(
+        Ctx, Index, AttributeSet::get(Ctx, Index, R)));
+}
+
+void
+RewriteStatepointsForGC::stripDereferenceabilityInfoFromPrototype(Function &F) {
+  LLVMContext &Ctx = F.getContext();
+
+  for (Argument &A : F.args())
+    if (isa<PointerType>(A.getType()))
+      RemoveDerefAttrAtIndex(Ctx, F, A.getArgNo() + 1);
+
+  if (isa<PointerType>(F.getReturnType()))
+    RemoveDerefAttrAtIndex(Ctx, F, AttributeSet::ReturnIndex);
+}
+
+void RewriteStatepointsForGC::stripDereferenceabilityInfoFromBody(Function &F) {
+  if (F.empty())
+    return;
+
+  LLVMContext &Ctx = F.getContext();
+  MDBuilder Builder(Ctx);
+
+  for (Instruction &I : inst_range(F)) {
+    if (const MDNode *MD = I.getMetadata(LLVMContext::MD_tbaa)) {
+      assert(MD->getNumOperands() < 5 && "unrecognized metadata shape!");
+      bool IsImmutableTBAA =
+          MD->getNumOperands() == 4 &&
+          mdconst::extract<ConstantInt>(MD->getOperand(3))->getValue() == 1;
+
+      if (!IsImmutableTBAA)
+        continue; // no work to do, MD_tbaa is already marked mutable
+
+      MDNode *Base = cast<MDNode>(MD->getOperand(0));
+      MDNode *Access = cast<MDNode>(MD->getOperand(1));
+      uint64_t Offset =
+          mdconst::extract<ConstantInt>(MD->getOperand(2))->getZExtValue();
+
+      MDNode *MutableTBAA =
+          Builder.createTBAAStructTagNode(Base, Access, Offset);
+      I.setMetadata(LLVMContext::MD_tbaa, MutableTBAA);
+    }
+
+    if (CallSite CS = CallSite(&I)) {
+      for (int i = 0, e = CS.arg_size(); i != e; i++)
+        if (isa<PointerType>(CS.getArgument(i)->getType()))
+          RemoveDerefAttrAtIndex(Ctx, CS, i + 1);
+      if (isa<PointerType>(CS.getType()))
+        RemoveDerefAttrAtIndex(Ctx, CS, AttributeSet::ReturnIndex);
+    }
+  }
+}
+
 /// Returns true if this function should be rewritten by this pass.  The main
 /// point of this function is as an extension point for custom logic.
 static bool shouldRewriteStatepointsIn(Function &F) {
@@ -2211,6 +2365,19 @@ static bool shouldRewriteStatepointsIn(Function &F) {
     return false;
 }
 
+void RewriteStatepointsForGC::stripDereferenceabilityInfo(Module &M) {
+#ifndef NDEBUG
+  assert(std::any_of(M.begin(), M.end(), shouldRewriteStatepointsIn) &&
+         "precondition!");
+#endif
+
+  for (Function &F : M)
+    stripDereferenceabilityInfoFromPrototype(F);
+
+  for (Function &F : M)
+    stripDereferenceabilityInfoFromBody(F);
+}
+
 bool RewriteStatepointsForGC::runOnFunction(Function &F) {
   // Nothing to do for declarations.
   if (F.isDeclaration() || F.empty())
@@ -2221,7 +2388,7 @@ bool RewriteStatepointsForGC::runOnFunction(Function &F) {
   if (!shouldRewriteStatepointsIn(F))
     return false;
 
-  DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+  DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>(F).getDomTree();
 
   // Gather all the statepoints which need rewritten.  Be careful to only
   // consider those in reachable code since we need to ask dominance queries

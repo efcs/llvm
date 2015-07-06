@@ -426,6 +426,9 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::ConstantFP, MVT::f32, Custom);
   setOperationAction(ISD::ConstantFP, MVT::f64, Custom);
 
+  setOperationAction(ISD::READ_REGISTER, MVT::i64, Custom);
+  setOperationAction(ISD::WRITE_REGISTER, MVT::i64, Custom);
+
   if (Subtarget->hasNEON()) {
     addDRTypeForNEON(MVT::v2f32);
     addDRTypeForNEON(MVT::v8i8);
@@ -1480,9 +1483,10 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   bool isStructRet    = (Outs.empty()) ? false : Outs[0].Flags.isSRet();
   bool isThisReturn   = false;
   bool isSibCall      = false;
+  auto Attr = MF.getFunction()->getFnAttribute("disable-tail-calls");
 
   // Disable tail calls if they're not supported.
-  if (!Subtarget->supportsTailCall() || MF.getTarget().Options.DisableTailCalls)
+  if (!Subtarget->supportsTailCall() || Attr.getValueAsString() == "true")
     isTailCall = false;
 
   if (isTailCall) {
@@ -1730,12 +1734,12 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   } else if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
     const GlobalValue *GV = G->getGlobal();
     isDirect = true;
-    bool isExt = GV->isDeclaration() || GV->isWeakForLinker();
-    bool isStub = (isExt && Subtarget->isTargetMachO()) &&
+    bool isDef = GV->isStrongDefinitionForLinker();
+    bool isStub = (!isDef && Subtarget->isTargetMachO()) &&
                    getTargetMachine().getRelocationModel() != Reloc::Static;
     isARMFunc = !Subtarget->isThumb() || (isStub && !Subtarget->isMClass());
     // ARM call to a local ARM function is predicable.
-    isLocalARMFunc = !Subtarget->isThumb() && (!isExt || !ARMInterworking);
+    isLocalARMFunc = !Subtarget->isThumb() && (isDef || !ARMInterworking);
     // tBX takes a register source operand.
     if (isStub && Subtarget->isThumb1Only() && !Subtarget->hasV5TOps()) {
       assert(Subtarget->isTargetMachO() && "WrapperPIC use on non-MachO?");
@@ -2039,7 +2043,7 @@ ARMTargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
   // cannot rely on the linker replacing the tail call with a return.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
     const GlobalValue *GV = G->getGlobal();
-    const Triple TT(getTargetMachine().getTargetTriple());
+    const Triple &TT = getTargetMachine().getTargetTriple();
     if (GV->hasExternalWeakLinkage() &&
         (!TT.isOSWindows() || TT.isOSBinFormatELF() || TT.isOSBinFormatMachO()))
       return false;
@@ -2372,10 +2376,30 @@ bool ARMTargetLowering::mayBeEmittedAsTailCall(CallInst *CI) const {
   if (!Subtarget->supportsTailCall())
     return false;
 
-  if (!CI->isTailCall() || getTargetMachine().Options.DisableTailCalls)
+  auto Attr =
+      CI->getParent()->getParent()->getFnAttribute("disable-tail-calls");
+  if (!CI->isTailCall() || Attr.getValueAsString() == "true")
     return false;
 
   return !Subtarget->isThumb1Only();
+}
+
+// Trying to write a 64 bit value so need to split into two 32 bit values first,
+// and pass the lower and high parts through.
+static SDValue LowerWRITE_REGISTER(SDValue Op, SelectionDAG &DAG) {
+  SDLoc DL(Op);
+  SDValue WriteValue = Op->getOperand(2);
+
+  // This function is only supposed to be called for i64 type argument.
+  assert(WriteValue.getValueType() == MVT::i64
+          && "LowerWRITE_REGISTER called for non-i64 type argument.");
+
+  SDValue Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, WriteValue,
+                           DAG.getConstant(0, DL, MVT::i32));
+  SDValue Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, WriteValue,
+                           DAG.getConstant(1, DL, MVT::i32));
+  SDValue Ops[] = { Op->getOperand(0), Op->getOperand(1), Lo, Hi };
+  return DAG.getNode(ISD::WRITE_REGISTER, DL, MVT::Other, Ops);
 }
 
 // ConstantPool, JumpTable, GlobalAddress, and ExternalSymbol are lowered as
@@ -4085,7 +4109,28 @@ unsigned ARMTargetLowering::getRegisterByName(const char* RegName,
                        .Default(0);
   if (Reg)
     return Reg;
-  report_fatal_error("Invalid register name global variable");
+  report_fatal_error(Twine("Invalid register name \""
+                              + StringRef(RegName)  + "\"."));
+}
+
+// Result is 64 bit value so split into two 32 bit values and return as a
+// pair of values.
+static void ExpandREAD_REGISTER(SDNode *N, SmallVectorImpl<SDValue> &Results,
+                                SelectionDAG &DAG) {
+  SDLoc DL(N);
+
+  // This function is only supposed to be called for i64 type destination.
+  assert(N->getValueType(0) == MVT::i64
+          && "ExpandREAD_REGISTER called for non-i64 type result.");
+
+  SDValue Read = DAG.getNode(ISD::READ_REGISTER, DL,
+                             DAG.getVTList(MVT::i32, MVT::i32, MVT::Other),
+                             N->getOperand(0),
+                             N->getOperand(1));
+
+  Results.push_back(DAG.getNode(ISD::BUILD_PAIR, DL, MVT::i64, Read.getValue(0),
+                    Read.getValue(1)));
+  Results.push_back(Read.getOperand(0));
 }
 
 /// ExpandBITCAST - If the target supports VFP, this function is called to
@@ -5018,6 +5063,30 @@ static bool isVZIP_v_undef_Mask(ArrayRef<int> M, EVT VT, unsigned &WhichResult){
   return true;
 }
 
+/// Check if \p ShuffleMask is a NEON two-result shuffle (VZIP, VUZP, VTRN),
+/// and return the corresponding ARMISD opcode if it is, or 0 if it isn't.
+static unsigned isNEONTwoResultShuffleMask(ArrayRef<int> ShuffleMask, EVT VT,
+                                           unsigned &WhichResult,
+                                           bool &isV_UNDEF) {
+  isV_UNDEF = false;
+  if (isVTRNMask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VTRN;
+  if (isVUZPMask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VUZP;
+  if (isVZIPMask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VZIP;
+
+  isV_UNDEF = true;
+  if (isVTRN_v_undef_Mask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VTRN;
+  if (isVUZP_v_undef_Mask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VUZP;
+  if (isVZIP_v_undef_Mask(ShuffleMask, VT, WhichResult))
+    return ARMISD::VZIP;
+
+  return 0;
+}
+
 /// \return true if this is a reverse operation on an vector.
 static bool isReverseMask(ArrayRef<int> M, EVT VT) {
   unsigned NumElts = VT.getVectorNumElements();
@@ -5434,7 +5503,7 @@ ARMTargetLowering::isShuffleMaskLegal(const SmallVectorImpl<int> &M,
       return true;
   }
 
-  bool ReverseVEXT;
+  bool ReverseVEXT, isV_UNDEF;
   unsigned Imm, WhichResult;
 
   unsigned EltSize = VT.getVectorElementType().getSizeInBits();
@@ -5445,12 +5514,7 @@ ARMTargetLowering::isShuffleMaskLegal(const SmallVectorImpl<int> &M,
           isVREVMask(M, VT, 16) ||
           isVEXTMask(M, VT, ReverseVEXT, Imm) ||
           isVTBLMask(M, VT) ||
-          isVTRNMask(M, VT, WhichResult) ||
-          isVUZPMask(M, VT, WhichResult) ||
-          isVZIPMask(M, VT, WhichResult) ||
-          isVTRN_v_undef_Mask(M, VT, WhichResult) ||
-          isVUZP_v_undef_Mask(M, VT, WhichResult) ||
-          isVZIP_v_undef_Mask(M, VT, WhichResult) ||
+          isNEONTwoResultShuffleMask(M, VT, WhichResult, isV_UNDEF) ||
           ((VT == MVT::v8i16 || VT == MVT::v16i8) && isReverseMask(M, VT)));
 }
 
@@ -5642,25 +5706,53 @@ static SDValue LowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) {
     // these operations, DAG memoization will ensure that a single node is
     // used for both shuffles.
     unsigned WhichResult;
-    if (isVTRNMask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VTRN, dl, DAG.getVTList(VT, VT),
-                         V1, V2).getValue(WhichResult);
-    if (isVUZPMask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VUZP, dl, DAG.getVTList(VT, VT),
-                         V1, V2).getValue(WhichResult);
-    if (isVZIPMask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VZIP, dl, DAG.getVTList(VT, VT),
-                         V1, V2).getValue(WhichResult);
+    bool isV_UNDEF;
+    if (unsigned ShuffleOpc = isNEONTwoResultShuffleMask(
+            ShuffleMask, VT, WhichResult, isV_UNDEF)) {
+      if (isV_UNDEF)
+        V2 = V1;
+      return DAG.getNode(ShuffleOpc, dl, DAG.getVTList(VT, VT), V1, V2)
+          .getValue(WhichResult);
+    }
 
-    if (isVTRN_v_undef_Mask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VTRN, dl, DAG.getVTList(VT, VT),
-                         V1, V1).getValue(WhichResult);
-    if (isVUZP_v_undef_Mask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VUZP, dl, DAG.getVTList(VT, VT),
-                         V1, V1).getValue(WhichResult);
-    if (isVZIP_v_undef_Mask(ShuffleMask, VT, WhichResult))
-      return DAG.getNode(ARMISD::VZIP, dl, DAG.getVTList(VT, VT),
-                         V1, V1).getValue(WhichResult);
+    // Also check for these shuffles through CONCAT_VECTORS: we canonicalize
+    // shuffles that produce a result larger than their operands with:
+    //   shuffle(concat(v1, undef), concat(v2, undef))
+    // ->
+    //   shuffle(concat(v1, v2), undef)
+    // because we can access quad vectors (see PerformVECTOR_SHUFFLECombine).
+    //
+    // This is useful in the general case, but there are special cases where
+    // native shuffles produce larger results: the two-result ops.
+    //
+    // Look through the concat when lowering them:
+    //   shuffle(concat(v1, v2), undef)
+    // ->
+    //   concat(VZIP(v1, v2):0, :1)
+    //
+    if (V1->getOpcode() == ISD::CONCAT_VECTORS &&
+        V2->getOpcode() == ISD::UNDEF) {
+      SDValue SubV1 = V1->getOperand(0);
+      SDValue SubV2 = V1->getOperand(1);
+      EVT SubVT = SubV1.getValueType();
+
+      // We expect these to have been canonicalized to -1.
+      assert(std::all_of(ShuffleMask.begin(), ShuffleMask.end(), [&](int i) {
+        return i < (int)VT.getVectorNumElements();
+      }) && "Unexpected shuffle index into UNDEF operand!");
+
+      if (unsigned ShuffleOpc = isNEONTwoResultShuffleMask(
+              ShuffleMask, SubVT, WhichResult, isV_UNDEF)) {
+        if (isV_UNDEF)
+          SubV2 = SubV1;
+        assert((WhichResult == 0) &&
+               "In-place shuffle of concat can only have one result!");
+        SDValue Res = DAG.getNode(ShuffleOpc, dl, DAG.getVTList(SubVT, SubVT),
+                                  SubV1, SubV2);
+        return DAG.getNode(ISD::CONCAT_VECTORS, dl, VT, Res.getValue(0),
+                           Res.getValue(1));
+      }
+    }
   }
 
   // If the shuffle is not directly supported and it has 4 elements, use
@@ -6355,6 +6447,7 @@ static void ReplaceREADCYCLECOUNTER(SDNode *N,
 SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
   default: llvm_unreachable("Don't know how to custom lower this!");
+  case ISD::WRITE_REGISTER: return LowerWRITE_REGISTER(Op, DAG);
   case ISD::ConstantPool:  return LowerConstantPool(Op, DAG);
   case ISD::BlockAddress:  return LowerBlockAddress(Op, DAG);
   case ISD::GlobalAddress:
@@ -6439,6 +6532,9 @@ void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
   switch (N->getOpcode()) {
   default:
     llvm_unreachable("Don't know how to custom expand this!");
+  case ISD::READ_REGISTER:
+    ExpandREAD_REGISTER(N, Results, DAG);
+    break;
   case ISD::BITCAST:
     Res = ExpandBITCAST(N, DAG);
     break;
@@ -10222,7 +10318,8 @@ bool ARMTargetLowering::isLegalT2ScaledAddressingMode(const AddrMode &AM,
 /// isLegalAddressingMode - Return true if the addressing mode represented
 /// by AM is legal for this target, for a load/store of the specified type.
 bool ARMTargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                              Type *Ty) const {
+                                              Type *Ty,
+                                              unsigned AS) const {
   EVT VT = getValueType(Ty, true);
   if (!isLegalAddressImmediate(AM.BaseOffs, VT, Subtarget))
     return false;
@@ -10567,7 +10664,7 @@ bool ARMTargetLowering::ExpandInlineAsm(CallInst *CI) const {
 /// getConstraintType - Given a constraint letter, return the type of
 /// constraint it is for this target.
 ARMTargetLowering::ConstraintType
-ARMTargetLowering::getConstraintType(const std::string &Constraint) const {
+ARMTargetLowering::getConstraintType(StringRef Constraint) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:  break;
@@ -10626,10 +10723,8 @@ ARMTargetLowering::getSingleConstraintMatchWeight(
 }
 
 typedef std::pair<unsigned, const TargetRegisterClass*> RCPair;
-RCPair
-ARMTargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
-                                                const std::string &Constraint,
-                                                MVT VT) const {
+RCPair ARMTargetLowering::getRegForInlineAsmConstraint(
+    const TargetRegisterInfo *TRI, StringRef Constraint, MVT VT) const {
   if (Constraint.size() == 1) {
     // GCC ARM Constraint Letters
     switch (Constraint[0]) {
@@ -11305,6 +11400,167 @@ Value *ARMTargetLowering::emitStoreConditional(IRBuilder<> &Builder, Value *Val,
       Strex, {Builder.CreateZExtOrBitCast(
                   Val, Strex->getFunctionType()->getParamType(0)),
               Addr});
+}
+
+/// \brief Lower an interleaved load into a vldN intrinsic.
+///
+/// E.g. Lower an interleaved load (Factor = 2):
+///        %wide.vec = load <8 x i32>, <8 x i32>* %ptr, align 4
+///        %v0 = shuffle %wide.vec, undef, <0, 2, 4, 6>  ; Extract even elements
+///        %v1 = shuffle %wide.vec, undef, <1, 3, 5, 7>  ; Extract odd elements
+///
+///      Into:
+///        %vld2 = { <4 x i32>, <4 x i32> } call llvm.arm.neon.vld2(%ptr, 4)
+///        %vec0 = extractelement { <4 x i32>, <4 x i32> } %vld2, i32 0
+///        %vec1 = extractelement { <4 x i32>, <4 x i32> } %vld2, i32 1
+bool ARMTargetLowering::lowerInterleavedLoad(
+    LoadInst *LI, ArrayRef<ShuffleVectorInst *> Shuffles,
+    ArrayRef<unsigned> Indices, unsigned Factor) const {
+  assert(Factor >= 2 && Factor <= getMaxSupportedInterleaveFactor() &&
+         "Invalid interleave factor");
+  assert(!Shuffles.empty() && "Empty shufflevector input");
+  assert(Shuffles.size() == Indices.size() &&
+         "Unmatched number of shufflevectors and indices");
+
+  VectorType *VecTy = Shuffles[0]->getType();
+  Type *EltTy = VecTy->getVectorElementType();
+
+  const DataLayout *DL = getDataLayout();
+  unsigned VecSize = DL->getTypeAllocSizeInBits(VecTy);
+  bool EltIs64Bits = DL->getTypeAllocSizeInBits(EltTy) == 64;
+
+  // Skip illegal vector types and vector types of i64/f64 element (vldN doesn't
+  // support i64/f64 element).
+  if ((VecSize != 64 && VecSize != 128) || EltIs64Bits)
+    return false;
+
+  // A pointer vector can not be the return type of the ldN intrinsics. Need to
+  // load integer vectors first and then convert to pointer vectors.
+  if (EltTy->isPointerTy())
+    VecTy = VectorType::get(DL->getIntPtrType(EltTy),
+                            VecTy->getVectorNumElements());
+
+  static const Intrinsic::ID LoadInts[3] = {Intrinsic::arm_neon_vld2,
+                                            Intrinsic::arm_neon_vld3,
+                                            Intrinsic::arm_neon_vld4};
+
+  Function *VldnFunc =
+      Intrinsic::getDeclaration(LI->getModule(), LoadInts[Factor - 2], VecTy);
+
+  IRBuilder<> Builder(LI);
+  SmallVector<Value *, 2> Ops;
+
+  Type *Int8Ptr = Builder.getInt8PtrTy(LI->getPointerAddressSpace());
+  Ops.push_back(Builder.CreateBitCast(LI->getPointerOperand(), Int8Ptr));
+  Ops.push_back(Builder.getInt32(LI->getAlignment()));
+
+  CallInst *VldN = Builder.CreateCall(VldnFunc, Ops, "vldN");
+
+  // Replace uses of each shufflevector with the corresponding vector loaded
+  // by ldN.
+  for (unsigned i = 0; i < Shuffles.size(); i++) {
+    ShuffleVectorInst *SV = Shuffles[i];
+    unsigned Index = Indices[i];
+
+    Value *SubVec = Builder.CreateExtractValue(VldN, Index);
+
+    // Convert the integer vector to pointer vector if the element is pointer.
+    if (EltTy->isPointerTy())
+      SubVec = Builder.CreateIntToPtr(SubVec, SV->getType());
+
+    SV->replaceAllUsesWith(SubVec);
+  }
+
+  return true;
+}
+
+/// \brief Get a mask consisting of sequential integers starting from \p Start.
+///
+/// I.e. <Start, Start + 1, ..., Start + NumElts - 1>
+static Constant *getSequentialMask(IRBuilder<> &Builder, unsigned Start,
+                                   unsigned NumElts) {
+  SmallVector<Constant *, 16> Mask;
+  for (unsigned i = 0; i < NumElts; i++)
+    Mask.push_back(Builder.getInt32(Start + i));
+
+  return ConstantVector::get(Mask);
+}
+
+/// \brief Lower an interleaved store into a vstN intrinsic.
+///
+/// E.g. Lower an interleaved store (Factor = 3):
+///        %i.vec = shuffle <8 x i32> %v0, <8 x i32> %v1,
+///                                  <0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11>
+///        store <12 x i32> %i.vec, <12 x i32>* %ptr, align 4
+///
+///      Into:
+///        %sub.v0 = shuffle <8 x i32> %v0, <8 x i32> v1, <0, 1, 2, 3>
+///        %sub.v1 = shuffle <8 x i32> %v0, <8 x i32> v1, <4, 5, 6, 7>
+///        %sub.v2 = shuffle <8 x i32> %v0, <8 x i32> v1, <8, 9, 10, 11>
+///        call void llvm.arm.neon.vst3(%ptr, %sub.v0, %sub.v1, %sub.v2, 4)
+///
+/// Note that the new shufflevectors will be removed and we'll only generate one
+/// vst3 instruction in CodeGen.
+bool ARMTargetLowering::lowerInterleavedStore(StoreInst *SI,
+                                              ShuffleVectorInst *SVI,
+                                              unsigned Factor) const {
+  assert(Factor >= 2 && Factor <= getMaxSupportedInterleaveFactor() &&
+         "Invalid interleave factor");
+
+  VectorType *VecTy = SVI->getType();
+  assert(VecTy->getVectorNumElements() % Factor == 0 &&
+         "Invalid interleaved store");
+
+  unsigned NumSubElts = VecTy->getVectorNumElements() / Factor;
+  Type *EltTy = VecTy->getVectorElementType();
+  VectorType *SubVecTy = VectorType::get(EltTy, NumSubElts);
+
+  const DataLayout *DL = getDataLayout();
+  unsigned SubVecSize = DL->getTypeAllocSizeInBits(SubVecTy);
+  bool EltIs64Bits = DL->getTypeAllocSizeInBits(EltTy) == 64;
+
+  // Skip illegal sub vector types and vector types of i64/f64 element (vstN
+  // doesn't support i64/f64 element).
+  if ((SubVecSize != 64 && SubVecSize != 128) || EltIs64Bits)
+    return false;
+
+  Value *Op0 = SVI->getOperand(0);
+  Value *Op1 = SVI->getOperand(1);
+  IRBuilder<> Builder(SI);
+
+  // StN intrinsics don't support pointer vectors as arguments. Convert pointer
+  // vectors to integer vectors.
+  if (EltTy->isPointerTy()) {
+    Type *IntTy = DL->getIntPtrType(EltTy);
+
+    // Convert to the corresponding integer vector.
+    Type *IntVecTy =
+        VectorType::get(IntTy, Op0->getType()->getVectorNumElements());
+    Op0 = Builder.CreatePtrToInt(Op0, IntVecTy);
+    Op1 = Builder.CreatePtrToInt(Op1, IntVecTy);
+
+    SubVecTy = VectorType::get(IntTy, NumSubElts);
+  }
+
+  static Intrinsic::ID StoreInts[3] = {Intrinsic::arm_neon_vst2,
+                                       Intrinsic::arm_neon_vst3,
+                                       Intrinsic::arm_neon_vst4};
+  Function *VstNFunc = Intrinsic::getDeclaration(
+      SI->getModule(), StoreInts[Factor - 2], SubVecTy);
+
+  SmallVector<Value *, 6> Ops;
+
+  Type *Int8Ptr = Builder.getInt8PtrTy(SI->getPointerAddressSpace());
+  Ops.push_back(Builder.CreateBitCast(SI->getPointerOperand(), Int8Ptr));
+
+  // Split the shufflevector operands into sub vectors for the new vstN call.
+  for (unsigned i = 0; i < Factor; i++)
+    Ops.push_back(Builder.CreateShuffleVector(
+        Op0, Op1, getSequentialMask(Builder, NumSubElts * i, NumSubElts)));
+
+  Ops.push_back(Builder.getInt32(SI->getAlignment()));
+  Builder.CreateCall(VstNFunc, Ops);
+  return true;
 }
 
 enum HABaseType {

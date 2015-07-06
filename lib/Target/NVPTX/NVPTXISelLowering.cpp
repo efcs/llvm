@@ -206,7 +206,14 @@ NVPTXTargetLowering::NVPTXTargetLowering(const NVPTXTargetMachine &TM,
   setLoadExtAction(ISD::EXTLOAD, MVT::f32, MVT::f16, Expand);
   setLoadExtAction(ISD::EXTLOAD, MVT::f64, MVT::f16, Expand);
   setLoadExtAction(ISD::EXTLOAD, MVT::f64, MVT::f32, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v2f32, MVT::v2f16, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v2f64, MVT::v2f16, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v2f64, MVT::v2f32, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v4f32, MVT::v4f16, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v4f64, MVT::v4f16, Expand);
+  setLoadExtAction(ISD::EXTLOAD, MVT::v4f64, MVT::v4f32, Expand);
   // Turn FP truncstore into trunc + store.
+  // FIXME: vector types should also be expanded
   setTruncStoreAction(MVT::f32, MVT::f16, Expand);
   setTruncStoreAction(MVT::f64, MVT::f16, Expand);
   setTruncStoreAction(MVT::f64, MVT::f32, Expand);
@@ -3725,7 +3732,8 @@ bool NVPTXTargetLowering::getTgtMemIntrinsic(
 /// (LoopStrengthReduce.cpp) and memory optimization for address mode
 /// (CodeGenPrepare.cpp)
 bool NVPTXTargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                                Type *Ty) const {
+                                                Type *Ty,
+                                                unsigned AS) const {
 
   // AddrMode - This represents an addressing mode of:
   //    BaseGV + BaseOffs + BaseReg + Scale*ScaleReg
@@ -3764,7 +3772,7 @@ bool NVPTXTargetLowering::isLegalAddressingMode(const AddrMode &AM,
 /// getConstraintType - Given a constraint letter, return the type of
 /// constraint it is for this target.
 NVPTXTargetLowering::ConstraintType
-NVPTXTargetLowering::getConstraintType(const std::string &Constraint) const {
+NVPTXTargetLowering::getConstraintType(StringRef Constraint) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:
@@ -3786,7 +3794,7 @@ NVPTXTargetLowering::getConstraintType(const std::string &Constraint) const {
 
 std::pair<unsigned, const TargetRegisterClass *>
 NVPTXTargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
-                                                  const std::string &Constraint,
+                                                  StringRef Constraint,
                                                   MVT VT) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {

@@ -241,6 +241,12 @@ bool ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
     } else if (auto S = dyn_cast<ELFYAML::MipsABIFlags>(Sec.get())) {
       if (!writeSectionContent(SHeader, *S, CBA))
         return false;
+    } else if (auto S = dyn_cast<ELFYAML::NoBitsSection>(Sec.get())) {
+      SHeader.sh_entsize = 0;
+      SHeader.sh_size = S->Size;
+      // SHT_NOBITS section does not have content
+      // so just to setup the section offset.
+      CBA.getOSAndAlignedOffset(SHeader.sh_offset);
     } else
       llvm_unreachable("Unknown section type");
 
@@ -552,10 +558,10 @@ int yaml2elf(yaml::Input &YIn, raw_ostream &Out) {
     return 1;
   }
   using object::ELFType;
-  typedef ELFType<support::little, 8, true> LE64;
-  typedef ELFType<support::big, 8, true> BE64;
-  typedef ELFType<support::little, 4, false> LE32;
-  typedef ELFType<support::big, 4, false> BE32;
+  typedef ELFType<support::little, true> LE64;
+  typedef ELFType<support::big, true> BE64;
+  typedef ELFType<support::little, false> LE32;
+  typedef ELFType<support::big, false> BE32;
   if (is64Bit(Doc)) {
     if (isLittleEndian(Doc))
       return ELFState<LE64>::writeELF(Out, Doc);

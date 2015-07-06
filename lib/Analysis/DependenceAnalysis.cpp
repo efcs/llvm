@@ -625,10 +625,9 @@ void Dependence::dump(raw_ostream &OS) const {
   OS << "!\n";
 }
 
-static AliasAnalysis::AliasResult underlyingObjectsAlias(AliasAnalysis *AA,
-                                                         const DataLayout &DL,
-                                                         const Value *A,
-                                                         const Value *B) {
+static AliasResult underlyingObjectsAlias(AliasAnalysis *AA,
+                                          const DataLayout &DL, const Value *A,
+                                          const Value *B) {
   const Value *AObj = GetUnderlyingObject(A, DL);
   const Value *BObj = GetUnderlyingObject(B, DL);
   return AA->alias(AObj, AA->getTypeStoreSize(AObj->getType()),
@@ -779,23 +778,56 @@ void DependenceAnalysis::collectCommonLoops(const SCEV *Expression,
   }
 }
 
-void DependenceAnalysis::unifySubscriptType(Subscript *Pair) {
-  const SCEV *Src = Pair->Src;
-  const SCEV *Dst = Pair->Dst;
-  IntegerType *SrcTy = dyn_cast<IntegerType>(Src->getType());
-  IntegerType *DstTy = dyn_cast<IntegerType>(Dst->getType());
-  if (SrcTy == nullptr || DstTy == nullptr) {
-    assert(SrcTy == DstTy && "This function only unify integer types and "
-                             "expect Src and Dst share the same type "
-                             "otherwise.");
-    return;
+void DependenceAnalysis::unifySubscriptType(ArrayRef<Subscript *> Pairs) {
+
+  unsigned widestWidthSeen = 0;
+  Type *widestType;
+
+  // Go through each pair and find the widest bit to which we need
+  // to extend all of them.
+  for (unsigned i = 0; i < Pairs.size(); i++) {
+    const SCEV *Src = Pairs[i]->Src;
+    const SCEV *Dst = Pairs[i]->Dst;
+    IntegerType *SrcTy = dyn_cast<IntegerType>(Src->getType());
+    IntegerType *DstTy = dyn_cast<IntegerType>(Dst->getType());
+    if (SrcTy == nullptr || DstTy == nullptr) {
+      assert(SrcTy == DstTy && "This function only unify integer types and "
+             "expect Src and Dst share the same type "
+             "otherwise.");
+      continue;
+    }
+    if (SrcTy->getBitWidth() > widestWidthSeen) {
+      widestWidthSeen = SrcTy->getBitWidth();
+      widestType = SrcTy;
+    }
+    if (DstTy->getBitWidth() > widestWidthSeen) {
+      widestWidthSeen = DstTy->getBitWidth();
+      widestType = DstTy;
+    }
   }
-  if (SrcTy->getBitWidth() > DstTy->getBitWidth()) {
-    // Sign-extend Dst to typeof(Src) if typeof(Src) is wider than typeof(Dst).
-    Pair->Dst = SE->getSignExtendExpr(Dst, SrcTy);
-  } else if (SrcTy->getBitWidth() < DstTy->getBitWidth()) {
-    // Sign-extend Src to typeof(Dst) if typeof(Dst) is wider than typeof(Src).
-    Pair->Src = SE->getSignExtendExpr(Src, DstTy);
+
+
+  assert(widestWidthSeen > 0);
+
+  // Now extend each pair to the widest seen.
+  for (unsigned i = 0; i < Pairs.size(); i++) {
+    const SCEV *Src = Pairs[i]->Src;
+    const SCEV *Dst = Pairs[i]->Dst;
+    IntegerType *SrcTy = dyn_cast<IntegerType>(Src->getType());
+    IntegerType *DstTy = dyn_cast<IntegerType>(Dst->getType());
+    if (SrcTy == nullptr || DstTy == nullptr) {
+      assert(SrcTy == DstTy && "This function only unify integer types and "
+             "expect Src and Dst share the same type "
+             "otherwise.");
+      continue;
+    }
+    if (SrcTy->getBitWidth() < widestWidthSeen)
+      // Sign-extend Src to widestType
+      Pairs[i]->Src = SE->getSignExtendExpr(Src, widestType);
+    if (DstTy->getBitWidth() < widestWidthSeen) {
+      // Sign-extend Dst to widestType
+      Pairs[i]->Dst = SE->getSignExtendExpr(Dst, widestType);
+    }
   }
 }
 
@@ -2937,7 +2969,7 @@ const SCEV *DependenceAnalysis::getUpperBound(BoundInfo *Bound) const {
 // return the coefficient (the step)
 // corresponding to the specified loop.
 // If there isn't one, return 0.
-// For example, given a*i + b*j + c*k, zeroing the coefficient
+// For example, given a*i + b*j + c*k, finding the coefficient
 // corresponding to the j loop would yield b.
 const SCEV *DependenceAnalysis::findCoefficient(const SCEV *Expr,
                                                 const Loop *TargetLoop)  const {
@@ -3234,8 +3266,8 @@ bool DependenceAnalysis::tryDelinearize(const SCEV *SrcSCEV,
 
   // First step: collect parametric terms in both array references.
   SmallVector<const SCEV *, 4> Terms;
-  SrcAR->collectParametricTerms(*SE, Terms);
-  DstAR->collectParametricTerms(*SE, Terms);
+  SE->collectParametricTerms(SrcAR, Terms);
+  SE->collectParametricTerms(DstAR, Terms);
 
   // Second step: find subscript sizes.
   SmallVector<const SCEV *, 4> Sizes;
@@ -3243,8 +3275,8 @@ bool DependenceAnalysis::tryDelinearize(const SCEV *SrcSCEV,
 
   // Third step: compute the access functions for each subscript.
   SmallVector<const SCEV *, 4> SrcSubscripts, DstSubscripts;
-  SrcAR->computeAccessFunctions(*SE, SrcSubscripts, Sizes);
-  DstAR->computeAccessFunctions(*SE, DstSubscripts, Sizes);
+  SE->computeAccessFunctions(SrcAR, SrcSubscripts, Sizes);
+  SE->computeAccessFunctions(DstAR, DstSubscripts, Sizes);
 
   // Fail when there is only a subscript: that's a linearized access function.
   if (SrcSubscripts.size() < 2 || DstSubscripts.size() < 2 ||
@@ -3332,16 +3364,16 @@ DependenceAnalysis::depends(Instruction *Src, Instruction *Dst,
 
   switch (underlyingObjectsAlias(AA, F->getParent()->getDataLayout(), DstPtr,
                                  SrcPtr)) {
-  case AliasAnalysis::MayAlias:
-  case AliasAnalysis::PartialAlias:
+  case MayAlias:
+  case PartialAlias:
     // cannot analyse objects if we don't understand their aliasing.
     DEBUG(dbgs() << "can't analyze may or partial alias\n");
     return make_unique<Dependence>(Src, Dst);
-  case AliasAnalysis::NoAlias:
+  case NoAlias:
     // If the objects noalias, they are distinct, accesses are independent.
     DEBUG(dbgs() << "no alias\n");
     return nullptr;
-  case AliasAnalysis::MustAlias:
+  case MustAlias:
     break; // The underlying objects alias; test accesses for dependence.
   }
 
@@ -3574,13 +3606,16 @@ DependenceAnalysis::depends(Instruction *Src, Instruction *Dst,
       SmallBitVector Sivs(Pairs);
       SmallBitVector Mivs(Pairs);
       SmallBitVector ConstrainedLevels(MaxLevels + 1);
+      SmallVector<Subscript *, 4> PairsInGroup;
       for (int SJ = Group.find_first(); SJ >= 0; SJ = Group.find_next(SJ)) {
         DEBUG(dbgs() << SJ << " ");
         if (Pair[SJ].Classification == Subscript::SIV)
           Sivs.set(SJ);
         else
           Mivs.set(SJ);
+        PairsInGroup.push_back(&Pair[SJ]);
       }
+      unifySubscriptType(PairsInGroup);
       DEBUG(dbgs() << "}\n");
       while (Sivs.any()) {
         bool Changed = false;
@@ -3778,7 +3813,7 @@ const  SCEV *DependenceAnalysis::getSplitIteration(const Dependence &Dep,
   Value *SrcPtr = getPointerOperand(Src);
   Value *DstPtr = getPointerOperand(Dst);
   assert(underlyingObjectsAlias(AA, F->getParent()->getDataLayout(), DstPtr,
-                                SrcPtr) == AliasAnalysis::MustAlias);
+                                SrcPtr) == MustAlias);
 
   // establish loop nesting levels
   establishNestingLevels(Src, Dst);

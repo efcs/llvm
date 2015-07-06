@@ -73,8 +73,11 @@ protected:
   /// MDNode for the compile unit.
   const DICompileUnit *CUNode;
 
+  // All DIEValues are allocated through this allocator.
+  BumpPtrAllocator DIEValueAllocator;
+
   /// Unit debug information entry.
-  DIE UnitDie;
+  DIE &UnitDie;
 
   /// Offset of the UnitDie from beginning of debug info section.
   unsigned DebugInfoOffset;
@@ -93,10 +96,6 @@ protected:
   /// information entries.
   DenseMap<const MDNode *, DIE *> MDNodeToDieMap;
 
-  /// Tracks the mapping of unit level debug information descriptors to debug
-  /// information entries using a DIEEntry proxy.
-  DenseMap<const MDNode *, DIEEntry *> MDNodeToDIEEntryMap;
-
   /// A list of all the DIEBlocks in use.
   std::vector<DIEBlock *> DIEBlocks;
 
@@ -107,12 +106,6 @@ protected:
   /// DW_AT_containing_type attribute. This attribute points to a DIE that
   /// corresponds to the MDNode mapped with the subprogram DIE.
   DenseMap<DIE *, const DINode *> ContainingTypeMap;
-
-  // All DIEValues are allocated through this allocator.
-  BumpPtrAllocator DIEValueAllocator;
-
-  // A preallocated DIEValue because 1 is used frequently.
-  DIEInteger *DIEIntegerOne;
 
   /// The section this unit will be emitted in.
   MCSection *Section;
@@ -150,7 +143,7 @@ public:
   void setDebugInfoOffset(unsigned DbgInfoOff) { DebugInfoOffset = DbgInfoOff; }
 
   /// \brief Return true if this compile unit has something to write out.
-  bool hasContent() const { return !UnitDie.getChildren().empty(); }
+  bool hasContent() const { return UnitDie.hasChildren(); }
 
   /// \brief Get string containing language specific context for a global name.
   ///
@@ -180,7 +173,7 @@ public:
   DIE *getDIE(const DINode *D) const;
 
   /// \brief Returns a fresh newly allocated DIELoc.
-  DIELoc *getDIELoc() { return new (DIEValueAllocator) DIELoc(); }
+  DIELoc *getDIELoc() { return new (DIEValueAllocator) DIELoc; }
 
   /// \brief Insert DIE into the map.
   ///
@@ -213,8 +206,8 @@ public:
   void addString(DIE &Die, dwarf::Attribute Attribute, StringRef Str);
 
   /// \brief Add a Dwarf label attribute data and value.
-  void addLabel(DIE &Die, dwarf::Attribute Attribute, dwarf::Form Form,
-                const MCSymbol *Label);
+  DIE::value_iterator addLabel(DIE &Die, dwarf::Attribute Attribute,
+                               dwarf::Form Form, const MCSymbol *Label);
 
   void addLabel(DIELoc &Die, dwarf::Form Form, const MCSymbol *Label);
 
@@ -233,7 +226,7 @@ public:
   void addDIEEntry(DIE &Die, dwarf::Attribute Attribute, DIE &Entry);
 
   /// \brief Add a DIE attribute data and value.
-  void addDIEEntry(DIE &Die, dwarf::Attribute Attribute, DIEEntry *Entry);
+  void addDIEEntry(DIE &Die, dwarf::Attribute Attribute, DIEEntry Entry);
 
   void addDIETypeSignature(DIE &Die, const DwarfTypeUnit &Type);
 
@@ -298,6 +291,7 @@ public:
                dwarf::Attribute Attribute = dwarf::DW_AT_type);
 
   DIE *getOrCreateNameSpace(const DINamespace *NS);
+  DIE *getOrCreateModule(const DIModule *M);
   DIE *getOrCreateSubprogramDIE(const DISubprogram *SP, bool Minimal = false);
 
   void applySubprogramAttributes(const DISubprogram *SP, DIE &SPDie,
@@ -369,25 +363,11 @@ private:
   /// If the DWARF version doesn't handle the language, return -1.
   int64_t getDefaultLowerBound() const;
 
-  /// \brief Returns the DIE entry for the specified debug variable.
-  DIEEntry *getDIEEntry(const MDNode *N) const {
-    return MDNodeToDIEEntryMap.lookup(N);
-  }
-
-  /// \brief Insert debug information entry into the map.
-  void insertDIEEntry(const MDNode *N, DIEEntry *E) {
-    MDNodeToDIEEntryMap.insert(std::make_pair(N, E));
-  }
-
   /// \brief Get an anonymous type for index type.
   DIE *getIndexTyDie();
 
   /// \brief Set D as anonymous type for index which can be reused later.
   void setIndexTyDie(DIE *D) { IndexTyDie = D; }
-
-  /// \brief Creates a new DIEEntry to be a proxy for a debug information
-  /// entry.
-  DIEEntry *createDIEEntry(DIE &Entry);
 
   /// If this is a named finished type then include it in the list of types for
   /// the accelerator tables.

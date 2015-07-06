@@ -76,7 +76,9 @@ class SparcAsmParser : public MCTargetAsmParser {
   bool matchSparcAsmModifiers(const MCExpr *&EVal, SMLoc &EndLoc);
   bool parseDirectiveWord(unsigned Size, SMLoc L);
 
-  bool is64Bit() const { return STI.getTargetTriple().startswith("sparcv9"); }
+  bool is64Bit() const {
+    return STI.getTargetTriple().getArchName().startswith("sparcv9");
+  }
 
   void expandSET(MCInst &Inst, SMLoc IDLoc,
                  SmallVectorImpl<MCInst> &Instructions);
@@ -408,7 +410,7 @@ void SparcAsmParser::expandSET(MCInst &Inst, SMLoc IDLoc,
   uint64_t ImmValue = IsImm ? MCValOp.getImm() : 0;
   const MCExpr *ValExpr;
   if (IsImm)
-    ValExpr = MCConstantExpr::Create(ImmValue, getContext());
+    ValExpr = MCConstantExpr::create(ImmValue, getContext());
   else
     ValExpr = MCValOp.getExpr();
 
@@ -417,7 +419,7 @@ void SparcAsmParser::expandSET(MCInst &Inst, SMLoc IDLoc,
   if (!IsImm || (ImmValue & ~0x1fff)) {
     MCInst TmpInst;
     const MCExpr *Expr =
-        SparcMCExpr::Create(SparcMCExpr::VK_Sparc_HI, ValExpr, getContext());
+        SparcMCExpr::create(SparcMCExpr::VK_Sparc_HI, ValExpr, getContext());
     TmpInst.setLoc(IDLoc);
     TmpInst.setOpcode(SP::SETHIi);
     TmpInst.addOperand(MCRegOp);
@@ -429,7 +431,7 @@ void SparcAsmParser::expandSET(MCInst &Inst, SMLoc IDLoc,
   if (!IsImm || ((ImmValue & 0x1fff) != 0 || ImmValue == 0)) {
     MCInst TmpInst;
     const MCExpr *Expr =
-        SparcMCExpr::Create(SparcMCExpr::VK_Sparc_LO, ValExpr, getContext());
+        SparcMCExpr::create(SparcMCExpr::VK_Sparc_LO, ValExpr, getContext());
     TmpInst.setLoc(IDLoc);
     TmpInst.setOpcode(SP::ORri);
     TmpInst.addOperand(MCRegOp);
@@ -774,11 +776,11 @@ SparcAsmParser::parseSparcAsmOperand(std::unique_ptr<SparcOperand> &Op,
       E = SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
       MCSymbol *Sym = getContext().getOrCreateSymbol(Identifier);
 
-      const MCExpr *Res = MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_None,
+      const MCExpr *Res = MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None,
                                                   getContext());
       if (isCall &&
           getContext().getObjectFileInfo()->getRelocM() == Reloc::PIC_)
-        Res = SparcMCExpr::Create(SparcMCExpr::VK_Sparc_WPLT30, Res,
+        Res = SparcMCExpr::create(SparcMCExpr::VK_Sparc_WPLT30, Res,
                                   getContext());
       Op = SparcOperand::CreateImm(Res, S, E);
     }
@@ -945,6 +947,8 @@ bool SparcAsmParser::matchRegisterName(const AsmToken &Tok,
   return false;
 }
 
+// Determine if an expression contains a reference to the symbol
+// "_GLOBAL_OFFSET_TABLE_".
 static bool hasGOTReference(const MCExpr *Expr) {
   switch (Expr->getKind()) {
   case MCExpr::Target:
@@ -996,6 +1000,13 @@ bool SparcAsmParser::matchSparcAsmModifiers(const MCExpr *&EVal,
 
   bool isPIC = getContext().getObjectFileInfo()->getRelocM() == Reloc::PIC_;
 
+  // Ugly: if a sparc assembly expression says "%hi(...)" but the
+  // expression within contains _GLOBAL_OFFSET_TABLE_, it REALLY means
+  // %pc22. Same with %lo -> %pc10. Worse, if it doesn't contain that,
+  // the meaning depends on whether the assembler was invoked with
+  // -KPIC or not: if so, it really means %got22/%got10; if not, it
+  // actually means what it said! Sigh, historical mistakes...
+
   switch(VK) {
   default: break;
   case SparcMCExpr::VK_Sparc_LO:
@@ -1010,7 +1021,7 @@ bool SparcAsmParser::matchSparcAsmModifiers(const MCExpr *&EVal,
     break;
   }
 
-  EVal = SparcMCExpr::Create(VK, subExpr, getContext());
+  EVal = SparcMCExpr::create(VK, subExpr, getContext());
   return true;
 }
 

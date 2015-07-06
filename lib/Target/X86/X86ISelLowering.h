@@ -56,10 +56,6 @@ namespace llvm {
       /// corresponds to X86::ANDNPS or X86::ANDNPD.
       FANDN,
 
-      /// Bitwise logical right shift of floating point values. This
-      /// corresponds to X86::PSRLDQ.
-      FSRL,
-
       /// These operations represent an abstract X86 call
       /// instruction, which includes a bunch of information.  In particular the
       /// operands of these node are:
@@ -184,6 +180,9 @@ namespace llvm {
       /// Shuffle 16 8-bit values within a vector.
       PSHUFB,
 
+      /// Compute Sum of Absolute Differences.
+      PSADBW,
+
       /// Bitwise Logical AND NOT of Packed FP values.
       ANDNP,
 
@@ -200,6 +199,7 @@ namespace llvm {
 
       /// Combined add and sub on an FP vector.
       ADDSUB,
+
       //  FP vector ops with rounding mode.
       FADD_RND,
       FSUB_RND,
@@ -207,14 +207,20 @@ namespace llvm {
       FDIV_RND,
       FMAX_RND,
       FMIN_RND,
-      
+      FSQRT_RND,
+
+      // FP vector get exponent 
+      FGETEXP_RND,
+      // FP Scale
+      SCALEF,
       // Integer add/sub with unsigned saturation.
       ADDUS,
       SUBUS,
       // Integer add/sub with signed saturation.
       ADDS,
       SUBS,
-
+      // Unsigned Integer average 
+      AVG,
       /// Integer horizontal add.
       HADD,
 
@@ -232,6 +238,9 @@ namespace llvm {
 
       /// Signed integer max and min.
       SMAX, SMIN,
+
+      // Integer absolute value
+      ABS,
 
       /// Floating point max and min.
       FMAX, FMIN,
@@ -288,6 +297,9 @@ namespace llvm {
 
       // Vector FP round.
       VFPROUND,
+
+      // Vector signed integer to double.
+      CVTDQ2PD,
 
       // 128-bit vector logical left / right shift
       VSHLDQ, VSRLDQ,
@@ -355,6 +367,8 @@ namespace llvm {
       PSHUFHW,
       PSHUFLW,
       SHUFP,
+      //Shuffle Packed Values at 128-bit granularity
+      SHUF128,
       MOVDDUP,
       MOVSHDUP,
       MOVSLDUP,
@@ -374,6 +388,10 @@ namespace llvm {
       VPERMIV3,
       VPERMI,
       VPERM2X128,
+      //Fix Up Special Packed Float32/64 values
+      VFIXUPIMM,
+      //Range Restriction Calculation For Packed Pairs of Float32/64 values
+      VRANGE,
       // Broadcast scalar to vector
       VBROADCAST,
       // Broadcast subvector to vector
@@ -386,6 +404,8 @@ namespace llvm {
       PMULUDQ,
       // Vector multiply packed signed doubleword integers
       PMULDQ,
+      // Vector Multiply Packed UnsignedIntegers with Round and Scale
+      MULHRS,
 
       // FMA nodes
       FMADD,
@@ -407,6 +427,10 @@ namespace llvm {
       COMPRESS,
       EXPAND,
 
+      //Convert Unsigned/Integer to Scalar Floating-Point Value
+      //with rounding mode
+      SINT_TO_FP_RND,
+      UINT_TO_FP_RND,
       // Save xmm argument registers to the stack, according to %al. An operator
       // is needed so that this can be expanded with control flow.
       VASTART_SAVE_XMM_REGS,
@@ -620,9 +644,8 @@ namespace llvm {
     /// legal as the hook is used before type legalization.
     bool isSafeMemOpType(MVT VT) const override;
 
-    /// Returns true if the target allows
-    /// unaligned memory accesses. of the specified type. Returns whether it
-    /// is "fast" by reference in the second argument.
+    /// Returns true if the target allows unaligned memory accesses of the
+    /// specified type. Returns whether it is "fast" in the last argument.
     bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AS, unsigned Align,
                                        bool *Fast) const override;
 
@@ -686,8 +709,7 @@ namespace llvm {
 
     bool ExpandInlineAsm(CallInst *CI) const override;
 
-    ConstraintType
-      getConstraintType(const std::string &Constraint) const override;
+    ConstraintType getConstraintType(StringRef Constraint) const override;
 
     /// Examine constraint string and operand type and determine a weight value.
     /// The operand object must already have been set up with the operand type.
@@ -705,8 +727,8 @@ namespace llvm {
                                       std::vector<SDValue> &Ops,
                                       SelectionDAG &DAG) const override;
 
-    unsigned getInlineAsmMemConstraint(
-        const std::string &ConstraintCode) const override {
+    unsigned
+    getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
       if (ConstraintCode == "i")
         return InlineAsm::Constraint_i;
       else if (ConstraintCode == "o")
@@ -724,12 +746,12 @@ namespace llvm {
     /// error, this returns a register number of 0.
     std::pair<unsigned, const TargetRegisterClass *>
     getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
-                                 const std::string &Constraint,
-                                 MVT VT) const override;
+                                 StringRef Constraint, MVT VT) const override;
 
     /// Return true if the addressing mode represented
     /// by AM is legal for this target, for a load/store of the specified type.
-    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty) const override;
+    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty,
+                               unsigned AS) const override;
 
     /// Return true if the specified immediate is legal
     /// icmp immediate, that is the target has icmp instructions which can
@@ -748,7 +770,8 @@ namespace llvm {
     /// of the specified type.
     /// If the AM is supported, the return value must be >= 0.
     /// If the AM is not supported, it returns a negative value.
-    int getScalingFactorCost(const AddrMode &AM, Type *Ty) const override;
+    int getScalingFactorCost(const AddrMode &AM, Type *Ty,
+                             unsigned AS) const override;
 
     bool isVectorShiftByScalarCheap(Type *Ty) const override;
 

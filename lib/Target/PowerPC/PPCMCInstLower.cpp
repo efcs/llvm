@@ -40,7 +40,7 @@ static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO, AsmPrinter &AP){
   Mangler *Mang = AP.Mang;
   const DataLayout *DL = TM.getDataLayout();
   MCContext &Ctx = AP.OutContext;
-  bool isDarwin = Triple(TM.getTargetTriple()).isOSDarwin();
+  bool isDarwin = TM.getTargetTriple().isOSDarwin();
 
   SmallString<128> Name;
   StringRef Suffix;
@@ -57,7 +57,7 @@ static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO, AsmPrinter &AP){
 
   if (!MO.isGlobal()) {
     assert(MO.isSymbol() && "Isn't a symbol reference");
-    Mang->getNameWithPrefix(Name, MO.getSymbolName());
+    Mangler::getNameWithPrefix(Name, MO.getSymbolName(), *DL);
   } else {
     const GlobalValue *GV = MO.getGlobal();
     TM.getNameWithPrefix(Name, GV, *Mang);
@@ -142,28 +142,28 @@ static MCOperand GetSymbolRef(const MachineOperand &MO, const MCSymbol *Symbol,
   if (MO.getTargetFlags() == PPCII::MO_PLT_OR_STUB && !isDarwin)
     RefKind = MCSymbolRefExpr::VK_PLT;
 
-  const MCExpr *Expr = MCSymbolRefExpr::Create(Symbol, RefKind, Ctx);
+  const MCExpr *Expr = MCSymbolRefExpr::create(Symbol, RefKind, Ctx);
 
   if (!MO.isJTI() && MO.getOffset())
-    Expr = MCBinaryExpr::CreateAdd(Expr,
-                                   MCConstantExpr::Create(MO.getOffset(), Ctx),
+    Expr = MCBinaryExpr::createAdd(Expr,
+                                   MCConstantExpr::create(MO.getOffset(), Ctx),
                                    Ctx);
 
   // Subtract off the PIC base if required.
   if (MO.getTargetFlags() & PPCII::MO_PIC_FLAG) {
     const MachineFunction *MF = MO.getParent()->getParent()->getParent();
     
-    const MCExpr *PB = MCSymbolRefExpr::Create(MF->getPICBaseSymbol(), Ctx);
-    Expr = MCBinaryExpr::CreateSub(Expr, PB, Ctx);
+    const MCExpr *PB = MCSymbolRefExpr::create(MF->getPICBaseSymbol(), Ctx);
+    Expr = MCBinaryExpr::createSub(Expr, PB, Ctx);
   }
 
   // Add ha16() / lo16() markers if required.
   switch (access) {
     case PPCII::MO_LO:
-      Expr = PPCMCExpr::CreateLo(Expr, isDarwin, Ctx);
+      Expr = PPCMCExpr::createLo(Expr, isDarwin, Ctx);
       break;
     case PPCII::MO_HA:
-      Expr = PPCMCExpr::CreateHa(Expr, isDarwin, Ctx);
+      Expr = PPCMCExpr::createHa(Expr, isDarwin, Ctx);
       break;
   }
 
@@ -193,7 +193,7 @@ void llvm::LowerPPCMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
       MCOp = MCOperand::createImm(MO.getImm());
       break;
     case MachineOperand::MO_MachineBasicBlock:
-      MCOp = MCOperand::createExpr(MCSymbolRefExpr::Create(
+      MCOp = MCOperand::createExpr(MCSymbolRefExpr::create(
                                       MO.getMBB()->getSymbol(), AP.OutContext));
       break;
     case MachineOperand::MO_GlobalAddress:

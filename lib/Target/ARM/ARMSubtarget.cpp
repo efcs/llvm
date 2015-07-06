@@ -106,7 +106,7 @@ ARMFrameLowering *ARMSubtarget::initializeFrameLowering(StringRef CPU,
   return new ARMFrameLowering(STI);
 }
 
-ARMSubtarget::ARMSubtarget(const std::string &TT, const std::string &CPU,
+ARMSubtarget::ARMSubtarget(const Triple &TT, const std::string &CPU,
                            const std::string &FS,
                            const ARMBaseTargetMachine &TM, bool IsLittle)
     : ARMGenSubtargetInfo(TT, CPU, FS), ARMProcFamily(Others),
@@ -187,8 +187,7 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   // Insert the architecture feature derived from the target triple into the
   // feature string. This is important for setting features that are implied
   // based on the architecture version.
-  std::string ArchFS =
-      ARM_MC::ParseARMTriple(TargetTriple.getTriple(), CPUString);
+  std::string ArchFS = ARM_MC::ParseARMTriple(TargetTriple, CPUString);
   if (!FS.empty()) {
     if (!ArchFS.empty())
       ArchFS = (Twine(ArchFS) + "," + FS).str();
@@ -287,7 +286,7 @@ ARMSubtarget::GVIsIndirectSymbol(const GlobalValue *GV,
   if (RelocM == Reloc::Static)
     return false;
 
-  bool isDecl = GV->isDeclarationForLinker();
+  bool isDef = GV->isStrongDefinitionForLinker();
 
   if (!isTargetMachO()) {
     // Extra load is needed for all externally visible.
@@ -295,33 +294,21 @@ ARMSubtarget::GVIsIndirectSymbol(const GlobalValue *GV,
       return false;
     return true;
   } else {
+    // If this is a strong reference to a definition, it is definitely not
+    // through a stub.
+    if (isDef)
+      return false;
+
+    // Unless we have a symbol with hidden visibility, we have to go through a
+    // normal $non_lazy_ptr stub because this symbol might be resolved late.
+    if (!GV->hasHiddenVisibility())  // Non-hidden $non_lazy_ptr reference.
+      return true;
+
     if (RelocM == Reloc::PIC_) {
-      // If this is a strong reference to a definition, it is definitely not
-      // through a stub.
-      if (!isDecl && !GV->isWeakForLinker())
-        return false;
-
-      // Unless we have a symbol with hidden visibility, we have to go through a
-      // normal $non_lazy_ptr stub because this symbol might be resolved late.
-      if (!GV->hasHiddenVisibility())  // Non-hidden $non_lazy_ptr reference.
-        return true;
-
       // If symbol visibility is hidden, we have a stub for common symbol
       // references and external declarations.
-      if (isDecl || GV->hasCommonLinkage())
+      if (GV->isDeclarationForLinker() || GV->hasCommonLinkage())
         // Hidden $non_lazy_ptr reference.
-        return true;
-
-      return false;
-    } else {
-      // If this is a strong reference to a definition, it is definitely not
-      // through a stub.
-      if (!isDecl && !GV->isWeakForLinker())
-        return false;
-
-      // Unless we have a symbol with hidden visibility, we have to go through a
-      // normal $non_lazy_ptr stub because this symbol might be resolved late.
-      if (!GV->hasHiddenVisibility())  // Non-hidden $non_lazy_ptr reference.
         return true;
     }
   }
@@ -338,7 +325,7 @@ bool ARMSubtarget::hasSinCos() const {
 }
 
 // This overrides the PostRAScheduler bit in the SchedModel for any CPU.
-bool ARMSubtarget::enablePostMachineScheduler() const {
+bool ARMSubtarget::enablePostRAScheduler() const {
   return (!isThumb() || hasThumb2());
 }
 

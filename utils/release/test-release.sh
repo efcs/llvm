@@ -38,9 +38,9 @@ BuildDir="`pwd`"
 BuildTriple=""
 
 function usage() {
-    echo "usage: `basename $0` -release X.Y -rc NUM [OPTIONS]"
+    echo "usage: `basename $0` -release X.Y.Z -rc NUM [OPTIONS]"
     echo ""
-    echo " -release X.Y         The release number to test."
+    echo " -release X.Y.Z       The release version to test."
     echo " -rc NUM              The pre-release candidate number."
     echo " -final               The final release candidate."
     echo " -triple TRIPLE       The target triple for this machine."
@@ -48,10 +48,7 @@ function usage() {
     echo " -build-dir DIR       Directory to perform testing in. [default: pwd]"
     echo " -no-checkout         Don't checkout the sources from SVN."
     echo " -no-64bit            Don't test the 64-bit version. [default: yes]"
-    echo " -enable-ada          Build Ada. [default: disable]"
     echo " -disable-clang       Do not test clang. [default: enable]"
-    echo " -enable-fortran      Enable Fortran build. [default: disable]"
-    echo " -disable-objc        Disable ObjC build. [default: enable]"
     echo " -test-debug          Test the debug build. [default: no]"
     echo " -test-asserts        Test with asserts on. [default: no]"
     echo " -no-compare-files    Don't test that phase 2 and 3 files are identical."
@@ -274,7 +271,7 @@ function configure_llvmCore() {
         --disable-timestamps \
         $build_triple_option"
     env CC="$c_compiler" CXX="$cxx_compiler" \
-    $BuildDir/llvm.src/configure --prefix=$InstallDir \
+        $BuildDir/llvm.src/configure --prefix=$InstallDir \
         --enable-optimized=$Optimized \
         --enable-assertions=$Assertions \
         --disable-timestamps \
@@ -388,39 +385,27 @@ for Flavor in $Flavors ; do
 
     llvmCore_phase2_objdir=$BuildDir/Phase2/$Flavor/llvmCore-$Release-$RC.obj
     llvmCore_phase2_installdir=$BuildDir/Phase2/$Flavor/llvmCore-$Release-$RC.install
-    llvmCore_de_phase2_objdir=$BuildDir/Phase2/$Flavor/llvmCore-DragonEgg-$Release-$RC.obj
-    llvmCore_de_phase2_installdir=$BuildDir/Phase2/$Flavor/llvmCore-DragonEgg-$Release-$RC.install
 
     llvmCore_phase3_objdir=$BuildDir/Phase3/$Flavor/llvmCore-$Release-$RC.obj
     llvmCore_phase3_installdir=$BuildDir/Phase3/$Flavor/llvmCore-$Release-$RC.install
-    llvmCore_de_phase3_objdir=$BuildDir/Phase3/$Flavor/llvmCore-DragonEgg-$Release-$RC.obj
-    llvmCore_de_phase3_installdir=$BuildDir/Phase3/$Flavor/llvmCore-DragonEgg-$Release-$RC.install
 
     rm -rf $llvmCore_phase1_objdir
     rm -rf $llvmCore_phase1_installdir
 
     rm -rf $llvmCore_phase2_objdir
     rm -rf $llvmCore_phase2_installdir
-    rm -rf $llvmCore_de_phase2_objdir
-    rm -rf $llvmCore_de_phase2_installdir
 
     rm -rf $llvmCore_phase3_objdir
     rm -rf $llvmCore_phase3_installdir
-    rm -rf $llvmCore_de_phase3_objdir
-    rm -rf $llvmCore_de_phase3_installdir
 
     mkdir -p $llvmCore_phase1_objdir
     mkdir -p $llvmCore_phase1_installdir
 
     mkdir -p $llvmCore_phase2_objdir
     mkdir -p $llvmCore_phase2_installdir
-    mkdir -p $llvmCore_de_phase2_objdir
-    mkdir -p $llvmCore_de_phase2_installdir
 
     mkdir -p $llvmCore_phase3_objdir
     mkdir -p $llvmCore_phase3_installdir
-    mkdir -p $llvmCore_de_phase3_objdir
-    mkdir -p $llvmCore_de_phase3_installdir
 
     ############################################################################
     # Phase 1: Build llvmCore and clang

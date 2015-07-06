@@ -71,8 +71,9 @@ public:
   void emitInlineAsmEnd(const MCSubtargetInfo &StartInfo,
                         const MCSubtargetInfo *EndInfo) const override;
 
-  void EmitJumpTable(const MachineInstr *MI);
-  void EmitJump2Table(const MachineInstr *MI);
+  void EmitJumpTableAddrs(const MachineInstr *MI);
+  void EmitJumpTableInsts(const MachineInstr *MI);
+  void EmitJumpTableTBInst(const MachineInstr *MI, unsigned OffsetWidth);
   void EmitInstruction(const MachineInstr *MI) override;
   bool runOnMachineFunction(MachineFunction &F) override;
 
@@ -104,7 +105,7 @@ private:
 public:
   unsigned getISAEncoding() override {
     // ARM/Darwin adds ISA to the DWARF info for each function.
-    Triple TT(TM.getTargetTriple());
+    const Triple &TT = TM.getTargetTriple();
     if (!TT.isOSBinFormatMachO())
       return 0;
     bool isThumb = TT.getArch() == Triple::thumb ||

@@ -78,7 +78,7 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
   switch (MO.getType()) {
   default: llvm_unreachable("unknown symbol type!");
   case MachineOperand::MO_ConstantPoolIndex:
-    O << *P.GetCPISymbol(MO.getIndex());
+    P.GetCPISymbol(MO.getIndex())->print(O, P.MAI);
     P.printOffset(MO.getOffset(), O);
     break;
   case MachineOperand::MO_GlobalAddress: {
@@ -127,9 +127,12 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
     // If the name begins with a dollar-sign, enclose it in parens.  We do this
     // to avoid having it look like an integer immediate to the assembler.
     if (GVSym->getName()[0] != '$')
-      O << *GVSym;
-    else
-      O << '(' << *GVSym << ')';
+      GVSym->print(O, P.MAI);
+    else {
+      O << '(';
+      GVSym->print(O, P.MAI);
+      O << ')';
+    }
     P.printOffset(MO.getOffset(), O);
     break;
   }
@@ -146,12 +149,15 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
     // These affect the name of the symbol, not any suffix.
     break;
   case X86II::MO_GOT_ABSOLUTE_ADDRESS:
-    O << " + [.-" << *P.MF->getPICBaseSymbol() << ']';
+    O << " + [.-";
+    P.MF->getPICBaseSymbol()->print(O, P.MAI);
+    O << ']';
     break;
   case X86II::MO_PIC_BASE_OFFSET:
   case X86II::MO_DARWIN_NONLAZY_PIC_BASE:
   case X86II::MO_DARWIN_HIDDEN_NONLAZY_PIC_BASE:
-    O << '-' << *P.MF->getPICBaseSymbol();
+    O << '-';
+    P.MF->getPICBaseSymbol()->print(O, P.MAI);
     break;
   case X86II::MO_TLSGD:     O << "@TLSGD";     break;
   case X86II::MO_TLSLD:     O << "@TLSLD";     break;
@@ -168,7 +174,8 @@ static void printSymbolOperand(X86AsmPrinter &P, const MachineOperand &MO,
   case X86II::MO_PLT:       O << "@PLT";       break;
   case X86II::MO_TLVP:      O << "@TLVP";      break;
   case X86II::MO_TLVP_PIC_BASE:
-    O << "@TLVP" << '-' << *P.MF->getPICBaseSymbol();
+    O << "@TLVP" << '-';
+    P.MF->getPICBaseSymbol()->print(O, P.MAI);
     break;
   case X86II::MO_SECREL:    O << "@SECREL32";  break;
   }
@@ -504,7 +511,7 @@ bool X86AsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
 }
 
 void X86AsmPrinter::EmitStartOfAsmFile(Module &M) {
-  Triple TT(TM.getTargetTriple());
+  const Triple &TT = TM.getTargetTriple();
 
   if (TT.isOSBinFormatMachO())
     OutStreamer->SwitchSection(getObjFileLowering().getTextSection());
@@ -525,7 +532,7 @@ void X86AsmPrinter::EmitStartOfAsmFile(Module &M) {
       // register any SEH handlers, so its object files should be safe.
       OutStreamer->EmitSymbolAttribute(S, MCSA_Global);
       OutStreamer->EmitAssignment(
-          S, MCConstantExpr::Create(int64_t(1), MMI->getContext()));
+          S, MCConstantExpr::create(int64_t(1), MMI->getContext()));
     }
   }
 }
@@ -549,7 +556,7 @@ emitNonLazySymbolPointer(MCStreamer &OutStreamer, MCSymbol *StubLabel,
     // using NLPs; however, sometimes the types are local to the file.
     // We need to fill in the value for the NLP in those cases.
     OutStreamer.EmitValue(
-        MCSymbolRefExpr::Create(MCSym.getPointer(), OutStreamer.getContext()),
+        MCSymbolRefExpr::create(MCSym.getPointer(), OutStreamer.getContext()),
         4 /*size*/);
 }
 
@@ -574,36 +581,8 @@ MCSymbol *X86AsmPrinter::GetCPISymbol(unsigned CPID) const {
   return AsmPrinter::GetCPISymbol(CPID);
 }
 
-void X86AsmPrinter::GenerateExportDirective(const MCSymbol *Sym, bool IsData) {
-  SmallString<128> Directive;
-  raw_svector_ostream OS(Directive);
-  StringRef Name = Sym->getName();
-  Triple TT(TM.getTargetTriple());
-
-  if (TT.isKnownWindowsMSVCEnvironment())
-    OS << " /EXPORT:";
-  else
-    OS << " -export:";
-
-  if ((TT.isWindowsGNUEnvironment() || TT.isWindowsCygwinEnvironment()) &&
-      (Name[0] == getDataLayout().getGlobalPrefix()))
-    Name = Name.drop_front();
-
-  OS << Name;
-
-  if (IsData) {
-    if (TT.isKnownWindowsMSVCEnvironment())
-      OS << ",DATA";
-    else
-      OS << ",data";
-  }
-
-  OS.flush();
-  OutStreamer->EmitBytes(Directive);
-}
-
 void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
-  Triple TT(TM.getTargetTriple());
+  const Triple &TT = TM.getTargetTriple();
 
   if (TT.isOSBinFormatMachO()) {
     // All darwin targets use mach-o.
@@ -667,6 +646,7 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
     }
 
     SM.serializeToStackMapSection();
+    FM.serializeToFaultMapSection();
 
     // Funny Darwin hack: This flag tells the linker that no global symbols
     // contain code that falls through to other global symbols (e.g. the obvious
@@ -684,43 +664,34 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
   }
 
   if (TT.isOSBinFormatCOFF()) {
-    // Necessary for dllexport support
-    std::vector<const MCSymbol*> DLLExportedFns, DLLExportedGlobals;
-
-    for (const auto &Function : M)
-      if (Function.hasDLLExportStorageClass() && !Function.isDeclaration())
-        DLLExportedFns.push_back(getSymbol(&Function));
-
-    for (const auto &Global : M.globals())
-      if (Global.hasDLLExportStorageClass() && !Global.isDeclaration())
-        DLLExportedGlobals.push_back(getSymbol(&Global));
-
-    for (const auto &Alias : M.aliases()) {
-      if (!Alias.hasDLLExportStorageClass())
-        continue;
-
-      if (Alias.getType()->getElementType()->isFunctionTy())
-        DLLExportedFns.push_back(getSymbol(&Alias));
-      else
-        DLLExportedGlobals.push_back(getSymbol(&Alias));
-    }
-
-    // Output linker support code for dllexported globals on windows.
-    if (!DLLExportedGlobals.empty() || !DLLExportedFns.empty()) {
-      const TargetLoweringObjectFileCOFF &TLOFCOFF =
+    const TargetLoweringObjectFileCOFF &TLOFCOFF =
         static_cast<const TargetLoweringObjectFileCOFF&>(getObjFileLowering());
 
-      OutStreamer->SwitchSection(TLOFCOFF.getDrectveSection());
+    std::string Flags;
+    raw_string_ostream FlagsOS(Flags);
 
-      for (auto & Symbol : DLLExportedGlobals)
-        GenerateExportDirective(Symbol, /*IsData=*/true);
-      for (auto & Symbol : DLLExportedFns)
-        GenerateExportDirective(Symbol, /*IsData=*/false);
+    for (const auto &Function : M)
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Function, *Mang);
+    for (const auto &Global : M.globals())
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Global, *Mang);
+    for (const auto &Alias : M.aliases())
+      TLOFCOFF.emitLinkerFlagsForGlobal(FlagsOS, &Alias, *Mang);
+
+    FlagsOS.flush();
+
+    // Output collected flags.
+    if (!Flags.empty()) {
+      OutStreamer->SwitchSection(TLOFCOFF.getDrectveSection());
+      OutStreamer->EmitBytes(Flags);
     }
+
+    SM.serializeToStackMapSection();
   }
 
-  if (TT.isOSBinFormatELF())
+  if (TT.isOSBinFormatELF()) {
     SM.serializeToStackMapSection();
+    FM.serializeToFaultMapSection();
+  }
 }
 
 //===----------------------------------------------------------------------===//

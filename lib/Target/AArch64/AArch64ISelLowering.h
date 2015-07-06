@@ -305,6 +305,15 @@ public:
                      unsigned &RequiredAligment) const override;
   bool hasPairedLoad(EVT LoadedType, unsigned &RequiredAligment) const override;
 
+  unsigned getMaxSupportedInterleaveFactor() const override { return 4; }
+
+  bool lowerInterleavedLoad(LoadInst *LI,
+                            ArrayRef<ShuffleVectorInst *> Shuffles,
+                            ArrayRef<unsigned> Indices,
+                            unsigned Factor) const override;
+  bool lowerInterleavedStore(StoreInst *SI, ShuffleVectorInst *SVI,
+                             unsigned Factor) const override;
+
   bool isLegalAddImmediate(int64_t) const override;
   bool isLegalICmpImmediate(int64_t) const override;
 
@@ -314,14 +323,16 @@ public:
 
   /// isLegalAddressingMode - Return true if the addressing mode represented
   /// by AM is legal for this target, for a load/store of the specified type.
-  bool isLegalAddressingMode(const AddrMode &AM, Type *Ty) const override;
+  bool isLegalAddressingMode(const AddrMode &AM, Type *Ty,
+                             unsigned AS) const override;
 
   /// \brief Return the cost of the scaling factor used in the addressing
   /// mode represented by AM for this target, for a load/store
   /// of the specified type.
   /// If the AM is supported, the return value must be >= 0.
   /// If the AM is not supported, it returns a negative value.
-  int getScalingFactorCost(const AddrMode &AM, Type *Ty) const override;
+  int getScalingFactorCost(const AddrMode &AM, Type *Ty,
+                           unsigned AS) const override;
 
   /// isFMAFasterThanFMulAndFAdd - Return true if an FMA operation is faster
   /// than a pair of fmul and fadd instructions. fmuladd intrinsics will be
@@ -460,8 +471,7 @@ private:
                         std::vector<SDNode *> *Created) const override;
   bool combineRepeatedFPDivisors(unsigned NumUsers) const override;
 
-  ConstraintType
-  getConstraintType(const std::string &Constraint) const override;
+  ConstraintType getConstraintType(StringRef Constraint) const override;
   unsigned getRegisterByName(const char* RegName, EVT VT) const override;
 
   /// Examine constraint string and operand type and determine a weight value.
@@ -472,14 +482,12 @@ private:
 
   std::pair<unsigned, const TargetRegisterClass *>
   getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
-                               const std::string &Constraint,
-                               MVT VT) const override;
+                               StringRef Constraint, MVT VT) const override;
   void LowerAsmOperandForConstraint(SDValue Op, std::string &Constraint,
                                     std::vector<SDValue> &Ops,
                                     SelectionDAG &DAG) const override;
 
-  unsigned getInlineAsmMemConstraint(
-      const std::string &ConstraintCode) const override {
+  unsigned getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
     if (ConstraintCode == "Q")
       return InlineAsm::Constraint_Q;
     // FIXME: clang has code for 'Ump', 'Utf', 'Usa', and 'Ush' but these are

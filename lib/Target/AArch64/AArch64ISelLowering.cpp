@@ -1424,7 +1424,7 @@ static SDValue LowerXOR(SDValue Op, SelectionDAG &DAG) {
   ConstantSDNode *CFVal = dyn_cast<ConstantSDNode>(FVal);
   ConstantSDNode *CTVal = dyn_cast<ConstantSDNode>(TVal);
 
-  // The the values aren't constants, this isn't the pattern we're looking for.
+  // The values aren't constants, this isn't the pattern we're looking for.
   if (!CFVal || !CTVal)
     return Op;
 
@@ -1777,8 +1777,7 @@ static bool isExtendedBUILD_VECTOR(SDNode *N, SelectionDAG &DAG,
   if (N->getOpcode() != ISD::BUILD_VECTOR)
     return false;
 
-  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
-    SDNode *Elt = N->getOperand(i).getNode();
+  for (const SDValue &Elt : N->op_values()) {
     if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(Elt)) {
       unsigned EltSize = VT.getVectorElementType().getSizeInBits();
       unsigned HalfSize = EltSize / 2;
@@ -2422,7 +2421,7 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
   // cannot rely on the linker replacing the tail call with a return.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
     const GlobalValue *GV = G->getGlobal();
-    const Triple TT(getTargetMachine().getTargetTriple());
+    const Triple &TT = getTargetMachine().getTargetTriple();
     if (GV->hasExternalWeakLinkage() &&
         (!TT.isOSWindows() || TT.isOSBinFormatELF() || TT.isOSBinFormatMachO()))
       return false;
@@ -3420,7 +3419,7 @@ SDValue AArch64TargetLowering::LowerFCOPYSIGN(SDValue Op,
     EltVT = MVT::i64;
     VecVT = MVT::v2i64;
 
-    // We want to materialize a mask with the the high bit set, but the AdvSIMD
+    // We want to materialize a mask with the high bit set, but the AdvSIMD
     // immediate moves cannot materialize that in a single instruction for
     // 64-bit elements. Instead, materialize zero and then negate it.
     EltMask = 0;
@@ -4065,7 +4064,8 @@ unsigned AArch64TargetLowering::getRegisterByName(const char* RegName,
                        .Default(0);
   if (Reg)
     return Reg;
-  report_fatal_error("Invalid register name global variable");
+  report_fatal_error(Twine("Invalid register name \""
+                              + StringRef(RegName)  + "\"."));
 }
 
 SDValue AArch64TargetLowering::LowerRETURNADDR(SDValue Op,
@@ -4232,7 +4232,7 @@ bool AArch64TargetLowering::isFPImmLegal(const APFloat &Imm, EVT VT) const {
 /// getConstraintType - Given a constraint letter, return the type of
 /// constraint it is for this target.
 AArch64TargetLowering::ConstraintType
-AArch64TargetLowering::getConstraintType(const std::string &Constraint) const {
+AArch64TargetLowering::getConstraintType(StringRef Constraint) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:
@@ -4283,8 +4283,7 @@ AArch64TargetLowering::getSingleConstraintMatchWeight(
 
 std::pair<unsigned, const TargetRegisterClass *>
 AArch64TargetLowering::getRegForInlineAsmConstraint(
-    const TargetRegisterInfo *TRI, const std::string &Constraint,
-    MVT VT) const {
+    const TargetRegisterInfo *TRI, StringRef Constraint, MVT VT) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     case 'r':
@@ -4320,10 +4319,9 @@ AArch64TargetLowering::getRegForInlineAsmConstraint(
     unsigned Size = Constraint.size();
     if ((Size == 4 || Size == 5) && Constraint[0] == '{' &&
         tolower(Constraint[1]) == 'v' && Constraint[Size - 1] == '}') {
-      const std::string Reg =
-          std::string(&Constraint[2], &Constraint[Size - 1]);
-      int RegNo = atoi(Reg.c_str());
-      if (RegNo >= 0 && RegNo <= 31) {
+      int RegNo;
+      bool Failed = Constraint.slice(2, Size - 1).getAsInteger(10, RegNo);
+      if (!Failed && RegNo >= 0 && RegNo <= 31) {
         // v0 - v31 are aliases of q0 - q31.
         // By default we'll emit v0-v31 for this unless there's a modifier where
         // we'll emit the correct register as well.
@@ -6688,6 +6686,160 @@ bool AArch64TargetLowering::hasPairedLoad(EVT LoadedType,
   return NumBits == 32 || NumBits == 64;
 }
 
+/// \brief Lower an interleaved load into a ldN intrinsic.
+///
+/// E.g. Lower an interleaved load (Factor = 2):
+///        %wide.vec = load <8 x i32>, <8 x i32>* %ptr
+///        %v0 = shuffle %wide.vec, undef, <0, 2, 4, 6>  ; Extract even elements
+///        %v1 = shuffle %wide.vec, undef, <1, 3, 5, 7>  ; Extract odd elements
+///
+///      Into:
+///        %ld2 = { <4 x i32>, <4 x i32> } call llvm.aarch64.neon.ld2(%ptr)
+///        %vec0 = extractelement { <4 x i32>, <4 x i32> } %ld2, i32 0
+///        %vec1 = extractelement { <4 x i32>, <4 x i32> } %ld2, i32 1
+bool AArch64TargetLowering::lowerInterleavedLoad(
+    LoadInst *LI, ArrayRef<ShuffleVectorInst *> Shuffles,
+    ArrayRef<unsigned> Indices, unsigned Factor) const {
+  assert(Factor >= 2 && Factor <= getMaxSupportedInterleaveFactor() &&
+         "Invalid interleave factor");
+  assert(!Shuffles.empty() && "Empty shufflevector input");
+  assert(Shuffles.size() == Indices.size() &&
+         "Unmatched number of shufflevectors and indices");
+
+  const DataLayout *DL = getDataLayout();
+
+  VectorType *VecTy = Shuffles[0]->getType();
+  unsigned VecSize = DL->getTypeAllocSizeInBits(VecTy);
+
+  // Skip illegal vector types.
+  if (VecSize != 64 && VecSize != 128)
+    return false;
+
+  // A pointer vector can not be the return type of the ldN intrinsics. Need to
+  // load integer vectors first and then convert to pointer vectors.
+  Type *EltTy = VecTy->getVectorElementType();
+  if (EltTy->isPointerTy())
+    VecTy = VectorType::get(DL->getIntPtrType(EltTy),
+                            VecTy->getVectorNumElements());
+
+  Type *PtrTy = VecTy->getPointerTo(LI->getPointerAddressSpace());
+  Type *Tys[2] = {VecTy, PtrTy};
+  static const Intrinsic::ID LoadInts[3] = {Intrinsic::aarch64_neon_ld2,
+                                            Intrinsic::aarch64_neon_ld3,
+                                            Intrinsic::aarch64_neon_ld4};
+  Function *LdNFunc =
+      Intrinsic::getDeclaration(LI->getModule(), LoadInts[Factor - 2], Tys);
+
+  IRBuilder<> Builder(LI);
+  Value *Ptr = Builder.CreateBitCast(LI->getPointerOperand(), PtrTy);
+
+  CallInst *LdN = Builder.CreateCall(LdNFunc, Ptr, "ldN");
+
+  // Replace uses of each shufflevector with the corresponding vector loaded
+  // by ldN.
+  for (unsigned i = 0; i < Shuffles.size(); i++) {
+    ShuffleVectorInst *SVI = Shuffles[i];
+    unsigned Index = Indices[i];
+
+    Value *SubVec = Builder.CreateExtractValue(LdN, Index);
+
+    // Convert the integer vector to pointer vector if the element is pointer.
+    if (EltTy->isPointerTy())
+      SubVec = Builder.CreateIntToPtr(SubVec, SVI->getType());
+
+    SVI->replaceAllUsesWith(SubVec);
+  }
+
+  return true;
+}
+
+/// \brief Get a mask consisting of sequential integers starting from \p Start.
+///
+/// I.e. <Start, Start + 1, ..., Start + NumElts - 1>
+static Constant *getSequentialMask(IRBuilder<> &Builder, unsigned Start,
+                                   unsigned NumElts) {
+  SmallVector<Constant *, 16> Mask;
+  for (unsigned i = 0; i < NumElts; i++)
+    Mask.push_back(Builder.getInt32(Start + i));
+
+  return ConstantVector::get(Mask);
+}
+
+/// \brief Lower an interleaved store into a stN intrinsic.
+///
+/// E.g. Lower an interleaved store (Factor = 3):
+///        %i.vec = shuffle <8 x i32> %v0, <8 x i32> %v1,
+///                                  <0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11>
+///        store <12 x i32> %i.vec, <12 x i32>* %ptr
+///
+///      Into:
+///        %sub.v0 = shuffle <8 x i32> %v0, <8 x i32> v1, <0, 1, 2, 3>
+///        %sub.v1 = shuffle <8 x i32> %v0, <8 x i32> v1, <4, 5, 6, 7>
+///        %sub.v2 = shuffle <8 x i32> %v0, <8 x i32> v1, <8, 9, 10, 11>
+///        call void llvm.aarch64.neon.st3(%sub.v0, %sub.v1, %sub.v2, %ptr)
+///
+/// Note that the new shufflevectors will be removed and we'll only generate one
+/// st3 instruction in CodeGen.
+bool AArch64TargetLowering::lowerInterleavedStore(StoreInst *SI,
+                                                  ShuffleVectorInst *SVI,
+                                                  unsigned Factor) const {
+  assert(Factor >= 2 && Factor <= getMaxSupportedInterleaveFactor() &&
+         "Invalid interleave factor");
+
+  VectorType *VecTy = SVI->getType();
+  assert(VecTy->getVectorNumElements() % Factor == 0 &&
+         "Invalid interleaved store");
+
+  unsigned NumSubElts = VecTy->getVectorNumElements() / Factor;
+  Type *EltTy = VecTy->getVectorElementType();
+  VectorType *SubVecTy = VectorType::get(EltTy, NumSubElts);
+
+  const DataLayout *DL = getDataLayout();
+  unsigned SubVecSize = DL->getTypeAllocSizeInBits(SubVecTy);
+
+  // Skip illegal vector types.
+  if (SubVecSize != 64 && SubVecSize != 128)
+    return false;
+
+  Value *Op0 = SVI->getOperand(0);
+  Value *Op1 = SVI->getOperand(1);
+  IRBuilder<> Builder(SI);
+
+  // StN intrinsics don't support pointer vectors as arguments. Convert pointer
+  // vectors to integer vectors.
+  if (EltTy->isPointerTy()) {
+    Type *IntTy = DL->getIntPtrType(EltTy);
+    unsigned NumOpElts =
+        dyn_cast<VectorType>(Op0->getType())->getVectorNumElements();
+
+    // Convert to the corresponding integer vector.
+    Type *IntVecTy = VectorType::get(IntTy, NumOpElts);
+    Op0 = Builder.CreatePtrToInt(Op0, IntVecTy);
+    Op1 = Builder.CreatePtrToInt(Op1, IntVecTy);
+
+    SubVecTy = VectorType::get(IntTy, NumSubElts);
+  }
+
+  Type *PtrTy = SubVecTy->getPointerTo(SI->getPointerAddressSpace());
+  Type *Tys[2] = {SubVecTy, PtrTy};
+  static const Intrinsic::ID StoreInts[3] = {Intrinsic::aarch64_neon_st2,
+                                             Intrinsic::aarch64_neon_st3,
+                                             Intrinsic::aarch64_neon_st4};
+  Function *StNFunc =
+      Intrinsic::getDeclaration(SI->getModule(), StoreInts[Factor - 2], Tys);
+
+  SmallVector<Value *, 5> Ops;
+
+  // Split the shufflevector operands into sub vectors for the new stN call.
+  for (unsigned i = 0; i < Factor; i++)
+    Ops.push_back(Builder.CreateShuffleVector(
+        Op0, Op1, getSequentialMask(Builder, NumSubElts * i, NumSubElts)));
+
+  Ops.push_back(Builder.CreateBitCast(SI->getPointerOperand(), PtrTy));
+  Builder.CreateCall(StNFunc, Ops);
+  return true;
+}
+
 static bool memOpAlign(unsigned DstAlign, unsigned SrcAlign,
                        unsigned AlignCheck) {
   return ((SrcAlign == 0 || SrcAlign % AlignCheck == 0) &&
@@ -6741,7 +6893,8 @@ bool AArch64TargetLowering::isLegalICmpImmediate(int64_t Immed) const {
 /// isLegalAddressingMode - Return true if the addressing mode represented
 /// by AM is legal for this target, for a load/store of the specified type.
 bool AArch64TargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                                  Type *Ty) const {
+                                                  Type *Ty,
+                                                  unsigned AS) const {
   // AArch64 has five basic addressing modes:
   //  reg
   //  reg + 9-bit signed offset
@@ -6792,7 +6945,8 @@ bool AArch64TargetLowering::isLegalAddressingMode(const AddrMode &AM,
 }
 
 int AArch64TargetLowering::getScalingFactorCost(const AddrMode &AM,
-                                                Type *Ty) const {
+                                                Type *Ty,
+                                                unsigned AS) const {
   // Scaling factors are not free at all.
   // Operands                     | Rt Latency
   // -------------------------------------------
@@ -6800,7 +6954,7 @@ int AArch64TargetLowering::getScalingFactorCost(const AddrMode &AM,
   // -------------------------------------------
   // Rt, [Xn, Xm, lsl #imm]       | Rn: 4 Rm: 5
   // Rt, [Xn, Wm, <extend> #imm]  |
-  if (isLegalAddressingMode(AM, Ty))
+  if (isLegalAddressingMode(AM, Ty, AS))
     // Scale represents reg2 * scale, thus account for 1 if
     // it is not equal to 0 or 1.
     return AM.Scale != 0 && AM.Scale != 1;
@@ -7440,21 +7594,26 @@ static SDValue tryCombineFixedPointConvert(SDNode *N,
 //
 // This routine does the actual conversion of such DUPs, once outer routines
 // have determined that everything else is in order.
+// It also supports immediate DUP-like nodes (MOVI/MVNi), which we can fold
+// similarly here.
 static SDValue tryExtendDUPToExtractHigh(SDValue N, SelectionDAG &DAG) {
-  // We can handle most types of duplicate, but the lane ones have an extra
-  // operand saying *which* lane, so we need to know.
-  bool IsDUPLANE;
   switch (N.getOpcode()) {
   case AArch64ISD::DUP:
-    IsDUPLANE = false;
-    break;
   case AArch64ISD::DUPLANE8:
   case AArch64ISD::DUPLANE16:
   case AArch64ISD::DUPLANE32:
   case AArch64ISD::DUPLANE64:
-    IsDUPLANE = true;
+  case AArch64ISD::MOVI:
+  case AArch64ISD::MOVIshift:
+  case AArch64ISD::MOVIedit:
+  case AArch64ISD::MOVImsl:
+  case AArch64ISD::MVNIshift:
+  case AArch64ISD::MVNImsl:
     break;
   default:
+    // FMOV could be supported, but isn't very useful, as it would only occur
+    // if you passed a bitcast' floating point immediate to an eligible long
+    // integer op (addl, smull, ...).
     return SDValue();
   }
 
@@ -7464,17 +7623,11 @@ static SDValue tryExtendDUPToExtractHigh(SDValue N, SelectionDAG &DAG) {
 
   MVT ElementTy = NarrowTy.getVectorElementType();
   unsigned NumElems = NarrowTy.getVectorNumElements();
-  MVT NewDUPVT = MVT::getVectorVT(ElementTy, NumElems * 2);
+  MVT NewVT = MVT::getVectorVT(ElementTy, NumElems * 2);
 
   SDLoc dl(N);
-  SDValue NewDUP;
-  if (IsDUPLANE)
-    NewDUP = DAG.getNode(N.getOpcode(), dl, NewDUPVT, N.getOperand(0),
-                         N.getOperand(1));
-  else
-    NewDUP = DAG.getNode(AArch64ISD::DUP, dl, NewDUPVT, N.getOperand(0));
-
-  return DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, NarrowTy, NewDUP,
+  return DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, NarrowTy,
+                     DAG.getNode(N->getOpcode(), dl, NewVT, N->ops()),
                      DAG.getConstant(NumElems, dl, MVT::i64));
 }
 
@@ -8773,6 +8926,14 @@ static SDValue performSelectCCCombine(SDNode *N, SelectionDAG &DAG) {
   return DAG.getNode(Opcode, SDLoc(N), N->getValueType(0), LHS, RHS);
 }
 
+/// Get rid of unnecessary NVCASTs (that don't change the type).
+static SDValue performNVCASTCombine(SDNode *N) {
+  if (N->getValueType(0) == N->getOperand(0).getValueType())
+    return N->getOperand(0);
+
+  return SDValue();
+}
+
 SDValue AArch64TargetLowering::PerformDAGCombine(SDNode *N,
                                                  DAGCombinerInfo &DCI) const {
   SelectionDAG &DAG = DCI.DAG;
@@ -8815,6 +8976,8 @@ SDValue AArch64TargetLowering::PerformDAGCombine(SDNode *N,
     return performCONDCombine(N, DCI, DAG, 2, 3);
   case AArch64ISD::DUP:
     return performPostLD1Combine(N, DCI, false);
+  case AArch64ISD::NVCAST:
+    return performNVCASTCombine(N);
   case ISD::INSERT_VECTOR_ELT:
     return performPostLD1Combine(N, DCI, true);
   case ISD::INTRINSIC_VOID:

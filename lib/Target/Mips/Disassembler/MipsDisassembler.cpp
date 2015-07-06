@@ -47,6 +47,8 @@ public:
 
   bool isGP64() const { return STI.getFeatureBits()[Mips::FeatureGP64Bit]; }
 
+  bool hasCnMips() const { return STI.getFeatureBits()[Mips::FeatureCnMips]; }
+
   bool hasCOP3() const {
     // Only present in MIPS-I and MIPS-II
     return !hasMips32() && !hasMips3();
@@ -175,6 +177,11 @@ static DecodeStatus DecodeMSACtrlRegisterClass(MCInst &Inst,
                                                unsigned RegNo,
                                                uint64_t Address,
                                                const void *Decoder);
+
+static DecodeStatus DecodeCOP0RegisterClass(MCInst &Inst,
+                                            unsigned RegNo,
+                                            uint64_t Address,
+                                            const void *Decoder);
 
 static DecodeStatus DecodeCOP2RegisterClass(MCInst &Inst,
                                             unsigned RegNo,
@@ -889,6 +896,16 @@ DecodeStatus MipsDisassembler::getInstruction(MCInst &Instr, uint64_t &Size,
     }
   }
 
+  if (hasCnMips()) {
+    DEBUG(dbgs() << "Trying CnMips table (32-bit opcodes):\n");
+    Result = decodeInstruction(DecoderTableCnMips32, Instr, Insn,
+                               Address, this, STI);
+    if (Result != MCDisassembler::Fail) {
+      Size = 4;
+      return Result;
+    }
+  }
+
   if (isGP64()) {
     DEBUG(dbgs() << "Trying Mips64 (GPR64) table (32-bit opcodes):\n");
     Result = decodeInstruction(DecoderTableMips6432, Instr, Insn,
@@ -1552,6 +1569,18 @@ static DecodeStatus DecodeMSACtrlRegisterClass(MCInst &Inst,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeCOP0RegisterClass(MCInst &Inst,
+                                            unsigned RegNo,
+                                            uint64_t Address,
+                                            const void *Decoder) {
+  if (RegNo > 31)
+    return MCDisassembler::Fail;
+
+  unsigned Reg = getReg(Decoder, Mips::COP0RegClassID, RegNo);
+  Inst.addOperand(MCOperand::createReg(Reg));
+  return MCDisassembler::Success;
+}
+
 static DecodeStatus DecodeCOP2RegisterClass(MCInst &Inst,
                                             unsigned RegNo,
                                             uint64_t Address,
@@ -1843,6 +1872,6 @@ static DecodeStatus DecodeMovePRegPair(MCInst &Inst, unsigned Insn,
 
 static DecodeStatus DecodeSimm23Lsl2(MCInst &Inst, unsigned Insn,
                                      uint64_t Address, const void *Decoder) {
-  Inst.addOperand(MCOperand::createImm(SignExtend32<23>(Insn) << 2));
+  Inst.addOperand(MCOperand::createImm(SignExtend32<25>(Insn << 2)));
   return MCDisassembler::Success;
 }

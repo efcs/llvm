@@ -17,6 +17,7 @@
 #include "InstPrinter/X86ATTInstPrinter.h"
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "Utils/X86ShuffleDecode.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -50,6 +51,8 @@ class X86MCInstLower {
 public:
   X86MCInstLower(const MachineFunction &MF, X86AsmPrinter &asmprinter);
 
+  Optional<MCOperand> LowerMachineOperand(const MachineInstr *MI,
+                                          const MachineOperand &MO) const;
   void Lower(const MachineInstr *MI, MCInst &OutMI) const;
 
   MCSymbol *GetSymbolFromOperand(const MachineOperand &MO) const;
@@ -128,6 +131,7 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
   const DataLayout *DL = TM.getDataLayout();
   assert((MO.isGlobal() || MO.isSymbol() || MO.isMBB()) && "Isn't a symbol reference");
 
+  MCSymbol *Sym = nullptr;
   SmallString<128> Name;
   StringRef Suffix;
 
@@ -155,17 +159,16 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
     const GlobalValue *GV = MO.getGlobal();
     AsmPrinter.getNameWithPrefix(Name, GV);
   } else if (MO.isSymbol()) {
-    if (MO.getTargetFlags() == X86II::MO_NOPREFIX)
-      Name += MO.getSymbolName();
-    else
-      getMang()->getNameWithPrefix(Name, MO.getSymbolName());
+    Mangler::getNameWithPrefix(Name, MO.getSymbolName(), *DL);
   } else if (MO.isMBB()) {
-    Name += MO.getMBB()->getSymbol()->getName();
+    assert(Suffix.empty());
+    Sym = MO.getMBB()->getSymbol();
   }
   unsigned OrigLen = Name.size() - PrefixLen;
 
   Name += Suffix;
-  MCSymbol *Sym = Ctx.getOrCreateSymbol(Name);
+  if (!Sym)
+    Sym = Ctx.getOrCreateSymbol(Name);
 
   StringRef OrigName = StringRef(Name).substr(PrefixLen, OrigLen);
 
@@ -235,15 +238,14 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
   case X86II::MO_DARWIN_NONLAZY:
   case X86II::MO_DLLIMPORT:
   case X86II::MO_DARWIN_STUB:
-  case X86II::MO_NOPREFIX:
     break;
 
   case X86II::MO_TLVP:      RefKind = MCSymbolRefExpr::VK_TLVP; break;
   case X86II::MO_TLVP_PIC_BASE:
-    Expr = MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_TLVP, Ctx);
+    Expr = MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_TLVP, Ctx);
     // Subtract the pic base.
-    Expr = MCBinaryExpr::CreateSub(Expr,
-                                  MCSymbolRefExpr::Create(MF.getPICBaseSymbol(),
+    Expr = MCBinaryExpr::createSub(Expr,
+                                  MCSymbolRefExpr::create(MF.getPICBaseSymbol(),
                                                            Ctx),
                                    Ctx);
     break;
@@ -264,10 +266,10 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
   case X86II::MO_PIC_BASE_OFFSET:
   case X86II::MO_DARWIN_NONLAZY_PIC_BASE:
   case X86II::MO_DARWIN_HIDDEN_NONLAZY_PIC_BASE:
-    Expr = MCSymbolRefExpr::Create(Sym, Ctx);
+    Expr = MCSymbolRefExpr::create(Sym, Ctx);
     // Subtract the pic base.
-    Expr = MCBinaryExpr::CreateSub(Expr,
-                            MCSymbolRefExpr::Create(MF.getPICBaseSymbol(), Ctx),
+    Expr = MCBinaryExpr::createSub(Expr,
+                            MCSymbolRefExpr::create(MF.getPICBaseSymbol(), Ctx),
                                    Ctx);
     if (MO.isJTI()) {
       assert(MAI.doesSetDirectiveSuppressesReloc());
@@ -277,17 +279,17 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
       // section so we are restricting it to jumptable references.
       MCSymbol *Label = Ctx.createTempSymbol();
       AsmPrinter.OutStreamer->EmitAssignment(Label, Expr);
-      Expr = MCSymbolRefExpr::Create(Label, Ctx);
+      Expr = MCSymbolRefExpr::create(Label, Ctx);
     }
     break;
   }
 
   if (!Expr)
-    Expr = MCSymbolRefExpr::Create(Sym, RefKind, Ctx);
+    Expr = MCSymbolRefExpr::create(Sym, RefKind, Ctx);
 
   if (!MO.isJTI() && !MO.isMBB() && MO.getOffset())
-    Expr = MCBinaryExpr::CreateAdd(Expr,
-                                   MCConstantExpr::Create(MO.getOffset(), Ctx),
+    Expr = MCBinaryExpr::createAdd(Expr,
+                                   MCConstantExpr::create(MO.getOffset(), Ctx),
                                    Ctx);
   return MCOperand::createExpr(Expr);
 }
@@ -399,47 +401,45 @@ static unsigned getRetOpcode(const X86Subtarget &Subtarget) {
   return Subtarget.is64Bit() ? X86::RETQ : X86::RETL;
 }
 
+Optional<MCOperand>
+X86MCInstLower::LowerMachineOperand(const MachineInstr *MI,
+                                    const MachineOperand &MO) const {
+  switch (MO.getType()) {
+  default:
+    MI->dump();
+    llvm_unreachable("unknown operand type");
+  case MachineOperand::MO_Register:
+    // Ignore all implicit register operands.
+    if (MO.isImplicit())
+      return None;
+    return MCOperand::createReg(MO.getReg());
+  case MachineOperand::MO_Immediate:
+    return MCOperand::createImm(MO.getImm());
+  case MachineOperand::MO_MachineBasicBlock:
+  case MachineOperand::MO_GlobalAddress:
+  case MachineOperand::MO_ExternalSymbol:
+    return LowerSymbolOperand(MO, GetSymbolFromOperand(MO));
+  case MachineOperand::MO_MCSymbol:
+    return LowerSymbolOperand(MO, MO.getMCSymbol());
+  case MachineOperand::MO_JumpTableIndex:
+    return LowerSymbolOperand(MO, AsmPrinter.GetJTISymbol(MO.getIndex()));
+  case MachineOperand::MO_ConstantPoolIndex:
+    return LowerSymbolOperand(MO, AsmPrinter.GetCPISymbol(MO.getIndex()));
+  case MachineOperand::MO_BlockAddress:
+    return LowerSymbolOperand(
+        MO, AsmPrinter.GetBlockAddressSymbol(MO.getBlockAddress()));
+  case MachineOperand::MO_RegisterMask:
+    // Ignore call clobbers.
+    return None;
+  }
+}
+
 void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   OutMI.setOpcode(MI->getOpcode());
 
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-
-    MCOperand MCOp;
-    switch (MO.getType()) {
-    default:
-      MI->dump();
-      llvm_unreachable("unknown operand type");
-    case MachineOperand::MO_Register:
-      // Ignore all implicit register operands.
-      if (MO.isImplicit()) continue;
-      MCOp = MCOperand::createReg(MO.getReg());
-      break;
-    case MachineOperand::MO_Immediate:
-      MCOp = MCOperand::createImm(MO.getImm());
-      break;
-    case MachineOperand::MO_MachineBasicBlock:
-    case MachineOperand::MO_GlobalAddress:
-    case MachineOperand::MO_ExternalSymbol:
-      MCOp = LowerSymbolOperand(MO, GetSymbolFromOperand(MO));
-      break;
-    case MachineOperand::MO_JumpTableIndex:
-      MCOp = LowerSymbolOperand(MO, AsmPrinter.GetJTISymbol(MO.getIndex()));
-      break;
-    case MachineOperand::MO_ConstantPoolIndex:
-      MCOp = LowerSymbolOperand(MO, AsmPrinter.GetCPISymbol(MO.getIndex()));
-      break;
-    case MachineOperand::MO_BlockAddress:
-      MCOp = LowerSymbolOperand(MO,
-                     AsmPrinter.GetBlockAddressSymbol(MO.getBlockAddress()));
-      break;
-    case MachineOperand::MO_RegisterMask:
-      // Ignore call clobbers.
-      continue;
-    }
-
-    OutMI.addOperand(MCOp);
-  }
+  for (const MachineOperand &MO : MI->operands())
+    if (auto MaybeMCOp = LowerMachineOperand(MI, MO))
+      OutMI.addOperand(MaybeMCOp.getValue());
 
   // Handle a few special cases to eliminate operand modifiers.
 ReSimplify:
@@ -710,7 +710,7 @@ void X86AsmPrinter::LowerTlsAddr(X86MCInstLower &MCInstLowering,
   }
 
   MCSymbol *sym = MCInstLowering.GetSymbolFromOperand(MI.getOperand(3));
-  const MCSymbolRefExpr *symRef = MCSymbolRefExpr::Create(sym, SRVK, context);
+  const MCSymbolRefExpr *symRef = MCSymbolRefExpr::create(sym, SRVK, context);
 
   MCInst LEA;
   if (is64Bits) {
@@ -749,7 +749,7 @@ void X86AsmPrinter::LowerTlsAddr(X86MCInstLower &MCInstLowering,
   StringRef name = is64Bits ? "__tls_get_addr" : "___tls_get_addr";
   MCSymbol *tlsGetAddr = context.getOrCreateSymbol(name);
   const MCSymbolRefExpr *tlsRef =
-    MCSymbolRefExpr::Create(tlsGetAddr,
+    MCSymbolRefExpr::create(tlsGetAddr,
                             MCSymbolRefExpr::VK_PLT,
                             context);
 
@@ -862,6 +862,28 @@ void X86AsmPrinter::LowerSTATEPOINT(const MachineInstr &MI,
   SM.recordStatepoint(MI);
 }
 
+void X86AsmPrinter::LowerFAULTING_LOAD_OP(const MachineInstr &MI,
+                                       X86MCInstLower &MCIL) {
+  // FAULTING_LOAD_OP <def>, <handler label>, <load opcode>, <load operands>
+
+  unsigned LoadDefRegister = MI.getOperand(0).getReg();
+  MCSymbol *HandlerLabel = MI.getOperand(1).getMCSymbol();
+  unsigned LoadOpcode = MI.getOperand(2).getImm();
+  unsigned LoadOperandsBeginIdx = 3;
+
+  FM.recordFaultingOp(FaultMaps::FaultingLoad, HandlerLabel);
+
+  MCInst LoadMI;
+  LoadMI.setOpcode(LoadOpcode);
+  LoadMI.addOperand(MCOperand::createReg(LoadDefRegister));
+  for (auto I = MI.operands_begin() + LoadOperandsBeginIdx,
+            E = MI.operands_end();
+       I != E; ++I)
+    if (auto MaybeOperand = MCIL.LowerMachineOperand(&MI, *I))
+      LoadMI.addOperand(MaybeOperand.getValue());
+
+  OutStreamer->EmitInstruction(LoadMI, getSubtargetInfo());
+}
 
 // Lower a stackmap of the form:
 // <id>, <shadowBytes>, ...
@@ -1071,7 +1093,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     // FIXME: We would like an efficient form for this, so we don't have to do a
     // lot of extra uniquing.
     EmitAndCountInstruction(MCInstBuilder(X86::CALLpcrel32)
-      .addExpr(MCSymbolRefExpr::Create(PICBase, OutContext)));
+      .addExpr(MCSymbolRefExpr::create(PICBase, OutContext)));
 
     // Emit the label.
     OutStreamer->EmitLabel(PICBase);
@@ -1100,12 +1122,12 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     // Now that we have emitted the label, lower the complex operand expression.
     MCSymbol *OpSym = MCInstLowering.GetSymbolFromOperand(MI->getOperand(2));
 
-    const MCExpr *DotExpr = MCSymbolRefExpr::Create(DotSym, OutContext);
+    const MCExpr *DotExpr = MCSymbolRefExpr::create(DotSym, OutContext);
     const MCExpr *PICBase =
-      MCSymbolRefExpr::Create(MF->getPICBaseSymbol(), OutContext);
-    DotExpr = MCBinaryExpr::CreateSub(DotExpr, PICBase, OutContext);
+      MCSymbolRefExpr::create(MF->getPICBaseSymbol(), OutContext);
+    DotExpr = MCBinaryExpr::createSub(DotExpr, PICBase, OutContext);
 
-    DotExpr = MCBinaryExpr::CreateAdd(MCSymbolRefExpr::Create(OpSym,OutContext),
+    DotExpr = MCBinaryExpr::createAdd(MCSymbolRefExpr::create(OpSym,OutContext),
                                       DotExpr, OutContext);
 
     EmitAndCountInstruction(MCInstBuilder(X86::ADD32ri)
@@ -1116,6 +1138,9 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   }
   case TargetOpcode::STATEPOINT:
     return LowerSTATEPOINT(*MI, MCInstLowering);
+
+  case TargetOpcode::FAULTING_LOAD_OP:
+    return LowerFAULTING_LOAD_OP(*MI, MCInstLowering);
 
   case TargetOpcode::STACKMAP:
     return LowerSTACKMAP(*MI);

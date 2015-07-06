@@ -24,6 +24,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -75,7 +76,7 @@ public:
   WinEHPrepare(const TargetMachine *TM = nullptr)
       : FunctionPass(ID) {
     if (TM)
-      TheTriple = Triple(TM->getTargetTriple());
+      TheTriple = TM->getTargetTriple();
   }
 
   bool runOnFunction(Function &Fn) override;
@@ -105,12 +106,12 @@ private:
                                 LandingPadInst *OutlinedLPad,
                                 const LandingPadInst *OriginalLPad,
                                 FrameVarInfoMap &VarInfo);
-  Function *createHandlerFunc(Type *RetTy, const Twine &Name, Module *M,
-                              Value *&ParentFP);
+  Function *createHandlerFunc(Function *ParentFn, Type *RetTy,
+                              const Twine &Name, Module *M, Value *&ParentFP);
   bool outlineHandler(ActionHandler *Action, Function *SrcFn,
                       LandingPadInst *LPad, BasicBlock *StartBB,
                       FrameVarInfoMap &VarInfo);
-  void addStubInvokeToHandlerIfNeeded(Function *Handler, Value *PersonalityFn);
+  void addStubInvokeToHandlerIfNeeded(Function *Handler);
 
   void mapLandingPadBlocks(LandingPadInst *LPad, LandingPadActions &Actions);
   CatchHandler *findCatchHandler(BasicBlock *BB, BasicBlock *&NextBB,
@@ -124,6 +125,7 @@ private:
 
   // All fields are reset by runOnFunction.
   DominatorTree *DT = nullptr;
+  const TargetLibraryInfo *LibInfo = nullptr;
   EHPersonality Personality = EHPersonality::Unknown;
   CatchHandlerMapTy CatchHandlerMap;
   CleanupHandlerMapTy CleanupHandlerMap;
@@ -377,13 +379,14 @@ bool WinEHPrepare::runOnFunction(Function &Fn) {
     return false;
 
   // Classify the personality to see what kind of preparation we need.
-  Personality = classifyEHPersonality(LPads.back()->getPersonalityFn());
+  Personality = classifyEHPersonality(Fn.getPersonalityFn());
 
   // Do nothing if this is not an MSVC personality.
   if (!isMSVCEHPersonality(Personality))
     return false;
 
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+  LibInfo = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
 
   // If there were any landing pads, prepareExceptionHandlers will make changes.
   prepareExceptionHandlers(Fn, LPads);
@@ -394,6 +397,7 @@ bool WinEHPrepare::doFinalization(Module &M) { return false; }
 
 void WinEHPrepare::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<DominatorTreeWrapperPass>();
+  AU.addRequired<TargetLibraryInfoWrapperPass>();
 }
 
 static bool isSelectorDispatch(BasicBlock *BB, BasicBlock *&CatchHandler,
@@ -1016,10 +1020,17 @@ bool WinEHPrepare::prepareExceptionHandlers(
   Builder.CreateCall(FrameEscapeFn, AllocasToEscape);
 
   if (SEHExceptionCodeSlot) {
-    if (SEHExceptionCodeSlot->hasNUses(0))
-      SEHExceptionCodeSlot->eraseFromParent();
-    else if (isAllocaPromotable(SEHExceptionCodeSlot))
+    if (isAllocaPromotable(SEHExceptionCodeSlot)) {
+      SmallPtrSet<BasicBlock *, 4> UserBlocks;
+      for (User *U : SEHExceptionCodeSlot->users()) {
+        if (auto *Inst = dyn_cast<Instruction>(U))
+          UserBlocks.insert(Inst->getParent());
+      }
       PromoteMemToReg(SEHExceptionCodeSlot, *DT);
+      // After the promotion, kill off dead instructions.
+      for (BasicBlock *BB : UserBlocks)
+        SimplifyInstructionsInBlock(BB, LibInfo);
+    }
   }
 
   // Clean up the handler action maps we created for this function
@@ -1029,6 +1040,7 @@ bool WinEHPrepare::prepareExceptionHandlers(
   CleanupHandlerMap.clear();
   HandlerToParentFP.clear();
   DT = nullptr;
+  LibInfo = nullptr;
   SEHExceptionCodeSlot = nullptr;
   EHBlocks.clear();
   NormalBlocks.clear();
@@ -1143,7 +1155,6 @@ void WinEHPrepare::completeNestedLandingPad(Function *ParentFn,
   ++II;
   // The instruction after the landing pad should now be a call to eh.actions.
   const Instruction *Recover = II;
-  assert(match(Recover, m_Intrinsic<Intrinsic::eh_actions>()));
   const IntrinsicInst *EHActions = cast<IntrinsicInst>(Recover);
 
   // Remap the return target in the nested handler.
@@ -1254,8 +1265,7 @@ static bool isCatchBlock(BasicBlock *BB) {
   return false;
 }
 
-static BasicBlock *createStubLandingPad(Function *Handler,
-                                        Value *PersonalityFn) {
+static BasicBlock *createStubLandingPad(Function *Handler) {
   // FIXME: Finish this!
   LLVMContext &Context = Handler->getContext();
   BasicBlock *StubBB = BasicBlock::Create(Context, "stub");
@@ -1264,7 +1274,7 @@ static BasicBlock *createStubLandingPad(Function *Handler,
   LandingPadInst *LPad = Builder.CreateLandingPad(
       llvm::StructType::get(Type::getInt8PtrTy(Context),
                             Type::getInt32Ty(Context), nullptr),
-      PersonalityFn, 0);
+      0);
   // Insert a call to llvm.eh.actions so that we don't try to outline this lpad.
   Function *ActionIntrin =
       Intrinsic::getDeclaration(Handler->getParent(), Intrinsic::eh_actions);
@@ -1279,8 +1289,7 @@ static BasicBlock *createStubLandingPad(Function *Handler,
 // landing pad if none is found.  The code that generates the .xdata tables for
 // the handler needs at least one landing pad to identify the parent function's
 // personality.
-void WinEHPrepare::addStubInvokeToHandlerIfNeeded(Function *Handler,
-                                                  Value *PersonalityFn) {
+void WinEHPrepare::addStubInvokeToHandlerIfNeeded(Function *Handler) {
   ReturnInst *Ret = nullptr;
   UnreachableInst *Unreached = nullptr;
   for (BasicBlock &BB : *Handler) {
@@ -1312,7 +1321,7 @@ void WinEHPrepare::addStubInvokeToHandlerIfNeeded(Function *Handler,
   // parent block.  We want to replace that with an invoke call, so we can
   // erase it now.
   OldRetBB->getTerminator()->eraseFromParent();
-  BasicBlock *StubLandingPad = createStubLandingPad(Handler, PersonalityFn);
+  BasicBlock *StubLandingPad = createStubLandingPad(Handler);
   Function *F =
       Intrinsic::getDeclaration(Handler->getParent(), Intrinsic::donothing);
   InvokeInst::Create(F, NewRetBB, StubLandingPad, None, "", OldRetBB);
@@ -1320,14 +1329,15 @@ void WinEHPrepare::addStubInvokeToHandlerIfNeeded(Function *Handler,
 
 // FIXME: Consider sinking this into lib/Target/X86 somehow. TargetLowering
 // usually doesn't build LLVM IR, so that's probably the wrong place.
-Function *WinEHPrepare::createHandlerFunc(Type *RetTy, const Twine &Name,
-                                          Module *M, Value *&ParentFP) {
+Function *WinEHPrepare::createHandlerFunc(Function *ParentFn, Type *RetTy,
+                                          const Twine &Name, Module *M,
+                                          Value *&ParentFP) {
   // x64 uses a two-argument prototype where the parent FP is the second
   // argument. x86 uses no arguments, just the incoming EBP value.
   LLVMContext &Context = M->getContext();
+  Type *Int8PtrType = Type::getInt8PtrTy(Context);
   FunctionType *FnType;
   if (TheTriple.getArch() == Triple::x86_64) {
-    Type *Int8PtrType = Type::getInt8PtrTy(Context);
     Type *ArgTys[2] = {Int8PtrType, Int8PtrType};
     FnType = FunctionType::get(RetTy, ArgTys, false);
   } else {
@@ -1344,9 +1354,13 @@ Function *WinEHPrepare::createHandlerFunc(Type *RetTy, const Twine &Name,
     assert(M);
     Function *FrameAddressFn =
         Intrinsic::getDeclaration(M, Intrinsic::frameaddress);
-    Value *Args[1] = {ConstantInt::get(Type::getInt32Ty(Context), 1)};
-    ParentFP = CallInst::Create(FrameAddressFn, Args, "parent_fp",
-                                &Handler->getEntryBlock());
+    Function *RecoverFPFn =
+        Intrinsic::getDeclaration(M, Intrinsic::x86_seh_recoverfp);
+    IRBuilder<> Builder(&Handler->getEntryBlock());
+    Value *EBP =
+        Builder.CreateCall(FrameAddressFn, {Builder.getInt32(1)}, "ebp");
+    Value *ParentI8Fn = Builder.CreateBitCast(ParentFn, Int8PtrType);
+    ParentFP = Builder.CreateCall(RecoverFPFn, {ParentI8Fn, EBP});
   }
   return Handler;
 }
@@ -1362,12 +1376,13 @@ bool WinEHPrepare::outlineHandler(ActionHandler *Action, Function *SrcFn,
   Value *ParentFP;
   Function *Handler;
   if (Action->getType() == Catch) {
-    Handler = createHandlerFunc(Int8PtrType, SrcFn->getName() + ".catch", M,
+    Handler = createHandlerFunc(SrcFn, Int8PtrType, SrcFn->getName() + ".catch", M,
                                 ParentFP);
   } else {
-    Handler = createHandlerFunc(Type::getVoidTy(Context),
+    Handler = createHandlerFunc(SrcFn, Type::getVoidTy(Context),
                                 SrcFn->getName() + ".cleanup", M, ParentFP);
   }
+  Handler->setPersonalityFn(SrcFn->getPersonalityFn());
   HandlerToParentFP[Handler] = ParentFP;
   Handler->addFnAttr("wineh-parent", SrcFn->getName());
   BasicBlock *Entry = &Handler->getEntryBlock();
@@ -1445,7 +1460,7 @@ bool WinEHPrepare::outlineHandler(ActionHandler *Action, Function *SrcFn,
   ClonedEntryBB->eraseFromParent();
 
   // Make sure we can identify the handler's personality later.
-  addStubInvokeToHandlerIfNeeded(Handler, LPad->getPersonalityFn());
+  addStubInvokeToHandlerIfNeeded(Handler);
 
   if (auto *CatchAction = dyn_cast<CatchHandler>(Action)) {
     WinEHCatchDirector *CatchDirector =
@@ -2286,7 +2301,7 @@ void WinEHPrepare::findCleanupHandlers(LandingPadActions &Actions,
         // value for this block but the value is a nullptr.  This means that
         // we have previously analyzed the block and determined that it did
         // not contain any cleanup code.  Based on the earlier analysis, we
-        // know the the block must end in either an unconditional branch, a
+        // know the block must end in either an unconditional branch, a
         // resume or a conditional branch that is predicated on a comparison
         // with a selector.  Either the resume or the selector dispatch
         // would terminate the search for cleanup code, so the unconditional
@@ -2385,40 +2400,43 @@ void WinEHPrepare::findCleanupHandlers(LandingPadActions &Actions,
           MaybeCall = MaybeCall->getNextNode();
       }
 
-      // Look for outlined finally calls.
-      if (CallSite FinallyCall = matchOutlinedFinallyCall(BB, MaybeCall)) {
-        Function *Fin = FinallyCall.getCalledFunction();
-        assert(Fin && "outlined finally call should be direct");
-        auto *Action = new CleanupHandler(BB);
-        Action->setHandlerBlockOrFunc(Fin);
-        Actions.insertCleanupHandler(Action);
-        CleanupHandlerMap[BB] = Action;
-        DEBUG(dbgs() << "  Found frontend-outlined finally call to "
-                     << Fin->getName() << " in block "
-                     << Action->getStartBlock()->getName() << "\n");
+      // Look for outlined finally calls on x64, since those happen to match the
+      // prototype provided by the runtime.
+      if (TheTriple.getArch() == Triple::x86_64) {
+        if (CallSite FinallyCall = matchOutlinedFinallyCall(BB, MaybeCall)) {
+          Function *Fin = FinallyCall.getCalledFunction();
+          assert(Fin && "outlined finally call should be direct");
+          auto *Action = new CleanupHandler(BB);
+          Action->setHandlerBlockOrFunc(Fin);
+          Actions.insertCleanupHandler(Action);
+          CleanupHandlerMap[BB] = Action;
+          DEBUG(dbgs() << "  Found frontend-outlined finally call to "
+                       << Fin->getName() << " in block "
+                       << Action->getStartBlock()->getName() << "\n");
 
-        // Split the block if there were more interesting instructions and look
-        // for finally calls in the normal successor block.
-        BasicBlock *SuccBB = BB;
-        if (FinallyCall.getInstruction() != BB->getTerminator() &&
-            FinallyCall.getInstruction()->getNextNode() !=
-                BB->getTerminator()) {
-          SuccBB =
-              SplitBlock(BB, FinallyCall.getInstruction()->getNextNode(), DT);
-        } else {
-          if (FinallyCall.isInvoke()) {
+          // Split the block if there were more interesting instructions and
+          // look for finally calls in the normal successor block.
+          BasicBlock *SuccBB = BB;
+          if (FinallyCall.getInstruction() != BB->getTerminator() &&
+              FinallyCall.getInstruction()->getNextNode() !=
+                  BB->getTerminator()) {
             SuccBB =
-                cast<InvokeInst>(FinallyCall.getInstruction())->getNormalDest();
+                SplitBlock(BB, FinallyCall.getInstruction()->getNextNode(), DT);
           } else {
-            SuccBB = BB->getUniqueSuccessor();
-            assert(SuccBB &&
-                   "splitOutlinedFinallyCalls didn't insert a branch");
+            if (FinallyCall.isInvoke()) {
+              SuccBB = cast<InvokeInst>(FinallyCall.getInstruction())
+                           ->getNormalDest();
+            } else {
+              SuccBB = BB->getUniqueSuccessor();
+              assert(SuccBB &&
+                     "splitOutlinedFinallyCalls didn't insert a branch");
+            }
           }
+          BB = SuccBB;
+          if (BB == EndBB)
+            return;
+          continue;
         }
-        BB = SuccBB;
-        if (BB == EndBB)
-          return;
-        continue;
       }
     }
 
@@ -2454,6 +2472,8 @@ void WinEHPrepare::findCleanupHandlers(LandingPadActions &Actions,
 void llvm::parseEHActions(
     const IntrinsicInst *II,
     SmallVectorImpl<std::unique_ptr<ActionHandler>> &Actions) {
+  assert(II->getIntrinsicID() == Intrinsic::eh_actions &&
+         "attempted to parse non eh.actions intrinsic");
   for (unsigned I = 0, E = II->getNumArgOperands(); I != E;) {
     uint64_t ActionKind =
         cast<ConstantInt>(II->getArgOperand(I))->getZExtValue();
@@ -2479,4 +2499,377 @@ void llvm::parseEHActions(
     }
   }
   std::reverse(Actions.begin(), Actions.end());
+}
+
+namespace {
+struct WinEHNumbering {
+  WinEHNumbering(WinEHFuncInfo &FuncInfo) : FuncInfo(FuncInfo),
+      CurrentBaseState(-1), NextState(0) {}
+
+  WinEHFuncInfo &FuncInfo;
+  int CurrentBaseState;
+  int NextState;
+
+  SmallVector<std::unique_ptr<ActionHandler>, 4> HandlerStack;
+  SmallPtrSet<const Function *, 4> VisitedHandlers;
+
+  int currentEHNumber() const {
+    return HandlerStack.empty() ? CurrentBaseState : HandlerStack.back()->getEHState();
+  }
+
+  void createUnwindMapEntry(int ToState, ActionHandler *AH);
+  void createTryBlockMapEntry(int TryLow, int TryHigh,
+                              ArrayRef<CatchHandler *> Handlers);
+  void processCallSite(MutableArrayRef<std::unique_ptr<ActionHandler>> Actions,
+                       ImmutableCallSite CS);
+  void popUnmatchedActions(int FirstMismatch);
+  void calculateStateNumbers(const Function &F);
+  void findActionRootLPads(const Function &F);
+};
+}
+
+void WinEHNumbering::createUnwindMapEntry(int ToState, ActionHandler *AH) {
+  WinEHUnwindMapEntry UME;
+  UME.ToState = ToState;
+  if (auto *CH = dyn_cast_or_null<CleanupHandler>(AH))
+    UME.Cleanup = cast<Function>(CH->getHandlerBlockOrFunc());
+  else
+    UME.Cleanup = nullptr;
+  FuncInfo.UnwindMap.push_back(UME);
+}
+
+void WinEHNumbering::createTryBlockMapEntry(int TryLow, int TryHigh,
+                                            ArrayRef<CatchHandler *> Handlers) {
+  // See if we already have an entry for this set of handlers.
+  // This is using iterators rather than a range-based for loop because
+  // if we find the entry we're looking for we'll need the iterator to erase it.
+  int NumHandlers = Handlers.size();
+  auto I = FuncInfo.TryBlockMap.begin();
+  auto E = FuncInfo.TryBlockMap.end();
+  for ( ; I != E; ++I) {
+    auto &Entry = *I;
+    if (Entry.HandlerArray.size() != (size_t)NumHandlers)
+      continue;
+    int N;
+    for (N = 0; N < NumHandlers; ++N) {
+      if (Entry.HandlerArray[N].Handler != Handlers[N]->getHandlerBlockOrFunc())
+        break; // breaks out of inner loop
+    }
+    // If all the handlers match, this is what we were looking for.
+    if (N == NumHandlers) {
+      break;
+    }
+  }
+
+  // If we found an existing entry for this set of handlers, extend the range
+  // but move the entry to the end of the map vector.  The order of entries
+  // in the map is critical to the way that the runtime finds handlers.
+  // FIXME: Depending on what has happened with block ordering, this may
+  //        incorrectly combine entries that should remain separate.
+  if (I != E) {
+    // Copy the existing entry.
+    WinEHTryBlockMapEntry Entry = *I;
+    Entry.TryLow = std::min(TryLow, Entry.TryLow);
+    Entry.TryHigh = std::max(TryHigh, Entry.TryHigh);
+    assert(Entry.TryLow <= Entry.TryHigh);
+    // Erase the old entry and add this one to the back.
+    FuncInfo.TryBlockMap.erase(I);
+    FuncInfo.TryBlockMap.push_back(Entry);
+    return;
+  }
+
+  // If we didn't find an entry, create a new one.
+  WinEHTryBlockMapEntry TBME;
+  TBME.TryLow = TryLow;
+  TBME.TryHigh = TryHigh;
+  assert(TBME.TryLow <= TBME.TryHigh);
+  for (CatchHandler *CH : Handlers) {
+    WinEHHandlerType HT;
+    if (CH->getSelector()->isNullValue()) {
+      HT.Adjectives = 0x40;
+      HT.TypeDescriptor = nullptr;
+    } else {
+      auto *GV = cast<GlobalVariable>(CH->getSelector()->stripPointerCasts());
+      // Selectors are always pointers to GlobalVariables with 'struct' type.
+      // The struct has two fields, adjectives and a type descriptor.
+      auto *CS = cast<ConstantStruct>(GV->getInitializer());
+      HT.Adjectives =
+          cast<ConstantInt>(CS->getAggregateElement(0U))->getZExtValue();
+      HT.TypeDescriptor =
+          cast<GlobalVariable>(CS->getAggregateElement(1)->stripPointerCasts());
+    }
+    HT.Handler = cast<Function>(CH->getHandlerBlockOrFunc());
+    HT.CatchObjRecoverIdx = CH->getExceptionVarIndex();
+    TBME.HandlerArray.push_back(HT);
+  }
+  FuncInfo.TryBlockMap.push_back(TBME);
+}
+
+static void print_name(const Value *V) {
+#ifndef NDEBUG
+  if (!V) {
+    DEBUG(dbgs() << "null");
+    return;
+  }
+
+  if (const auto *F = dyn_cast<Function>(V))
+    DEBUG(dbgs() << F->getName());
+  else
+    DEBUG(V->dump());
+#endif
+}
+
+void WinEHNumbering::processCallSite(
+    MutableArrayRef<std::unique_ptr<ActionHandler>> Actions,
+    ImmutableCallSite CS) {
+  DEBUG(dbgs() << "processCallSite (EH state = " << currentEHNumber()
+               << ") for: ");
+  print_name(CS ? CS.getCalledValue() : nullptr);
+  DEBUG(dbgs() << '\n');
+
+  DEBUG(dbgs() << "HandlerStack: \n");
+  for (int I = 0, E = HandlerStack.size(); I < E; ++I) {
+    DEBUG(dbgs() << "  ");
+    print_name(HandlerStack[I]->getHandlerBlockOrFunc());
+    DEBUG(dbgs() << '\n');
+  }
+  DEBUG(dbgs() << "Actions: \n");
+  for (int I = 0, E = Actions.size(); I < E; ++I) {
+    DEBUG(dbgs() << "  ");
+    print_name(Actions[I]->getHandlerBlockOrFunc());
+    DEBUG(dbgs() << '\n');
+  }
+  int FirstMismatch = 0;
+  for (int E = std::min(HandlerStack.size(), Actions.size()); FirstMismatch < E;
+       ++FirstMismatch) {
+    if (HandlerStack[FirstMismatch]->getHandlerBlockOrFunc() !=
+        Actions[FirstMismatch]->getHandlerBlockOrFunc())
+      break;
+  }
+
+  // Remove unmatched actions from the stack and process their EH states.
+  popUnmatchedActions(FirstMismatch);
+
+  DEBUG(dbgs() << "Pushing actions for CallSite: ");
+  print_name(CS ? CS.getCalledValue() : nullptr);
+  DEBUG(dbgs() << '\n');
+
+  bool LastActionWasCatch = false;
+  const LandingPadInst *LastRootLPad = nullptr;
+  for (size_t I = FirstMismatch; I != Actions.size(); ++I) {
+    // We can reuse eh states when pushing two catches for the same invoke.
+    bool CurrActionIsCatch = isa<CatchHandler>(Actions[I].get());
+    auto *Handler = cast<Function>(Actions[I]->getHandlerBlockOrFunc());
+    // Various conditions can lead to a handler being popped from the
+    // stack and re-pushed later.  That shouldn't create a new state.
+    // FIXME: Can code optimization lead to re-used handlers?
+    if (FuncInfo.HandlerEnclosedState.count(Handler)) {
+      // If we already assigned the state enclosed by this handler re-use it.
+      Actions[I]->setEHState(FuncInfo.HandlerEnclosedState[Handler]);
+      continue;
+    }
+    const LandingPadInst* RootLPad = FuncInfo.RootLPad[Handler];
+    if (CurrActionIsCatch && LastActionWasCatch && RootLPad == LastRootLPad) {
+      DEBUG(dbgs() << "setEHState for handler to " << currentEHNumber() << "\n");
+      Actions[I]->setEHState(currentEHNumber());
+    } else {
+      DEBUG(dbgs() << "createUnwindMapEntry(" << currentEHNumber() << ", ");
+      print_name(Actions[I]->getHandlerBlockOrFunc());
+      DEBUG(dbgs() << ") with EH state " << NextState << "\n");
+      createUnwindMapEntry(currentEHNumber(), Actions[I].get());
+      DEBUG(dbgs() << "setEHState for handler to " << NextState << "\n");
+      Actions[I]->setEHState(NextState);
+      NextState++;
+    }
+    HandlerStack.push_back(std::move(Actions[I]));
+    LastActionWasCatch = CurrActionIsCatch;
+    LastRootLPad = RootLPad;
+  }
+
+  // This is used to defer numbering states for a handler until after the
+  // last time it appears in an invoke action list.
+  if (CS.isInvoke()) {
+    for (int I = 0, E = HandlerStack.size(); I < E; ++I) {
+      auto *Handler = cast<Function>(HandlerStack[I]->getHandlerBlockOrFunc());
+      if (FuncInfo.LastInvoke[Handler] != cast<InvokeInst>(CS.getInstruction()))
+        continue;
+      FuncInfo.LastInvokeVisited[Handler] = true;
+      DEBUG(dbgs() << "Last invoke of ");
+      print_name(Handler);
+      DEBUG(dbgs() << " has been visited.\n");
+    }
+  }
+
+  DEBUG(dbgs() << "In EHState " << currentEHNumber() << " for CallSite: ");
+  print_name(CS ? CS.getCalledValue() : nullptr);
+  DEBUG(dbgs() << '\n');
+}
+
+void WinEHNumbering::popUnmatchedActions(int FirstMismatch) {
+  // Don't recurse while we are looping over the handler stack.  Instead, defer
+  // the numbering of the catch handlers until we are done popping.
+  SmallVector<CatchHandler *, 4> PoppedCatches;
+  for (int I = HandlerStack.size() - 1; I >= FirstMismatch; --I) {
+    std::unique_ptr<ActionHandler> Handler = HandlerStack.pop_back_val();
+    if (isa<CatchHandler>(Handler.get()))
+      PoppedCatches.push_back(cast<CatchHandler>(Handler.release()));
+  }
+
+  int TryHigh = NextState - 1;
+  int LastTryLowIdx = 0;
+  for (int I = 0, E = PoppedCatches.size(); I != E; ++I) {
+    CatchHandler *CH = PoppedCatches[I];
+    DEBUG(dbgs() << "Popped handler with state " << CH->getEHState() << "\n");
+    if (I + 1 == E || CH->getEHState() != PoppedCatches[I + 1]->getEHState()) {
+      int TryLow = CH->getEHState();
+      auto Handlers =
+          makeArrayRef(&PoppedCatches[LastTryLowIdx], I - LastTryLowIdx + 1);
+      DEBUG(dbgs() << "createTryBlockMapEntry(" << TryLow << ", " << TryHigh);
+      for (size_t J = 0; J < Handlers.size(); ++J) {
+        DEBUG(dbgs() << ", ");
+        print_name(Handlers[J]->getHandlerBlockOrFunc());
+      }
+      DEBUG(dbgs() << ")\n");
+      createTryBlockMapEntry(TryLow, TryHigh, Handlers);
+      LastTryLowIdx = I + 1;
+    }
+  }
+
+  for (CatchHandler *CH : PoppedCatches) {
+    if (auto *F = dyn_cast<Function>(CH->getHandlerBlockOrFunc())) {
+      if (FuncInfo.LastInvokeVisited[F]) {
+        DEBUG(dbgs() << "Assigning base state " << NextState << " to ");
+        print_name(F);
+        DEBUG(dbgs() << '\n');
+        FuncInfo.HandlerBaseState[F] = NextState;
+        DEBUG(dbgs() << "createUnwindMapEntry(" << currentEHNumber()
+                     << ", null)\n");
+        createUnwindMapEntry(currentEHNumber(), nullptr);
+        ++NextState;
+        calculateStateNumbers(*F);
+      }
+      else {
+        DEBUG(dbgs() << "Deferring handling of ");
+        print_name(F);
+        DEBUG(dbgs() << " until last invoke visited.\n");
+      }
+    }
+    delete CH;
+  }
+}
+
+void WinEHNumbering::calculateStateNumbers(const Function &F) {
+  auto I = VisitedHandlers.insert(&F);
+  if (!I.second)
+    return; // We've already visited this handler, don't renumber it.
+
+  int OldBaseState = CurrentBaseState;
+  if (FuncInfo.HandlerBaseState.count(&F)) {
+    CurrentBaseState = FuncInfo.HandlerBaseState[&F];
+  }
+
+  size_t SavedHandlerStackSize = HandlerStack.size();
+
+  DEBUG(dbgs() << "Calculating state numbers for: " << F.getName() << '\n');
+  SmallVector<std::unique_ptr<ActionHandler>, 4> ActionList;
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      const auto *CI = dyn_cast<CallInst>(&I);
+      if (!CI || CI->doesNotThrow())
+        continue;
+      processCallSite(None, CI);
+    }
+    const auto *II = dyn_cast<InvokeInst>(BB.getTerminator());
+    if (!II)
+      continue;
+    const LandingPadInst *LPI = II->getLandingPadInst();
+    auto *ActionsCall = dyn_cast<IntrinsicInst>(LPI->getNextNode());
+    if (!ActionsCall)
+      continue;
+    parseEHActions(ActionsCall, ActionList);
+    if (ActionList.empty())
+      continue;
+    processCallSite(ActionList, II);
+    ActionList.clear();
+    FuncInfo.LandingPadStateMap[LPI] = currentEHNumber();
+    DEBUG(dbgs() << "Assigning state " << currentEHNumber()
+                  << " to landing pad at " << LPI->getParent()->getName()
+                  << '\n');
+  }
+
+  // Pop any actions that were pushed on the stack for this function.
+  popUnmatchedActions(SavedHandlerStackSize);
+
+  DEBUG(dbgs() << "Assigning max state " << NextState - 1
+               << " to " << F.getName() << '\n');
+  FuncInfo.CatchHandlerMaxState[&F] = NextState - 1;
+
+  CurrentBaseState = OldBaseState;
+}
+
+// This function follows the same basic traversal as calculateStateNumbers
+// but it is necessary to identify the root landing pad associated
+// with each action before we start assigning state numbers.
+void WinEHNumbering::findActionRootLPads(const Function &F) {
+  auto I = VisitedHandlers.insert(&F);
+  if (!I.second)
+    return; // We've already visited this handler, don't revisit it.
+
+  SmallVector<std::unique_ptr<ActionHandler>, 4> ActionList;
+  for (const BasicBlock &BB : F) {
+    const auto *II = dyn_cast<InvokeInst>(BB.getTerminator());
+    if (!II)
+      continue;
+    const LandingPadInst *LPI = II->getLandingPadInst();
+    auto *ActionsCall = dyn_cast<IntrinsicInst>(LPI->getNextNode());
+    if (!ActionsCall)
+      continue;
+
+    assert(ActionsCall->getIntrinsicID() == Intrinsic::eh_actions);
+    parseEHActions(ActionsCall, ActionList);
+    if (ActionList.empty())
+      continue;
+    for (int I = 0, E = ActionList.size(); I < E; ++I) {
+      if (auto *Handler
+              = dyn_cast<Function>(ActionList[I]->getHandlerBlockOrFunc())) {
+        FuncInfo.LastInvoke[Handler] = II;
+        // Don't replace the root landing pad if we previously saw this
+        // handler in a different function.
+        if (FuncInfo.RootLPad.count(Handler) &&
+            FuncInfo.RootLPad[Handler]->getParent()->getParent() != &F)
+          continue;
+        DEBUG(dbgs() << "Setting root lpad for ");
+        print_name(Handler);
+        DEBUG(dbgs() << " to " << LPI->getParent()->getName() << '\n');
+        FuncInfo.RootLPad[Handler] = LPI;
+      }
+    }
+    // Walk the actions again and look for nested handlers.  This has to
+    // happen after all of the actions have been processed in the current
+    // function.
+    for (int I = 0, E = ActionList.size(); I < E; ++I)
+      if (auto *Handler
+              = dyn_cast<Function>(ActionList[I]->getHandlerBlockOrFunc()))
+        findActionRootLPads(*Handler);
+    ActionList.clear();
+  }
+}
+
+void llvm::calculateWinCXXEHStateNumbers(const Function *ParentFn,
+                                         WinEHFuncInfo &FuncInfo) {
+  // Return if it's already been done.
+  if (!FuncInfo.LandingPadStateMap.empty())
+    return;
+
+  WinEHNumbering Num(FuncInfo);
+  Num.findActionRootLPads(*ParentFn);
+  // The VisitedHandlers list is used by both findActionRootLPads and
+  // calculateStateNumbers, but both functions need to visit all handlers.
+  Num.VisitedHandlers.clear();
+  Num.calculateStateNumbers(*ParentFn);
+  // Pop everything on the handler stack.
+  // It may be necessary to call this more than once because a handler can
+  // be pushed on the stack as a result of clearing the stack.
+  while (!Num.HandlerStack.empty())
+    Num.processCallSite(None, ImmutableCallSite());
 }
