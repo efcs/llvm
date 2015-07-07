@@ -234,6 +234,10 @@ public:
   const T        *getEntry(uint32_t Section, uint32_t Entry) const;
   template <typename T>
   const T *getEntry(const Elf_Shdr *Section, uint32_t Entry) const;
+
+  const Elf_Shdr *getDotSymtabSec() const { return dot_symtab_sec; }
+  const Elf_Shdr *getDotDynSymSec() const { return DotDynSymSec; }
+
   ErrorOr<StringRef> getStringTable(const Elf_Shdr *Section) const;
   const char *getDynamicString(uintX_t Offset) const;
   ErrorOr<StringRef> getSymbolVersion(const Elf_Shdr *section,
@@ -366,7 +370,6 @@ public:
   ErrorOr<StringRef> getSymbolName(const Elf_Sym *Symb, bool IsDynamic) const;
 
   ErrorOr<StringRef> getSectionName(const Elf_Shdr *Section) const;
-  uint64_t getSymbolIndex(const Elf_Sym *sym) const;
   ErrorOr<ArrayRef<uint8_t> > getSectionContents(const Elf_Shdr *Sec) const;
   StringRef getLoadName() const;
 };
@@ -743,18 +746,6 @@ ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &EC)
   }
 
   EC = std::error_code();
-}
-
-// Get the symbol table index in the symtab section given a symbol
-template <class ELFT>
-uint64_t ELFFile<ELFT>::getSymbolIndex(const Elf_Sym *Sym) const {
-  uintptr_t SymLoc = uintptr_t(Sym);
-  uintptr_t SymTabLoc = uintptr_t(base() + dot_symtab_sec->sh_offset);
-  assert(SymLoc > SymTabLoc && "Symbol not in symbol table!");
-  uint64_t SymOffset = SymLoc - SymTabLoc;
-  assert(SymOffset % dot_symtab_sec->sh_entsize == 0 &&
-         "Symbol not multiple of symbol size!");
-  return SymOffset / dot_symtab_sec->sh_entsize;
 }
 
 template <class ELFT>

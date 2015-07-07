@@ -212,9 +212,7 @@ static const Target *getTarget(const ObjectFile *Obj = nullptr) {
 }
 
 bool llvm::RelocAddressLess(RelocationRef a, RelocationRef b) {
-  uint64_t a_addr = a.getOffset();
-  uint64_t b_addr = b.getOffset();
-  return a_addr < b_addr;
+  return a.getOffset() < b.getOffset();
 }
 
 namespace {
@@ -433,9 +431,10 @@ static std::error_code getRelocationValueString(const COFFObjectFile *Obj,
                                                 const RelocationRef &Rel,
                                                 SmallVectorImpl<char> &Result) {
   symbol_iterator SymI = Rel.getSymbol();
-  StringRef SymName;
-  if (std::error_code EC = SymI->getName(SymName))
+  ErrorOr<StringRef> SymNameOrErr = SymI->getName();
+  if (std::error_code EC = SymNameOrErr.getError())
     return EC;
+  StringRef SymName = *SymNameOrErr;
   Result.append(SymName.begin(), SymName.end());
   return std::error_code();
 }
@@ -454,16 +453,15 @@ static void printRelocationTargetName(const MachOObjectFile *O,
 
     for (const SymbolRef &Symbol : O->symbols()) {
       std::error_code ec;
-      uint64_t Addr;
-      StringRef Name;
-
-      if ((ec = Symbol.getAddress(Addr)))
+      ErrorOr<uint64_t> Addr = Symbol.getAddress();
+      if ((ec = Addr.getError()))
         report_fatal_error(ec.message());
-      if (Addr != Val)
+      if (*Addr != Val)
         continue;
-      if ((ec = Symbol.getName(Name)))
-        report_fatal_error(ec.message());
-      fmt << Name;
+      ErrorOr<StringRef> Name = Symbol.getName();
+      if (std::error_code EC = Name.getError())
+        report_fatal_error(EC.message());
+      fmt << *Name;
       return;
     }
 
@@ -493,7 +491,9 @@ static void printRelocationTargetName(const MachOObjectFile *O,
   if (isExtern) {
     symbol_iterator SI = O->symbol_begin();
     advance(SI, Val);
-    SI->getName(S);
+    ErrorOr<StringRef> SOrErr = SI->getName();
+    if (!error(SOrErr.getError()))
+      S = *SOrErr;
   } else {
     section_iterator SI = O->section_begin();
     // Adjust for the fact that sections are 1-indexed.
@@ -821,19 +821,20 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     std::vector<std::pair<uint64_t, StringRef>> Symbols;
     for (const SymbolRef &Symbol : Obj->symbols()) {
       if (Section.containsSymbol(Symbol)) {
-        uint64_t Address;
-        if (error(Symbol.getAddress(Address)))
+        ErrorOr<uint64_t> AddressOrErr = Symbol.getAddress();
+        if (error(AddressOrErr.getError()))
           break;
+        uint64_t Address = *AddressOrErr;
         if (Address == UnknownAddress)
           continue;
         Address -= SectionAddr;
         if (Address >= SectSize)
           continue;
 
-        StringRef Name;
-        if (error(Symbol.getName(Name)))
+        ErrorOr<StringRef> Name = Symbol.getName();
+        if (error(Name.getError()))
           break;
-        Symbols.push_back(std::make_pair(Address, Name));
+        Symbols.push_back(std::make_pair(Address, *Name));
       }
     }
 
@@ -1110,19 +1111,23 @@ void llvm::PrintSymbolTable(const ObjectFile *o) {
     return;
   }
   for (const SymbolRef &Symbol : o->symbols()) {
-    uint64_t Address;
+    ErrorOr<uint64_t> AddressOrError = Symbol.getAddress();
+    if (error(AddressOrError.getError()))
+      continue;
+    uint64_t Address = *AddressOrError;
     SymbolRef::Type Type = Symbol.getType();
     uint32_t Flags = Symbol.getFlags();
     section_iterator Section = o->section_end();
-    if (error(Symbol.getAddress(Address)))
-      continue;
     if (error(Symbol.getSection(Section)))
       continue;
     StringRef Name;
     if (Type == SymbolRef::ST_Debug && Section != o->section_end()) {
       Section->getName(Name);
-    } else if (error(Symbol.getName(Name))) {
-      continue;
+    } else {
+      ErrorOr<StringRef> NameOrErr = Symbol.getName();
+      if (error(NameOrErr.getError()))
+        continue;
+      Name = *NameOrErr;
     }
 
     bool Global = Flags & SymbolRef::SF_Global;
