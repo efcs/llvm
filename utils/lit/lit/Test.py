@@ -224,7 +224,7 @@ class Test:
                 return True
 
             # If this is an exact match for one of the features, it fails.
-            if item in self.config.available_features:
+            if self.config.feature_evaluator(item, self.config):
                 return True
 
             # If this is a part of the target triple, it fails.

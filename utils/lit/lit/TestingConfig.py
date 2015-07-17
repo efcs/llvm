@@ -3,6 +3,16 @@ import sys
 
 OldPy = sys.version_info[0] == 2 and sys.version_info[1] < 7
 
+
+
+class DefaultFeatureEvaluator(object):
+    def __init__(self):
+        pass
+
+    def evaluate(self, strExpr, config):
+        return (strExpr in config.available_features or
+                strExpr in config.available_features_dict)
+
 class TestingConfig:
     """"
     TestingConfig - Information on the tests inside a suite.
@@ -58,6 +68,8 @@ class TestingConfig:
             if litConfig.valgrindLeakCheck:
                 available_features.append('vg_leak')
 
+        available_features_dict = {}
+
         return TestingConfig(None,
                              name = '<unnamed>',
                              suffixes = set(),
@@ -69,6 +81,7 @@ class TestingConfig:
                              test_source_root = None,
                              excludes = [],
                              available_features = available_features,
+                             available_features_dict = available_features_dict,
                              pipefail = True)
 
     def load_from_path(self, path, litConfig):
@@ -118,7 +131,9 @@ class TestingConfig:
     def __init__(self, parent, name, suffixes, test_format,
                  environment, substitutions, unsupported,
                  test_exec_root, test_source_root, excludes,
-                 available_features, pipefail, limit_to_features = []):
+                 available_features, available_features_dict, pipefail,
+                 limit_to_features = [],
+                 feature_evaluator = None):
         self.parent = parent
         self.name = str(name)
         self.suffixes = set(suffixes)
@@ -130,11 +145,15 @@ class TestingConfig:
         self.test_source_root = test_source_root
         self.excludes = set(excludes)
         self.available_features = set(available_features)
+        self.available_features_dict = dict(available_features_dict)
         self.pipefail = pipefail
         # This list is used by TestRunner.py to restrict running only tests that
         # require one of the features in this list if this list is non-empty.
         # Configurations can set this list to restrict the set of tests to run.
         self.limit_to_features = set(limit_to_features)
+        if feature_evaluator is None:
+            feature_evaluator = DefaultFeatureEvaluator()
+        self.feature_evaluator = feature_evaluator
 
     def finish(self, litConfig):
         """finish() - Finish this config object, after loading is complete."""

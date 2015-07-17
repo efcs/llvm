@@ -389,7 +389,8 @@ def parseIntegratedTestScriptCommands(source_path):
 
 
 def parseIntegratedTestScript(test, normalize_slashes=False,
-                              extra_substitutions=[], require_script=True):
+                              extra_substitutions=[],
+                              require_script=True):
     """parseIntegratedTestScript - Scan an LLVM/Clang style integrated test
     script and extract the lines to 'RUN' as well as 'XFAIL' and 'REQUIRES'
     and 'UNSUPPORTED' information. The RUN lines also will have variable
@@ -499,15 +500,17 @@ def parseIntegratedTestScript(test, normalize_slashes=False,
         return lit.Test.Result(Test.UNRESOLVED,
                                "Test has unterminated run lines (with '\\')")
 
+    evaluator = test.config.feature_evaluator
+
     # Check that we have the required features:
     missing_required_features = [f for f in requires
-                                 if f not in test.config.available_features]
+                                 if not evaluator.evaluate(f, test.config)]
     if missing_required_features:
         msg = ', '.join(missing_required_features)
         return lit.Test.Result(Test.UNSUPPORTED,
                                "Test requires the following features: %s" % msg)
     unsupported_features = [f for f in unsupported
-                            if f in test.config.available_features]
+                            if evaluator.evaluate(f, test.config)]
     if unsupported_features:
         msg = ', '.join(unsupported_features)
         return lit.Test.Result(Test.UNSUPPORTED,
