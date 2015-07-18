@@ -25,31 +25,37 @@ namespace {
 // List of canonical FPU names (use getFPUSynonym) and which architectural
 // features they correspond to (use getFPUFeatures).
 // FIXME: TableGen this.
+// The entries must appear in the order listed in ARM::FPUKind for correct indexing
 struct {
   const char * Name;
   ARM::FPUKind ID;
-  unsigned FPUVersion; ///< Corresponds directly to the FP arch version number.
+  ARM::FPUVersion FPUVersion;
   ARM::NeonSupportLevel NeonSupport;
   ARM::FPURestriction Restriction;
 } FPUNames[] = {
-  { "invalid",       ARM::FK_INVALID,       0, ARM::NS_None,   ARM::FR_None},
-  { "none",          ARM::FK_NONE,          0, ARM::NS_None,   ARM::FR_None},
-  { "vfp",           ARM::FK_VFP,           2, ARM::NS_None,   ARM::FR_None},
-  { "vfpv2",         ARM::FK_VFPV2,         2, ARM::NS_None,   ARM::FR_None},
-  { "vfpv3",         ARM::FK_VFPV3,         3, ARM::NS_None,   ARM::FR_None},
-  { "vfpv3-d16",     ARM::FK_VFPV3_D16,     3, ARM::NS_None,   ARM::FR_D16},
-  { "vfpv4",         ARM::FK_VFPV4,         4, ARM::NS_None,   ARM::FR_None},
-  { "vfpv4-d16",     ARM::FK_VFPV4_D16,     4, ARM::NS_None,   ARM::FR_D16},
-  { "fpv4-sp-d16",   ARM::FK_FPV4_SP_D16,   4, ARM::NS_None,   ARM::FR_SP_D16},
-  { "fpv5-d16",      ARM::FK_FPV5_D16,      5, ARM::NS_None,   ARM::FR_D16},
-  { "fpv5-sp-d16",   ARM::FK_FPV5_SP_D16,   5, ARM::NS_None,   ARM::FR_SP_D16},
-  { "fp-armv8",      ARM::FK_FP_ARMV8,      5, ARM::NS_None,   ARM::FR_None},
-  { "neon",          ARM::FK_NEON,          3, ARM::NS_Neon,   ARM::FR_None},
-  { "neon-vfpv4",    ARM::FK_NEON_VFPV4,    4, ARM::NS_Neon,   ARM::FR_None},
-  { "neon-fp-armv8", ARM::FK_NEON_FP_ARMV8, 5, ARM::NS_Neon,   ARM::FR_None},
+  { "invalid",        ARM::FK_INVALID,        ARM::FV_NONE,       ARM::NS_None,   ARM::FR_None},
+  { "none",           ARM::FK_NONE,           ARM::FV_NONE,       ARM::NS_None,   ARM::FR_None},
+  { "vfp",            ARM::FK_VFP,            ARM::FV_VFPV2,      ARM::NS_None,   ARM::FR_None},
+  { "vfpv2",          ARM::FK_VFPV2,          ARM::FV_VFPV2,      ARM::NS_None,   ARM::FR_None},
+  { "vfpv3",          ARM::FK_VFPV3,          ARM::FV_VFPV3,      ARM::NS_None,   ARM::FR_None},
+  { "vfpv3-fp16",     ARM::FK_VFPV3_FP16,     ARM::FV_VFPV3_FP16, ARM::NS_None,   ARM::FR_None},
+  { "vfpv3-d16",      ARM::FK_VFPV3_D16,      ARM::FV_VFPV3,      ARM::NS_None,   ARM::FR_D16},
+  { "vfpv3-d16-fp16", ARM::FK_VFPV3_D16_FP16, ARM::FV_VFPV3_FP16, ARM::NS_None,   ARM::FR_D16},
+  { "vfpv3xd",        ARM::FK_VFPV3XD,        ARM::FV_VFPV3,      ARM::NS_None,   ARM::FR_SP_D16},
+  { "vfpv3xd-fp16",   ARM::FK_VFPV3XD_FP16,   ARM::FV_VFPV3_FP16, ARM::NS_None,   ARM::FR_SP_D16},
+  { "vfpv4",          ARM::FK_VFPV4,          ARM::FV_VFPV4,      ARM::NS_None,   ARM::FR_None},
+  { "vfpv4-d16",      ARM::FK_VFPV4_D16,      ARM::FV_VFPV4,      ARM::NS_None,   ARM::FR_D16},
+  { "fpv4-sp-d16",    ARM::FK_FPV4_SP_D16,    ARM::FV_VFPV4,      ARM::NS_None,   ARM::FR_SP_D16},
+  { "fpv5-d16",       ARM::FK_FPV5_D16,       ARM::FV_VFPV5,      ARM::NS_None,   ARM::FR_D16},
+  { "fpv5-sp-d16",    ARM::FK_FPV5_SP_D16,    ARM::FV_VFPV5,      ARM::NS_None,   ARM::FR_SP_D16},
+  { "fp-armv8",       ARM::FK_FP_ARMV8,       ARM::FV_VFPV5,      ARM::NS_None,   ARM::FR_None},
+  { "neon",           ARM::FK_NEON,           ARM::FV_VFPV3,      ARM::NS_Neon,   ARM::FR_None},
+  { "neon-fp16",      ARM::FK_NEON_FP16,      ARM::FV_VFPV3_FP16, ARM::NS_Neon,   ARM::FR_None},
+  { "neon-vfpv4",     ARM::FK_NEON_VFPV4,     ARM::FV_VFPV4,      ARM::NS_Neon,   ARM::FR_None},
+  { "neon-fp-armv8",  ARM::FK_NEON_FP_ARMV8,  ARM::FV_VFPV5,      ARM::NS_Neon,   ARM::FR_None},
   { "crypto-neon-fp-armv8",
-              ARM::FK_CRYPTO_NEON_FP_ARMV8, 5, ARM::NS_Crypto, ARM::FR_None},
-  { "softvfp",       ARM::FK_SOFTVFP,       0, ARM::NS_None,   ARM::FR_None},
+               ARM::FK_CRYPTO_NEON_FP_ARMV8,  ARM::FV_VFPV5,      ARM::NS_Crypto, ARM::FR_None},
+  { "softvfp",        ARM::FK_SOFTVFP,        ARM::FV_NONE,       ARM::NS_None,   ARM::FR_None},
 };
 
 // List of canonical arch names (use getArchSynonym).
@@ -132,93 +138,94 @@ struct {
 struct {
   const char *Name;
   ARM::ArchKind ArchID;
-  bool Default;
+  ARM::FPUKind DefaultFPU;
+  bool Default; // is $Name the default CPU for $ArchID ?
 } CPUNames[] = {
-  { "arm2",          ARM::AK_ARMV2,    true },
-  { "arm3",          ARM::AK_ARMV2A,   true },
-  { "arm6",          ARM::AK_ARMV3,    true },
-  { "arm7m",         ARM::AK_ARMV3M,   true },
-  { "arm8",          ARM::AK_ARMV4,    false },
-  { "arm810",        ARM::AK_ARMV4,    false },
-  { "strongarm",     ARM::AK_ARMV4,    true },
-  { "strongarm110",  ARM::AK_ARMV4,    false },
-  { "strongarm1100", ARM::AK_ARMV4,    false },
-  { "strongarm1110", ARM::AK_ARMV4,    false },
-  { "arm7tdmi",      ARM::AK_ARMV4T,   true },
-  { "arm7tdmi-s",    ARM::AK_ARMV4T,   false },
-  { "arm710t",       ARM::AK_ARMV4T,   false },
-  { "arm720t",       ARM::AK_ARMV4T,   false },
-  { "arm9",          ARM::AK_ARMV4T,   false },
-  { "arm9tdmi",      ARM::AK_ARMV4T,   false },
-  { "arm920",        ARM::AK_ARMV4T,   false },
-  { "arm920t",       ARM::AK_ARMV4T,   false },
-  { "arm922t",       ARM::AK_ARMV4T,   false },
-  { "arm9312",       ARM::AK_ARMV4T,   false },
-  { "arm940t",       ARM::AK_ARMV4T,   false },
-  { "ep9312",        ARM::AK_ARMV4T,   false },
-  { "arm10tdmi",     ARM::AK_ARMV5T,   true },
-  { "arm1020t",      ARM::AK_ARMV5T,   false },
-  { "arm9e",         ARM::AK_ARMV5TE,  false },
-  { "arm946e-s",     ARM::AK_ARMV5TE,  false },
-  { "arm966e-s",     ARM::AK_ARMV5TE,  false },
-  { "arm968e-s",     ARM::AK_ARMV5TE,  false },
-  { "arm10e",        ARM::AK_ARMV5TE,  false },
-  { "arm1020e",      ARM::AK_ARMV5TE,  false },
-  { "arm1022e",      ARM::AK_ARMV5TE,  true },
-  { "iwmmxt",        ARM::AK_ARMV5TE,  false },
-  { "xscale",        ARM::AK_ARMV5TE,  false },
-  { "arm926ej-s",    ARM::AK_ARMV5TEJ, true },
-  { "arm1136jf-s",   ARM::AK_ARMV6,    true },
-  { "arm1176j-s",    ARM::AK_ARMV6K,   false },
-  { "arm1176jz-s",   ARM::AK_ARMV6K,   false },
-  { "mpcore",        ARM::AK_ARMV6K,   false },
-  { "mpcorenovfp",   ARM::AK_ARMV6K,   false },
-  { "arm1176jzf-s",  ARM::AK_ARMV6K,   true },
-  { "arm1176jzf-s",  ARM::AK_ARMV6Z,   true },
-  { "arm1176jzf-s",  ARM::AK_ARMV6ZK,  true },
-  { "arm1156t2-s",   ARM::AK_ARMV6T2,  true },
-  { "arm1156t2f-s",  ARM::AK_ARMV6T2,  false },
-  { "cortex-m0",     ARM::AK_ARMV6M,   true },
-  { "cortex-m0plus", ARM::AK_ARMV6M,   false },
-  { "cortex-m1",     ARM::AK_ARMV6M,   false },
-  { "sc000",         ARM::AK_ARMV6M,   false },
-  { "cortex-a5",     ARM::AK_ARMV7A,   false },
-  { "cortex-a7",     ARM::AK_ARMV7A,   false },
-  { "cortex-a8",     ARM::AK_ARMV7A,   true },
-  { "cortex-a9",     ARM::AK_ARMV7A,   false },
-  { "cortex-a12",    ARM::AK_ARMV7A,   false },
-  { "cortex-a15",    ARM::AK_ARMV7A,   false },
-  { "cortex-a17",    ARM::AK_ARMV7A,   false },
-  { "krait",         ARM::AK_ARMV7A,   false },
-  { "cortex-r4",     ARM::AK_ARMV7R,   true },
-  { "cortex-r4f",    ARM::AK_ARMV7R,   false },
-  { "cortex-r5",     ARM::AK_ARMV7R,   false },
-  { "cortex-r7",     ARM::AK_ARMV7R,   false },
-  { "sc300",         ARM::AK_ARMV7M,   false },
-  { "cortex-m3",     ARM::AK_ARMV7M,   true },
-  { "cortex-m4",     ARM::AK_ARMV7EM,  true },
-  { "cortex-m7",     ARM::AK_ARMV7EM,  false },
-  { "cortex-a53",    ARM::AK_ARMV8A,   true },
-  { "cortex-a57",    ARM::AK_ARMV8A,   false },
-  { "cortex-a72",    ARM::AK_ARMV8A,   false },
-  { "cyclone",       ARM::AK_ARMV8A,   false },
-  { "generic",       ARM::AK_ARMV8_1A, true },
+  { "arm2",          ARM::AK_ARMV2,    ARM::FK_NONE,       true },
+  { "arm3",          ARM::AK_ARMV2A,   ARM::FK_NONE,       true },
+  { "arm6",          ARM::AK_ARMV3,    ARM::FK_NONE,       true },
+  { "arm7m",         ARM::AK_ARMV3M,   ARM::FK_NONE,       true },
+  { "arm8",          ARM::AK_ARMV4,    ARM::FK_NONE,       false },
+  { "arm810",        ARM::AK_ARMV4,    ARM::FK_NONE,       false },
+  { "strongarm",     ARM::AK_ARMV4,    ARM::FK_NONE,       true },
+  { "strongarm110",  ARM::AK_ARMV4,    ARM::FK_NONE,       false },
+  { "strongarm1100", ARM::AK_ARMV4,    ARM::FK_NONE,       false },
+  { "strongarm1110", ARM::AK_ARMV4,    ARM::FK_NONE,       false },
+  { "arm7tdmi",      ARM::AK_ARMV4T,   ARM::FK_NONE,       true },
+  { "arm7tdmi-s",    ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm710t",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm720t",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm9",          ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm9tdmi",      ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm920",        ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm920t",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm922t",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm9312",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm940t",       ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "ep9312",        ARM::AK_ARMV4T,   ARM::FK_NONE,       false },
+  { "arm10tdmi",     ARM::AK_ARMV5T,   ARM::FK_NONE,       true },
+  { "arm1020t",      ARM::AK_ARMV5T,   ARM::FK_NONE,       false },
+  { "arm9e",         ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm946e-s",     ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm966e-s",     ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm968e-s",     ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm10e",        ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm1020e",      ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm1022e",      ARM::AK_ARMV5TE,  ARM::FK_NONE,       true },
+  { "iwmmxt",        ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "xscale",        ARM::AK_ARMV5TE,  ARM::FK_NONE,       false },
+  { "arm926ej-s",    ARM::AK_ARMV5TEJ, ARM::FK_NONE,       true },
+  { "arm1136jf-s",   ARM::AK_ARMV6,    ARM::FK_VFPV2,      true },
+  { "arm1176j-s",    ARM::AK_ARMV6K,   ARM::FK_NONE,       false },
+  { "arm1176jz-s",   ARM::AK_ARMV6K,   ARM::FK_NONE,       false },
+  { "mpcore",        ARM::AK_ARMV6K,   ARM::FK_VFPV2,      false },
+  { "mpcorenovfp",   ARM::AK_ARMV6K,   ARM::FK_NONE,       false },
+  { "arm1176jzf-s",  ARM::AK_ARMV6K,   ARM::FK_VFPV2,      true },
+  { "arm1176jzf-s",  ARM::AK_ARMV6Z,   ARM::FK_VFPV2,      true },
+  { "arm1176jzf-s",  ARM::AK_ARMV6ZK,  ARM::FK_VFPV2,      true },
+  { "arm1156t2-s",   ARM::AK_ARMV6T2,  ARM::FK_NONE,       true },
+  { "arm1156t2f-s",  ARM::AK_ARMV6T2,  ARM::FK_VFPV2,      false },
+  { "cortex-m0",     ARM::AK_ARMV6M,   ARM::FK_NONE,       true },
+  { "cortex-m0plus", ARM::AK_ARMV6M,   ARM::FK_NONE,       false },
+  { "cortex-m1",     ARM::AK_ARMV6M,   ARM::FK_NONE,       false },
+  { "sc000",         ARM::AK_ARMV6M,   ARM::FK_NONE,       false },
+  { "cortex-a5",     ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "cortex-a7",     ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "cortex-a8",     ARM::AK_ARMV7A,   ARM::FK_NEON,       true },
+  { "cortex-a9",     ARM::AK_ARMV7A,   ARM::FK_NEON_FP16,  false },
+  { "cortex-a12",    ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "cortex-a15",    ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "cortex-a17",    ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "krait",         ARM::AK_ARMV7A,   ARM::FK_NEON_VFPV4, false },
+  { "cortex-r4",     ARM::AK_ARMV7R,   ARM::FK_NONE,       true },
+  { "cortex-r4f",    ARM::AK_ARMV7R,   ARM::FK_VFPV3_D16,  false },
+  { "cortex-r5",     ARM::AK_ARMV7R,   ARM::FK_VFPV3_D16,      false },
+  { "cortex-r7",     ARM::AK_ARMV7R,   ARM::FK_VFPV3_D16_FP16, false },
+  { "sc300",         ARM::AK_ARMV7M,   ARM::FK_NONE,           false },
+  { "cortex-m3",     ARM::AK_ARMV7M,   ARM::FK_NONE,           true },
+  { "cortex-m4",     ARM::AK_ARMV7EM,  ARM::FK_FPV4_SP_D16,    true },
+  { "cortex-m7",     ARM::AK_ARMV7EM,  ARM::FK_FPV5_D16,             false },
+  { "cortex-a53",    ARM::AK_ARMV8A,   ARM::FK_CRYPTO_NEON_FP_ARMV8, true },
+  { "cortex-a57",    ARM::AK_ARMV8A,   ARM::FK_CRYPTO_NEON_FP_ARMV8, false },
+  { "cortex-a72",    ARM::AK_ARMV8A,   ARM::FK_CRYPTO_NEON_FP_ARMV8, false },
+  { "cyclone",       ARM::AK_ARMV8A,   ARM::FK_CRYPTO_NEON_FP_ARMV8, false },
+  { "generic",       ARM::AK_ARMV8_1A, ARM::FK_NEON_FP_ARMV8,        true },
   // Non-standard Arch names.
-  { "iwmmxt",        ARM::AK_IWMMXT,   true },
-  { "xscale",        ARM::AK_XSCALE,   true },
-  { "arm10tdmi",     ARM::AK_ARMV5,    true },
-  { "arm1022e",      ARM::AK_ARMV5E,   true },
-  { "arm1136j-s",    ARM::AK_ARMV6J,   true },
-  { "arm1136jz-s",   ARM::AK_ARMV6J,   false },
-  { "cortex-m0",     ARM::AK_ARMV6SM,  true },
-  { "arm1176jzf-s",  ARM::AK_ARMV6HL,  true },
-  { "cortex-a8",     ARM::AK_ARMV7,    true },
-  { "cortex-a8",     ARM::AK_ARMV7L,   true },
-  { "cortex-a8",     ARM::AK_ARMV7HL,  true },
-  { "cortex-m4",     ARM::AK_ARMV7EM,  true },
-  { "swift",         ARM::AK_ARMV7S,   true },
+  { "iwmmxt",        ARM::AK_IWMMXT,   ARM::FK_NONE,       true },
+  { "xscale",        ARM::AK_XSCALE,   ARM::FK_NONE,       true },
+  { "arm10tdmi",     ARM::AK_ARMV5,    ARM::FK_NONE,       true },
+  { "arm1022e",      ARM::AK_ARMV5E,   ARM::FK_NONE,       true },
+  { "arm1136j-s",    ARM::AK_ARMV6J,   ARM::FK_NONE,       true },
+  { "arm1136jz-s",   ARM::AK_ARMV6J,   ARM::FK_NONE,       false },
+  { "cortex-m0",     ARM::AK_ARMV6SM,  ARM::FK_NONE,       true },
+  { "arm1176jzf-s",  ARM::AK_ARMV6HL,  ARM::FK_VFPV2,      true },
+  { "cortex-a8",     ARM::AK_ARMV7,    ARM::FK_NEON,       true },
+  { "cortex-a8",     ARM::AK_ARMV7L,   ARM::FK_NEON,       true },
+  { "cortex-a8",     ARM::AK_ARMV7HL,  ARM::FK_NEON,       true },
+  { "cortex-m4",     ARM::AK_ARMV7EM,  ARM::FK_NONE,       true },
+  { "swift",         ARM::AK_ARMV7S,   ARM::FK_NEON_VFPV4, true },
   // Invalid CPU
-  { "invalid",       ARM::AK_INVALID,  true }
+  { "invalid",       ARM::AK_INVALID,  ARM::FK_INVALID,    true }
 };
 
 } // namespace
@@ -251,6 +258,14 @@ unsigned ARMTargetParser::getFPURestriction(unsigned FPUKind) {
   return FPUNames[FPUKind].Restriction;
 }
 
+unsigned ARMTargetParser::getDefaultFPU(StringRef CPU) {
+  for (const auto C : CPUNames) {
+    if (CPU == C.Name)
+      return C.DefaultFPU;
+  }
+  return ARM::FK_INVALID;
+}
+
 bool ARMTargetParser::getFPUFeatures(unsigned FPUKind,
                                      std::vector<const char *> &Features) {
 
@@ -276,29 +291,39 @@ bool ARMTargetParser::getFPUFeatures(unsigned FPUKind,
 
   // FPU version subtarget features are inclusive of lower-numbered ones, so
   // enable the one corresponding to this version and disable all that are
-  // higher.
+  // higher. We also have to make sure to disable fp16 when vfp4 is disabled,
+  // as +vfp4 implies +fp16 but -vfp4 does not imply -fp16.
   switch (FPUNames[FPUKind].FPUVersion) {
-  case 5:
+  case ARM::FV_VFPV5:
     Features.push_back("+fp-armv8");
     break;
-  case 4:
+  case ARM::FV_VFPV4:
     Features.push_back("+vfp4");
     Features.push_back("-fp-armv8");
     break;
-  case 3:
+  case ARM::FV_VFPV3_FP16:
     Features.push_back("+vfp3");
+    Features.push_back("+fp16");
     Features.push_back("-vfp4");
     Features.push_back("-fp-armv8");
     break;
-  case 2:
+  case ARM::FV_VFPV3:
+    Features.push_back("+vfp3");
+    Features.push_back("-fp16");
+    Features.push_back("-vfp4");
+    Features.push_back("-fp-armv8");
+    break;
+  case ARM::FV_VFPV2:
     Features.push_back("+vfp2");
     Features.push_back("-vfp3");
+    Features.push_back("-fp16");
     Features.push_back("-vfp4");
     Features.push_back("-fp-armv8");
     break;
-  case 0:
+  case ARM::FV_NONE:
     Features.push_back("-vfp2");
     Features.push_back("-vfp3");
+    Features.push_back("-fp16");
     Features.push_back("-vfp4");
     Features.push_back("-fp-armv8");
     break;
@@ -531,6 +556,7 @@ unsigned ARMTargetParser::parseArchProfile(StringRef Arch) {
     return ARM::PK_R;
   case ARM::AK_ARMV7:
   case ARM::AK_ARMV7A:
+  case ARM::AK_ARMV7L:
   case ARM::AK_ARMV8A:
   case ARM::AK_ARMV8_1A:
     return ARM::PK_A;

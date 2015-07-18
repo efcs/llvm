@@ -67,11 +67,6 @@ EnableAtomicTidy("aarch64-atomic-cfg-tidy", cl::Hidden,
                           " to make use of cmpxchg flow-based information"),
                  cl::init(true));
 
-static cl::opt<bool> AArch64InterleavedAccessOpt(
-    "aarch64-interleaved-access-opt",
-    cl::desc("Optimize interleaved memory accesses in the AArch64 backend"),
-    cl::init(false), cl::Hidden);
-
 static cl::opt<bool>
 EnableEarlyIfConversion("aarch64-enable-early-ifcvt", cl::Hidden,
                         cl::desc("Run early if-conversion"),
@@ -125,7 +120,7 @@ static std::string computeDataLayout(const Triple &TT, bool LittleEndian) {
 
 /// TargetMachine ctor - Create an AArch64 architecture model.
 ///
-AArch64TargetMachine::AArch64TargetMachine(const Target &T, StringRef TT,
+AArch64TargetMachine::AArch64TargetMachine(const Target &T, const Triple &TT,
                                            StringRef CPU, StringRef FS,
                                            const TargetOptions &Options,
                                            Reloc::Model RM, CodeModel::Model CM,
@@ -133,9 +128,9 @@ AArch64TargetMachine::AArch64TargetMachine(const Target &T, StringRef TT,
                                            bool LittleEndian)
     // This nested ternary is horrible, but DL needs to be properly
     // initialized before TLInfo is constructed.
-    : LLVMTargetMachine(T, computeDataLayout(Triple(TT), LittleEndian), TT, CPU,
-                        FS, Options, RM, CM, OL),
-      TLOF(createTLOF(Triple(getTargetTriple()))),
+    : LLVMTargetMachine(T, computeDataLayout(TT, LittleEndian), TT, CPU, FS,
+                        Options, RM, CM, OL),
+      TLOF(createTLOF(getTargetTriple())),
       isLittle(LittleEndian) {
   initAsmInfo();
 }
@@ -160,29 +155,27 @@ AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<AArch64Subtarget>(Triple(TargetTriple), CPU, FS,
-                                            *this, isLittle);
+    I = llvm::make_unique<AArch64Subtarget>(TargetTriple, CPU, FS, *this,
+                                            isLittle);
   }
   return I.get();
 }
 
 void AArch64leTargetMachine::anchor() { }
 
-AArch64leTargetMachine::
-AArch64leTargetMachine(const Target &T, StringRef TT,
-                       StringRef CPU, StringRef FS, const TargetOptions &Options,
-                       Reloc::Model RM, CodeModel::Model CM,
-                       CodeGenOpt::Level OL)
-  : AArch64TargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
+AArch64leTargetMachine::AArch64leTargetMachine(
+    const Target &T, const Triple &TT, StringRef CPU, StringRef FS,
+    const TargetOptions &Options, Reloc::Model RM, CodeModel::Model CM,
+    CodeGenOpt::Level OL)
+    : AArch64TargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
 
 void AArch64beTargetMachine::anchor() { }
 
-AArch64beTargetMachine::
-AArch64beTargetMachine(const Target &T, StringRef TT,
-                       StringRef CPU, StringRef FS, const TargetOptions &Options,
-                       Reloc::Model RM, CodeModel::Model CM,
-                       CodeGenOpt::Level OL)
-  : AArch64TargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, false) {}
+AArch64beTargetMachine::AArch64beTargetMachine(
+    const Target &T, const Triple &TT, StringRef CPU, StringRef FS,
+    const TargetOptions &Options, Reloc::Model RM, CodeModel::Model CM,
+    CodeGenOpt::Level OL)
+    : AArch64TargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, false) {}
 
 namespace {
 /// AArch64 Code Generator Pass Configuration Options.
@@ -230,10 +223,11 @@ void AArch64PassConfig::addIRPasses() {
   if (TM->getOptLevel() != CodeGenOpt::None && EnableAtomicTidy)
     addPass(createCFGSimplificationPass());
 
-  if (TM->getOptLevel() != CodeGenOpt::None && AArch64InterleavedAccessOpt)
-    addPass(createAArch64InterleavedAccessPass());
-
   TargetPassConfig::addIRPasses();
+
+  // Match interleaved memory accesses to ldN/stN intrinsics.
+  if (TM->getOptLevel() != CodeGenOpt::None)
+    addPass(createInterleavedAccessPass(TM));
 
   if (TM->getOptLevel() == CodeGenOpt::Aggressive && EnableGEPOpt) {
     // Call SeparateConstOffsetFromGEP pass to extract constants within indices
@@ -277,7 +271,7 @@ bool AArch64PassConfig::addInstSelector() {
 
   // For ELF, cleanup any local-dynamic TLS accesses (i.e. combine as many
   // references to _TLS_MODULE_BASE_ as possible.
-  if (Triple(TM->getTargetTriple()).isOSBinFormatELF() &&
+  if (TM->getTargetTriple().isOSBinFormatELF() &&
       getOptLevel() != CodeGenOpt::None)
     addPass(createAArch64CleanupLocalDynamicTLSPass());
 
@@ -332,6 +326,6 @@ void AArch64PassConfig::addPreEmitPass() {
   // range of their destination.
   addPass(createAArch64BranchRelaxation());
   if (TM->getOptLevel() != CodeGenOpt::None && EnableCollectLOH &&
-      Triple(TM->getTargetTriple()).isOSBinFormatMachO())
+      TM->getTargetTriple().isOSBinFormatMachO())
     addPass(createAArch64CollectLOHPass());
 }

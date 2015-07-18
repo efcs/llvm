@@ -1,4 +1,4 @@
-; RUN: llc -march=aarch64 -aarch64-interleaved-access-opt=true < %s | FileCheck %s
+; RUN: llc -march=aarch64 -aarch64-neon-syntax=generic -lower-interleaved-accesses=true < %s | FileCheck %s
 
 ; CHECK-LABEL: load_factor2:
 ; CHECK: ld2 { v0.8b, v1.8b }, [x0]
@@ -10,9 +10,9 @@ define <8 x i8> @load_factor2(<16 x i8>* %ptr) {
   ret <8 x i8> %add
 }
 
-; CHECK-LABEL: load_delat3:
+; CHECK-LABEL: load_factor3:
 ; CHECK: ld3 { v0.4s, v1.4s, v2.4s }, [x0]
-define <4 x i32> @load_delat3(i32* %ptr) {
+define <4 x i32> @load_factor3(i32* %ptr) {
   %base = bitcast i32* %ptr to <12 x i32>*
   %wide.vec = load <12 x i32>, <12 x i32>* %base, align 4
   %strided.v2 = shufflevector <12 x i32> %wide.vec, <12 x i32> undef, <4 x i32> <i32 2, i32 5, i32 8, i32 11>

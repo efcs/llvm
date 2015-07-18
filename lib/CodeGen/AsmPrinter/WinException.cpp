@@ -70,19 +70,27 @@ void WinException::beginFunction(const MachineFunction *MF) {
 
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   unsigned PerEncoding = TLOF.getPersonalityEncoding();
-  const Function *Per = MMI->getPersonality();
+  const Function *Per = nullptr;
+  if (F->hasPersonalityFn())
+    Per = dyn_cast<Function>(F->getPersonalityFn()->stripPointerCasts());
 
-  shouldEmitPersonality = hasLandingPads &&
-    PerEncoding != dwarf::DW_EH_PE_omit && Per;
+  bool forceEmitPersonality =
+    F->hasPersonalityFn() && !isNoOpWithoutInvoke(classifyEHPersonality(Per)) &&
+    F->needsUnwindTableEntry();
+
+  shouldEmitPersonality = forceEmitPersonality || (hasLandingPads &&
+    PerEncoding != dwarf::DW_EH_PE_omit && Per);
 
   unsigned LSDAEncoding = TLOF.getLSDAEncoding();
   shouldEmitLSDA = shouldEmitPersonality &&
     LSDAEncoding != dwarf::DW_EH_PE_omit;
 
-  // If we're not using CFI, we don't want the CFI or the personality. Emit the
-  // LSDA if this is the parent function.
+  // If we're not using CFI, we don't want the CFI or the personality. If
+  // WinEHPrepare outlined something, we should emit the LSDA.
   if (!Asm->MAI->usesWindowsCFI()) {
-    shouldEmitLSDA = (hasLandingPads && F == ParentF);
+    bool HasOutlinedChildren =
+        F->hasFnAttribute("wineh-parent") && F == ParentF;
+    shouldEmitLSDA = HasOutlinedChildren;
     shouldEmitPersonality = false;
     return;
   }
@@ -121,7 +129,10 @@ void WinException::endFunction(const MachineFunction *MF) {
   if (!shouldEmitPersonality && !shouldEmitMoves && !shouldEmitLSDA)
     return;
 
-  EHPersonality Per = MMI->getPersonalityType();
+  const Function *F = MF->getFunction();
+  EHPersonality Per = EHPersonality::Unknown;
+  if (F->hasPersonalityFn())
+    Per = classifyEHPersonality(F->getPersonalityFn());
 
   // Get rid of any dead landing pads if we're not using a Windows EH scheme. In
   // Windows EH schemes, the landing pad is not actually reachable. It only
@@ -319,6 +330,7 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
       return;
   } else {
     FuncInfoXData = Asm->OutContext.getOrCreateLSDASymbol(ParentLinkageName);
+    emitEHRegistrationOffsetLabel(FuncInfo, ParentLinkageName);
   }
 
   MCSymbol *UnwindMapXData = nullptr;
@@ -349,6 +361,7 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
   // EHFlags & 1 -> Synchronous exceptions only, no async exceptions.
   // EHFlags & 2 -> ???
   // EHFlags & 4 -> The function is noexcept(true), unwinding can't continue.
+  OS.EmitValueToAlignment(4);
   OS.EmitLabel(FuncInfoXData);
   OS.EmitIntValue(0x19930522, 4);                      // MagicNumber
   OS.EmitIntValue(FuncInfo.UnwindMap.size(), 4);       // MaxState
@@ -449,7 +462,7 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
               Asm->OutContext.getOrCreateParentFrameOffsetSymbol(
                   GlobalValue::getRealLinkageName(HT.Handler->getName()));
           const MCSymbolRefExpr *ParentFrameOffsetRef = MCSymbolRefExpr::create(
-              ParentFrameOffset, MCSymbolRefExpr::VK_None, Asm->OutContext);
+              ParentFrameOffset, Asm->OutContext);
           OS.EmitValue(ParentFrameOffsetRef, 4); // ParentFrameOffset
         }
       }
@@ -547,19 +560,41 @@ void WinException::extendIP2StateTable(const MachineFunction *MF,
   }
 }
 
+void WinException::emitEHRegistrationOffsetLabel(const WinEHFuncInfo &FuncInfo,
+                                                 StringRef FLinkageName) {
+  // Outlined helpers called by the EH runtime need to know the offset of the EH
+  // registration in order to recover the parent frame pointer. Now that we know
+  // we've code generated the parent, we can emit the label assignment that
+  // those helpers use to get the offset of the registration node.
+  assert(FuncInfo.EHRegNodeEscapeIndex != INT_MAX &&
+         "no EH reg node localescape index");
+  MCSymbol *ParentFrameOffset =
+      Asm->OutContext.getOrCreateParentFrameOffsetSymbol(FLinkageName);
+  MCSymbol *RegistrationOffsetSym = Asm->OutContext.getOrCreateFrameAllocSymbol(
+      FLinkageName, FuncInfo.EHRegNodeEscapeIndex);
+  const MCExpr *RegistrationOffsetSymRef =
+      MCSymbolRefExpr::create(RegistrationOffsetSym, Asm->OutContext);
+  Asm->OutStreamer->EmitAssignment(ParentFrameOffset, RegistrationOffsetSymRef);
+}
+
 /// Emit the language-specific data that _except_handler3 and 4 expect. This is
 /// functionally equivalent to the __C_specific_handler table, except it is
 /// indexed by state number instead of IP.
 void WinException::emitExceptHandlerTable(const MachineFunction *MF) {
-  auto &OS = *Asm->OutStreamer;
-
-  // Emit the __ehtable label that we use for llvm.x86.seh.lsda.
+  MCStreamer &OS = *Asm->OutStreamer;
   const Function *F = MF->getFunction();
   StringRef FLinkageName = GlobalValue::getRealLinkageName(F->getName());
+
+  WinEHFuncInfo &FuncInfo = MMI->getWinEHFuncInfo(F);
+  emitEHRegistrationOffsetLabel(FuncInfo, FLinkageName);
+
+  // Emit the __ehtable label that we use for llvm.x86.seh.lsda.
   MCSymbol *LSDALabel = Asm->OutContext.getOrCreateLSDASymbol(FLinkageName);
+  OS.EmitValueToAlignment(4);
   OS.EmitLabel(LSDALabel);
 
-  const Function *Per = MMI->getPersonality();
+  const Function *Per =
+      dyn_cast<Function>(F->getPersonalityFn()->stripPointerCasts());
   StringRef PerName = Per->getName();
   int BaseState = -1;
   if (PerName == "_except_handler4") {
@@ -598,8 +633,8 @@ void WinException::emitExceptHandlerTable(const MachineFunction *MF) {
   // For each action in each lpad, emit one of these:
   // struct ScopeTableEntry {
   //   int32_t EnclosingLevel;
-  //   int32_t (__cdecl *FilterOrFinally)();
-  //   void *HandlerLabel;
+  //   int32_t (__cdecl *Filter)();
+  //   void *HandlerOrFinally;
   // };
   //
   // The "outermost" action will use BaseState as its enclosing level. Each
@@ -610,21 +645,20 @@ void WinException::emitExceptHandlerTable(const MachineFunction *MF) {
     assert(CurState + int(LPInfo->SEHHandlers.size()) - 1 ==
                LPInfo->WinEHState &&
            "gaps in the SEH scope table");
-    for (const SEHHandler &Handler : LPInfo->SEHHandlers) {
-      // Emit the filter or finally function pointer, if present. Otherwise,
-      // emit '0' to indicate a catch-all.
-      const Function *F = Handler.FilterOrFinally;
-      const MCExpr *FilterOrFinally =
-          create32bitRef(F ? Asm->getSymbol(F) : nullptr);
-
-      // Compute the recovery address, which is a block address or null.
+    for (auto I = LPInfo->SEHHandlers.rbegin(), E = LPInfo->SEHHandlers.rend();
+         I != E; ++I) {
+      const SEHHandler &Handler = *I;
       const BlockAddress *BA = Handler.RecoverBA;
-      const MCExpr *RecoverBBOrNull =
-          create32bitRef(BA ? Asm->GetBlockAddressSymbol(BA) : nullptr);
+      const Function *F = Handler.FilterOrFinally;
+      assert(F && "cannot catch all in 32-bit SEH without filter function");
+      const MCExpr *FilterOrNull =
+          create32bitRef(BA ? Asm->getSymbol(F) : nullptr);
+      const MCExpr *ExceptOrFinally = create32bitRef(
+          BA ? Asm->GetBlockAddressSymbol(BA) : Asm->getSymbol(F));
 
       OS.EmitIntValue(EnclosingLevel, 4);
-      OS.EmitValue(FilterOrFinally, 4);
-      OS.EmitValue(RecoverBBOrNull, 4);
+      OS.EmitValue(FilterOrNull, 4);
+      OS.EmitValue(ExceptOrFinally, 4);
 
       // The next state unwinds to this state.
       EnclosingLevel = CurState;

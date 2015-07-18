@@ -28,6 +28,7 @@
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/CodeGen/TargetSchedule.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
@@ -366,14 +367,10 @@ ARMBaseInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,MachineBasicBlock *&TBB,
 
 
 unsigned ARMBaseInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
-  MachineBasicBlock::iterator I = MBB.end();
-  if (I == MBB.begin()) return 0;
-  --I;
-  while (I->isDebugValue()) {
-    if (I == MBB.begin())
-      return 0;
-    --I;
-  }
+  MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
+  if (I == MBB.end())
+    return 0;
+
   if (!isUncondBranchOpcode(I->getOpcode()) &&
       !isCondBranchOpcode(I->getOpcode()))
     return 0;
@@ -396,7 +393,7 @@ unsigned ARMBaseInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 unsigned
 ARMBaseInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                                MachineBasicBlock *FBB,
-                               const SmallVectorImpl<MachineOperand> &Cond,
+                               ArrayRef<MachineOperand> Cond,
                                DebugLoc DL) const {
   ARMFunctionInfo *AFI = MBB.getParent()->getInfo<ARMFunctionInfo>();
   int BOpc   = !AFI->isThumbFunction()
@@ -458,8 +455,7 @@ bool ARMBaseInstrInfo::isPredicated(const MachineInstr *MI) const {
 }
 
 bool ARMBaseInstrInfo::
-PredicateInstruction(MachineInstr *MI,
-                     const SmallVectorImpl<MachineOperand> &Pred) const {
+PredicateInstruction(MachineInstr *MI, ArrayRef<MachineOperand> Pred) const {
   unsigned Opc = MI->getOpcode();
   if (isUncondBranchOpcode(Opc)) {
     MI->setDesc(get(getMatchingCondBranchOpcode(Opc)));
@@ -479,9 +475,8 @@ PredicateInstruction(MachineInstr *MI,
   return false;
 }
 
-bool ARMBaseInstrInfo::
-SubsumesPredicate(const SmallVectorImpl<MachineOperand> &Pred1,
-                  const SmallVectorImpl<MachineOperand> &Pred2) const {
+bool ARMBaseInstrInfo::SubsumesPredicate(ArrayRef<MachineOperand> Pred1,
+                                         ArrayRef<MachineOperand> Pred2) const {
   if (Pred1.size() > 2 || Pred2.size() > 2)
     return false;
 
@@ -1235,8 +1230,7 @@ ARMBaseInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   Reloc::Model RM = MF.getTarget().getRelocationModel();
 
   if (MI->getOpcode() == TargetOpcode::LOAD_STACK_GUARD) {
-    assert(getSubtarget().getTargetTriple().getObjectFormat() ==
-           Triple::MachO &&
+    assert(getSubtarget().getTargetTriple().isOSBinFormatMachO() &&
            "LOAD_STACK_GUARD currently supported only for MachO.");
     expandLoadStackGuard(MI, RM);
     MI->getParent()->erase(MI);
@@ -3995,7 +3989,7 @@ int ARMBaseInstrInfo::getInstrLatency(const InstrItineraryData *ItinData,
 }
 
 bool ARMBaseInstrInfo::
-hasHighOperandLatency(const InstrItineraryData *ItinData,
+hasHighOperandLatency(const TargetSchedModel &SchedModel,
                       const MachineRegisterInfo *MRI,
                       const MachineInstr *DefMI, unsigned DefIdx,
                       const MachineInstr *UseMI, unsigned UseIdx) const {
@@ -4007,9 +4001,8 @@ hasHighOperandLatency(const InstrItineraryData *ItinData,
     return true;
 
   // Hoist VFP / NEON instructions with 4 or higher latency.
-  int Latency = computeOperandLatency(ItinData, DefMI, DefIdx, UseMI, UseIdx);
-  if (Latency < 0)
-    Latency = getInstrLatency(ItinData, DefMI);
+  unsigned Latency
+    = SchedModel.computeOperandLatency(DefMI, DefIdx, UseMI, UseIdx);
   if (Latency <= 3)
     return false;
   return DDomain == ARMII::DomainVFP || DDomain == ARMII::DomainNEON ||
@@ -4017,8 +4010,9 @@ hasHighOperandLatency(const InstrItineraryData *ItinData,
 }
 
 bool ARMBaseInstrInfo::
-hasLowDefLatency(const InstrItineraryData *ItinData,
+hasLowDefLatency(const TargetSchedModel &SchedModel,
                  const MachineInstr *DefMI, unsigned DefIdx) const {
+  const InstrItineraryData *ItinData = SchedModel.getInstrItineraries();
   if (!ItinData || ItinData->isEmpty())
     return false;
 

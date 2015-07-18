@@ -211,6 +211,11 @@ void llvm::ReplaceInstWithInst(BasicBlock::InstListType &BIL,
   assert(I->getParent() == nullptr &&
          "ReplaceInstWithInst: Instruction already inserted into basic block!");
 
+  // Copy debug location to newly added instruction, if it wasn't already set
+  // by the caller.
+  if (!I->getDebugLoc())
+    I->setDebugLoc(BI->getDebugLoc());
+
   // Insert the new instruction into the basic block...
   BasicBlock::iterator New = BIL.insert(BI, I);
 
@@ -435,8 +440,6 @@ static void UpdatePHINodes(BasicBlock *OrigBB, BasicBlock *NewBB,
     // Create the new PHI node, insert it into NewBB at the end of the block
     PHINode *NewPHI =
         PHINode::Create(PN->getType(), Preds.size(), PN->getName() + ".ph", BI);
-    if (AA)
-      AA->copyValue(PN, NewPHI);
 
     // NOTE! This loop walks backwards for a reason! First off, this minimizes
     // the cost of removal if we end up removing a large number of values, and
@@ -716,7 +719,6 @@ TerminatorInst *llvm::SplitBlockAndInsertIfThen(Value *Cond,
   CheckTerm->setDebugLoc(SplitBefore->getDebugLoc());
   BranchInst *HeadNewTerm =
     BranchInst::Create(/*ifTrue*/ThenBlock, /*ifFalse*/Tail, Cond);
-  HeadNewTerm->setDebugLoc(SplitBefore->getDebugLoc());
   HeadNewTerm->setMetadata(LLVMContext::MD_prof, BranchWeights);
   ReplaceInstWithInst(HeadOldTerm, HeadNewTerm);
 
@@ -766,7 +768,6 @@ void llvm::SplitBlockAndInsertIfThenElse(Value *Cond, Instruction *SplitBefore,
   (*ElseTerm)->setDebugLoc(SplitBefore->getDebugLoc());
   BranchInst *HeadNewTerm =
     BranchInst::Create(/*ifTrue*/ThenBlock, /*ifFalse*/ElseBlock, Cond);
-  HeadNewTerm->setDebugLoc(SplitBefore->getDebugLoc());
   HeadNewTerm->setMetadata(LLVMContext::MD_prof, BranchWeights);
   ReplaceInstWithInst(HeadOldTerm, HeadNewTerm);
 }

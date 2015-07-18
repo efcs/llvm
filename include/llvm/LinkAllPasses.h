@@ -131,6 +131,7 @@ namespace {
       (void) llvm::createRegionPrinterPass();
       (void) llvm::createRegionViewerPass();
       (void) llvm::createSCCPPass();
+      (void) llvm::createSafeStackPass();
       (void) llvm::createScalarReplAggregatesPass();
       (void) llvm::createSingleLoopExtractorPass();
       (void) llvm::createStripSymbolsPass();
@@ -175,6 +176,7 @@ namespace {
       (void) llvm::createStraightLineStrengthReducePass();
       (void) llvm::createMemDerefPrinter();
       (void) llvm::createFloat2IntPass();
+      (void) llvm::createEliminateAvailableExternallyPass();
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::ScalarEvolution();

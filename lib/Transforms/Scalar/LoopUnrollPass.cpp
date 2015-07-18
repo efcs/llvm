@@ -436,6 +436,21 @@ private:
 
     return true;
   }
+
+  bool visitCastInst(CastInst &I) {
+    // Propagate constants through casts.
+    Constant *COp = dyn_cast<Constant>(I.getOperand(0));
+    if (!COp)
+      COp = SimplifiedValues.lookup(I.getOperand(0));
+    if (COp)
+      if (Constant *C =
+              ConstantExpr::getCast(I.getOpcode(), COp, I.getType())) {
+        SimplifiedValues[&I] = C;
+        return true;
+      }
+
+    return Base::visitCastInst(I);
+  }
 };
 } // namespace
 
@@ -455,13 +470,15 @@ struct EstimatedUnrollCost {
 ///
 /// Complete loop unrolling can make some loads constant, and we need to know
 /// if that would expose any further optimization opportunities.  This routine
-/// estimates this optimization.  It assigns computed number of instructions,
-/// that potentially might be optimized away, to
-/// NumberOfOptimizedInstructions, and total number of instructions to
-/// UnrolledLoopSize (not counting blocks that won't be reached, if we were
-/// able to compute the condition).
-/// \returns false if we can't analyze the loop, or if we discovered that
-/// unrolling won't give anything. Otherwise, returns true.
+/// estimates this optimization.  It computes cost of unrolled loop
+/// (UnrolledCost) and dynamic cost of the original loop (RolledDynamicCost). By
+/// dynamic cost we mean that we won't count costs of blocks that are known not
+/// to be executed (i.e. if we have a branch in the loop and we know that at the
+/// given iteration its condition would be resolved to true, we won't add up the
+/// cost of the 'false'-block).
+/// \returns Optional value, holding the RolledDynamicCost and UnrolledCost. If
+/// the analysis failed (no benefits expected from the unrolling, or the loop is
+/// too big to analyze), the returned value is None.
 Optional<EstimatedUnrollCost>
 analyzeLoopUnrollCost(const Loop *L, unsigned TripCount, ScalarEvolution &SE,
                       const TargetTransformInfo &TTI,
@@ -838,8 +855,10 @@ bool LoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
 
   // Reduce count based on the type of unrolling and the threshold values.
   unsigned OriginalCount = Count;
-  bool AllowRuntime = UserRuntime ? CurrentRuntime : UP.Runtime;
-  if (HasRuntimeUnrollDisablePragma(L)) {
+  bool AllowRuntime =
+      (PragmaCount > 0) || (UserRuntime ? CurrentRuntime : UP.Runtime);
+  // Don't unroll a runtime trip count loop with unroll full pragma.
+  if (HasRuntimeUnrollDisablePragma(L) || PragmaFullUnroll) {
     AllowRuntime = false;
   }
   if (Unrolling == Partial) {

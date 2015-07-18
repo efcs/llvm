@@ -571,7 +571,7 @@ bool ArgPromotion::isSafeToPromoteArgument(Argument *Arg,
     LoadInst *Load = Loads[i];
     BasicBlock *BB = Load->getParent();
 
-    AliasAnalysis::Location Loc = MemoryLocation::get(Load);
+    MemoryLocation Loc = MemoryLocation::get(Load);
     if (AA.canInstructionRangeModRef(BB->front(), *Load, Loc,
         AliasAnalysis::Mod))
       return false;  // Pointer is invalidated!
@@ -825,7 +825,6 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
             V = GetElementPtrInst::Create(SI->first, V, Ops,
                                           V->getName() + ".idx", Call);
             Ops.clear();
-            AA.copyValue(OrigLoad->getOperand(0), V);
           }
           // Since we're replacing a load make sure we take the alignment
           // of the previous load.
@@ -837,7 +836,6 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
           newLoad->setAAMetadata(AAInfo);
 
           Args.push_back(newLoad);
-          AA.copyValue(OrigLoad, Args.back());
         }
       }
 

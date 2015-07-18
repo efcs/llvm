@@ -112,9 +112,9 @@ protected:
   /// IsR9Reserved - True if R9 is a not available as general purpose register.
   bool IsR9Reserved;
 
-  /// UseMovt - True if MOVT / MOVW pairs are used for materialization of 32-bit
-  /// imms (including global addresses).
-  bool UseMovt;
+  /// NoMovt - True if MOVT / MOVW pairs are not used for materialization of
+  /// 32-bit imms (including global addresses).
+  bool NoMovt;
 
   /// SupportsTailCall - True if the OS supports tail call. The dynamic linker
   /// must be able to synthesize call stubs for interworking between ARM and
@@ -205,6 +205,9 @@ protected:
 
   /// NaCl TRAP instruction is generated instead of the regular TRAP.
   bool UseNaClTrap;
+
+  /// Generate calls via indirect call instructions.
+  bool GenLongCalls;
 
   /// Target machine allowed unsafe FP math (such as use of NEON fp)
   bool UnsafeFPMath;
@@ -342,6 +345,7 @@ public:
   bool hasMPExtension() const { return HasMPExtension; }
   bool hasThumb2DSP() const { return Thumb2DSP; }
   bool useNaClTrap() const { return UseNaClTrap; }
+  bool genLongCalls() const { return GenLongCalls; }
 
   bool hasFP16() const { return HasFP16; }
   bool hasD16() const { return HasD16; }
@@ -429,8 +433,11 @@ public:
   /// compiler runtime or math libraries.
   bool hasSinCos() const;
 
+  /// Returns true if machine scheduler should be enabled.
+  bool enableMachineScheduler() const override;
+
   /// True for some subtargets at > -O0.
-  bool enablePostMachineScheduler() const override;
+  bool enablePostRAScheduler() const override;
 
   // enableAtomicExpand- True if we need to expand our atomics.
   bool enableAtomicExpand() const override;

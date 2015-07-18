@@ -62,7 +62,7 @@ static std::string computeDataLayout(const Triple &TT, StringRef CPU,
   if (!ABI.IsN64())
     Ret += "-p:32:32";
 
-  // 8 and 16 bit integers only need no have natural alignment, but try to
+  // 8 and 16 bit integers only need to have natural alignment, but try to
   // align them to 32 bits. 64 bit integers have natural alignment.
   Ret += "-i8:8:32-i16:16:32-i64:64";
 
@@ -82,24 +82,20 @@ static std::string computeDataLayout(const Triple &TT, StringRef CPU,
 // offset from the stack/frame pointer, using StackGrowsUp enables
 // an easier handling.
 // Using CodeModel::Large enables different CALL behavior.
-MipsTargetMachine::MipsTargetMachine(const Target &T, StringRef TT,
+MipsTargetMachine::MipsTargetMachine(const Target &T, const Triple &TT,
                                      StringRef CPU, StringRef FS,
                                      const TargetOptions &Options,
                                      Reloc::Model RM, CodeModel::Model CM,
                                      CodeGenOpt::Level OL, bool isLittle)
-    : LLVMTargetMachine(T,
-                        computeDataLayout(Triple(TT), CPU, Options, isLittle),
-                        TT, CPU, FS, Options, RM, CM, OL),
+    : LLVMTargetMachine(T, computeDataLayout(TT, CPU, Options, isLittle), TT,
+                        CPU, FS, Options, RM, CM, OL),
       isLittle(isLittle), TLOF(make_unique<MipsTargetObjectFile>()),
-      ABI(MipsABIInfo::computeTargetABI(Triple(TT), CPU, Options.MCOptions)),
-      Subtarget(nullptr),
-      DefaultSubtarget(Triple(TT), CPU, FS, isLittle, *this),
-      NoMips16Subtarget(Triple(TT), CPU,
-                        FS.empty() ? "-mips16" : FS.str() + ",-mips16",
+      ABI(MipsABIInfo::computeTargetABI(TT, CPU, Options.MCOptions)),
+      Subtarget(nullptr), DefaultSubtarget(TT, CPU, FS, isLittle, *this),
+      NoMips16Subtarget(TT, CPU, FS.empty() ? "-mips16" : FS.str() + ",-mips16",
                         isLittle, *this),
-      Mips16Subtarget(Triple(TT), CPU,
-                      FS.empty() ? "+mips16" : FS.str() + ",+mips16", isLittle,
-                      *this) {
+      Mips16Subtarget(TT, CPU, FS.empty() ? "+mips16" : FS.str() + ",+mips16",
+                      isLittle, *this) {
   Subtarget = &DefaultSubtarget;
   initAsmInfo();
 }
@@ -108,21 +104,21 @@ MipsTargetMachine::~MipsTargetMachine() {}
 
 void MipsebTargetMachine::anchor() { }
 
-MipsebTargetMachine::
-MipsebTargetMachine(const Target &T, StringRef TT,
-                    StringRef CPU, StringRef FS, const TargetOptions &Options,
-                    Reloc::Model RM, CodeModel::Model CM,
-                    CodeGenOpt::Level OL)
-  : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, false) {}
+MipsebTargetMachine::MipsebTargetMachine(const Target &T, const Triple &TT,
+                                         StringRef CPU, StringRef FS,
+                                         const TargetOptions &Options,
+                                         Reloc::Model RM, CodeModel::Model CM,
+                                         CodeGenOpt::Level OL)
+    : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, false) {}
 
 void MipselTargetMachine::anchor() { }
 
-MipselTargetMachine::
-MipselTargetMachine(const Target &T, StringRef TT,
-                    StringRef CPU, StringRef FS, const TargetOptions &Options,
-                    Reloc::Model RM, CodeModel::Model CM,
-                    CodeGenOpt::Level OL)
-  : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
+MipselTargetMachine::MipselTargetMachine(const Target &T, const Triple &TT,
+                                         StringRef CPU, StringRef FS,
+                                         const TargetOptions &Options,
+                                         Reloc::Model RM, CodeModel::Model CM,
+                                         CodeGenOpt::Level OL)
+    : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
 
 const MipsSubtarget *
 MipsTargetMachine::getSubtargetImpl(const Function &F) const {
@@ -160,8 +156,8 @@ MipsTargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<MipsSubtarget>(Triple(TargetTriple), CPU, FS,
-                                         isLittle, *this);
+    I = llvm::make_unique<MipsSubtarget>(TargetTriple, CPU, FS, isLittle,
+                                         *this);
   }
   return I.get();
 }
@@ -241,7 +237,7 @@ TargetIRAnalysis MipsTargetMachine::getTargetIRAnalysis() {
     if (Subtarget->allowMixed16_32()) {
       DEBUG(errs() << "No Target Transform Info Pass Added\n");
       // FIXME: This is no longer necessary as the TTI returned is per-function.
-      return TargetTransformInfo(getDataLayout());
+      return TargetTransformInfo(F.getParent()->getDataLayout());
     }
 
     DEBUG(errs() << "Target Transform Info Pass Added\n");

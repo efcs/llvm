@@ -16,6 +16,7 @@
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Target/TargetInstrInfo.h"
 
 using namespace llvm;
@@ -143,7 +144,7 @@ private:
   unsigned materializeGV(const GlobalValue *GV, MVT VT);
   unsigned materializeInt(const Constant *C, MVT VT);
   unsigned materialize32BitInt(int64_t Imm, const TargetRegisterClass *RC);
-  unsigned materializeExternalCallSym(const char *SynName);
+  unsigned materializeExternalCallSym(MCSymbol *Syn);
 
   MachineInstrBuilder emitInst(unsigned Opc) {
     return BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc));
@@ -266,7 +267,7 @@ unsigned MipsFastISel::emitLogicalOp(unsigned ISDOpc, MVT RetVT,
 }
 
 unsigned MipsFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
-  assert(TLI.getValueType(AI->getType(), true) == MVT::i32 &&
+  assert(TLI.getValueType(DL, AI->getType(), true) == MVT::i32 &&
          "Alloca should always return a pointer.");
 
   DenseMap<const AllocaInst *, int>::iterator SI =
@@ -369,19 +370,19 @@ unsigned MipsFastISel::materializeGV(const GlobalValue *GV, MVT VT) {
   return DestReg;
 }
 
-unsigned MipsFastISel::materializeExternalCallSym(const char *SymName) {
+unsigned MipsFastISel::materializeExternalCallSym(MCSymbol *Sym) {
   const TargetRegisterClass *RC = &Mips::GPR32RegClass;
   unsigned DestReg = createResultReg(RC);
   emitInst(Mips::LW, DestReg)
       .addReg(MFI->getGlobalBaseReg())
-      .addExternalSymbol(SymName, MipsII::MO_GOT);
+      .addSym(Sym, MipsII::MO_GOT);
   return DestReg;
 }
 
 // Materialize a constant into a register, and return the register
 // number (or zero if we failed to handle it).
 unsigned MipsFastISel::fastMaterializeConstant(const Constant *C) {
-  EVT CEVT = TLI.getValueType(C->getType(), true);
+  EVT CEVT = TLI.getValueType(DL, C->getType(), true);
 
   // Only handle simple types.
   if (!CEVT.isSimple())
@@ -506,12 +507,13 @@ bool MipsFastISel::computeCallAddress(const Value *V, Address &Addr) {
     break;
   case Instruction::IntToPtr:
     // Look past no-op inttoptrs if its operand is in the same BB.
-    if (TLI.getValueType(U->getOperand(0)->getType()) == TLI.getPointerTy())
+    if (TLI.getValueType(DL, U->getOperand(0)->getType()) ==
+        TLI.getPointerTy(DL))
       return computeCallAddress(U->getOperand(0), Addr);
     break;
   case Instruction::PtrToInt:
     // Look past no-op ptrtoints if its operand is in the same BB.
-    if (TLI.getValueType(U->getType()) == TLI.getPointerTy())
+    if (TLI.getValueType(DL, U->getType()) == TLI.getPointerTy(DL))
       return computeCallAddress(U->getOperand(0), Addr);
     break;
   }
@@ -531,7 +533,7 @@ bool MipsFastISel::computeCallAddress(const Value *V, Address &Addr) {
 }
 
 bool MipsFastISel::isTypeLegal(Type *Ty, MVT &VT) {
-  EVT evt = TLI.getValueType(Ty, true);
+  EVT evt = TLI.getValueType(DL, Ty, true);
   // Only handle simple types.
   if (evt == MVT::Other || !evt.isSimple())
     return false;
@@ -930,8 +932,8 @@ bool MipsFastISel::selectFPExt(const Instruction *I) {
   if (UnsupportedFPMode)
     return false;
   Value *Src = I->getOperand(0);
-  EVT SrcVT = TLI.getValueType(Src->getType(), true);
-  EVT DestVT = TLI.getValueType(I->getType(), true);
+  EVT SrcVT = TLI.getValueType(DL, Src->getType(), true);
+  EVT DestVT = TLI.getValueType(DL, I->getType(), true);
 
   if (SrcVT != MVT::f32 || DestVT != MVT::f64)
     return false;
@@ -997,8 +999,8 @@ bool MipsFastISel::selectFPTrunc(const Instruction *I) {
   if (UnsupportedFPMode)
     return false;
   Value *Src = I->getOperand(0);
-  EVT SrcVT = TLI.getValueType(Src->getType(), true);
-  EVT DestVT = TLI.getValueType(I->getType(), true);
+  EVT SrcVT = TLI.getValueType(DL, Src->getType(), true);
+  EVT DestVT = TLI.getValueType(DL, I->getType(), true);
 
   if (SrcVT != MVT::f64 || DestVT != MVT::f32)
     return false;
@@ -1234,7 +1236,7 @@ bool MipsFastISel::fastLowerCall(CallLoweringInfo &CLI) {
   bool IsTailCall = CLI.IsTailCall;
   bool IsVarArg = CLI.IsVarArg;
   const Value *Callee = CLI.Callee;
-  const char *SymName = CLI.SymName;
+  MCSymbol *Symbol = CLI.Symbol;
 
   // Allow SelectionDAG isel to handle tail calls.
   if (IsTailCall)
@@ -1286,8 +1288,8 @@ bool MipsFastISel::fastLowerCall(CallLoweringInfo &CLI) {
 
   // Issue the call.
   unsigned DestAddress;
-  if (SymName)
-    DestAddress = materializeExternalCallSym(SymName);
+  if (Symbol)
+    DestAddress = materializeExternalCallSym(Symbol);
   else
     DestAddress = materializeGV(Addr.getGlobalValue(), MVT::i32);
   emitInst(TargetOpcode::COPY, Mips::T9).addReg(DestAddress);
@@ -1414,7 +1416,8 @@ bool MipsFastISel::selectRet(const Instruction *I) {
   if (Ret->getNumOperands() > 0) {
     CallingConv::ID CC = F.getCallingConv();
     SmallVector<ISD::OutputArg, 4> Outs;
-    GetReturnInfo(F.getReturnType(), F.getAttributes(), Outs, TLI);
+    GetReturnInfo(F.getReturnType(), F.getAttributes(), Outs, TLI, DL);
+
     // Analyze operands of the call, assigning locations to each operand.
     SmallVector<CCValAssign, 16> ValLocs;
     MipsCCState CCInfo(CC, F.isVarArg(), *FuncInfo.MF, ValLocs,
@@ -1448,7 +1451,7 @@ bool MipsFastISel::selectRet(const Instruction *I) {
     if (!MRI.getRegClass(SrcReg)->contains(DestReg))
       return false;
 
-    EVT RVEVT = TLI.getValueType(RV->getType());
+    EVT RVEVT = TLI.getValueType(DL, RV->getType());
     if (!RVEVT.isSimple())
       return false;
 
@@ -1492,8 +1495,8 @@ bool MipsFastISel::selectTrunc(const Instruction *I) {
   Value *Op = I->getOperand(0);
 
   EVT SrcVT, DestVT;
-  SrcVT = TLI.getValueType(Op->getType(), true);
-  DestVT = TLI.getValueType(I->getType(), true);
+  SrcVT = TLI.getValueType(DL, Op->getType(), true);
+  DestVT = TLI.getValueType(DL, I->getType(), true);
 
   if (SrcVT != MVT::i32 && SrcVT != MVT::i16 && SrcVT != MVT::i8)
     return false;
@@ -1520,8 +1523,8 @@ bool MipsFastISel::selectIntExt(const Instruction *I) {
     return false;
 
   EVT SrcEVT, DestEVT;
-  SrcEVT = TLI.getValueType(SrcTy, true);
-  DestEVT = TLI.getValueType(DestTy, true);
+  SrcEVT = TLI.getValueType(DL, SrcTy, true);
+  DestEVT = TLI.getValueType(DL, DestTy, true);
   if (!SrcEVT.isSimple())
     return false;
   if (!DestEVT.isSimple())
@@ -1619,7 +1622,7 @@ unsigned MipsFastISel::emitIntExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
 }
 
 bool MipsFastISel::selectDivRem(const Instruction *I, unsigned ISDOpcode) {
-  EVT DestEVT = TLI.getValueType(I->getType(), true);
+  EVT DestEVT = TLI.getValueType(DL, I->getType(), true);
   if (!DestEVT.isSimple())
     return false;
 
@@ -1684,7 +1687,7 @@ bool MipsFastISel::selectShift(const Instruction *I) {
     if (!TempReg)
       return false;
 
-    MVT Op0MVT = TLI.getValueType(Op0->getType(), true).getSimpleVT();
+    MVT Op0MVT = TLI.getValueType(DL, Op0->getType(), true).getSimpleVT();
     bool IsZExt = Opcode == Instruction::LShr;
     if (!emitIntExt(Op0MVT, Op0Reg, MVT::i32, TempReg, IsZExt))
       return false;
@@ -1802,7 +1805,7 @@ unsigned MipsFastISel::getRegEnsuringSimpleIntegerWidening(const Value *V,
   unsigned VReg = getRegForValue(V);
   if (VReg == 0)
     return 0;
-  MVT VMVT = TLI.getValueType(V->getType(), true).getSimpleVT();
+  MVT VMVT = TLI.getValueType(DL, V->getType(), true).getSimpleVT();
   if ((VMVT == MVT::i8) || (VMVT == MVT::i16)) {
     unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
     if (!emitIntExt(VMVT, VReg, MVT::i32, TempReg, IsUnsigned))
