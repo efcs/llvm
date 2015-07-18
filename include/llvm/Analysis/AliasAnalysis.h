@@ -211,6 +211,8 @@ public:
     /// (if it has any) are non-volatile loads from objects pointed to by its
     /// pointer-typed arguments, with arbitrary offsets.
     ///
+    /// This property corresponds to the LLVM IR 'argmemonly' attribute combined
+    /// with 'readonly' attribute.
     /// This property corresponds to the IntrReadArgMem LLVM intrinsic flag.
     OnlyReadsArgumentPointees = ArgumentPointees | Ref,
 
@@ -218,6 +220,7 @@ public:
     /// function (if it has any) are non-volatile loads and stores from objects
     /// pointed to by its pointer-typed arguments, with arbitrary offsets.
     ///
+    /// This property corresponds to the LLVM IR 'argmemonly' attribute.
     /// This property corresponds to the IntrReadWriteArgMem LLVM intrinsic flag.
     OnlyAccessesArgumentPointees = ArgumentPointees | ModRef,
 
@@ -518,30 +521,10 @@ public:
   ///
   virtual void deleteValue(Value *V);
 
-  /// copyValue - This method should be used whenever a preexisting value in the
-  /// program is copied or cloned, introducing a new value.  Note that analysis
-  /// implementations should tolerate clients that use this method to introduce
-  /// the same value multiple times: if the analysis already knows about a
-  /// value, it should ignore the request.
-  ///
-  virtual void copyValue(Value *From, Value *To);
-
-  /// addEscapingUse - This method should be used whenever an escaping use is
-  /// added to a pointer value.  Analysis implementations may either return
-  /// conservative responses for that value in the future, or may recompute
-  /// some or all internal state to continue providing precise responses.
-  ///
-  /// Escaping uses are considered by anything _except_ the following:
-  ///  - GEPs or bitcasts of the pointer
-  ///  - Loads through the pointer
-  ///  - Stores through (but not of) the pointer
-  virtual void addEscapingUse(Use &U);
-
   /// replaceWithNewValue - This method is the obvious combination of the two
   /// above, and it provided as a helper to simplify client code.
   ///
   void replaceWithNewValue(Value *Old, Value *New) {
-    copyValue(Old, New);
     deleteValue(Old);
   }
 };

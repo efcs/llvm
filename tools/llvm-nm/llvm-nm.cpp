@@ -185,39 +185,20 @@ struct NMSymbol {
 }
 
 static bool compareSymbolAddress(const NMSymbol &A, const NMSymbol &B) {
-  bool AUndefined = A.Sym.getFlags() & SymbolRef::SF_Undefined;
-  bool BUndefined = B.Sym.getFlags() & SymbolRef::SF_Undefined;
-  if (AUndefined && !BUndefined)
-    return true;
-  if (!AUndefined && BUndefined)
-    return false;
-  if (A.Address < B.Address)
-    return true;
-  if (A.Address == B.Address && A.Name < B.Name)
-    return true;
-  if (A.Address == B.Address && A.Name == B.Name && A.Size < B.Size)
-    return true;
-  return false;
+  bool ADefined = !(A.Sym.getFlags() & SymbolRef::SF_Undefined);
+  bool BDefined = !(B.Sym.getFlags() & SymbolRef::SF_Undefined);
+  return std::make_tuple(ADefined, A.Address, A.Name, A.Size) <
+         std::make_tuple(BDefined, B.Address, B.Name, B.Size);
 }
 
 static bool compareSymbolSize(const NMSymbol &A, const NMSymbol &B) {
-  if (A.Size < B.Size)
-    return true;
-  if (A.Size == B.Size && A.Name < B.Name)
-    return true;
-  if (A.Size == B.Size && A.Name == B.Name && A.Address < B.Address)
-    return true;
-  return false;
+  return std::make_tuple(A.Size, A.Name, A.Address) <
+         std::make_tuple(B.Size, B.Name, B.Address);
 }
 
 static bool compareSymbolName(const NMSymbol &A, const NMSymbol &B) {
-  if (A.Name < B.Name)
-    return true;
-  if (A.Name == B.Name && A.Size < B.Size)
-    return true;
-  if (A.Name == B.Name && A.Size == B.Size && A.Address < B.Address)
-    return true;
-  return false;
+  return std::make_tuple(A.Name, A.Size, A.Address) <
+         std::make_tuple(B.Name, B.Size, B.Address);
 }
 
 static char isSymbolList64Bit(SymbolicFile &Obj) {
@@ -564,12 +545,12 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     char SymbolAddrStr[18] = "";
     char SymbolSizeStr[18] = "";
 
-    if (OutputFormat == sysv || I->Address == UnknownAddress)
+    if (OutputFormat == sysv || I->TypeChar == 'U')
       strcpy(SymbolAddrStr, printBlanks);
     if (OutputFormat == sysv)
       strcpy(SymbolSizeStr, printBlanks);
 
-    if (I->Address != UnknownAddress)
+    if (I->TypeChar != 'U')
       format(printFormat, I->Address)
           .print(SymbolAddrStr, sizeof(SymbolAddrStr));
     format(printFormat, I->Size).print(SymbolSizeStr, sizeof(SymbolSizeStr));
@@ -881,21 +862,17 @@ static void dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
       continue;
     NMSymbol S;
     S.Size = 0;
-    S.Address = UnknownAddress;
+    S.Address = 0;
     if (PrintSize) {
       if (isa<ELFObjectFileBase>(&Obj))
         S.Size = ELFSymbolRef(Sym).getSize();
     }
     if (PrintAddress && isa<ObjectFile>(Obj)) {
       SymbolRef SymRef(Sym);
-      if (SymFlags & SymbolRef::SF_Common) {
-        S.Address = SymRef.getCommonSize();
-      } else {
-        ErrorOr<uint64_t> AddressOrErr = SymRef.getAddress();
-        if (error(AddressOrErr.getError()))
-          break;
-        S.Address = *AddressOrErr;
-      }
+      ErrorOr<uint64_t> AddressOrErr = SymRef.getAddress();
+      if (error(AddressOrErr.getError()))
+        break;
+      S.Address = *AddressOrErr;
     }
     S.TypeChar = getNMTypeChar(Obj, Sym);
     if (error(Sym.printName(OS)))

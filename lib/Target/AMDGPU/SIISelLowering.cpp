@@ -254,8 +254,9 @@ bool SITargetLowering::isShuffleMaskLegal(const SmallVectorImpl<int> &,
   return false;
 }
 
-bool SITargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                             Type *Ty, unsigned AS) const {
+bool SITargetLowering::isLegalAddressingMode(const DataLayout &DL,
+                                             const AddrMode &AM, Type *Ty,
+                                             unsigned AS) const {
   // No global is ever allowed as a base.
   if (AM.BaseGV)
     return false;
@@ -416,7 +417,7 @@ static EVT toIntegerVT(EVT VT) {
 SDValue SITargetLowering::LowerParameter(SelectionDAG &DAG, EVT VT, EVT MemVT,
                                          SDLoc SL, SDValue Chain,
                                          unsigned Offset, bool Signed) const {
-  const DataLayout *DL = getDataLayout();
+  const DataLayout &DL = DAG.getDataLayout();
   MachineFunction &MF = DAG.getMachineFunction();
   const SIRegisterInfo *TRI =
       static_cast<const SIRegisterInfo*>(Subtarget->getRegisterInfo());
@@ -425,16 +426,16 @@ SDValue SITargetLowering::LowerParameter(SelectionDAG &DAG, EVT VT, EVT MemVT,
   Type *Ty = VT.getTypeForEVT(*DAG.getContext());
 
   MachineRegisterInfo &MRI = DAG.getMachineFunction().getRegInfo();
-  MVT PtrVT = getPointerTy(AMDGPUAS::CONSTANT_ADDRESS);
+  MVT PtrVT = getPointerTy(DL, AMDGPUAS::CONSTANT_ADDRESS);
   PointerType *PtrTy = PointerType::get(Ty, AMDGPUAS::CONSTANT_ADDRESS);
   SDValue BasePtr = DAG.getCopyFromReg(Chain, SL,
                                        MRI.getLiveInVirtReg(InputPtrReg), PtrVT);
   SDValue Ptr = DAG.getNode(ISD::ADD, SL, PtrVT, BasePtr,
                             DAG.getConstant(Offset, SL, PtrVT));
-  SDValue PtrOffset = DAG.getUNDEF(getPointerTy(AMDGPUAS::CONSTANT_ADDRESS));
+  SDValue PtrOffset = DAG.getUNDEF(PtrVT);
   MachinePointerInfo PtrInfo(UndefValue::get(PtrTy));
 
-  unsigned Align = DL->getABITypeAlignment(Ty);
+  unsigned Align = DL.getABITypeAlignment(Ty);
 
   if (VT != MemVT && VT.isFloatingPoint()) {
     // Do an integer load and convert.
@@ -451,7 +452,12 @@ SDValue SITargetLowering::LowerParameter(SelectionDAG &DAG, EVT VT, EVT MemVT,
                                true, // isNonTemporal
                                true, // isInvariant
                                Align); // Alignment
-    return DAG.getNode(ISD::FP16_TO_FP, SL, VT, Load);
+    SDValue Ops[] = {
+      DAG.getNode(ISD::FP16_TO_FP, SL, VT, Load),
+      Load.getValue(1)
+    };
+
+    return DAG.getMergeValues(Ops, SL);
   }
 
   ISD::LoadExtType ExtTy = Signed ? ISD::SEXTLOAD : ISD::ZEXTLOAD;
@@ -569,6 +575,8 @@ SDValue SITargetLowering::LowerFormalArguments(
 
   AnalyzeFormalArguments(CCInfo, Splits);
 
+  SmallVector<SDValue, 16> Chains;
+
   for (unsigned i = 0, e = Ins.size(), ArgIdx = 0; i != e; ++i) {
 
     const ISD::InputArg &Arg = Ins[i];
@@ -587,8 +595,9 @@ SDValue SITargetLowering::LowerFormalArguments(
                               VA.getLocMemOffset();
       // The first 36 bytes of the input buffer contains information about
       // thread group and global sizes.
-      SDValue Arg = LowerParameter(DAG, VT, MemVT,  DL, DAG.getRoot(),
+      SDValue Arg = LowerParameter(DAG, VT, MemVT,  DL, Chain,
                                    Offset, Ins[i].Flags.isSExt());
+      Chains.push_back(Arg.getValue(1));
 
       const PointerType *ParamTy =
         dyn_cast<PointerType>(FType->getParamType(Ins[i].getOrigArgIndex()));
@@ -614,7 +623,8 @@ SDValue SITargetLowering::LowerFormalArguments(
       Reg = TRI->getMatchingSuperReg(Reg, AMDGPU::sub0,
                                      &AMDGPU::SReg_64RegClass);
       Reg = MF.addLiveIn(Reg, &AMDGPU::SReg_64RegClass);
-      InVals.push_back(DAG.getCopyFromReg(Chain, DL, Reg, VT));
+      SDValue Copy = DAG.getCopyFromReg(Chain, DL, Reg, VT);
+      InVals.push_back(Copy);
       continue;
     }
 
@@ -634,7 +644,9 @@ SDValue SITargetLowering::LowerFormalArguments(
       for (unsigned j = 1; j != NumElements; ++j) {
         Reg = ArgLocs[ArgIdx++].getLocReg();
         Reg = MF.addLiveIn(Reg, RC);
-        Regs.push_back(DAG.getCopyFromReg(Chain, DL, Reg, VT));
+
+        SDValue Copy = DAG.getCopyFromReg(Chain, DL, Reg, VT);
+        Regs.push_back(Copy);
       }
 
       // Fill up the missing vector elements
@@ -653,7 +665,11 @@ SDValue SITargetLowering::LowerFormalArguments(
         AMDGPU::SGPR_32RegClass.begin(), AMDGPU::SGPR_32RegClass.getNumRegs()));
     Info->ScratchOffsetReg = AMDGPU::SGPR_32RegClass.getRegister(ScratchIdx);
   }
-  return Chain;
+
+  if (Chains.empty())
+    return Chain;
+
+  return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Chains);
 }
 
 MachineBasicBlock * SITargetLowering::EmitInstrWithCustomInserter(
@@ -695,14 +711,15 @@ bool SITargetLowering::enableAggressiveFMAFusion(EVT VT) const {
   return true;
 }
 
-EVT SITargetLowering::getSetCCResultType(LLVMContext &Ctx, EVT VT) const {
+EVT SITargetLowering::getSetCCResultType(const DataLayout &DL, LLVMContext &Ctx,
+                                         EVT VT) const {
   if (!VT.isVector()) {
     return MVT::i1;
   }
   return EVT::getVectorVT(Ctx, MVT::i1, VT.getVectorNumElements());
 }
 
-MVT SITargetLowering::getScalarShiftAmountTy(EVT VT) const {
+MVT SITargetLowering::getScalarShiftAmountTy(const DataLayout &, EVT) const {
   return MVT::i32;
 }
 
@@ -795,10 +812,29 @@ static SDNode *findUser(SDValue Value, unsigned Opcode) {
 
 SDValue SITargetLowering::LowerFrameIndex(SDValue Op, SelectionDAG &DAG) const {
 
+  SDLoc SL(Op);
   FrameIndexSDNode *FINode = cast<FrameIndexSDNode>(Op);
   unsigned FrameIndex = FINode->getIndex();
 
-  return DAG.getTargetFrameIndex(FrameIndex, MVT::i32);
+  // A FrameIndex node represents a 32-bit offset into scratch memory.  If
+  // the high bit of a frame index offset were to be set, this would mean
+  // that it represented an offset of ~2GB * 64 = ~128GB from the start of the
+  // scratch buffer, with 64 being the number of threads per wave.
+  //
+  // If we know the machine uses less than 128GB of scratch, then we can
+  // amrk the high bit of the FrameIndex node as known zero,
+  // which is important, because it means in most situations we can
+  // prove that values derived from FrameIndex nodes are non-negative.
+  // This enables us to take advantage of more addressing modes when
+  // accessing scratch buffers, since for scratch reads/writes, the register
+  // offset must always be positive.
+
+  SDValue TFI = DAG.getTargetFrameIndex(FrameIndex, MVT::i32);
+  if (Subtarget->enableHugeScratchBuffer())
+    return TFI;
+
+  return DAG.getNode(ISD::AssertZext, SL, MVT::i32, TFI,
+                    DAG.getValueType(EVT::getIntegerVT(*DAG.getContext(), 31)));
 }
 
 /// This transforms the control flow intrinsics to get the branch destination as
@@ -888,7 +924,7 @@ SDValue SITargetLowering::LowerGlobalAddress(AMDGPUMachineFunction *MFI,
 
   SDLoc DL(GSD);
   const GlobalValue *GV = GSD->getGlobal();
-  MVT PtrVT = getPointerTy(GSD->getAddressSpace());
+  MVT PtrVT = getPointerTy(DAG.getDataLayout(), GSD->getAddressSpace());
 
   SDValue Ptr = DAG.getNode(AMDGPUISD::CONST_DATA_PTR, DL, PtrVT);
   SDValue GA = DAG.getTargetGlobalAddress(GV, DL, MVT::i32);
@@ -926,6 +962,7 @@ SDValue SITargetLowering::copyToM0(SelectionDAG &DAG, SDValue Chain, SDLoc DL,
 SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                                                   SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
+  auto MFI = MF.getInfo<SIMachineFunctionInfo>();
   const SIRegisterInfo *TRI =
       static_cast<const SIRegisterInfo *>(Subtarget->getRegisterInfo());
 
@@ -964,8 +1001,7 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
 
   case Intrinsic::AMDGPU_read_workdim:
     return LowerParameter(DAG, VT, VT, DL, DAG.getEntryNode(),
-                          MF.getInfo<SIMachineFunctionInfo>()->ABIArgOffset,
-                          false);
+                          getImplicitParameterOffset(MFI, GRID_DIM), false);
 
   case Intrinsic::r600_read_tgid_x:
     return CreateLiveInRegister(DAG, &AMDGPU::SReg_32RegClass,
@@ -1213,7 +1249,8 @@ SDValue SITargetLowering::LowerFDIV32(SDValue Op, SelectionDAG &DAG) const {
 
   const SDValue One = DAG.getConstantFP(1.0, SL, MVT::f32);
 
-  EVT SetCCVT = getSetCCResultType(*DAG.getContext(), MVT::f32);
+  EVT SetCCVT =
+      getSetCCResultType(DAG.getDataLayout(), *DAG.getContext(), MVT::f32);
 
   SDValue r2 = DAG.getSetCC(SL, SetCCVT, r1, K0, ISD::SETOGT);
 
@@ -1411,7 +1448,7 @@ SDValue SITargetLowering::performUCharToFloatCombine(SDNode *N,
     unsigned AS = Load->getAddressSpace();
     unsigned Align = Load->getAlignment();
     Type *Ty = LoadVT.getTypeForEVT(*DAG.getContext());
-    unsigned ABIAlignment = getDataLayout()->getABITypeAlignment(Ty);
+    unsigned ABIAlignment = DAG.getDataLayout().getABITypeAlignment(Ty);
 
     // Don't try to replace the load if we have to expand it due to alignment
     // problems. Otherwise we will end up scalarizing the load, and trying to
@@ -2016,6 +2053,13 @@ void SITargetLowering::adjustWritemask(MachineSDNode *&Node,
   }
 }
 
+static bool isFrameIndexOp(SDValue Op) {
+  if (Op.getOpcode() == ISD::AssertZext)
+    Op = Op.getOperand(0);
+
+  return isa<FrameIndexSDNode>(Op);
+}
+
 /// \brief Legalize target independent instructions (e.g. INSERT_SUBREG)
 /// with frame index operands.
 /// LLVM assumes that inputs are to these instructions are registers.
@@ -2024,7 +2068,7 @@ void SITargetLowering::legalizeTargetIndependentNode(SDNode *Node,
 
   SmallVector<SDValue, 8> Ops;
   for (unsigned i = 0; i < Node->getNumOperands(); ++i) {
-    if (!isa<FrameIndexSDNode>(Node->getOperand(i))) {
+    if (!isFrameIndexOp(Node->getOperand(i))) {
       Ops.push_back(Node->getOperand(i));
       continue;
     }
