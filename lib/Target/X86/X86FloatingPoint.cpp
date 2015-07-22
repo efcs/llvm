@@ -32,10 +32,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/EdgeBundles.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/Debug.h"
@@ -301,8 +301,9 @@ bool FPS::runOnMachineFunction(MachineFunction &MF) {
   bool FPIsUsed = false;
 
   static_assert(X86::FP6 == X86::FP0+6, "Register enums aren't sorted right!");
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (unsigned i = 0; i <= 6; ++i)
-    if (MF.getRegInfo().isPhysRegUsed(X86::FP0+i)) {
+    if (!MRI.reg_nodbg_empty(X86::FP0 + i)) {
       FPIsUsed = true;
       break;
     }
@@ -1530,7 +1531,7 @@ void FPS::handleSpecialFP(MachineBasicBlock::iterator &Inst) {
     if (Op.isKill())
       moveToTop(FPReg, Inst);
     else
-      duplicateToTop(FPReg, FPReg, Inst);
+      duplicateToTop(FPReg, ScratchFPReg, Inst);
 
     // Emit the call. This will pop the operand.
     BuildMI(*MBB, Inst, MI->getDebugLoc(), TII->get(X86::CALLpcrel32))

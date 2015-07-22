@@ -16,6 +16,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/SymbolSize.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/FileSystem.h"
@@ -24,6 +25,7 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <string>
 #include <system_error>
@@ -38,18 +40,14 @@ cl::list<std::string> InputFilenames(cl::Positional,
                                      cl::ZeroOrMore);
 } // namespace opts
 
-static int ReturnValue = EXIT_SUCCESS;
-
 namespace llvm {
 
-static bool error(std::error_code EC) {
+static void error(std::error_code EC) {
   if (!EC)
-    return false;
-
-  ReturnValue = EXIT_FAILURE;
+    return;
   outs() << "\nError reading file: " << EC.message() << ".\n";
   outs().flush();
-  return true;
+  exit(1);
 }
 
 } // namespace llvm
@@ -57,10 +55,9 @@ static bool error(std::error_code EC) {
 static void reportError(StringRef Input, StringRef Message) {
   if (Input == "-")
     Input = "<stdin>";
-
   errs() << Input << ": " << Message << "\n";
   errs().flush();
-  ReturnValue = EXIT_FAILURE;
+  exit(1);
 }
 
 static void reportError(StringRef Input, std::error_code EC) {
@@ -82,7 +79,7 @@ static SmallVectorImpl<SectionRef> &getRelocSections(const ObjectFile *Obj,
   return SectionRelocMap[Sec];
 }
 
-static bool collectRelocatedSymbols(const ObjectFile *Obj,
+static void collectRelocatedSymbols(const ObjectFile *Obj,
                                     const SectionRef &Sec, uint64_t SecAddress,
                                     uint64_t SymAddress, uint64_t SymSize,
                                     StringRef *I, StringRef *E) {
@@ -95,22 +92,18 @@ static bool collectRelocatedSymbols(const ObjectFile *Obj,
       const object::symbol_iterator RelocSymI = Reloc.getSymbol();
       if (RelocSymI == Obj->symbol_end())
         continue;
-      StringRef RelocSymName;
-      if (error(RelocSymI->getName(RelocSymName)))
-        return true;
-      uint64_t Offset;
-      if (error(Reloc.getOffset(Offset)))
-        return true;
+      ErrorOr<StringRef> RelocSymName = RelocSymI->getName();
+      error(RelocSymName.getError());
+      uint64_t Offset = Reloc.getOffset();
       if (Offset >= SymOffset && Offset < SymEnd) {
-        *I = RelocSymName;
+        *I = *RelocSymName;
         ++I;
       }
     }
   }
-  return false;
 }
 
-static bool collectRelocationOffsets(
+static void collectRelocationOffsets(
     const ObjectFile *Obj, const SectionRef &Sec, uint64_t SecAddress,
     uint64_t SymAddress, uint64_t SymSize, StringRef SymName,
     std::map<std::pair<StringRef, uint64_t>, StringRef> &Collection) {
@@ -121,17 +114,13 @@ static bool collectRelocationOffsets(
       const object::symbol_iterator RelocSymI = Reloc.getSymbol();
       if (RelocSymI == Obj->symbol_end())
         continue;
-      StringRef RelocSymName;
-      if (error(RelocSymI->getName(RelocSymName)))
-        return true;
-      uint64_t Offset;
-      if (error(Reloc.getOffset(Offset)))
-        return true;
+      ErrorOr<StringRef> RelocSymName = RelocSymI->getName();
+      error(RelocSymName.getError());
+      uint64_t Offset = Reloc.getOffset();
       if (Offset >= SymOffset && Offset < SymEnd)
-        Collection[std::make_pair(SymName, Offset - SymOffset)] = RelocSymName;
+        Collection[std::make_pair(SymName, Offset - SymOffset)] = *RelocSymName;
     }
   }
-  return false;
 }
 
 static void dumpCXXData(const ObjectFile *Obj) {
@@ -186,13 +175,17 @@ static void dumpCXXData(const ObjectFile *Obj) {
 
   uint8_t BytesInAddress = Obj->getBytesInAddress();
 
-  for (const object::SymbolRef &Sym : Obj->symbols()) {
-    StringRef SymName;
-    if (error(Sym.getName(SymName)))
-      return;
+  std::vector<std::pair<SymbolRef, uint64_t>> SymAddr =
+      object::computeSymbolSizes(*Obj);
+
+  for (auto &P : SymAddr) {
+    object::SymbolRef Sym = P.first;
+    uint64_t SymSize = P.second;
+    ErrorOr<StringRef> SymNameOrErr = Sym.getName();
+    error(SymNameOrErr.getError());
+    StringRef SymName = *SymNameOrErr;
     object::section_iterator SecI(Obj->section_begin());
-    if (error(Sym.getSection(SecI)))
-      return;
+    error(Sym.getSection(SecI));
     // Skip external symbols.
     if (SecI == Obj->section_end())
       continue;
@@ -201,11 +194,10 @@ static void dumpCXXData(const ObjectFile *Obj) {
     if (Sec.isBSS() || Sec.isVirtual())
       continue;
     StringRef SecContents;
-    if (error(Sec.getContents(SecContents)))
-      return;
-    uint64_t SymAddress, SymSize;
-    if (error(Sym.getAddress(SymAddress)) || error(Sym.getSize(SymSize)))
-      return;
+    error(Sec.getContents(SecContents));
+    ErrorOr<uint64_t> SymAddressOrErr = Sym.getAddress();
+    error(SymAddressOrErr.getError());
+    uint64_t SymAddress = *SymAddressOrErr;
     uint64_t SecAddress = Sec.getAddress();
     uint64_t SecSize = Sec.getSize();
     uint64_t SymOffset = SymAddress - SecAddress;
@@ -234,9 +226,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
       COL.Data = ArrayRef<little32_t>(
           reinterpret_cast<const little32_t *>(SymContents.data()), 3);
       StringRef *I = std::begin(COL.Symbols), *E = std::end(COL.Symbols);
-      if (collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I,
-                                  E))
-        return;
+      collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I, E);
       COLs[SymName] = COL;
     }
     // Class hierarchy descriptors in the MS-ABI start with '??_R3'
@@ -245,9 +235,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
       CHD.Data = ArrayRef<little32_t>(
           reinterpret_cast<const little32_t *>(SymContents.data()), 3);
       StringRef *I = std::begin(CHD.Symbols), *E = std::end(CHD.Symbols);
-      if (collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I,
-                                  E))
-        return;
+      collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I, E);
       CHDs[SymName] = CHD;
     }
     // Class hierarchy descriptors in the MS-ABI start with '??_R2'
@@ -263,9 +251,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
       BCD.Data = ArrayRef<little32_t>(
           reinterpret_cast<const little32_t *>(SymContents.data()) + 1, 5);
       StringRef *I = std::begin(BCD.Symbols), *E = std::end(BCD.Symbols);
-      if (collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I,
-                                  E))
-        return;
+      collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I, E);
       BCDs[SymName] = BCD;
     }
     // Type descriptors in the MS-ABI start with '??_R0'
@@ -278,9 +264,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
         TD.AlwaysZero = *reinterpret_cast<const little32_t *>(DataPtr);
       TD.MangledName = SymContents.drop_front(BytesInAddress * 2);
       StringRef *I = std::begin(TD.Symbols), *E = std::end(TD.Symbols);
-      if (collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I,
-                                  E))
-        return;
+      collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I, E);
       TDs[SymName] = TD;
     }
     // Throw descriptors in the MS-ABI start with '_TI'
@@ -311,9 +295,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
       CT.VirtualBaseAdjustmentOffset = DataPtr[4];
       CT.Size = DataPtr[5];
       StringRef *I = std::begin(CT.Symbols), *E = std::end(CT.Symbols);
-      if (collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I,
-                                  E))
-        return;
+      collectRelocatedSymbols(Obj, Sec, SecAddress, SymAddress, SymSize, I, E);
       CTs[SymName] = CT;
     }
     // Construction vtables in the Itanium ABI start with '_ZTT' or '__ZTT'.
@@ -354,7 +336,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
     StringRef SymName = VFTableEntry.second;
     outs() << VFTableName << '[' << Offset << "]: " << SymName << '\n';
   }
-  for (const std::pair<StringRef, ArrayRef<little32_t>> &VBTable : VBTables) {
+  for (const auto &VBTable : VBTables) {
     StringRef VBTableName = VBTable.first;
     uint32_t Idx = 0;
     for (little32_t Offset : VBTable.second) {
@@ -362,7 +344,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
       Idx += sizeof(Offset);
     }
   }
-  for (const std::pair<StringRef, CompleteObjectLocator> &COLPair : COLs) {
+  for (const auto &COLPair : COLs) {
     StringRef COLName = COLPair.first;
     const CompleteObjectLocator &COL = COLPair.second;
     outs() << COLName << "[IsImageRelative]: " << COL.Data[0] << '\n';
@@ -372,7 +354,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
     outs() << COLName << "[ClassHierarchyDescriptor]: " << COL.Symbols[1]
            << '\n';
   }
-  for (const std::pair<StringRef, ClassHierarchyDescriptor> &CHDPair : CHDs) {
+  for (const auto &CHDPair : CHDs) {
     StringRef CHDName = CHDPair.first;
     const ClassHierarchyDescriptor &CHD = CHDPair.second;
     outs() << CHDName << "[AlwaysZero]: " << CHD.Data[0] << '\n';
@@ -380,14 +362,13 @@ static void dumpCXXData(const ObjectFile *Obj) {
     outs() << CHDName << "[NumClasses]: " << CHD.Data[2] << '\n';
     outs() << CHDName << "[BaseClassArray]: " << CHD.Symbols[0] << '\n';
   }
-  for (const std::pair<std::pair<StringRef, uint64_t>, StringRef> &BCAEntry :
-       BCAEntries) {
+  for (const auto &BCAEntry : BCAEntries) {
     StringRef BCAName = BCAEntry.first.first;
     uint64_t Offset = BCAEntry.first.second;
     StringRef SymName = BCAEntry.second;
     outs() << BCAName << '[' << Offset << "]: " << SymName << '\n';
   }
-  for (const std::pair<StringRef, BaseClassDescriptor> &BCDPair : BCDs) {
+  for (const auto &BCDPair : BCDs) {
     StringRef BCDName = BCDPair.first;
     const BaseClassDescriptor &BCD = BCDPair.second;
     outs() << BCDName << "[TypeDescriptor]: " << BCD.Symbols[0] << '\n';
@@ -399,7 +380,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
     outs() << BCDName << "[ClassHierarchyDescriptor]: " << BCD.Symbols[1]
            << '\n';
   }
-  for (const std::pair<StringRef, TypeDescriptor> &TDPair : TDs) {
+  for (const auto &TDPair : TDs) {
     StringRef TDName = TDPair.first;
     const TypeDescriptor &TD = TDPair.second;
     outs() << TDName << "[VFPtr]: " << TD.Symbols[0] << '\n';
@@ -409,7 +390,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
                          /*UseHexEscapes=*/true)
         << '\n';
   }
-  for (const std::pair<StringRef, ThrowInfo> &TIPair : TIs) {
+  for (const auto &TIPair : TIs) {
     StringRef TIName = TIPair.first;
     const ThrowInfo &TI = TIPair.second;
     auto dumpThrowInfoFlag = [&](const char *Name, uint32_t Flag) {
@@ -428,7 +409,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
     dumpThrowInfoSymbol("ForwardCompat", 8);
     dumpThrowInfoSymbol("CatchableTypeArray", 12);
   }
-  for (const std::pair<StringRef, CatchableTypeArray> &CTAPair : CTAs) {
+  for (const auto &CTAPair : CTAs) {
     StringRef CTAName = CTAPair.first;
     const CatchableTypeArray &CTA = CTAPair.second;
 
@@ -440,7 +421,7 @@ static void dumpCXXData(const ObjectFile *Obj) {
          I != E; ++I)
       outs() << CTAName << '[' << Idx++ << "]: " << I->second << '\n';
   }
-  for (const std::pair<StringRef, CatchableType> &CTPair : CTs) {
+  for (const auto &CTPair : CTs) {
     StringRef CTName = CTPair.first;
     const CatchableType &CT = CTPair.second;
     auto dumpCatchableTypeFlag = [&](const char *Name, uint32_t Flag) {
@@ -463,14 +444,13 @@ static void dumpCXXData(const ObjectFile *Obj) {
            << "[CopyCtor]: " << (CT.Symbols[1].empty() ? "null" : CT.Symbols[1])
            << '\n';
   }
-  for (const std::pair<std::pair<StringRef, uint64_t>, StringRef> &VTTPair :
-       VTTEntries) {
+  for (const auto &VTTPair : VTTEntries) {
     StringRef VTTName = VTTPair.first.first;
     uint64_t VTTOffset = VTTPair.first.second;
     StringRef VTTEntry = VTTPair.second;
     outs() << VTTName << '[' << VTTOffset << "]: " << VTTEntry << '\n';
   }
-  for (const std::pair<StringRef, StringRef> &TIPair : TINames) {
+  for (const auto &TIPair : TINames) {
     StringRef TIName = TIPair.first;
     outs() << TIName << ": " << TIPair.second << '\n';
   }
@@ -566,5 +546,5 @@ int main(int argc, const char *argv[]) {
   std::for_each(opts::InputFilenames.begin(), opts::InputFilenames.end(),
                 dumpInput);
 
-  return ReturnValue;
+  return EXIT_SUCCESS;
 }

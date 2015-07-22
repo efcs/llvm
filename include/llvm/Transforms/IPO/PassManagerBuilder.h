@@ -81,6 +81,11 @@ public:
     /// run after everything else.
     EP_OptimizerLast,
 
+    /// EP_VectorizerStart - This extension point allows adding optimization
+    /// passes before the vectorizer and other highly target specific
+    /// optimization passes are executed.
+    EP_VectorizerStart,
+
     /// EP_EnabledOnOptLevel0 - This extension point allows adding passes that
     /// should not be disabled by O0 optimization level. The passes will be
     /// inserted after the inlining pass.
@@ -120,8 +125,8 @@ public:
   bool DisableGVNLoadPRE;
   bool VerifyInput;
   bool VerifyOutput;
-  bool StripDebug;
   bool MergeFunctions;
+  bool PrepareForLTO;
 
 private:
   /// ExtensionList - This is list of all of the extensions that are registered.
@@ -141,6 +146,7 @@ private:
                          legacy::PassManagerBase &PM) const;
   void addInitialAliasAnalysisPasses(legacy::PassManagerBase &PM) const;
   void addLTOOptimizationPasses(legacy::PassManagerBase &PM);
+  void addLateLTOOptimizationPasses(legacy::PassManagerBase &PM);
 
 public:
   /// populateFunctionPassManager - This fills in the function pass manager,

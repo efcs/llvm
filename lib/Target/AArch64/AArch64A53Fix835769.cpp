@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 
 using namespace llvm;
@@ -47,7 +48,7 @@ static bool isFirstInstructionInSequence(MachineInstr *MI) {
   case AArch64::PRFUMi:
     return true;
   default:
-    return (MI->mayLoad() || MI->mayStore());
+    return MI->mayLoadOrStore();
   }
 }
 

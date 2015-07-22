@@ -165,8 +165,7 @@ void PPCRegisterInfo::adjustStackMapLiveOutMask(uint32_t *Mask) const {
 BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
-  const PPCFrameLowering *PPCFI =
-      static_cast<const PPCFrameLowering *>(Subtarget.getFrameLowering());
+  const PPCFrameLowering *TFI = getFrameLowering(MF);
 
   // The ZERO register is not really a register, but the representation of r0
   // when used in instructions that treat r0 as the constant 0.
@@ -209,7 +208,7 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     Reserved.set(PPC::X1);
     Reserved.set(PPC::X13);
 
-    if (PPCFI->needsFP(MF))
+    if (TFI->needsFP(MF))
       Reserved.set(PPC::X31);
 
     if (hasBasePointer(MF))
@@ -230,7 +229,7 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     }
   }
 
-  if (PPCFI->needsFP(MF))
+  if (TFI->needsFP(MF))
     Reserved.set(PPC::R31);
 
   if (hasBasePointer(MF)) {
@@ -256,8 +255,7 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
 
 unsigned PPCRegisterInfo::getRegPressureLimit(const TargetRegisterClass *RC,
                                               MachineFunction &MF) const {
-  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
-  const TargetFrameLowering *TFI = Subtarget.getFrameLowering();
+  const PPCFrameLowering *TFI = getFrameLowering(MF);
   const unsigned DefaultSafety = 1;
 
   switch (RC->getID()) {
@@ -282,6 +280,7 @@ unsigned PPCRegisterInfo::getRegPressureLimit(const TargetRegisterClass *RC,
     return 32 - DefaultSafety;
   case PPC::VSRCRegClassID:
   case PPC::VSFRCRegClassID:
+  case PPC::VSSRCRegClassID:
     return 64 - DefaultSafety;
   case PPC::CRRCRegClassID:
     return 8 - DefaultSafety;
@@ -300,6 +299,8 @@ PPCRegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
       return &PPC::VSFRCRegClass;
     else if (RC == &PPC::VRRCRegClass)
       return &PPC::VSRCRegClass;
+    else if (RC == &PPC::F4RCRegClass && Subtarget.hasP8Vector())
+      return &PPC::VSSRCRegClass;
   }
 
   return TargetRegisterInfo::getLargestLegalSuperClass(RC, MF);
@@ -338,7 +339,8 @@ void PPCRegisterInfo::lowerDynamicAlloc(MachineBasicBlock::iterator II) const {
   unsigned FrameSize = MFI->getStackSize();
   
   // Get stack alignments.
-  unsigned TargetAlign = Subtarget.getFrameLowering()->getStackAlignment();
+  const PPCFrameLowering *TFI = getFrameLowering(MF);
+  unsigned TargetAlign = TFI->getStackAlignment();
   unsigned MaxAlign = MFI->getMaxAlignment();
   assert((maxCallFrameSize & (MaxAlign-1)) == 0 &&
          "Maximum call-frame size not sufficiently aligned");
@@ -522,37 +524,6 @@ void PPCRegisterInfo::lowerCRRestore(MachineBasicBlock::iterator II,
 
   // Discard the pseudo instruction.
   MBB.erase(II);
-}
-
-static unsigned getCRFromCRBit(unsigned SrcReg) {
-  unsigned Reg = 0;
-  if (SrcReg == PPC::CR0LT || SrcReg == PPC::CR0GT ||
-      SrcReg == PPC::CR0EQ || SrcReg == PPC::CR0UN)
-    Reg = PPC::CR0;
-  else if (SrcReg == PPC::CR1LT || SrcReg == PPC::CR1GT ||
-           SrcReg == PPC::CR1EQ || SrcReg == PPC::CR1UN)
-    Reg = PPC::CR1;
-  else if (SrcReg == PPC::CR2LT || SrcReg == PPC::CR2GT ||
-           SrcReg == PPC::CR2EQ || SrcReg == PPC::CR2UN)
-    Reg = PPC::CR2;
-  else if (SrcReg == PPC::CR3LT || SrcReg == PPC::CR3GT ||
-           SrcReg == PPC::CR3EQ || SrcReg == PPC::CR3UN)
-    Reg = PPC::CR3;
-  else if (SrcReg == PPC::CR4LT || SrcReg == PPC::CR4GT ||
-           SrcReg == PPC::CR4EQ || SrcReg == PPC::CR4UN)
-    Reg = PPC::CR4;
-  else if (SrcReg == PPC::CR5LT || SrcReg == PPC::CR5GT ||
-           SrcReg == PPC::CR5EQ || SrcReg == PPC::CR5UN)
-    Reg = PPC::CR5;
-  else if (SrcReg == PPC::CR6LT || SrcReg == PPC::CR6GT ||
-           SrcReg == PPC::CR6EQ || SrcReg == PPC::CR6UN)
-    Reg = PPC::CR6;
-  else if (SrcReg == PPC::CR7LT || SrcReg == PPC::CR7GT ||
-           SrcReg == PPC::CR7EQ || SrcReg == PPC::CR7UN)
-    Reg = PPC::CR7;
-
-  assert(Reg != 0 && "Invalid CR bit register");
-  return Reg;
 }
 
 void PPCRegisterInfo::lowerCRBitSpilling(MachineBasicBlock::iterator II,
@@ -892,8 +863,7 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 }
 
 unsigned PPCRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
-  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
-  const TargetFrameLowering *TFI = Subtarget.getFrameLowering();
+  const PPCFrameLowering *TFI = getFrameLowering(MF);
 
   if (!TM.isPPC64())
     return TFI->hasFP(MF) ? PPC::R31 : PPC::R1;
@@ -928,24 +898,6 @@ bool PPCRegisterInfo::hasBasePointer(const MachineFunction &MF) const {
   return needsStackRealignment(MF);
 }
 
-bool PPCRegisterInfo::canRealignStack(const MachineFunction &MF) const {
-  if (MF.getFunction()->hasFnAttribute("no-realign-stack"))
-    return false;
-
-  return true;
-}
-
-bool PPCRegisterInfo::needsStackRealignment(const MachineFunction &MF) const {
-  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
-  const MachineFrameInfo *MFI = MF.getFrameInfo();
-  const Function *F = MF.getFunction();
-  unsigned StackAlign = Subtarget.getFrameLowering()->getStackAlignment();
-  bool requiresRealignment = ((MFI->getMaxAlignment() > StackAlign) ||
-                              F->hasFnAttribute(Attribute::StackAlignment));
-
-  return requiresRealignment && canRealignStack(MF);
-}
-
 /// Returns true if the instruction's frame index
 /// reference would be better served by a base register other than FP
 /// or SP. Used by LocalStackFrameAllocation to determine which frame index
@@ -974,11 +926,8 @@ needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
 
   MachineBasicBlock &MBB = *MI->getParent();
   MachineFunction &MF = *MBB.getParent();
-  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
-  const PPCFrameLowering *PPCFI =
-      static_cast<const PPCFrameLowering *>(Subtarget.getFrameLowering());
-  unsigned StackEst =
-    PPCFI->determineFrameLayout(MF, false, true);
+  const PPCFrameLowering *TFI = getFrameLowering(MF);
+  unsigned StackEst = TFI->determineFrameLayout(MF, false, true);
 
   // If we likely don't need a stack frame, then we probably don't need a
   // virtual base register either.
@@ -993,7 +942,7 @@ needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
 
   // The frame pointer will point to the end of the stack, so estimate the
   // offset as the difference between the object offset and the FP location.
-  return !isFrameOffsetLegal(MI, Offset);
+  return !isFrameOffsetLegal(MI, getBaseRegister(MF), Offset);
 }
 
 /// Insert defining instruction(s) for BaseReg to
@@ -1045,6 +994,7 @@ void PPCRegisterInfo::resolveFrameIndex(MachineInstr &MI, unsigned BaseReg,
 }
 
 bool PPCRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
+                                         unsigned BaseReg,
                                          int64_t Offset) const {
   unsigned FIOperandNum = 0;
   while (!MI->getOperand(FIOperandNum).isFI()) {
@@ -1061,4 +1011,3 @@ bool PPCRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
          MI->getOpcode() == TargetOpcode::PATCHPOINT ||
          (isInt<16>(Offset) && (!usesIXAddr(*MI) || (Offset & 3) == 0));
 }
-

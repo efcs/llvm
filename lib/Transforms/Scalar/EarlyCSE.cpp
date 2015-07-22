@@ -18,6 +18,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
@@ -27,7 +28,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/RecyclingAllocator.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <deque>
@@ -459,6 +460,30 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
   // predecessors.
   if (!BB->getSinglePredecessor())
     ++CurrentGeneration;
+
+  // If this node has a single predecessor which ends in a conditional branch,
+  // we can infer the value of the branch condition given that we took this
+  // path.  We need the single predeccesor to ensure there's not another path
+  // which reaches this block where the condition might hold a different
+  // value.  Since we're adding this to the scoped hash table (like any other
+  // def), it will have been popped if we encounter a future merge block.
+  if (BasicBlock *Pred = BB->getSinglePredecessor())
+    if (auto *BI = dyn_cast<BranchInst>(Pred->getTerminator()))
+      if (BI->isConditional())
+        if (auto *CondInst = dyn_cast<Instruction>(BI->getCondition()))
+          if (SimpleValue::canHandle(CondInst)) {
+            assert(BI->getSuccessor(0) == BB || BI->getSuccessor(1) == BB);
+            auto *ConditionalConstant = (BI->getSuccessor(0) == BB) ?
+              ConstantInt::getTrue(BB->getContext()) :
+              ConstantInt::getFalse(BB->getContext());
+            AvailableValues.insert(CondInst, ConditionalConstant);
+            DEBUG(dbgs() << "EarlyCSE CVP: Add conditional value for '"
+                  << CondInst->getName() << "' as " << *ConditionalConstant
+                  << " in " << BB->getName() << "\n");
+            // Replace all dominated uses with the known value
+            replaceDominatedUsesWith(CondInst, ConditionalConstant, DT,
+                                     BasicBlockEdge(Pred, BB));
+          }
 
   /// LastStore - Keep track of the last non-volatile store that we saw... for
   /// as long as there in no instruction that reads memory.  If we see a store

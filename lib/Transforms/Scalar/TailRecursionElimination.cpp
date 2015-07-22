@@ -54,8 +54,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/Loads.h"
@@ -156,6 +156,9 @@ static bool CanTRE(Function &F) {
 
 bool TailCallElim::runOnFunction(Function &F) {
   if (skipOptnoneFunction(F))
+    return false;
+
+  if (F.getFnAttribute("disable-tail-calls").getValueAsString() == "true")
     return false;
 
   bool AllCallsAreTailCalls = false;

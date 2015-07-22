@@ -11,11 +11,11 @@
 
 ; <data section> - it should have made one span covering all vars in this CU.
 ; CHECK-NEXT: .quad some_data
-; CHECK-NEXT: .quad .Ldebug_end0-some_data
+; CHECK-NEXT: .quad .Lsec_end0-some_data
 
 ; <other sections> - it should have made one span covering all vars in this CU.
 ; CHECK-NEXT: .quad some_other
-; CHECK-NEXT: .quad .Ldebug_end1-some_other
+; CHECK-NEXT: .quad .Lsec_end1-some_other
 
 ; <common symbols> - it should have made one span for each symbol.
 ; CHECK-NEXT: .quad some_bss
@@ -23,7 +23,7 @@
 
 ; <text section> - it should have made one span covering all functions in this CU.
 ; CHECK-NEXT: .quad .Lfunc_begin0
-; CHECK-NEXT: .quad .Ldebug_end2-.Lfunc_begin0
+; CHECK-NEXT: .quad .Lsec_end2-.Lfunc_begin0
 
 ; -- finish --
 ; CHECK-NEXT: # ARange terminator
@@ -62,20 +62,20 @@ entry:
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!13, !16}
 
-!0 = !MDCompileUnit(language: DW_LANG_C99, producer: "clang version 3.4 ", isOptimized: false, emissionKind: 0, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !8, imports: !2)
-!1 = !MDFile(filename: "test.c", directory: "/home/kayamon")
+!0 = !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.4 ", isOptimized: false, emissionKind: 0, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !8, imports: !2)
+!1 = !DIFile(filename: "test.c", directory: "/home/kayamon")
 !2 = !{}
 !3 = !{!4}
-!4 = !MDSubprogram(name: "some_code", line: 5, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: false, scopeLine: 6, file: !1, scope: !5, type: !6, function: void ()* @some_code, variables: !2)
-!5 = !MDFile(filename: "test.c", directory: "/home/kayamon")
-!6 = !MDSubroutineType(types: !7)
+!4 = !DISubprogram(name: "some_code", line: 5, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: false, scopeLine: 6, file: !1, scope: !5, type: !6, function: void ()* @some_code, variables: !2)
+!5 = !DIFile(filename: "test.c", directory: "/home/kayamon")
+!6 = !DISubroutineType(types: !7)
 !7 = !{null}
 !8 = !{!9, !11, !12}
-!9 = !MDGlobalVariable(name: "some_data", line: 1, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_data)
-!10 = !MDBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
-!11 = !MDGlobalVariable(name: "some_other", line: 3, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_other)
-!12 = !MDGlobalVariable(name: "some_bss", line: 2, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_bss)
+!9 = !DIGlobalVariable(name: "some_data", line: 1, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_data)
+!10 = !DIBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
+!11 = !DIGlobalVariable(name: "some_other", line: 3, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_other)
+!12 = !DIGlobalVariable(name: "some_bss", line: 2, isLocal: false, isDefinition: true, scope: null, file: !5, type: !10, variable: i32* @some_bss)
 !13 = !{i32 2, !"Dwarf Version", i32 4}
-!14 = !MDLocation(line: 7, scope: !4)
-!15 = !MDLocation(line: 8, scope: !4)
+!14 = !DILocation(line: 7, scope: !4)
+!15 = !DILocation(line: 8, scope: !4)
 !16 = !{i32 1, !"Debug Info Version", i32 3}

@@ -31,6 +31,7 @@
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -55,6 +56,10 @@ cl::desc("Disable compare instruction optimization"), cl::Hidden);
 static cl::opt<bool> VSXSelfCopyCrash("crash-on-ppc-vsx-self-copy",
 cl::desc("Causes the backend to crash instead of generating a nop VSX copy"),
 cl::Hidden);
+
+static cl::opt<bool>
+UseOldLatencyCalc("ppc-old-latency-calc", cl::Hidden,
+  cl::desc("Use the old (incorrect) instruction latency calculation"));
 
 // Pin the vtable to this file.
 void PPCInstrInfo::anchor() {}
@@ -102,6 +107,35 @@ PPCInstrInfo::CreateTargetPostRAHazardRecognizer(const InstrItineraryData *II,
   return new ScoreboardHazardRecognizer(II, DAG);
 }
 
+unsigned PPCInstrInfo::getInstrLatency(const InstrItineraryData *ItinData,
+                                       const MachineInstr *MI,
+                                       unsigned *PredCost) const {
+  if (!ItinData || UseOldLatencyCalc)
+    return PPCGenInstrInfo::getInstrLatency(ItinData, MI, PredCost);
+
+  // The default implementation of getInstrLatency calls getStageLatency, but
+  // getStageLatency does not do the right thing for us. While we have
+  // itinerary, most cores are fully pipelined, and so the itineraries only
+  // express the first part of the pipeline, not every stage. Instead, we need
+  // to use the listed output operand cycle number (using operand 0 here, which
+  // is an output).
+
+  unsigned Latency = 1;
+  unsigned DefClass = MI->getDesc().getSchedClass();
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
+    if (!MO.isReg() || !MO.isDef() || MO.isImplicit())
+      continue;
+
+    int Cycle = ItinData->getOperandCycle(DefClass, i);
+    if (Cycle < 0)
+      continue;
+
+    Latency = std::max(Latency, (unsigned) Cycle);
+  }
+
+  return Latency;
+}
 
 int PPCInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
                                     const MachineInstr *DefMI, unsigned DefIdx,
@@ -110,12 +144,14 @@ int PPCInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
   int Latency = PPCGenInstrInfo::getOperandLatency(ItinData, DefMI, DefIdx,
                                                    UseMI, UseIdx);
 
+  if (!DefMI->getParent())
+    return Latency;
+
   const MachineOperand &DefMO = DefMI->getOperand(DefIdx);
   unsigned Reg = DefMO.getReg();
 
-  const TargetRegisterInfo *TRI = &getRegisterInfo();
   bool IsRegCR;
-  if (TRI->isVirtualRegister(Reg)) {
+  if (TargetRegisterInfo::isVirtualRegister(Reg)) {
     const MachineRegisterInfo *MRI =
       &DefMI->getParent()->getParent()->getRegInfo();
     IsRegCR = MRI->getRegClass(Reg)->hasSuperClassEq(&PPC::CRRCRegClass) ||
@@ -151,6 +187,265 @@ int PPCInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
   }
 
   return Latency;
+}
+
+static bool hasVirtualRegDefsInBasicBlock(const MachineInstr &Inst,
+                                          const MachineBasicBlock *MBB) {
+  const MachineOperand &Op1 = Inst.getOperand(1);
+  const MachineOperand &Op2 = Inst.getOperand(2);
+  const MachineRegisterInfo &MRI = MBB->getParent()->getRegInfo();
+
+  // We need virtual register definitions.
+  MachineInstr *MI1 = nullptr;
+  MachineInstr *MI2 = nullptr;
+  if (Op1.isReg() && TargetRegisterInfo::isVirtualRegister(Op1.getReg()))
+    MI1 = MRI.getUniqueVRegDef(Op1.getReg());
+  if (Op2.isReg() && TargetRegisterInfo::isVirtualRegister(Op2.getReg()))
+    MI2 = MRI.getUniqueVRegDef(Op2.getReg());
+
+  // And they need to be in the trace (otherwise, they won't have a depth).
+  if (MI1 && MI2 && MI1->getParent() == MBB && MI2->getParent() == MBB)
+    return true;
+
+  return false;
+}
+
+static bool hasReassocSibling(const MachineInstr &Inst, bool &Commuted) {
+  const MachineBasicBlock *MBB = Inst.getParent();
+  const MachineRegisterInfo &MRI = MBB->getParent()->getRegInfo();
+  MachineInstr *MI1 = MRI.getUniqueVRegDef(Inst.getOperand(1).getReg());
+  MachineInstr *MI2 = MRI.getUniqueVRegDef(Inst.getOperand(2).getReg());
+  unsigned AssocOpcode = Inst.getOpcode();
+
+  // If only one operand has the same opcode and it's the second source operand,
+  // the operands must be commuted.
+  Commuted = MI1->getOpcode() != AssocOpcode && MI2->getOpcode() == AssocOpcode;
+  if (Commuted)
+    std::swap(MI1, MI2);
+
+  // 1. The previous instruction must be the same type as Inst.
+  // 2. The previous instruction must have virtual register definitions for its
+  //    operands in the same basic block as Inst.
+  // 3. The previous instruction's result must only be used by Inst.
+  if (MI1->getOpcode() == AssocOpcode &&
+      hasVirtualRegDefsInBasicBlock(*MI1, MBB) &&
+      MRI.hasOneNonDBGUse(MI1->getOperand(0).getReg()))
+    return true;
+
+  return false;
+}
+
+// This function does not list all associative and commutative operations, but
+// only those worth feeding through the machine combiner in an attempt to
+// reduce the critical path. Mostly, this means floating-point operations,
+// because they have high latencies (compared to other operations, such and
+// and/or, which are also associative and commutative, but have low latencies).
+//
+// The concept is that these operations can benefit from this kind of
+// transformation:
+//
+// A = ? op ?
+// B = A op X
+// C = B op Y
+// -->
+// A = ? op ?
+// B = X op Y
+// C = A op B
+//
+// breaking the dependency between A and B, allowing them to be executed in
+// parallel (or back-to-back in a pipeline) instead of depending on each other.
+static bool isAssociativeAndCommutative(unsigned Opcode) {
+  switch (Opcode) {
+  // FP Add:
+  case PPC::FADD:
+  case PPC::FADDS:
+  // FP Multiply:
+  case PPC::FMUL:
+  case PPC::FMULS:
+  // Altivec Add:
+  case PPC::VADDFP:
+  // VSX Add:
+  case PPC::XSADDDP:
+  case PPC::XVADDDP:
+  case PPC::XVADDSP:
+  case PPC::XSADDSP:
+  // VSX Multiply:
+  case PPC::XSMULDP:
+  case PPC::XVMULDP:
+  case PPC::XVMULSP:
+  case PPC::XSMULSP:
+  // QPX Add:
+  case PPC::QVFADD:
+  case PPC::QVFADDS:
+  case PPC::QVFADDSs:
+  // QPX Multiply:
+  case PPC::QVFMUL:
+  case PPC::QVFMULS:
+  case PPC::QVFMULSs:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Return true if the input instruction is part of a chain of dependent ops
+/// that are suitable for reassociation, otherwise return false.
+/// If the instruction's operands must be commuted to have a previous
+/// instruction of the same type define the first source operand, Commuted will
+/// be set to true.
+static bool isReassocCandidate(const MachineInstr &Inst, bool &Commuted) {
+  // 1. The operation must be associative and commutative.
+  // 2. The instruction must have virtual register definitions for its
+  //    operands in the same basic block.
+  // 3. The instruction must have a reassociable sibling.
+  if (isAssociativeAndCommutative(Inst.getOpcode()) &&
+      hasVirtualRegDefsInBasicBlock(Inst, Inst.getParent()) &&
+      hasReassocSibling(Inst, Commuted))
+    return true;
+
+  return false;
+}
+
+bool PPCInstrInfo::getMachineCombinerPatterns(MachineInstr &Root,
+        SmallVectorImpl<MachineCombinerPattern::MC_PATTERN> &Patterns) const {
+  // Using the machine combiner in this way is potentially expensive, so
+  // restrict to when aggressive optimizations are desired.
+  if (Subtarget.getTargetMachine().getOptLevel() != CodeGenOpt::Aggressive)
+    return false;
+
+  // FP reassociation is only legal when we don't need strict IEEE semantics.
+  if (!Root.getParent()->getParent()->getTarget().Options.UnsafeFPMath)
+    return false;
+
+  // Look for this reassociation pattern:
+  //   B = A op X (Prev)
+  //   C = B op Y (Root)
+
+  // FIXME: We should also match FMA operations here, where we consider the
+  // 'part' of the FMA, either the addition or the multiplication, paired with
+  // an actual addition or multiplication.
+
+  bool Commute;
+  if (isReassocCandidate(Root, Commute)) {
+    // We found a sequence of instructions that may be suitable for a
+    // reassociation of operands to increase ILP. Specify each commutation
+    // possibility for the Prev instruction in the sequence and let the
+    // machine combiner decide if changing the operands is worthwhile.
+    if (Commute) {
+      Patterns.push_back(MachineCombinerPattern::MC_REASSOC_AX_YB);
+      Patterns.push_back(MachineCombinerPattern::MC_REASSOC_XA_YB);
+    } else {
+      Patterns.push_back(MachineCombinerPattern::MC_REASSOC_AX_BY);
+      Patterns.push_back(MachineCombinerPattern::MC_REASSOC_XA_BY);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/// Attempt the following reassociation to reduce critical path length:
+///   B = A op X (Prev)
+///   C = B op Y (Root)
+///   ===>
+///   B = X op Y
+///   C = A op B
+static void reassociateOps(MachineInstr &Root, MachineInstr &Prev,
+                           MachineCombinerPattern::MC_PATTERN Pattern,
+                           SmallVectorImpl<MachineInstr *> &InsInstrs,
+                           SmallVectorImpl<MachineInstr *> &DelInstrs,
+                           DenseMap<unsigned, unsigned> &InstrIdxForVirtReg) {
+  MachineFunction *MF = Root.getParent()->getParent();
+  MachineRegisterInfo &MRI = MF->getRegInfo();
+  const TargetInstrInfo *TII = MF->getSubtarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  const TargetRegisterClass *RC = Root.getRegClassConstraint(0, TII, TRI);
+
+  // This array encodes the operand index for each parameter because the
+  // operands may be commuted. Each row corresponds to a pattern value,
+  // and each column specifies the index of A, B, X, Y.
+  unsigned OpIdx[4][4] = {
+    { 1, 1, 2, 2 },
+    { 1, 2, 2, 1 },
+    { 2, 1, 1, 2 },
+    { 2, 2, 1, 1 }
+  };
+
+  MachineOperand &OpA = Prev.getOperand(OpIdx[Pattern][0]);
+  MachineOperand &OpB = Root.getOperand(OpIdx[Pattern][1]);
+  MachineOperand &OpX = Prev.getOperand(OpIdx[Pattern][2]);
+  MachineOperand &OpY = Root.getOperand(OpIdx[Pattern][3]);
+  MachineOperand &OpC = Root.getOperand(0);
+
+  unsigned RegA = OpA.getReg();
+  unsigned RegB = OpB.getReg();
+  unsigned RegX = OpX.getReg();
+  unsigned RegY = OpY.getReg();
+  unsigned RegC = OpC.getReg();
+
+  if (TargetRegisterInfo::isVirtualRegister(RegA))
+    MRI.constrainRegClass(RegA, RC);
+  if (TargetRegisterInfo::isVirtualRegister(RegB))
+    MRI.constrainRegClass(RegB, RC);
+  if (TargetRegisterInfo::isVirtualRegister(RegX))
+    MRI.constrainRegClass(RegX, RC);
+  if (TargetRegisterInfo::isVirtualRegister(RegY))
+    MRI.constrainRegClass(RegY, RC);
+  if (TargetRegisterInfo::isVirtualRegister(RegC))
+    MRI.constrainRegClass(RegC, RC);
+
+  // Create a new virtual register for the result of (X op Y) instead of
+  // recycling RegB because the MachineCombiner's computation of the critical
+  // path requires a new register definition rather than an existing one.
+  unsigned NewVR = MRI.createVirtualRegister(RC);
+  InstrIdxForVirtReg.insert(std::make_pair(NewVR, 0));
+
+  unsigned Opcode = Root.getOpcode();
+  bool KillA = OpA.isKill();
+  bool KillX = OpX.isKill();
+  bool KillY = OpY.isKill();
+
+  // Create new instructions for insertion.
+  MachineInstrBuilder MIB1 =
+    BuildMI(*MF, Prev.getDebugLoc(), TII->get(Opcode), NewVR)
+      .addReg(RegX, getKillRegState(KillX))
+      .addReg(RegY, getKillRegState(KillY));
+  InsInstrs.push_back(MIB1);
+
+  MachineInstrBuilder MIB2 =
+    BuildMI(*MF, Root.getDebugLoc(), TII->get(Opcode), RegC)
+      .addReg(RegA, getKillRegState(KillA))
+      .addReg(NewVR, getKillRegState(true));
+  InsInstrs.push_back(MIB2);
+
+  // Record old instructions for deletion.
+  DelInstrs.push_back(&Prev);
+  DelInstrs.push_back(&Root);
+}
+
+void PPCInstrInfo::genAlternativeCodeSequence(
+    MachineInstr &Root,
+    MachineCombinerPattern::MC_PATTERN Pattern,
+    SmallVectorImpl<MachineInstr *> &InsInstrs,
+    SmallVectorImpl<MachineInstr *> &DelInstrs,
+    DenseMap<unsigned, unsigned> &InstIdxForVirtReg) const {
+  MachineRegisterInfo &MRI = Root.getParent()->getParent()->getRegInfo();
+
+  // Select the previous instruction in the sequence based on the input pattern.
+  MachineInstr *Prev = nullptr;
+  switch (Pattern) {
+    case MachineCombinerPattern::MC_REASSOC_AX_BY:
+    case MachineCombinerPattern::MC_REASSOC_XA_BY:
+      Prev = MRI.getUniqueVRegDef(Root.getOperand(1).getReg());
+      break;
+    case MachineCombinerPattern::MC_REASSOC_AX_YB:
+    case MachineCombinerPattern::MC_REASSOC_XA_YB:
+      Prev = MRI.getUniqueVRegDef(Root.getOperand(2).getReg());
+  }
+  assert(Prev && "Unknown pattern for machine combiner");
+
+  reassociateOps(Root, *Prev, Pattern, InsInstrs, DelInstrs, InstIdxForVirtReg);
+  return;
 }
 
 // Detect 32 -> 64-bit extensions where we may reuse the low sub-register.
@@ -352,15 +647,10 @@ bool PPCInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,MachineBasicBlock *&TBB,
   bool isPPC64 = Subtarget.isPPC64();
 
   // If the block has no terminators, it just falls into the block after it.
-  MachineBasicBlock::iterator I = MBB.end();
-  if (I == MBB.begin())
+  MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
+  if (I == MBB.end())
     return false;
-  --I;
-  while (I->isDebugValue()) {
-    if (I == MBB.begin())
-      return false;
-    --I;
-  }
+
   if (!isUnpredicatedTerminator(I))
     return false;
 
@@ -513,14 +803,10 @@ bool PPCInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,MachineBasicBlock *&TBB,
 }
 
 unsigned PPCInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
-  MachineBasicBlock::iterator I = MBB.end();
-  if (I == MBB.begin()) return 0;
-  --I;
-  while (I->isDebugValue()) {
-    if (I == MBB.begin())
-      return 0;
-    --I;
-  }
+  MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
+  if (I == MBB.end())
+    return 0;
+
   if (I->getOpcode() != PPC::B && I->getOpcode() != PPC::BCC &&
       I->getOpcode() != PPC::BC && I->getOpcode() != PPC::BCn &&
       I->getOpcode() != PPC::BDNZ8 && I->getOpcode() != PPC::BDNZ &&
@@ -548,7 +834,7 @@ unsigned PPCInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 unsigned
 PPCInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                            MachineBasicBlock *FBB,
-                           const SmallVectorImpl<MachineOperand> &Cond,
+                           ArrayRef<MachineOperand> Cond,
                            DebugLoc DL) const {
   // Shouldn't be a fall through.
   assert(TBB && "InsertBranch must not be told to insert a fallthrough");
@@ -593,7 +879,7 @@ PPCInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
 
 // Select analysis.
 bool PPCInstrInfo::canInsertSelect(const MachineBasicBlock &MBB,
-                const SmallVectorImpl<MachineOperand> &Cond,
+                ArrayRef<MachineOperand> Cond,
                 unsigned TrueReg, unsigned FalseReg,
                 int &CondCycles, int &TrueCycles, int &FalseCycles) const {
   if (!Subtarget.hasISEL())
@@ -634,8 +920,7 @@ bool PPCInstrInfo::canInsertSelect(const MachineBasicBlock &MBB,
 
 void PPCInstrInfo::insertSelect(MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator MI, DebugLoc dl,
-                                unsigned DestReg,
-                                const SmallVectorImpl<MachineOperand> &Cond,
+                                unsigned DestReg, ArrayRef<MachineOperand> Cond,
                                 unsigned TrueReg, unsigned FalseReg) const {
   assert(Cond.size() == 2 &&
          "PPC branch conditions have two components!");
@@ -697,6 +982,33 @@ void PPCInstrInfo::insertSelect(MachineBasicBlock &MBB,
     .addReg(Cond[1].getReg(), 0, SubIdx);
 }
 
+static unsigned getCRBitValue(unsigned CRBit) {
+  unsigned Ret = 4;
+  if (CRBit == PPC::CR0LT || CRBit == PPC::CR1LT ||
+      CRBit == PPC::CR2LT || CRBit == PPC::CR3LT ||
+      CRBit == PPC::CR4LT || CRBit == PPC::CR5LT ||
+      CRBit == PPC::CR6LT || CRBit == PPC::CR7LT)
+    Ret = 3;
+  if (CRBit == PPC::CR0GT || CRBit == PPC::CR1GT ||
+      CRBit == PPC::CR2GT || CRBit == PPC::CR3GT ||
+      CRBit == PPC::CR4GT || CRBit == PPC::CR5GT ||
+      CRBit == PPC::CR6GT || CRBit == PPC::CR7GT)
+    Ret = 2;
+  if (CRBit == PPC::CR0EQ || CRBit == PPC::CR1EQ ||
+      CRBit == PPC::CR2EQ || CRBit == PPC::CR3EQ ||
+      CRBit == PPC::CR4EQ || CRBit == PPC::CR5EQ ||
+      CRBit == PPC::CR6EQ || CRBit == PPC::CR7EQ)
+    Ret = 1;
+  if (CRBit == PPC::CR0UN || CRBit == PPC::CR1UN ||
+      CRBit == PPC::CR2UN || CRBit == PPC::CR3UN ||
+      CRBit == PPC::CR4UN || CRBit == PPC::CR5UN ||
+      CRBit == PPC::CR6UN || CRBit == PPC::CR7UN)
+    Ret = 0;
+
+  assert(Ret != 4 && "Invalid CR bit register");
+  return Ret;
+}
+
 void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator I, DebugLoc DL,
                                unsigned DestReg, unsigned SrcReg,
@@ -742,6 +1054,32 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     SrcReg = SuperReg;
   }
 
+  // Different class register copy
+  if (PPC::CRBITRCRegClass.contains(SrcReg) &&
+      PPC::GPRCRegClass.contains(DestReg)) {
+    unsigned CRReg = getCRFromCRBit(SrcReg);
+    BuildMI(MBB, I, DL, get(PPC::MFOCRF), DestReg)
+       .addReg(CRReg), getKillRegState(KillSrc);
+    // Rotate the CR bit in the CR fields to be the least significant bit and
+    // then mask with 0x1 (MB = ME = 31).
+    BuildMI(MBB, I, DL, get(PPC::RLWINM), DestReg)
+       .addReg(DestReg, RegState::Kill)
+       .addImm(TRI->getEncodingValue(CRReg) * 4 + (4 - getCRBitValue(SrcReg)))
+       .addImm(31)
+       .addImm(31);
+    return;
+  } else if (PPC::CRRCRegClass.contains(SrcReg) &&
+      PPC::G8RCRegClass.contains(DestReg)) {
+    BuildMI(MBB, I, DL, get(PPC::MFOCRF8), DestReg)
+       .addReg(SrcReg), getKillRegState(KillSrc);
+    return;
+  } else if (PPC::CRRCRegClass.contains(SrcReg) &&
+      PPC::GPRCRegClass.contains(DestReg)) {
+    BuildMI(MBB, I, DL, get(PPC::MFOCRF), DestReg)
+       .addReg(SrcReg), getKillRegState(KillSrc);
+    return;
+   }
+
   unsigned Opc;
   if (PPC::GPRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::OR;
@@ -763,7 +1101,8 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     // copies are generated, they are close enough to some use that the
     // lower-latency form is preferable.
     Opc = PPC::XXLOR;
-  else if (PPC::VSFRCRegClass.contains(DestReg, SrcReg))
+  else if (PPC::VSFRCRegClass.contains(DestReg, SrcReg) ||
+           PPC::VSSRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::XXLORf;
   else if (PPC::QFRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::QVFMR;
@@ -844,6 +1183,12 @@ PPCInstrInfo::StoreRegToStackSlot(MachineFunction &MF,
     NonRI = true;
   } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
     NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXSDX))
+                                       .addReg(SrcReg,
+                                               getKillRegState(isKill)),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::VSSRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXSSPX))
                                        .addReg(SrcReg,
                                                getKillRegState(isKill)),
                                        FrameIdx));
@@ -959,6 +1304,10 @@ PPCInstrInfo::LoadRegFromStackSlot(MachineFunction &MF, DebugLoc DL,
     NonRI = true;
   } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
     NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXSDX), DestReg),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::VSSRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXSSPX), DestReg),
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VRSAVERCRegClass.hasSubClassEq(RC)) {
@@ -1149,9 +1498,8 @@ bool PPCInstrInfo::isUnpredicatedTerminator(const MachineInstr *MI) const {
   return !isPredicated(MI);
 }
 
-bool PPCInstrInfo::PredicateInstruction(
-                     MachineInstr *MI,
-                     const SmallVectorImpl<MachineOperand> &Pred) const {
+bool PPCInstrInfo::PredicateInstruction(MachineInstr *MI,
+                                        ArrayRef<MachineOperand> Pred) const {
   unsigned OpC = MI->getOpcode();
   if (OpC == PPC::BLR || OpC == PPC::BLR8) {
     if (Pred[1].getReg() == PPC::CTR8 || Pred[1].getReg() == PPC::CTR) {
@@ -1242,9 +1590,8 @@ bool PPCInstrInfo::PredicateInstruction(
   return false;
 }
 
-bool PPCInstrInfo::SubsumesPredicate(
-                     const SmallVectorImpl<MachineOperand> &Pred1,
-                     const SmallVectorImpl<MachineOperand> &Pred2) const {
+bool PPCInstrInfo::SubsumesPredicate(ArrayRef<MachineOperand> Pred1,
+                                     ArrayRef<MachineOperand> Pred2) const {
   assert(Pred1.size() == 2 && "Invalid PPC first predicate");
   assert(Pred2.size() == 2 && "Invalid PPC second predicate");
 

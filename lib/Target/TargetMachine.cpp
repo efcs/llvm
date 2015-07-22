@@ -22,6 +22,7 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/SectionKind.h"
@@ -37,18 +38,27 @@ using namespace llvm;
 //
 
 TargetMachine::TargetMachine(const Target &T, StringRef DataLayoutString,
-                             StringRef TT, StringRef CPU, StringRef FS,
+                             const Triple &TT, StringRef CPU, StringRef FS,
                              const TargetOptions &Options)
     : TheTarget(T), DL(DataLayoutString), TargetTriple(TT), TargetCPU(CPU),
-      TargetFS(FS), CodeGenInfo(nullptr), AsmInfo(nullptr),
-      RequireStructuredCFG(false), Options(Options) {}
+      TargetFS(FS), CodeGenInfo(nullptr), AsmInfo(nullptr), MRI(nullptr),
+      MII(nullptr), STI(nullptr), RequireStructuredCFG(false),
+      Options(Options) {}
 
 TargetMachine::~TargetMachine() {
   delete CodeGenInfo;
   delete AsmInfo;
+  delete MRI;
+  delete MII;
+  delete STI;
 }
 
 /// \brief Reset the target options based on the function's attributes.
+// FIXME: This function needs to go away for a number of reasons:
+// a) global state on the TargetMachine is terrible in general,
+// b) there's no default state here to keep,
+// c) these target options should be passed only on the function
+//    and not on the TargetMachine (via TargetOptions) at all.
 void TargetMachine::resetTargetOptions(const Function &F) const {
 #define RESET_OPTION(X, Y)                                                     \
   do {                                                                         \
@@ -56,15 +66,10 @@ void TargetMachine::resetTargetOptions(const Function &F) const {
       Options.X = (F.getFnAttribute(Y).getValueAsString() == "true");          \
   } while (0)
 
-  RESET_OPTION(NoFramePointerElim, "no-frame-pointer-elim");
   RESET_OPTION(LessPreciseFPMADOption, "less-precise-fpmad");
   RESET_OPTION(UnsafeFPMath, "unsafe-fp-math");
   RESET_OPTION(NoInfsFPMath, "no-infs-fp-math");
   RESET_OPTION(NoNaNsFPMath, "no-nans-fp-math");
-  RESET_OPTION(UseSoftFloat, "use-soft-float");
-  RESET_OPTION(DisableTailCalls, "disable-tail-calls");
-
-  Options.MCOptions.SanitizeAddress = F.hasFnAttribute(Attribute::SanitizeAddress);
 }
 
 /// getRelocationModel - Returns the code generation relocation model. The
@@ -145,8 +150,9 @@ void TargetMachine::setOptLevel(CodeGenOpt::Level Level) const {
 }
 
 TargetIRAnalysis TargetMachine::getTargetIRAnalysis() {
-  return TargetIRAnalysis(
-      [this](Function &) { return TargetTransformInfo(getDataLayout()); });
+  return TargetIRAnalysis([this](Function &F) {
+    return TargetTransformInfo(F.getParent()->getDataLayout());
+  });
 }
 
 static bool canUsePrivateLabel(const MCAsmInfo &AsmInfo,
@@ -179,8 +185,8 @@ void TargetMachine::getNameWithPrefix(SmallVectorImpl<char> &Name,
 }
 
 MCSymbol *TargetMachine::getSymbol(const GlobalValue *GV, Mangler &Mang) const {
-  SmallString<60> NameStr;
+  SmallString<128> NameStr;
   getNameWithPrefix(NameStr, GV, Mang);
   const TargetLoweringObjectFile *TLOF = getObjFileLowering();
-  return TLOF->getContext().GetOrCreateSymbol(NameStr.str());
+  return TLOF->getContext().getOrCreateSymbol(NameStr);
 }

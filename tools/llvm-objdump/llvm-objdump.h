@@ -1,4 +1,3 @@
-//===-- llvm-objdump.h ----------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -35,6 +34,7 @@ extern cl::opt<bool> Rebase;
 extern cl::opt<bool> Bind;
 extern cl::opt<bool> LazyBind;
 extern cl::opt<bool> WeakBind;
+extern cl::opt<bool> RawClangAST;
 extern cl::opt<bool> UniversalHeaders;
 extern cl::opt<bool> ArchiveHeaders;
 extern cl::opt<bool> IndirectSymbols;
@@ -43,6 +43,7 @@ extern cl::opt<bool> LinkOptHints;
 extern cl::opt<bool> InfoPlist;
 extern cl::opt<bool> DylibsUsed;
 extern cl::opt<bool> DylibId;
+extern cl::opt<bool> ObjcMetaData;
 extern cl::opt<std::string> DisSymName;
 extern cl::opt<bool> NonVerbose;
 extern cl::opt<bool> Relocations;
@@ -50,11 +51,11 @@ extern cl::opt<bool> SectionHeaders;
 extern cl::opt<bool> SectionContents;
 extern cl::opt<bool> SymbolTable;
 extern cl::opt<bool> UnwindInfo;
+extern cl::opt<bool> PrintImmHex;
 
 // Various helper functions.
 bool error(std::error_code ec);
 bool RelocAddressLess(object::RelocationRef a, object::RelocationRef b);
-void DumpBytes(ArrayRef<uint8_t> bytes);
 void ParseInputMachO(StringRef Filename);
 void printCOFFUnwindInfo(const object::COFFObjectFile* o);
 void printMachOUnwindInfo(const object::MachOObjectFile* o);
@@ -71,6 +72,7 @@ void printRebaseTable(const object::ObjectFile *o);
 void printBindTable(const object::ObjectFile *o);
 void printLazyBindTable(const object::ObjectFile *o);
 void printWeakBindTable(const object::ObjectFile *o);
+void printRawClangAST(const object::ObjectFile *o);
 void PrintRelocations(const object::ObjectFile *o);
 void PrintSectionHeaders(const object::ObjectFile *o);
 void PrintSectionContents(const object::ObjectFile *o);

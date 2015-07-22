@@ -22,6 +22,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
@@ -36,7 +37,9 @@ static void exitWithError(const Twine &Message, StringRef Whence = "") {
   ::exit(1);
 }
 
+namespace {
 enum ProfileKinds { instr, sample };
+}
 
 static void mergeInstrProfile(const cl::list<std::string> &Inputs,
                               StringRef OutputFilename) {

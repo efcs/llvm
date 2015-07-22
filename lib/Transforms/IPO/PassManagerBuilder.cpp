@@ -59,6 +59,10 @@ static cl::opt<bool>
 RunLoopRerolling("reroll-loops", cl::Hidden,
                  cl::desc("Run the loop rerolling pass"));
 
+static cl::opt<bool>
+RunFloat2Int("float-to-int", cl::Hidden, cl::init(true),
+             cl::desc("Run the float2int (float demotion) pass"));
+
 static cl::opt<bool> RunLoadCombine("combine-loads", cl::init(false),
                                     cl::Hidden,
                                     cl::desc("Run the load combining pass"));
@@ -81,12 +85,15 @@ static cl::opt<bool> EnableLoopInterchange(
     "enable-loopinterchange", cl::init(false), cl::Hidden,
     cl::desc("Enable the new, experimental LoopInterchange Pass"));
 
+static cl::opt<bool> EnableLoopDistribute(
+    "enable-loop-distribute", cl::init(false), cl::Hidden,
+    cl::desc("Enable the new, experimental LoopDistribution Pass"));
+
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
     SizeLevel = 0;
     LibraryInfo = nullptr;
     Inliner = nullptr;
-    DisableTailCalls = false;
     DisableUnitAtATime = false;
     DisableUnrollLoops = false;
     BBVectorize = RunBBVectorization;
@@ -97,8 +104,8 @@ PassManagerBuilder::PassManagerBuilder() {
     DisableGVNLoadPRE = false;
     VerifyInput = false;
     VerifyOutput = false;
-    StripDebug = false;
     MergeFunctions = false;
+    PrepareForLTO = false;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -231,8 +238,7 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createInstructionCombiningPass());  // Combine silly seq's
   addExtensionsToPM(EP_Peephole, MPM);
 
-  if (!DisableTailCalls)
-    MPM.add(createTailCallEliminationPass()); // Eliminate tail calls
+  MPM.add(createTailCallEliminationPass()); // Eliminate tail calls
   MPM.add(createCFGSimplificationPass());     // Merge & remove BBs
   MPM.add(createReassociatePass());           // Reassociate expressions
   // Rotate Loop - disable header duplication at -Oz
@@ -243,9 +249,10 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createIndVarSimplifyPass());        // Canonicalize indvars
   MPM.add(createLoopIdiomPass());             // Recognize idioms like memset.
   MPM.add(createLoopDeletionPass());          // Delete dead loops
-  if (EnableLoopInterchange)
+  if (EnableLoopInterchange) {
     MPM.add(createLoopInterchangePass()); // Interchange loops
-
+    MPM.add(createCFGSimplificationPass());
+  }
   if (!DisableUnrollLoops)
     MPM.add(createSimpleLoopUnrollPass());    // Unroll small loops
   addExtensionsToPM(EP_LoopOptimizerEnd, MPM);
@@ -308,10 +315,20 @@ void PassManagerBuilder::populateModulePassManager(
   // we must insert a no-op module pass to reset the pass manager.
   MPM.add(createBarrierNoopPass());
 
+  if (RunFloat2Int)
+    MPM.add(createFloat2IntPass());
+
+  addExtensionsToPM(EP_VectorizerStart, MPM);
+
   // Re-rotate loops in all our loop nests. These may have fallout out of
   // rotated form due to GVN or other transformations, and the vectorizer relies
-  // on the rotated form.
-  MPM.add(createLoopRotatePass());
+  // on the rotated form. Disable header duplication at -Oz.
+  MPM.add(createLoopRotatePass(SizeLevel == 2 ? 0 : -1));
+
+  // Distribute loops to allow partial vectorization.  I.e. isolate dependences
+  // into separate loop that would otherwise inhibit vectorization.
+  if (EnableLoopDistribute)
+    MPM.add(createLoopDistributePass());
 
   MPM.add(createLoopVectorizePass(DisableUnrollLoops, LoopVectorize));
   // FIXME: Because of #pragma vectorize enable, the passes below are always
@@ -366,9 +383,8 @@ void PassManagerBuilder::populateModulePassManager(
   if (!DisableUnrollLoops) {
     MPM.add(createLoopUnrollPass());    // Unroll small loops
 
-    // This is a barrier pass to avoid combine LICM pass and loop unroll pass
-    // within same loop pass manager.
-    MPM.add(createInstructionSimplifierPass());
+    // LoopUnroll may generate some redundency to cleanup.
+    MPM.add(createInstructionCombiningPass());
 
     // Runtime unrolling will introduce runtime check in loop prologue. If the
     // unrolled loop is a inner loop, then the prologue will be inside the
@@ -388,6 +404,17 @@ void PassManagerBuilder::populateModulePassManager(
     // GlobalOpt already deletes dead functions and globals, at -O2 try a
     // late pass of GlobalDCE.  It is capable of deleting dead cycles.
     if (OptLevel > 1) {
+      if (!PrepareForLTO) {
+        // Remove avail extern fns and globals definitions if we aren't
+        // compiling an object file for later LTO. For LTO we want to preserve
+        // these so they are eligible for inlining at link-time. Note if they
+        // are unreferenced they will be removed by GlobalDCE below, so
+        // this only impacts referenced available externally globals.
+        // Eventually they will be suppressed during codegen, but eliminating
+        // here enables more opportunity for GlobalDCE as it may make
+        // globals referenced by available external functions dead.
+        MPM.add(createEliminateAvailableExternallyPass());
+      }
       MPM.add(createGlobalDCEPass());         // Remove dead fns and globals.
       MPM.add(createConstantMergePass());     // Merge dup global constants
     }
@@ -492,10 +519,10 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   addExtensionsToPM(EP_Peephole, PM);
 
   PM.add(createJumpThreadingPass());
+}
 
-  // Lower bitset metadata to bitsets.
-  PM.add(createLowerBitSetsPass());
-
+void PassManagerBuilder::addLateLTOOptimizationPasses(
+    legacy::PassManagerBase &PM) {
   // Delete basic blocks, which optimization passes may have killed.
   PM.add(createCFGSimplificationPass());
 
@@ -515,19 +542,19 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
   if (VerifyInput)
     PM.add(createVerifierPass());
 
-  if (StripDebug)
-    PM.add(createStripSymbolsPass(true));
-
-  if (VerifyInput)
-    PM.add(createDebugInfoVerifierPass());
-
-  if (OptLevel != 0)
+  if (OptLevel > 1)
     addLTOOptimizationPasses(PM);
 
-  if (VerifyOutput) {
+  // Lower bit sets to globals. This pass supports Clang's control flow
+  // integrity mechanisms (-fsanitize=cfi*) and needs to run at link time if CFI
+  // is enabled. The pass does nothing if CFI is disabled.
+  PM.add(createLowerBitSetsPass());
+
+  if (OptLevel != 0)
+    addLateLTOOptimizationPasses(PM);
+
+  if (VerifyOutput)
     PM.add(createVerifierPass());
-    PM.add(createDebugInfoVerifierPass());
-  }
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {

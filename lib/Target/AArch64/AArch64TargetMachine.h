@@ -24,20 +24,15 @@ namespace llvm {
 class AArch64TargetMachine : public LLVMTargetMachine {
 protected:
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
-  AArch64Subtarget Subtarget;
   mutable StringMap<std::unique_ptr<AArch64Subtarget>> SubtargetMap;
 
 public:
-  AArch64TargetMachine(const Target &T, StringRef TT, StringRef CPU,
+  AArch64TargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                        StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL, bool IsLittleEndian);
 
   ~AArch64TargetMachine() override;
-
-  const AArch64Subtarget *getSubtargetImpl() const override {
-    return &Subtarget;
-  }
   const AArch64Subtarget *getSubtargetImpl(const Function &F) const override;
 
   // Pass Pipeline Configuration
@@ -59,7 +54,7 @@ private:
 class AArch64leTargetMachine : public AArch64TargetMachine {
   virtual void anchor();
 public:
-  AArch64leTargetMachine(const Target &T, StringRef TT, StringRef CPU,
+  AArch64leTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                          StringRef FS, const TargetOptions &Options,
                          Reloc::Model RM, CodeModel::Model CM,
                          CodeGenOpt::Level OL);
@@ -70,7 +65,7 @@ public:
 class AArch64beTargetMachine : public AArch64TargetMachine {
   virtual void anchor();
 public:
-  AArch64beTargetMachine(const Target &T, StringRef TT, StringRef CPU,
+  AArch64beTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                          StringRef FS, const TargetOptions &Options,
                          Reloc::Model RM, CodeModel::Model CM,
                          CodeGenOpt::Level OL);

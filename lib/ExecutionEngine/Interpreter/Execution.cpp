@@ -23,6 +23,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cmath>
 using namespace llvm;
@@ -315,7 +316,7 @@ void Interpreter::visitICmpInst(ICmpInst &I) {
 
 #define IMPLEMENT_VECTOR_FCMP(OP)                                   \
   case Type::VectorTyID:                                            \
-    if(dyn_cast<VectorType>(Ty)->getElementType()->isFloatTy()) {   \
+    if (cast<VectorType>(Ty)->getElementType()->isFloatTy()) {      \
       IMPLEMENT_VECTOR_FCMP_T(OP, Float);                           \
     } else {                                                        \
         IMPLEMENT_VECTOR_FCMP_T(OP, Double);                        \
@@ -362,7 +363,7 @@ static GenericValue executeFCMP_OEQ(GenericValue Src1, GenericValue Src2,
 
 #define MASK_VECTOR_NANS(TY, X,Y, FLAG)                                     \
   if (TY->isVectorTy()) {                                                   \
-    if (dyn_cast<VectorType>(TY)->getElementType()->isFloatTy()) {          \
+    if (cast<VectorType>(TY)->getElementType()->isFloatTy()) {              \
       MASK_VECTOR_NANS_T(X, Y, Float, FLAG)                                 \
     } else {                                                                \
       MASK_VECTOR_NANS_T(X, Y, Double, FLAG)                                \
@@ -535,7 +536,7 @@ static GenericValue executeFCMP_ORD(GenericValue Src1, GenericValue Src2,
   if(Ty->isVectorTy()) {
     assert(Src1.AggregateVal.size() == Src2.AggregateVal.size());
     Dest.AggregateVal.resize( Src1.AggregateVal.size() );
-    if(dyn_cast<VectorType>(Ty)->getElementType()->isFloatTy()) {
+    if (cast<VectorType>(Ty)->getElementType()->isFloatTy()) {
       for( size_t _i=0;_i<Src1.AggregateVal.size();_i++)
         Dest.AggregateVal[_i].IntVal = APInt(1,
         ( (Src1.AggregateVal[_i].FloatVal ==
@@ -566,7 +567,7 @@ static GenericValue executeFCMP_UNO(GenericValue Src1, GenericValue Src2,
   if(Ty->isVectorTy()) {
     assert(Src1.AggregateVal.size() == Src2.AggregateVal.size());
     Dest.AggregateVal.resize( Src1.AggregateVal.size() );
-    if(dyn_cast<VectorType>(Ty)->getElementType()->isFloatTy()) {
+    if (cast<VectorType>(Ty)->getElementType()->isFloatTy()) {
       for( size_t _i=0;_i<Src1.AggregateVal.size();_i++)
         Dest.AggregateVal[_i].IntVal = APInt(1,
         ( (Src1.AggregateVal[_i].FloatVal !=
@@ -712,10 +713,10 @@ void Interpreter::visitBinaryOperator(BinaryOperator &I) {
     // Macros to choose appropriate TY: float or double and run operation
     // execution
 #define FLOAT_VECTOR_OP(OP) {                                         \
-  if (dyn_cast<VectorType>(Ty)->getElementType()->isFloatTy())        \
+  if (cast<VectorType>(Ty)->getElementType()->isFloatTy())            \
     FLOAT_VECTOR_FUNCTION(OP, FloatVal)                               \
   else {                                                              \
-    if (dyn_cast<VectorType>(Ty)->getElementType()->isDoubleTy())     \
+    if (cast<VectorType>(Ty)->getElementType()->isDoubleTy())         \
       FLOAT_VECTOR_FUNCTION(OP, DoubleVal)                            \
     else {                                                            \
       dbgs() << "Unhandled type for OP instruction: " << *Ty << "\n"; \
@@ -744,12 +745,12 @@ void Interpreter::visitBinaryOperator(BinaryOperator &I) {
     case Instruction::FMul:  FLOAT_VECTOR_OP(*) break;
     case Instruction::FDiv:  FLOAT_VECTOR_OP(/) break;
     case Instruction::FRem:
-      if (dyn_cast<VectorType>(Ty)->getElementType()->isFloatTy())
+      if (cast<VectorType>(Ty)->getElementType()->isFloatTy())
         for (unsigned i = 0; i < R.AggregateVal.size(); ++i)
           R.AggregateVal[i].FloatVal = 
           fmod(Src1.AggregateVal[i].FloatVal, Src2.AggregateVal[i].FloatVal);
       else {
-        if (dyn_cast<VectorType>(Ty)->getElementType()->isDoubleTy())
+        if (cast<VectorType>(Ty)->getElementType()->isDoubleTy())
           for (unsigned i = 0; i < R.AggregateVal.size(); ++i)
             R.AggregateVal[i].DoubleVal = 
             fmod(Src1.AggregateVal[i].DoubleVal, Src2.AggregateVal[i].DoubleVal);
@@ -967,7 +968,7 @@ void Interpreter::visitAllocaInst(AllocaInst &I) {
   unsigned NumElements = 
     getOperandValue(I.getOperand(0), SF).IntVal.getZExtValue();
 
-  unsigned TypeSize = (size_t)TD.getTypeAllocSize(Ty);
+  unsigned TypeSize = (size_t)getDataLayout().getTypeAllocSize(Ty);
 
   // Avoid malloc-ing zero bytes, use max()...
   unsigned MemToAlloc = std::max(1U, NumElements * TypeSize);
@@ -999,7 +1000,7 @@ GenericValue Interpreter::executeGEPOperation(Value *Ptr, gep_type_iterator I,
 
   for (; I != E; ++I) {
     if (StructType *STy = dyn_cast<StructType>(*I)) {
-      const StructLayout *SLO = TD.getStructLayout(STy);
+      const StructLayout *SLO = getDataLayout().getStructLayout(STy);
 
       const ConstantInt *CPU = cast<ConstantInt>(I.getOperand());
       unsigned Index = unsigned(CPU->getZExtValue());
@@ -1019,7 +1020,7 @@ GenericValue Interpreter::executeGEPOperation(Value *Ptr, gep_type_iterator I,
         assert(BitWidth == 64 && "Invalid index type for getelementptr");
         Idx = (int64_t)IdxGV.IntVal.getZExtValue();
       }
-      Total += TD.getTypeAllocSize(ST->getElementType())*Idx;
+      Total += getDataLayout().getTypeAllocSize(ST->getElementType()) * Idx;
     }
   }
 
@@ -1476,7 +1477,7 @@ GenericValue Interpreter::executeIntToPtrInst(Value *SrcVal, Type *DstTy,
   GenericValue Dest, Src = getOperandValue(SrcVal, SF);
   assert(DstTy->isPointerTy() && "Invalid PtrToInt instruction");
 
-  uint32_t PtrSize = TD.getPointerSizeInBits();
+  uint32_t PtrSize = getDataLayout().getPointerSizeInBits();
   if (PtrSize != Src.IntVal.getBitWidth())
     Src.IntVal = Src.IntVal.zextOrTrunc(PtrSize);
 
@@ -1496,7 +1497,7 @@ GenericValue Interpreter::executeBitCastInst(Value *SrcVal, Type *DstTy,
       (DstTy->getTypeID() == Type::VectorTyID)) {
     // vector src bitcast to vector dst or vector src bitcast to scalar dst or
     // scalar src bitcast to vector dst
-    bool isLittleEndian = TD.isLittleEndian();
+    bool isLittleEndian = getDataLayout().isLittleEndian();
     GenericValue TempDst, TempSrc, SrcVec;
     const Type *SrcElemTy;
     const Type *DstElemTy;
@@ -2072,13 +2073,12 @@ GenericValue Interpreter::getOperandValue(Value *V, ExecutionContext &SF) {
 //===----------------------------------------------------------------------===//
 // callFunction - Execute the specified function...
 //
-void Interpreter::callFunction(Function *F,
-                               const std::vector<GenericValue> &ArgVals) {
+void Interpreter::callFunction(Function *F, ArrayRef<GenericValue> ArgVals) {
   assert((ECStack.empty() || !ECStack.back().Caller.getInstruction() ||
           ECStack.back().Caller.arg_size() == ArgVals.size()) &&
          "Incorrect number of arguments passed into function call!");
   // Make a new stack frame... and fill it in.
-  ECStack.push_back(ExecutionContext());
+  ECStack.emplace_back();
   ExecutionContext &StackFrame = ECStack.back();
   StackFrame.CurFunction = F;
 

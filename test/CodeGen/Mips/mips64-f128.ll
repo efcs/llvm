@@ -1,10 +1,10 @@
-; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips4 -soft-float -O1 \
+; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips4 -mattr=+soft-float -O1 \
 ; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT
-; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64 -soft-float -O1 \
+; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64 -mattr=+soft-float -O1 \
 ; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT
-; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r2 -soft-float -O1 \
+; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r2 -mattr=+soft-float -O1 \
 ; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT
-; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r6 -soft-float -O1 \
+; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r6 -mattr=+soft-float -O1 \
 ; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=CMP_CC_FMT
 
 @gld0 = external global fp128
@@ -545,7 +545,7 @@ entry:
 
 ; ALL-LABEL: load_LD_float:
 ; ALL: ld   $[[R0:[0-9]+]], %got_disp(gf1)
-; ALL: lwu  $4, 0($[[R0]])
+; ALL: lw   $4, 0($[[R0]])
 ; ALL: ld   $25, %call16(__extendsftf2)
 ; ALL: jalr $25
 
