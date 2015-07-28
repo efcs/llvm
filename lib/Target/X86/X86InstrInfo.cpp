@@ -332,6 +332,9 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::MUL8r,       X86::MUL8m,         TB_FOLDED_LOAD },
     { X86::PEXTRDrr,    X86::PEXTRDmr,      TB_FOLDED_STORE },
     { X86::PEXTRQrr,    X86::PEXTRQmr,      TB_FOLDED_STORE },
+    { X86::PUSH16r,     X86::PUSH16rmm,     TB_FOLDED_LOAD },
+    { X86::PUSH32r,     X86::PUSH32rmm,     TB_FOLDED_LOAD },
+    { X86::PUSH64r,     X86::PUSH64rmm,     TB_FOLDED_LOAD },
     { X86::SETAEr,      X86::SETAEm,        TB_FOLDED_STORE },
     { X86::SETAr,       X86::SETAm,         TB_FOLDED_STORE },
     { X86::SETBEr,      X86::SETBEm,        TB_FOLDED_STORE },
@@ -956,18 +959,9 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::DPPDrri,         X86::DPPDrmi,       TB_ALIGN_16 },
     { X86::DPPSrri,         X86::DPPSrmi,       TB_ALIGN_16 },
 
-    // FIXME: We should not be folding Fs* scalar loads into vector
-    // instructions because the vector instructions require vector-sized
-    // loads. Lowering should create vector-sized instructions (the Fv*
-    // variants below) to allow load folding.
-    { X86::FsANDNPDrr,      X86::FsANDNPDrm,    TB_ALIGN_16 },
-    { X86::FsANDNPSrr,      X86::FsANDNPSrm,    TB_ALIGN_16 },
-    { X86::FsANDPDrr,       X86::FsANDPDrm,     TB_ALIGN_16 },
-    { X86::FsANDPSrr,       X86::FsANDPSrm,     TB_ALIGN_16 },
-    { X86::FsORPDrr,        X86::FsORPDrm,      TB_ALIGN_16 },
-    { X86::FsORPSrr,        X86::FsORPSrm,      TB_ALIGN_16 },
-    { X86::FsXORPDrr,       X86::FsXORPDrm,     TB_ALIGN_16 },
-    { X86::FsXORPSrr,       X86::FsXORPSrm,     TB_ALIGN_16 },
+    // Do not fold Fs* scalar logical op loads because there are no scalar
+    // load variants for these instructions. When folded, the load is required
+    // to be 128-bits, so the load size would not match.
 
     { X86::FvANDNPDrr,      X86::FvANDNPDrm,    TB_ALIGN_16 },
     { X86::FvANDNPSrr,      X86::FvANDNPSrm,    TB_ALIGN_16 },
@@ -4878,10 +4872,14 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
   bool isCallRegIndirect = Subtarget.callRegIndirect();
   bool isTwoAddrFold = false;
 
-  // For CPUs that favor the register form of a call,
-  // do not fold loads into calls.
-  if (isCallRegIndirect &&
-    (MI->getOpcode() == X86::CALL32r || MI->getOpcode() == X86::CALL64r))
+  // For CPUs that favor the register form of a call or push,
+  // do not fold loads into calls or pushes, unless optimizing for size
+  // aggressively.
+  if (isCallRegIndirect && 
+      !MF.getFunction()->hasFnAttribute(Attribute::MinSize) &&
+      (MI->getOpcode() == X86::CALL32r || MI->getOpcode() == X86::CALL64r ||
+       MI->getOpcode() == X86::PUSH16r || MI->getOpcode() == X86::PUSH32r ||
+       MI->getOpcode() == X86::PUSH64r))
     return nullptr;
 
   unsigned NumOps = MI->getDesc().getNumOperands();

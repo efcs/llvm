@@ -17,10 +17,13 @@
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/MIRYamlMapping.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -77,7 +80,8 @@ public:
   void convert(ModuleSlotTracker &MST, yaml::MachineBasicBlock &YamlMBB,
                const MachineBasicBlock &MBB);
   void convertStackObjects(yaml::MachineFunction &MF,
-                           const MachineFrameInfo &MFI);
+                           const MachineFrameInfo &MFI,
+                           const TargetRegisterInfo *TRI);
 
 private:
   void initRegisterMaskIds(const MachineFunction &MF);
@@ -100,8 +104,11 @@ public:
 
   void print(const MachineInstr &MI);
   void printMBBReference(const MachineBasicBlock &MBB);
+  void printIRBlockReference(const BasicBlock &BB);
   void printStackObjectReference(int FrameIndex);
   void print(const MachineOperand &Op, const TargetRegisterInfo *TRI);
+
+  void print(const MCCFIInstruction &CFI, const TargetRegisterInfo *TRI);
 };
 
 } // end anonymous namespace
@@ -136,6 +143,12 @@ static void printReg(unsigned Reg, raw_ostream &OS,
     llvm_unreachable("Can't print this kind of register yet");
 }
 
+static void printReg(unsigned Reg, yaml::StringValue &Dest,
+                     const TargetRegisterInfo *TRI) {
+  raw_string_ostream OS(Dest.Value);
+  printReg(Reg, OS, TRI);
+}
+
 void MIRPrinter::print(const MachineFunction &MF) {
   initRegisterMaskIds(MF);
 
@@ -146,22 +159,16 @@ void MIRPrinter::print(const MachineFunction &MF) {
   YamlMF.HasInlineAsm = MF.hasInlineAsm();
   convert(YamlMF, MF.getRegInfo(), MF.getSubtarget().getRegisterInfo());
   convert(YamlMF.FrameInfo, *MF.getFrameInfo());
-  convertStackObjects(YamlMF, *MF.getFrameInfo());
+  convertStackObjects(YamlMF, *MF.getFrameInfo(),
+                      MF.getSubtarget().getRegisterInfo());
   if (const auto *ConstantPool = MF.getConstantPool())
     convert(YamlMF, *ConstantPool);
 
   ModuleSlotTracker MST(MF.getFunction()->getParent());
+  MST.incorporateFunction(*MF.getFunction());
   if (const auto *JumpTableInfo = MF.getJumpTableInfo())
     convert(MST, YamlMF.JumpTableInfo, *JumpTableInfo);
-  int I = 0;
   for (const auto &MBB : MF) {
-    // TODO: Allow printing of non sequentially numbered MBBs.
-    // This is currently needed as the basic block references get their index
-    // from MBB.getNumber(), thus it should be sequential so that the parser can
-    // map back to the correct MBBs when parsing the output.
-    assert(MBB.getNumber() == I++ &&
-           "Can't print MBBs that aren't sequentially numbered");
-    (void)I;
     yaml::MachineBasicBlock YamlMBB;
     convert(MST, YamlMBB, MBB);
     YamlMF.BasicBlocks.push_back(YamlMBB);
@@ -184,7 +191,19 @@ void MIRPrinter::convert(yaml::MachineFunction &MF,
     VReg.ID = I;
     VReg.Class =
         StringRef(TRI->getRegClassName(RegInfo.getRegClass(Reg))).lower();
+    unsigned PreferredReg = RegInfo.getSimpleHint(Reg);
+    if (PreferredReg)
+      printReg(PreferredReg, VReg.PreferredRegister, TRI);
     MF.VirtualRegisters.push_back(VReg);
+  }
+
+  // Print the live ins.
+  for (auto I = RegInfo.livein_begin(), E = RegInfo.livein_end(); I != E; ++I) {
+    yaml::MachineFunctionLiveIn LiveIn;
+    printReg(I->first, LiveIn.Register, TRI);
+    if (I->second)
+      printReg(I->second, LiveIn.VirtualRegister, TRI);
+    MF.LiveIns.push_back(LiveIn);
   }
 }
 
@@ -206,7 +225,8 @@ void MIRPrinter::convert(yaml::MachineFrameInfo &YamlMFI,
 }
 
 void MIRPrinter::convertStackObjects(yaml::MachineFunction &MF,
-                                     const MachineFrameInfo &MFI) {
+                                     const MachineFrameInfo &MFI,
+                                     const TargetRegisterInfo *TRI) {
   // Process fixed stack objects.
   unsigned ID = 0;
   for (int I = MFI.getObjectIndexBegin(); I < 0; ++I) {
@@ -251,6 +271,19 @@ void MIRPrinter::convertStackObjects(yaml::MachineFunction &MF,
     MF.StackObjects.push_back(YamlObject);
     StackObjectOperandMapping.insert(std::make_pair(
         I, FrameIndexOperand::create(YamlObject.Name.Value, ID++)));
+  }
+
+  for (const auto &CSInfo : MFI.getCalleeSavedInfo()) {
+    yaml::StringValue Reg;
+    printReg(CSInfo.getReg(), Reg, TRI);
+    auto StackObjectInfo = StackObjectOperandMapping.find(CSInfo.getFrameIdx());
+    assert(StackObjectInfo != StackObjectOperandMapping.end() &&
+           "Invalid stack object index");
+    const FrameIndexOperand &StackObject = StackObjectInfo->second;
+    if (StackObject.IsFixed)
+      MF.FixedStackObjects[StackObject.ID].CalleeSavedRegister = Reg;
+    else
+      MF.StackObjects[StackObject.ID].CalleeSavedRegister = Reg;
   }
 }
 
@@ -298,11 +331,17 @@ void MIRPrinter::convert(ModuleSlotTracker &MST,
                          const MachineBasicBlock &MBB) {
   assert(MBB.getNumber() >= 0 && "Invalid MBB number");
   YamlMBB.ID = (unsigned)MBB.getNumber();
-  // TODO: Serialize unnamed BB references.
-  if (const auto *BB = MBB.getBasicBlock())
-    YamlMBB.Name.Value = BB->hasName() ? BB->getName() : "<unnamed bb>";
-  else
-    YamlMBB.Name.Value = "";
+  if (const auto *BB = MBB.getBasicBlock()) {
+    if (BB->hasName()) {
+      YamlMBB.Name.Value = BB->getName();
+    } else {
+      int Slot = MST.getLocalSlot(BB);
+      if (Slot == -1)
+        YamlMBB.IRBlock.Value = "<badref>";
+      else
+        YamlMBB.IRBlock.Value = (Twine("%ir-block.") + Twine(Slot)).str();
+    }
+  }
   YamlMBB.Alignment = MBB.getAlignment();
   YamlMBB.AddressTaken = MBB.hasAddressTaken();
   YamlMBB.IsLandingPad = MBB.isLandingPad();
@@ -346,6 +385,8 @@ void MIPrinter::print(const MachineInstr &MI) {
   assert(TRI && "Expected target register info");
   const auto *TII = SubTarget.getInstrInfo();
   assert(TII && "Expected target instruction info");
+  if (MI.isCFIInstruction())
+    assert(MI.getNumOperands() == 1 && "Expected 1 operand in CFI instruction");
 
   unsigned I = 0, E = MI.getNumOperands();
   for (; I < E && MI.getOperand(I).isReg() && MI.getOperand(I).isDef() &&
@@ -372,6 +413,13 @@ void MIPrinter::print(const MachineInstr &MI) {
     print(MI.getOperand(I), TRI);
     NeedComma = true;
   }
+
+  if (MI.getDebugLoc()) {
+    if (NeedComma)
+      OS << ',';
+    OS << " debug-location ";
+    MI.getDebugLoc()->printAsOperand(OS, MST);
+  }
 }
 
 void MIPrinter::printMBBReference(const MachineBasicBlock &MBB) {
@@ -380,6 +428,19 @@ void MIPrinter::printMBBReference(const MachineBasicBlock &MBB) {
     if (BB->hasName())
       OS << '.' << BB->getName();
   }
+}
+
+void MIPrinter::printIRBlockReference(const BasicBlock &BB) {
+  OS << "%ir-block.";
+  if (BB.hasName()) {
+    printLLVMNameWithoutPrefix(OS, BB.getName());
+    return;
+  }
+  int Slot = MST.getLocalSlot(&BB);
+  if (Slot == -1)
+    OS << "<badref>";
+  else
+    OS << Slot;
 }
 
 void MIPrinter::printStackObjectReference(int FrameIndex) {
@@ -394,6 +455,18 @@ void MIPrinter::printStackObjectReference(int FrameIndex) {
   OS << "%stack." << Operand.ID;
   if (!Operand.Name.empty())
     OS << '.' << Operand.Name;
+}
+
+static const char *getTargetIndexName(const MachineFunction &MF, int Index) {
+  const auto *TII = MF.getSubtarget().getInstrInfo();
+  assert(TII && "expected instruction info");
+  auto Indices = TII->getSerializableTargetIndices();
+  for (const auto &I : Indices) {
+    if (I.first == Index) {
+      return I.second;
+    }
+  }
+  return nullptr;
 }
 
 void MIPrinter::print(const MachineOperand &Op, const TargetRegisterInfo *TRI) {
@@ -426,12 +499,37 @@ void MIPrinter::print(const MachineOperand &Op, const TargetRegisterInfo *TRI) {
     OS << "%const." << Op.getIndex();
     // TODO: Print offset and target flags.
     break;
+  case MachineOperand::MO_TargetIndex: {
+    OS << "target-index(";
+    if (const auto *Name = getTargetIndexName(
+            *Op.getParent()->getParent()->getParent(), Op.getIndex()))
+      OS << Name;
+    else
+      OS << "<unknown>";
+    OS << ')';
+    // TODO: Print the offset and target flags.
+    break;
+  }
   case MachineOperand::MO_JumpTableIndex:
     OS << "%jump-table." << Op.getIndex();
     // TODO: Print target flags.
     break;
+  case MachineOperand::MO_ExternalSymbol:
+    OS << '$';
+    printLLVMNameWithoutPrefix(OS, Op.getSymbolName());
+    // TODO: Print the target flags.
+    break;
   case MachineOperand::MO_GlobalAddress:
     Op.getGlobal()->printAsOperand(OS, /*PrintType=*/false, MST);
+    // TODO: Print offset and target flags.
+    break;
+  case MachineOperand::MO_BlockAddress:
+    OS << "blockaddress(";
+    Op.getBlockAddress()->getFunction()->printAsOperand(OS, /*PrintType=*/false,
+                                                        MST);
+    OS << ", ";
+    printIRBlockReference(*Op.getBlockAddress()->getBasicBlock());
+    OS << ')';
     // TODO: Print offset and target flags.
     break;
   case MachineOperand::MO_RegisterMask: {
@@ -442,9 +540,56 @@ void MIPrinter::print(const MachineOperand &Op, const TargetRegisterInfo *TRI) {
       llvm_unreachable("Can't print this machine register mask yet.");
     break;
   }
+  case MachineOperand::MO_Metadata:
+    Op.getMetadata()->printAsOperand(OS, MST);
+    break;
+  case MachineOperand::MO_CFIIndex: {
+    const auto &MMI = Op.getParent()->getParent()->getParent()->getMMI();
+    print(MMI.getFrameInstructions()[Op.getCFIIndex()], TRI);
+    break;
+  }
   default:
     // TODO: Print the other machine operands.
     llvm_unreachable("Can't print this machine operand at the moment");
+  }
+}
+
+static void printCFIRegister(unsigned DwarfReg, raw_ostream &OS,
+                             const TargetRegisterInfo *TRI) {
+  int Reg = TRI->getLLVMRegNum(DwarfReg, true);
+  if (Reg == -1) {
+    OS << "<badreg>";
+    return;
+  }
+  printReg(Reg, OS, TRI);
+}
+
+void MIPrinter::print(const MCCFIInstruction &CFI,
+                      const TargetRegisterInfo *TRI) {
+  switch (CFI.getOperation()) {
+  case MCCFIInstruction::OpOffset:
+    OS << ".cfi_offset ";
+    if (CFI.getLabel())
+      OS << "<mcsymbol> ";
+    printCFIRegister(CFI.getRegister(), OS, TRI);
+    OS << ", " << CFI.getOffset();
+    break;
+  case MCCFIInstruction::OpDefCfaRegister:
+    OS << ".cfi_def_cfa_register ";
+    if (CFI.getLabel())
+      OS << "<mcsymbol> ";
+    printCFIRegister(CFI.getRegister(), OS, TRI);
+    break;
+  case MCCFIInstruction::OpDefCfaOffset:
+    OS << ".cfi_def_cfa_offset ";
+    if (CFI.getLabel())
+      OS << "<mcsymbol> ";
+    OS << CFI.getOffset();
+    break;
+  default:
+    // TODO: Print the other CFI Operations.
+    OS << "<unserializable cfi operation>";
+    break;
   }
 }
 
