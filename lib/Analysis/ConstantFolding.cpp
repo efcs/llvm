@@ -248,8 +248,7 @@ static bool IsConstantOffsetFromGlobal(Constant *C, GlobalValue *&GV,
 
   // Look through ptr->int and ptr->ptr casts.
   if (CE->getOpcode() == Instruction::PtrToInt ||
-      CE->getOpcode() == Instruction::BitCast ||
-      CE->getOpcode() == Instruction::AddrSpaceCast)
+      CE->getOpcode() == Instruction::BitCast)
     return IsConstantOffsetFromGlobal(CE->getOperand(0), GV, Offset, DL);
 
   // i32* getelementptr ([5 x i32]* @a, i32 0, i32 5)
@@ -531,6 +530,10 @@ Constant *llvm::ConstantFoldLoadFromConstPtr(Constant *C,
   if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C))
     if (GV->isConstant() && GV->hasDefinitiveInitializer())
       return GV->getInitializer();
+
+  if (auto *GA = dyn_cast<GlobalAlias>(C))
+    if (GA->getAliasee() && !GA->mayBeOverridden())
+      return ConstantFoldLoadFromConstPtr(GA->getAliasee(), DL);
 
   // If the loaded value isn't a constant expr, we can't handle it.
   ConstantExpr *CE = dyn_cast<ConstantExpr>(C);

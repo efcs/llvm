@@ -164,9 +164,7 @@ public:
 
     // Delete the instructions backwards, as it has a reduced likelihood of
     // having to update as many def-use and use-def chains.
-    for (auto I = Unused.rbegin(), E = Unused.rend(); I != E; ++I) {
-      auto *Inst = *I;
-
+    for (auto *Inst : make_range(Unused.rbegin(), Unused.rend())) {
       if (!Inst->use_empty())
         Inst->replaceAllUsesWith(UndefValue::get(Inst->getType()));
       Inst->eraseFromParent();
@@ -749,10 +747,12 @@ private:
     // If we need run-time checks to disambiguate pointers are run-time, version
     // the loop now.
     auto PtrToPartition = Partitions.computePartitionSetForPointers(LAI);
-    LoopVersioning LVer(LAI, L, LI, DT, &PtrToPartition);
-    if (LVer.needsRuntimeChecks()) {
+    auto Checks =
+        LAI.getRuntimePointerChecking()->generateChecks(&PtrToPartition);
+    if (!Checks.empty()) {
       DEBUG(dbgs() << "\nPointers:\n");
-      DEBUG(LAI.getRuntimePointerChecking()->print(dbgs(), 0, &PtrToPartition));
+      DEBUG(LAI.getRuntimePointerChecking()->printChecks(dbgs(), Checks));
+      LoopVersioning LVer(std::move(Checks), LAI, L, LI, DT);
       LVer.versionLoop(this);
       LVer.addPHINodes(DefsUsedOutside);
     }
