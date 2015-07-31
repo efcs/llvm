@@ -496,6 +496,7 @@ TEST_F(MCJITCAPITest, addGlobalMapping) {
   SKIP_UNSUPPORTED_PLATFORM;
 
   Module = LLVMModuleCreateWithName("testModule");
+  LLVMSetTarget(Module, HostTriple.c_str());
   LLVMTypeRef FunctionType = LLVMFunctionType(LLVMInt32Type(), NULL, 0, 0);
   LLVMValueRef MappedFn = LLVMAddFunction(Module, "mapped_fn", FunctionType);
 
@@ -505,6 +506,7 @@ TEST_F(MCJITCAPITest, addGlobalMapping) {
   LLVMPositionBuilderAtEnd(Builder, Entry);
   LLVMValueRef RetVal = LLVMBuildCall(Builder, MappedFn, NULL, 0, "");
   LLVMBuildRet(Builder, RetVal);
+  LLVMDisposeBuilder(Builder);
 
   LLVMVerifyModule(Module, LLVMAbortProcessAction, &Error);
   LLVMDisposeMessage(Error);
