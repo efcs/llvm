@@ -26,7 +26,7 @@ def HasSIMD128 : Predicate<"Subtarget->hasSIMD128()">,
 //===----------------------------------------------------------------------===//
 
 def SDT_WebAssemblyArgument : SDTypeProfile<1, 1, [SDTCisVT<1, i32>]>;
-def SDT_WebAssemblyReturn   : SDTypeProfile<0, 1, []>;
+def SDT_WebAssemblyReturn   : SDTypeProfile<0, -1, []>;
 
 //===----------------------------------------------------------------------===//
 // WebAssembly-specific DAG Nodes.
@@ -55,8 +55,24 @@ def WebAssemblyreturn   : SDNode<"WebAssemblyISD::RETURN",
 
 include "WebAssemblyInstrFormats.td"
 
-def ARGUMENT : I<(outs Int32:$res), (ins i32imm:$argno),
-                 [(set Int32:$res, (WebAssemblyargument timm:$argno))]>;
+multiclass ARGUMENT<WebAssemblyRegClass vt> {
+  def ARGUMENT_#vt : I<(outs vt:$res), (ins i32imm:$argno),
+                       [(set vt:$res, (WebAssemblyargument timm:$argno))]>;
+}
+defm : ARGUMENT<Int32>;
+defm : ARGUMENT<Int64>;
+defm : ARGUMENT<Float32>;
+defm : ARGUMENT<Float64>;
+
+
+def Immediate_I32 : I<(outs Int32:$res), (ins i32imm:$imm),
+                      [(set Int32:$res, imm:$imm)]>;
+def Immediate_I64 : I<(outs Int64:$res), (ins i64imm:$imm),
+                      [(set Int64:$res, imm:$imm)]>;
+def Immediate_F32 : I<(outs Float32:$res), (ins f32imm:$imm),
+                      [(set Float32:$res, fpimm:$imm)]>;
+def Immediate_F64 : I<(outs Float64:$res), (ins f64imm:$imm),
+                      [(set Float64:$res, fpimm:$imm)]>;
 
 //===----------------------------------------------------------------------===//
 // Additional sets of instructions.
