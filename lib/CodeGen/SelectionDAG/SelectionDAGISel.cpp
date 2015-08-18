@@ -293,6 +293,11 @@ namespace llvm {
     const TargetLowering *TLI = IS->TLI;
     const TargetSubtargetInfo &ST = IS->MF->getSubtarget();
 
+    // Try first to see if the Target has its own way of selecting a scheduler
+    if (auto *SchedulerCtor = ST.getDAGScheduler(OptLevel)) {
+      return SchedulerCtor(IS, OptLevel);
+    }
+
     if (OptLevel == CodeGenOpt::None ||
         (ST.enableMachineScheduler() && ST.enableMachineSchedDefaultSched()) ||
         TLI->getSchedulingPreference() == Sched::Source)
@@ -381,7 +386,7 @@ void SelectionDAGISel::getAnalysisUsage(AnalysisUsage &AU) const {
 ///
 /// This is required for correctness, so it must be done at -O0.
 ///
-static void SplitCriticalSideEffectEdges(Function &Fn, AliasAnalysis *AA) {
+static void SplitCriticalSideEffectEdges(Function &Fn) {
   // Loop for blocks with phi nodes.
   for (Function::iterator BB = Fn.begin(), E = Fn.end(); BB != E; ++BB) {
     PHINode *PN = dyn_cast<PHINode>(BB->begin());
@@ -407,7 +412,7 @@ static void SplitCriticalSideEffectEdges(Function &Fn, AliasAnalysis *AA) {
         // Okay, we have to split this edge.
         SplitCriticalEdge(
             Pred->getTerminator(), GetSuccessorNumber(Pred, BB),
-            CriticalEdgeSplittingOptions(AA).setMergeIdenticalEdges());
+            CriticalEdgeSplittingOptions().setMergeIdenticalEdges());
         goto ReprocessBlock;
       }
   }
@@ -444,7 +449,7 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
 
   DEBUG(dbgs() << "\n\n\n=== " << Fn.getName() << "\n");
 
-  SplitCriticalSideEffectEdges(const_cast<Function&>(Fn), AA);
+  SplitCriticalSideEffectEdges(const_cast<Function &>(Fn));
 
   CurDAG->init(*MF);
   FuncInfo->set(Fn, *MF, CurDAG);
@@ -1643,14 +1648,7 @@ SelectionDAGISel::FinishBasicBlock() {
 /// one preferred by the target.
 ///
 ScheduleDAGSDNodes *SelectionDAGISel::CreateScheduler() {
-  RegisterScheduler::FunctionPassCtor Ctor = RegisterScheduler::getDefault();
-
-  if (!Ctor) {
-    Ctor = ISHeuristic;
-    RegisterScheduler::setDefault(Ctor);
-  }
-
-  return Ctor(this, OptLevel);
+  return ISHeuristic(this, OptLevel);
 }
 
 //===----------------------------------------------------------------------===//

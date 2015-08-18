@@ -123,9 +123,9 @@ static bool ValueDominatesPHI(Value *V, PHINode *P, const DominatorTree *DT) {
   }
 
   // Otherwise, if the instruction is in the entry block, and is not an invoke,
-  // then it obviously dominates all phi nodes.
+  // and is not a catchpad, then it obviously dominates all phi nodes.
   if (I->getParent() == &I->getParent()->getParent()->getEntryBlock() &&
-      !isa<InvokeInst>(I))
+      !isa<InvokeInst>(I) && !isa<CatchPadInst>(I))
     return true;
 
   return false;
@@ -3577,11 +3577,6 @@ static Value *SimplifyExtractElementInst(Value *Vec, Value *Idx, const Query &,
   if (auto *IdxC = dyn_cast<ConstantInt>(Idx)) {
     unsigned IndexVal = IdxC->getZExtValue();
     unsigned VectorWidth = Vec->getType()->getVectorNumElements();
-
-    // If this is extracting an invalid index, turn this into undef, to avoid
-    // crashing the code below.
-    if (IndexVal >= VectorWidth)
-      return UndefValue::get(Vec->getType()->getVectorElementType());
 
     if (Value *Elt = findScalarElement(Vec, IndexVal))
       return Elt;

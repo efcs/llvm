@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -90,7 +91,9 @@ static const char *const kAsanUnregisterGlobalsName =
     "__asan_unregister_globals";
 static const char *const kAsanPoisonGlobalsName = "__asan_before_dynamic_init";
 static const char *const kAsanUnpoisonGlobalsName = "__asan_after_dynamic_init";
-static const char *const kAsanInitName = "__asan_init_v5";
+static const char *const kAsanInitName = "__asan_init";
+static const char *const kAsanVersionCheckName =
+    "__asan_version_mismatch_check_v6";
 static const char *const kAsanPtrCmp = "__sanitizer_ptr_cmp";
 static const char *const kAsanPtrSub = "__sanitizer_ptr_sub";
 static const char *const kAsanHandleNoReturnName = "__asan_handle_no_return";
@@ -337,12 +340,12 @@ static ShadowMapping getShadowMapping(Triple &TargetTriple, int LongSize,
 
   ShadowMapping Mapping;
 
-  if (IsAndroid) {
+  if (LongSize == 32) {
     // Android is always PIE, which means that the beginning of the address
     // space is always available.
-    Mapping.Offset = 0;
-  } else if (LongSize == 32) {
-    if (IsMIPS32)
+    if (IsAndroid)
+      Mapping.Offset = 0;
+    else if (IsMIPS32)
       Mapping.Offset = kMIPS32_ShadowOffset32;
     else if (IsFreeBSD)
       Mapping.Offset = kFreeBSD_ShadowOffset32;
@@ -538,7 +541,7 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
   ShadowMapping Mapping;
 
   SmallVector<AllocaInst *, 16> AllocaVec;
-  SmallVector<AllocaInst *, 16> NonInstrumentedStaticAllocaVec;
+  SmallSetVector<AllocaInst *, 16> NonInstrumentedStaticAllocaVec;
   SmallVector<Instruction *, 8> RetVec;
   unsigned StackAlignment;
 
@@ -565,7 +568,8 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
   typedef DenseMap<Value *, AllocaInst *> AllocaForValueMapTy;
   AllocaForValueMapTy AllocaForValue;
 
-  bool HasNonEmptyInlineAsm;
+  bool HasNonEmptyInlineAsm = false;
+  bool HasReturnsTwiceCall = false;
   std::unique_ptr<CallInst> EmptyInlineAsm;
 
   FunctionStackPoisoner(Function &F, AddressSanitizer &ASan)
@@ -577,7 +581,6 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
         IntptrPtrTy(PointerType::get(IntptrTy, 0)),
         Mapping(ASan.Mapping),
         StackAlignment(1 << Mapping.Scale),
-        HasNonEmptyInlineAsm(false),
         EmptyInlineAsm(CallInst::Create(ASan.EmptyAsm)) {}
 
   bool runOnFunction() {
@@ -641,7 +644,7 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
   /// \brief Collect Alloca instructions we want (and can) handle.
   void visitAllocaInst(AllocaInst &AI) {
     if (!ASan.isInterestingAlloca(AI)) {
-      if (AI.isStaticAlloca()) NonInstrumentedStaticAllocaVec.push_back(&AI);
+      if (AI.isStaticAlloca()) NonInstrumentedStaticAllocaVec.insert(&AI);
       return;
     }
 
@@ -679,9 +682,13 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
     AllocaPoisonCallVec.push_back(APC);
   }
 
-  void visitCallInst(CallInst &CI) {
-    HasNonEmptyInlineAsm |=
-        CI.isInlineAsm() && !CI.isIdenticalTo(EmptyInlineAsm.get());
+  void visitCallSite(CallSite CS) {
+    Instruction *I = CS.getInstruction();
+    if (CallInst *CI = dyn_cast<CallInst>(I)) {
+      HasNonEmptyInlineAsm |=
+          CI->isInlineAsm() && !CI->isIdenticalTo(EmptyInlineAsm.get());
+      HasReturnsTwiceCall |= CI->canReturnTwice();
+    }
   }
 
   // ---------------------- Helpers.
@@ -1403,7 +1410,7 @@ void AddressSanitizer::initializeCallbacks(Module &M) {
       const std::string ExpStr = Exp ? "exp_" : "";
       const std::string SuffixStr = CompileKernel ? "N" : "_n";
       const std::string EndingStr = CompileKernel ? "_noabort" : "";
-      const Type *ExpType = Exp ? Type::getInt32Ty(*C) : nullptr;
+      Type *ExpType = Exp ? Type::getInt32Ty(*C) : nullptr;
       // TODO(glider): for KASan builds add _noabort to error reporting
       // functions and make them actually noabort (remove the UnreachableInst).
       AsanErrorCallbackSized[AccessIsWrite][Exp] =
@@ -1467,9 +1474,9 @@ bool AddressSanitizer::doInitialization(Module &M) {
 
   if (!CompileKernel) {
     std::tie(AsanCtorFunction, AsanInitFunction) =
-        createSanitizerCtorAndInitFunctions(M, kAsanModuleCtorName, kAsanInitName,
-                                            /*InitArgTypes=*/{},
-                                            /*InitArgs=*/{});
+        createSanitizerCtorAndInitFunctions(
+            M, kAsanModuleCtorName, kAsanInitName,
+            /*InitArgTypes=*/{}, /*InitArgs=*/{}, kAsanVersionCheckName);
     appendToGlobalCtors(M, AsanCtorFunction, kAsanCtorAndDtorPriority);
   }
   Mapping = getShadowMapping(TargetTriple, LongSize, CompileKernel);
@@ -1787,10 +1794,15 @@ void FunctionStackPoisoner::poisonStack() {
   IRBuilder<> IRB(InsBefore);
   IRB.SetCurrentDebugLocation(EntryDebugLocation);
 
-  // Make sure non-instrumented allocas stay in the first basic block.
-  // Otherwise, debug info is broken, because only first-basic-block allocas are
-  // treated as regular stack slots.
-  for (auto *AI : NonInstrumentedStaticAllocaVec) AI->moveBefore(InsBefore);
+  // Make sure non-instrumented allocas stay in the entry block. Otherwise,
+  // debug info is broken, because only entry-block allocas are treated as
+  // regular stack slots.
+  auto InsBeforeB = InsBefore->getParent();
+  assert(InsBeforeB == &F.getEntryBlock());
+  for (BasicBlock::iterator I = InsBefore; I != InsBeforeB->end(); ++I)
+    if (auto *AI = dyn_cast_or_null<AllocaInst>(I))
+      if (NonInstrumentedStaticAllocaVec.count(AI) > 0)
+        AI->moveBefore(InsBefore);
 
   // If we have a call to llvm.localescape, keep it in the entry block.
   if (LocalEscapeCall) LocalEscapeCall->moveBefore(InsBefore);
@@ -1812,10 +1824,15 @@ void FunctionStackPoisoner::poisonStack() {
   uint64_t LocalStackSize = L.FrameSize;
   bool DoStackMalloc = ClUseAfterReturn && !ASan.CompileKernel &&
                        LocalStackSize <= kMaxStackMallocSize;
-  // Don't do dynamic alloca or stack malloc in presence of inline asm:
-  // too often it makes assumptions on which registers are available.
-  bool DoDynamicAlloca = ClDynamicAllocaStack && !HasNonEmptyInlineAsm;
-  DoStackMalloc &= !HasNonEmptyInlineAsm;
+  bool DoDynamicAlloca = ClDynamicAllocaStack;
+  // Don't do dynamic alloca or stack malloc if:
+  // 1) There is inline asm: too often it makes assumptions on which registers
+  //    are available.
+  // 2) There is a returns_twice call (typically setjmp), which is
+  //    optimization-hostile, and doesn't play well with introduced indirect
+  //    register-relative calculation of local variable addresses.
+  DoDynamicAlloca &= !HasNonEmptyInlineAsm && !HasReturnsTwiceCall;
+  DoStackMalloc &= !HasNonEmptyInlineAsm && !HasReturnsTwiceCall;
 
   Value *StaticAlloca =
       DoDynamicAlloca ? nullptr : createAllocaForLayout(IRB, L, false);

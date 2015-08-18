@@ -60,17 +60,24 @@ STATISTIC(NumSTRD2STM,  "Number of strd instructions turned back into stm");
 STATISTIC(NumLDRD2LDR,  "Number of ldrd instructions turned back into ldr's");
 STATISTIC(NumSTRD2STR,  "Number of strd instructions turned back into str's");
 
+namespace llvm {
+void initializeARMLoadStoreOptPass(PassRegistry &);
+}
+
+#define ARM_LOAD_STORE_OPT_NAME "ARM load / store optimization pass"
+
 namespace {
   /// Post- register allocation pass the combine load / store instructions to
   /// form ldm / stm instructions.
   struct ARMLoadStoreOpt : public MachineFunctionPass {
     static char ID;
-    ARMLoadStoreOpt() : MachineFunctionPass(ID) {}
+    ARMLoadStoreOpt() : MachineFunctionPass(ID) {
+      initializeARMLoadStoreOptPass(*PassRegistry::getPassRegistry());
+    }
 
     const MachineFunction *MF;
     const TargetInstrInfo *TII;
     const TargetRegisterInfo *TRI;
-    const MachineRegisterInfo *MRI;
     const ARMSubtarget *STI;
     const TargetLowering *TL;
     ARMFunctionInfo *AFI;
@@ -84,7 +91,7 @@ namespace {
     bool runOnMachineFunction(MachineFunction &Fn) override;
 
     const char *getPassName() const override {
-      return "ARM load / store optimization pass";
+      return ARM_LOAD_STORE_OPT_NAME;
     }
 
   private:
@@ -147,6 +154,8 @@ namespace {
   };
   char ARMLoadStoreOpt::ID = 0;
 }
+
+INITIALIZE_PASS(ARMLoadStoreOpt, "arm-load-store-opt", ARM_LOAD_STORE_OPT_NAME, false, false)
 
 static bool definesCPSR(const MachineInstr *MI) {
   for (const auto &MO : MI->operands()) {
@@ -1815,7 +1824,7 @@ bool ARMLoadStoreOpt::runOnMachineFunction(MachineFunction &Fn) {
   AFI = Fn.getInfo<ARMFunctionInfo>();
   TII = STI->getInstrInfo();
   TRI = STI->getRegisterInfo();
-  MRI = &Fn.getRegInfo();
+
   RegClassInfoValid = false;
   isThumb2 = AFI->isThumb2Function();
   isThumb1 = AFI->isThumbFunction() && !isThumb2;
@@ -2297,3 +2306,4 @@ FunctionPass *llvm::createARMLoadStoreOptimizationPass(bool PreAlloc) {
     return new ARMPreAllocLoadStoreOpt();
   return new ARMLoadStoreOpt();
 }
+

@@ -110,11 +110,11 @@ public:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addPreserved<DominatorTreeWrapperPass>();
-    AU.addPreserved<ScalarEvolution>();
+    AU.addPreserved<ScalarEvolutionWrapperPass>();
     AU.addPreserved<TargetLibraryInfoWrapperPass>();
     AU.addRequired<AssumptionCacheTracker>();
     AU.addRequired<DominatorTreeWrapperPass>();
-    AU.addRequired<ScalarEvolution>();
+    AU.addRequired<ScalarEvolutionWrapperPass>();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
     AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.setPreservesCFG();
@@ -191,7 +191,7 @@ INITIALIZE_PASS_BEGIN(NaryReassociate, "nary-reassociate", "Nary reassociation",
                       false, false)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(NaryReassociate, "nary-reassociate", "Nary reassociation",
@@ -207,7 +207,7 @@ bool NaryReassociate::runOnFunction(Function &F) {
 
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-  SE = &getAnalysis<ScalarEvolution>();
+  SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
 
@@ -508,11 +508,6 @@ Instruction *NaryReassociate::tryReassociateAdd(Value *LHS, Value *RHS,
 
 Instruction *NaryReassociate::tryReassociatedAdd(const SCEV *LHSExpr,
                                                  Value *RHS, Instruction *I) {
-  auto Pos = SeenExprs.find(LHSExpr);
-  // Bail out if LHSExpr is not previously seen.
-  if (Pos == SeenExprs.end())
-    return nullptr;
-
   // Look for the closest dominator LHS of I that computes LHSExpr, and replace
   // I with LHS + RHS.
   auto *LHS = findClosestMatchingDominator(LHSExpr, I);

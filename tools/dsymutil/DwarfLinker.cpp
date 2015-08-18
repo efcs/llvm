@@ -527,7 +527,7 @@ StringRef NonRelocatableStringpool::internString(StringRef S) {
   std::pair<uint32_t, StringMapEntryBase *> Entry(0, nullptr);
   auto InsertResult = Strings.insert(std::make_pair(S, Entry));
   return InsertResult.first->getKey();
-};
+}
 
 /// \brief The Dwarf streaming logic
 ///
@@ -618,7 +618,8 @@ public:
 
   /// \brief Emit the line table described in \p Rows into the
   /// debug_line section.
-  void emitLineTableForUnit(StringRef PrologueBytes, unsigned MinInstLength,
+  void emitLineTableForUnit(MCDwarfLineTableParams Params,
+                            StringRef PrologueBytes, unsigned MinInstLength,
                             std::vector<DWARFDebugLine::Row> &Rows,
                             unsigned AdddressSize);
 
@@ -942,7 +943,8 @@ void DwarfStreamer::emitLocationsForUnit(const CompileUnit &Unit,
   }
 }
 
-void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
+void DwarfStreamer::emitLineTableForUnit(MCDwarfLineTableParams Params,
+                                         StringRef PrologueBytes,
                                          unsigned MinInstLength,
                                          std::vector<DWARFDebugLine::Row> &Rows,
                                          unsigned PointerSize) {
@@ -965,7 +967,7 @@ void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
   if (Rows.empty()) {
     // We only have the dummy entry, dsymutil emits an entry with a 0
     // address in that case.
-    MCDwarfLineAddr::Encode(*MC, INT64_MAX, 0, EncodingOS);
+    MCDwarfLineAddr::Encode(*MC, Params, INT64_MAX, 0, EncodingOS);
     MS->EmitBytes(EncodingOS.str());
     LineSectionSize += EncodingBuffer.size();
     MS->EmitLabel(LineEndSym);
@@ -1047,11 +1049,10 @@ void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
 
     int64_t LineDelta = int64_t(Row.Line) - LastLine;
     if (!Row.EndSequence) {
-      MCDwarfLineAddr::Encode(*MC, LineDelta, AddressDelta, EncodingOS);
+      MCDwarfLineAddr::Encode(*MC, Params, LineDelta, AddressDelta, EncodingOS);
       MS->EmitBytes(EncodingOS.str());
       LineSectionSize += EncodingBuffer.size();
       EncodingBuffer.resize(0);
-      EncodingOS.resync();
       Address = Row.Address;
       LastLine = Row.Line;
       RowsSinceLastSequence++;
@@ -1066,11 +1067,10 @@ void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
         MS->EmitULEB128IntValue(AddressDelta);
         LineSectionSize += 1 + getULEB128Size(AddressDelta);
       }
-      MCDwarfLineAddr::Encode(*MC, INT64_MAX, 0, EncodingOS);
+      MCDwarfLineAddr::Encode(*MC, Params, INT64_MAX, 0, EncodingOS);
       MS->EmitBytes(EncodingOS.str());
       LineSectionSize += EncodingBuffer.size();
       EncodingBuffer.resize(0);
-      EncodingOS.resync();
       Address = -1ULL;
       LastLine = FileNum = IsStatement = 1;
       RowsSinceLastSequence = Column = Isa = 0;
@@ -1078,11 +1078,10 @@ void DwarfStreamer::emitLineTableForUnit(StringRef PrologueBytes,
   }
 
   if (RowsSinceLastSequence) {
-    MCDwarfLineAddr::Encode(*MC, INT64_MAX, 0, EncodingOS);
+    MCDwarfLineAddr::Encode(*MC, Params, INT64_MAX, 0, EncodingOS);
     MS->EmitBytes(EncodingOS.str());
     LineSectionSize += EncodingBuffer.size();
     EncodingBuffer.resize(0);
-    EncodingOS.resync();
   }
 
   MS->EmitLabel(LineEndSym);
@@ -1410,6 +1409,11 @@ private:
                      const DWARFDebugInfoEntryMinimal *DIE = nullptr) const;
 
   bool createStreamer(Triple TheTriple, StringRef OutputFilename);
+
+  /// \brief Attempt to load a debug object from disk.
+  ErrorOr<const object::ObjectFile &> loadObject(BinaryHolder &BinaryHolder,
+                                                 DebugMapObject &Obj,
+                                                 const DebugMap &Map);
   /// @}
 
 private:
@@ -2318,7 +2322,7 @@ unsigned DwarfLinker::cloneDieReferenceAttribute(
 unsigned DwarfLinker::cloneBlockAttribute(DIE &Die, AttributeSpec AttrSpec,
                                           const DWARFFormValue &Val,
                                           unsigned AttrSize) {
-  DIE *Attr;
+  DIEValueList *Attr;
   DIEValue Value;
   DIELoc *Loc = nullptr;
   DIEBlock *Block = nullptr;
@@ -2330,7 +2334,8 @@ unsigned DwarfLinker::cloneBlockAttribute(DIE &Die, AttributeSpec AttrSpec,
     Block = new (DIEAlloc) DIEBlock;
     DIEBlocks.push_back(Block);
   }
-  Attr = Loc ? static_cast<DIE *>(Loc) : static_cast<DIE *>(Block);
+  Attr = Loc ? static_cast<DIEValueList *>(Loc)
+             : static_cast<DIEValueList *>(Block);
 
   if (Loc)
     Value = DIEValue(dwarf::Attribute(AttrSpec.Attr),
@@ -2876,12 +2881,13 @@ void DwarfLinker::patchLineTableForUnit(CompileUnit &Unit,
       if (StopAddress != -1ULL && !Seq.empty()) {
         // Insert end sequence row with the computed end address, but
         // the same line as the previous one.
-        Seq.emplace_back(Seq.back());
-        Seq.back().Address = StopAddress;
-        Seq.back().EndSequence = 1;
-        Seq.back().PrologueEnd = 0;
-        Seq.back().BasicBlock = 0;
-        Seq.back().EpilogueBegin = 0;
+        auto NextLine = Seq.back();
+        NextLine.Address = StopAddress;
+        NextLine.EndSequence = 1;
+        NextLine.PrologueEnd = 0;
+        NextLine.BasicBlock = 0;
+        NextLine.EpilogueBegin = 0;
+        Seq.push_back(NextLine);
         insertLineSequence(Seq, NewRows);
       }
 
@@ -2909,13 +2915,18 @@ void DwarfLinker::patchLineTableForUnit(CompileUnit &Unit,
   // table emitter.
   if (LineTable.Prologue.Version != 2 ||
       LineTable.Prologue.DefaultIsStmt != DWARF2_LINE_DEFAULT_IS_STMT ||
-      LineTable.Prologue.LineBase != -5 || LineTable.Prologue.LineRange != 14 ||
-      LineTable.Prologue.OpcodeBase != 13)
+      LineTable.Prologue.OpcodeBase > 13)
     reportWarning("line table paramters mismatch. Cannot emit.");
-  else
-    Streamer->emitLineTableForUnit(LineData.slice(StmtList + 4, PrologueEnd),
+  else {
+    MCDwarfLineTableParams Params;
+    Params.DWARF2LineOpcodeBase = LineTable.Prologue.OpcodeBase;
+    Params.DWARF2LineBase = LineTable.Prologue.LineBase;
+    Params.DWARF2LineRange = LineTable.Prologue.LineRange;
+    Streamer->emitLineTableForUnit(Params,
+                                   LineData.slice(StmtList + 4, PrologueEnd),
                                    LineTable.Prologue.MinInstLength, NewRows,
                                    Unit.getOrigUnit().getAddressByteSize());
+  }
 }
 
 void DwarfLinker::emitAcceleratorEntriesForUnit(CompileUnit &Unit) {
@@ -3008,6 +3019,19 @@ void DwarfLinker::patchFrameInfoForObject(const DebugMapObject &DMO,
   }
 }
 
+ErrorOr<const object::ObjectFile &>
+DwarfLinker::loadObject(BinaryHolder &BinaryHolder, DebugMapObject &Obj,
+                        const DebugMap &Map) {
+  auto ErrOrObjs =
+      BinaryHolder.GetObjectFiles(Obj.getObjectFilename(), Obj.getTimestamp());
+  if (std::error_code EC = ErrOrObjs.getError())
+    reportWarning(Twine(Obj.getObjectFilename()) + ": " + EC.message());
+  auto ErrOrObj = BinaryHolder.Get(Map.getTriple());
+  if (std::error_code EC = ErrOrObj.getError())
+    reportWarning(Twine(Obj.getObjectFilename()) + ": " + EC.message());
+  return ErrOrObj;
+}
+
 bool DwarfLinker::link(const DebugMap &Map) {
 
   if (Map.begin() == Map.end()) {
@@ -3027,11 +3051,9 @@ bool DwarfLinker::link(const DebugMap &Map) {
 
     if (Options.Verbose)
       outs() << "DEBUG MAP OBJECT: " << Obj->getObjectFilename() << "\n";
-    auto ErrOrObj = BinHolder.GetObjectFile(Obj->getObjectFilename());
-    if (std::error_code EC = ErrOrObj.getError()) {
-      reportWarning(Twine(Obj->getObjectFilename()) + ": " + EC.message());
+    auto ErrOrObj = loadObject(BinHolder, *Obj, Map);
+    if (!ErrOrObj)
       continue;
-    }
 
     // Look for relocations that correspond to debug map entries.
     if (!findValidRelocsInDebugInfo(*ErrOrObj, *Obj)) {

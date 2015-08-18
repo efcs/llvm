@@ -33,6 +33,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
@@ -115,6 +116,14 @@ DwarfPubSections("generate-dwarf-pub-sections", cl::Hidden,
                             clEnumVal(Disable, "Disabled"), clEnumValEnd),
                  cl::init(Default));
 
+static cl::opt<DefaultOnOff>
+DwarfLinkageNames("dwarf-linkage-names", cl::Hidden,
+                  cl::desc("Emit DWARF linkage-name attributes."),
+                  cl::values(clEnumVal(Default, "Default for platform"),
+                             clEnumVal(Enable, "Enabled"),
+                             clEnumVal(Disable, "Disabled"), clEnumValEnd),
+                  cl::init(Default));
+
 static const char *const DWARFGroupName = "DWARF Emission";
 static const char *const DbgTimerName = "DWARF Debug Writer";
 
@@ -187,9 +196,9 @@ const DIType *DbgVariable::getType() const {
     if (tag == dwarf::DW_TAG_pointer_type)
       subType = resolve(cast<DIDerivedType>(Ty)->getBaseType());
 
-    auto Elements = cast<DICompositeTypeBase>(subType)->getElements();
+    auto Elements = cast<DICompositeType>(subType)->getElements();
     for (unsigned i = 0, N = Elements.size(); i < N; ++i) {
-      auto *DT = cast<DIDerivedTypeBase>(Elements[i]);
+      auto *DT = cast<DIDerivedType>(Elements[i]);
       if (getName() == DT->getName())
         return resolve(DT->getBaseType());
     }
@@ -249,9 +258,17 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   else
     HasDwarfPubSections = DwarfPubSections == Enable;
 
+  // SCE does not use linkage names.
+  if (DwarfLinkageNames == Default)
+    UseLinkageNames = !tuneForSCE();
+  else
+    UseLinkageNames = DwarfLinkageNames == Enable;
+
   unsigned DwarfVersionNumber = Asm->TM.Options.MCOptions.DwarfVersion;
   DwarfVersion = DwarfVersionNumber ? DwarfVersionNumber
                                     : MMI->getModule()->getDwarfVersion();
+  // Use dwarf 4 by default if nothing is requested.
+  DwarfVersion = DwarfVersion ? DwarfVersion : dwarf::DWARF_VERSION;
 
   // Work around a GDB bug. GDB doesn't support the standard opcode;
   // SCE doesn't support GNU's; LLDB prefers the standard opcode, which
@@ -1156,7 +1173,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
     // The first mention of a function argument gets the CurrentFnBegin
     // label, so arguments are visible when breaking at function entry.
     const DILocalVariable *DIVar = Ranges.front().first->getDebugVariable();
-    if (DIVar->getTag() == dwarf::DW_TAG_arg_variable &&
+    if (DIVar->isParameter() &&
         getDISubprogram(DIVar->getScope())->describes(MF->getFunction())) {
       LabelsBeforeInsn[Ranges.front().first] = Asm->getFunctionBegin();
       if (Ranges.front().first->getDebugExpression()->isBitPiece()) {
@@ -1892,7 +1909,7 @@ void DwarfDebug::emitDebugLineDWO() {
   assert(useSplitDwarf() && "No split dwarf?");
   Asm->OutStreamer->SwitchSection(
       Asm->getObjFileLowering().getDwarfLineDWOSection());
-  SplitTypeUnitFileTable.Emit(*Asm->OutStreamer);
+  SplitTypeUnitFileTable.Emit(*Asm->OutStreamer, MCDwarfLineTableParams());
 }
 
 // Emit the .debug_str.dwo section for separated dwarf. This contains the

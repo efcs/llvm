@@ -18,8 +18,6 @@ else
     MAKE=make
 fi
 
-projects="llvm cfe compiler-rt libcxx libcxxabi test-suite clang-tools-extra libunwind"
-
 # Base SVN URL for the sources.
 Base_url="http://llvm.org/svn/llvm-project"
 
@@ -32,6 +30,11 @@ do_checkout="yes"
 do_debug="no"
 do_asserts="no"
 do_compare="yes"
+do_rt="yes"
+do_libs="yes"
+do_libunwind="yes"
+do_test_suite="yes"
+do_openmp="no"
 BuildDir="`pwd`"
 use_autoconf="no"
 ExtraConfigureFlags=""
@@ -55,6 +58,11 @@ function usage() {
     echo " -use-autoconf        Use autoconf instead of cmake"
     echo " -svn-path DIR        Use the specified DIR instead of a release."
     echo "                      For example -svn-path trunk or -svn-path branches/release_37"
+    echo " -no-rt               Disable check-out & build Compiler-RT"
+    echo " -no-libs             Disable check-out & build libcxx/libcxxabi/libunwind"
+    echo " -no-libunwind        Disable check-out & build libunwind"
+    echo " -no-test-suite       Disable check-out & build test-suite"
+    echo " -openmp              Check out and build the OpenMP run-time (experimental)"
 }
 
 if [ `uname -s` = "Darwin" ]; then
@@ -123,6 +131,21 @@ while [ $# -gt 0 ]; do
         -use-autoconf | --use-autoconf )
             use_autoconf="yes"
             ;;
+        -no-rt )
+            do_rt="no"
+            ;;
+        -no-libs )
+            do_libs="no"
+            ;;
+        -no-libunwind )
+            do_libunwind="no"
+            ;;
+        -no-test-suite )
+            do_test_suite="no"
+            ;;
+        -openmp )
+            do_openmp="yes"
+            ;;
         -help | --help | -h | --h | -\? )
             usage
             exit 0
@@ -167,6 +190,24 @@ if [ -z "$NumJobs" ]; then
     NumJobs=3
 fi
 
+# Projects list
+projects="llvm cfe clang-tools-extra"
+if [ $do_rt = "yes" ]; then
+  projects="$projects compiler-rt"
+fi
+if [ $do_libs = "yes" ]; then
+  projects="$projects libcxx libcxxabi"
+  if [ $do_libunwind = "yes" ]; then
+    projects="$projects libunwind"
+  fi
+fi
+if [ $do_test_suite = "yes" ]; then
+  projects="$projects test-suite"
+fi
+if [ $do_openmp = "yes" ]; then
+  projects="$projects openmp"
+fi
+
 # Go to the build directory (may be different from CWD)
 BuildDir=$BuildDir/$RC
 mkdir -p $BuildDir
@@ -182,6 +223,16 @@ if [ $RC != "final" ]; then
   Package=$Package-$RC
 fi
 Package=$Package-$Triple
+
+# Errors to be highlighted at the end are written to this file.
+echo -n > $LogDir/deferred_errors.log
+
+function deferred_error() {
+  Phase="$1"
+  Flavor="$2"
+  Msg="$3"
+  echo "[${Flavor} Phase${Phase}] ${Msg}" | tee -a $LogDir/deferred_errors.log
+}
 
 # Make sure that a required program is available
 function check_program_exists() {
@@ -215,6 +266,10 @@ function export_sources() {
     check_valid_urls
 
     for proj in $projects ; do
+        if [ -d $proj.src ]; then
+          echo "# Reusing $proj $Release-$RC sources"
+          continue
+        fi
         echo "# Exporting $proj $Release-$RC sources"
         if ! svn export -q $Base_url/$proj/$ExportBranch $proj.src ; then
             echo "error: failed to export $proj project"
@@ -227,24 +282,24 @@ function export_sources() {
     if [ ! -h clang ]; then
         ln -s ../../cfe.src clang
     fi
-    cd $BuildDir/llvm.src/tools/clang/tools
-    if [ ! -h clang-tools-extra ]; then
-        ln -s ../../../../clang-tools-extra.src extra
+    cd $BuildDir/cfe.src/tools
+    if [ ! -h extra ]; then
+        ln -s ../../clang-tools-extra.src extra
     fi
     cd $BuildDir/llvm.src/projects
-    if [ ! -h test-suite ]; then
+    if [ -d $BuildDir/test-suite.src ] && [ ! -h test-suite ]; then
         ln -s ../../test-suite.src test-suite
     fi
-    if [ ! -h compiler-rt ]; then
+    if [ -d $BuildDir/compiler-rt.src ] && [ ! -h compiler-rt ]; then
         ln -s ../../compiler-rt.src compiler-rt
     fi
-    if [ ! -h libcxx ]; then
+    if [ -d $BuildDir/libcxx.src ] && [ ! -h libcxx ]; then
         ln -s ../../libcxx.src libcxx
     fi
-    if [ ! -h libcxxabi ]; then
+    if [ -d $BuildDir/libcxxabi.src ] && [ ! -h libcxxabi ]; then
         ln -s ../../libcxxabi.src libcxxabi
     fi
-    if [ ! -h libunwind ]; then
+    if [ -d $BuildDir/libunwind.src ] && [ ! -h libunwind ]; then
         ln -s ../../libunwind.src libunwind
     fi
 
@@ -338,13 +393,17 @@ function test_llvmCore() {
     ObjDir="$3"
 
     cd $ObjDir
-    ${MAKE} -j $NumJobs -k check-all \
-        2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log
+    if ! ( ${MAKE} -j $NumJobs -k check-all \
+        2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log ) ; then
+      deferred_error $Phase $Flavor "check-all failed"
+    fi
 
     if [ "$use_autoconf" = "yes" ]; then
         # In the cmake build, unit tests are run as part of check-all.
-        ${MAKE} -k unittests \
-            2>&1 | tee $LogDir/llvm.unittests-Phase$Phase-$Flavor.log
+        if ! ( ${MAKE} -k unittests 2>&1 | \
+            tee $LogDir/llvm.unittests-Phase$Phase-$Flavor.log ) ; then
+          deferred_error $Phase $Flavor "unittests failed"
+        fi
     fi
 
     cd $BuildDir
@@ -384,6 +443,46 @@ function package_release() {
     cd $cwd
 }
 
+# Build and package the OpenMP run-time. This is still experimental and not
+# meant for official testing in the release, but as a way for providing
+# binaries as a convenience to those who want to try it out.
+function build_OpenMP() {
+    cwd=`pwd`
+
+    rm -rf $BuildDir/Phase3/openmp
+    rm -rf $BuildDir/Phase3/openmp.install
+    mkdir -p $BuildDir/Phase3/openmp
+    cd $BuildDir/Phase3/openmp
+    clang=$BuildDir/Phase3/Release/llvmCore-$Release-$RC.install/usr/local/bin/clang
+
+    echo "#" cmake -DCMAKE_C_COMPILER=${clang} -DCMAKE_CXX_COMPILER=${clang}++ \
+            -DCMAKE_BUILD_TYPE=Release -DLIBOMP_MICRO_TESTS=on \
+            $BuildDir/openmp.src/runtime
+    cmake -DCMAKE_C_COMPILER=${clang} -DCMAKE_CXX_COMPILER=${clang}++ \
+            -DCMAKE_BUILD_TYPE=Release -DLIBOMP_MICRO_TESTS=on \
+            $BuildDir/openmp.src/runtime
+
+    echo "# Building OpenMP run-time"
+    echo "# ${MAKE} -j $NumJobs VERBOSE=1"
+    ${MAKE} -j $NumJobs VERBOSE=1
+    echo "# ${MAKE} libomp-micro-tests VERBOSE=1"
+    ${MAKE} libomp-micro-tests VERBOSE=1
+    echo "# ${MAKE} install DESTDIR=$BuildDir/Phase3/openmp.install"
+    ${MAKE} install DESTDIR=$BuildDir/Phase3/openmp.install
+
+    OpenMPPackage=OpenMP-$Release
+    if [ $RC != "final" ]; then
+        OpenMPPackage=$OpenMPPackage-$RC
+    fi
+    OpenMPPackage=$OpenMPPackage-$Triple
+
+    mv $BuildDir/Phase3/openmp.install/usr/local $BuildDir/$OpenMPPackage
+    cd $BuildDir
+    tar cvfJ $BuildDir/$OpenMPPackage.tar.xz $OpenMPPackage
+    mv $OpenMPPackage $BuildDir/Phase3/openmp.install/usr/local
+    cd $cwd
+}
+
 # Exit if any command fails
 # Note: pipefail is necessary for running build commands through
 # a pipe (i.e. it changes the output of ``false | tee /dev/null ; echo $?``)
@@ -416,7 +515,6 @@ for Flavor in $Flavors ; do
 
     c_compiler="$CC"
     cxx_compiler="$CXX"
-
     llvmCore_phase1_objdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.obj
     llvmCore_phase1_destdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.install
 
@@ -495,6 +593,11 @@ for Flavor in $Flavors ; do
         done
     fi
 done
+
+if [ $do_openmp = "yes" ]; then
+  build_OpenMP
+fi
+
 ) 2>&1 | tee $LogDir/testing.$Release-$RC.log
 
 package_release
@@ -509,4 +612,13 @@ else
   echo "### Package: $Package.tar.xz"
 fi
 echo "### Logs: $LogDir"
+
+echo "### Errors:"
+if [ -s "$LogDir/deferred_errors.log" ]; then
+  cat "$LogDir/deferred_errors.log"
+  exit 1
+else
+  echo "None."
+fi
+
 exit 0

@@ -282,9 +282,8 @@ namespace llvm {
 
       // Vector integer truncate.
       VTRUNC,
-
-      // Vector integer truncate with mask.
-      VTRUNCM,
+      // Vector integer truncate with unsigned/signed saturation.
+      VTRUNCUS, VTRUNCS,
 
       // Vector FP extend.
       VFPEXT,
@@ -386,6 +385,10 @@ namespace llvm {
       VFIXUPIMM,
       //Range Restriction Calculation For Packed Pairs of Float32/64 values
       VRANGE,
+      // Reduce - Perform Reduction Transformation on scalar\packed FP
+      VREDUCE,
+      // RndScale - Round FP Values To Include A Given Number Of Fraction Bits
+      VRNDSCALE,
       // Broadcast scalar to vector
       VBROADCAST,
       // Broadcast subvector to vector
@@ -419,7 +422,6 @@ namespace llvm {
       FNMSUB_RND,
       FMADDSUB_RND,
       FMSUBADD_RND,
-      RNDSCALE,
 
       // Compress and expand
       COMPRESS,
@@ -1051,7 +1053,7 @@ namespace llvm {
     LoadInst *
     lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *AI) const override;
 
-    bool needsCmpXchgNb(const Type *MemType) const;
+    bool needsCmpXchgNb(Type *MemType) const;
 
     /// Utility function to emit atomic-load-arith operations (and, or, xor,
     /// nand, max, min, umax, umin). It takes the corresponding instruction to
@@ -1077,6 +1079,9 @@ namespace llvm {
 
     MachineBasicBlock *EmitLoweredSelect(MachineInstr *I,
                                          MachineBasicBlock *BB) const;
+
+    MachineBasicBlock *EmitLoweredAtomicFP(MachineInstr *I,
+                                           MachineBasicBlock *BB) const;
 
     MachineBasicBlock *EmitLoweredWinAlloca(MachineInstr *MI,
                                               MachineBasicBlock *BB) const;
@@ -1122,7 +1127,7 @@ namespace llvm {
                              unsigned &RefinementSteps) const override;
 
     /// Reassociate floating point divisions into multiply by reciprocal.
-    bool combineRepeatedFPDivisors(unsigned NumUsers) const override;
+    unsigned combineRepeatedFPDivisors() const override;
   };
 
   namespace X86 {

@@ -116,6 +116,8 @@ void MachineRegisterInfo::clearVirtRegs() {
   }
 #endif
   VRegInfo.clear();
+  for (auto &I : LiveIns)
+    I.second = 0;
 }
 
 void MachineRegisterInfo::verifyUseList(unsigned Reg) const {
@@ -484,6 +486,18 @@ bool MachineRegisterInfo::isPhysRegModified(unsigned PhysReg) const {
         continue;
       return true;
     }
+  }
+  return false;
+}
+
+bool MachineRegisterInfo::isPhysRegUsed(unsigned PhysReg) const {
+  if (UsedPhysRegMask.test(PhysReg))
+    return true;
+  const TargetRegisterInfo *TRI = getTargetRegisterInfo();
+  for (MCRegAliasIterator AliasReg(PhysReg, TRI, true); AliasReg.isValid();
+       ++AliasReg) {
+    if (!reg_nodbg_empty(*AliasReg))
+      return true;
   }
   return false;
 }
