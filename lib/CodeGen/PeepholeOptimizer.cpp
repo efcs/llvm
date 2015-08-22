@@ -354,7 +354,7 @@ namespace {
 
     /// \brief Following the use-def chain, get the next available source
     /// for the tracked value.
-    /// \return A ValueTrackerResult containing the a set of registers
+    /// \return A ValueTrackerResult containing a set of registers
     /// and sub registers with tracked values. A ValueTrackerResult with
     /// an empty set of registers means no source was found.
     ValueTrackerResult getNextSource();
@@ -632,10 +632,9 @@ bool PeepholeOptimizer::findNextSource(unsigned Reg, unsigned SubReg,
   SmallVector<TargetInstrInfo::RegSubRegPair, 4> SrcToLook;
   TargetInstrInfo::RegSubRegPair CurSrcPair(Reg, SubReg);
   SrcToLook.push_back(CurSrcPair);
-  bool ShouldRewrite = false;
 
-  unsigned PHILimit = RewritePHILimit;
-  while (!SrcToLook.empty() && PHILimit) {
+  unsigned PHICount = 0;
+  while (!SrcToLook.empty() && PHICount < RewritePHILimit) {
     TargetInstrInfo::RegSubRegPair Pair = SrcToLook.pop_back_val();
     // As explained above, do not handle physical registers
     if (TargetRegisterInfo::isPhysicalRegister(Pair.Reg))
@@ -645,6 +644,7 @@ bool PeepholeOptimizer::findNextSource(unsigned Reg, unsigned SubReg,
     ValueTracker ValTracker(CurSrcPair.Reg, CurSrcPair.SubReg, *MRI,
                             !DisableAdvCopyOpt, TII);
     ValueTrackerResult Res;
+    bool ShouldRewrite = false;
 
     do {
       // Follow the chain of copies until we reach the top of the use-def chain
@@ -671,7 +671,7 @@ bool PeepholeOptimizer::findNextSource(unsigned Reg, unsigned SubReg,
       // a PHI instruction. Add the found PHI edges to be looked up further.
       unsigned NumSrcs = Res.getNumSources();
       if (NumSrcs > 1) {
-        PHILimit--;
+        PHICount++;
         for (unsigned i = 0; i < NumSrcs; ++i)
           SrcToLook.push_back(TargetInstrInfo::RegSubRegPair(
               Res.getSrcReg(i), Res.getSrcSubReg(i)));
@@ -698,15 +698,15 @@ bool PeepholeOptimizer::findNextSource(unsigned Reg, unsigned SubReg,
     if (Res.isValid())
       continue;
 
-    if (!PHILimit) {
-      DEBUG(dbgs() << "findNextSource: PHI limit reached\n");
-      return false;
-    }
-
     // Do not continue searching for a new source if the there's at least
     // one use-def which cannot be rewritten.
     if (!ShouldRewrite)
       return false;
+  }
+
+  if (PHICount >= RewritePHILimit) {
+    DEBUG(dbgs() << "findNextSource: PHI limit reached\n");
+    return false;
   }
 
   // If we did not find a more suitable source, there is nothing to optimize.
@@ -721,7 +721,7 @@ bool PeepholeOptimizer::findNextSource(unsigned Reg, unsigned SubReg,
 /// successfully traverse a PHI instruction and find suitable sources coming
 /// from its edges. By inserting a new PHI, we provide a rewritten PHI def
 /// suitable to be used in a new COPY instruction.
-MachineInstr *
+static MachineInstr *
 insertPHI(MachineRegisterInfo *MRI, const TargetInstrInfo *TII,
           const SmallVectorImpl<TargetInstrInfo::RegSubRegPair> &SrcRegs,
           MachineInstr *OrigPHI) {
@@ -814,12 +814,9 @@ public:
   virtual bool RewriteCurrentSource(unsigned NewReg, unsigned NewSubReg) {
     if (!CopyLike.isCopy() || CurrentSrcIdx != 1)
       return false;
-    DEBUG(dbgs() << "-- RewriteCurrentSource\n");
-    DEBUG(dbgs() << "   Replacing: " << CopyLike);
     MachineOperand &MOSrc = CopyLike.getOperand(CurrentSrcIdx);
     MOSrc.setReg(NewReg);
     MOSrc.setSubReg(NewSubReg);
-    DEBUG(dbgs() << "        With: " << CopyLike);
     return true;
   }
 
@@ -1415,16 +1412,15 @@ bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &MF) {
       if (MI->isDebugValue())
           continue;
 
-      // If there exists an instruction which belongs to the following
-      // categories, we will discard the load candidates.
+      // If we run into an instruction we can't fold across, discard
+      // the load candidates.
+      if (MI->isLoadFoldBarrier())
+        FoldAsLoadDefCandidates.clear();
+
       if (MI->isPosition() || MI->isPHI() || MI->isImplicitDef() ||
           MI->isKill() || MI->isInlineAsm() ||
-          MI->hasUnmodeledSideEffects()) {
-        FoldAsLoadDefCandidates.clear();
+          MI->hasUnmodeledSideEffects())
         continue;
-      }
-      if (MI->mayStore() || MI->isCall())
-        FoldAsLoadDefCandidates.clear();
 
       if ((isUncoalescableCopy(*MI) &&
            optimizeUncoalescableCopy(MI, LocalMIs)) ||
@@ -1770,7 +1766,7 @@ ValueTrackerResult ValueTracker::getNextSource() {
     Res.setInst(Def);
 
     // If we can still move up in the use-def chain, move to the next
-    // defintion.
+    // definition.
     if (!TargetRegisterInfo::isPhysicalRegister(Reg) && OneRegSrc) {
       Def = MRI.getVRegDef(Reg);
       DefIdx = MRI.def_begin(Reg).getOperandNo();

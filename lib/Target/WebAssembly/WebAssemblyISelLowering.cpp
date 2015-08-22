@@ -92,6 +92,8 @@ int DiagnosticInfoUnsupported::KindID = 0;
 WebAssemblyTargetLowering::WebAssemblyTargetLowering(
     const TargetMachine &TM, const WebAssemblySubtarget &STI)
     : TargetLowering(TM), Subtarget(&STI) {
+  // Booleans always contain 0 or 1.
+  setBooleanContents(ZeroOrOneBooleanContent);
   // WebAssembly does not produce floating-point exceptions on normal floating
   // point operations.
   setHasFloatingPointExceptions(false);
@@ -108,7 +110,57 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
   // Compute derived properties from the register classes.
   computeRegisterProperties(Subtarget->getRegisterInfo());
 
-  // FIXME: setOperationAction...
+  // FIXME: many setOperationAction are missing...
+
+  for (auto T : {MVT::f32, MVT::f64}) {
+    // Don't expand the floating-point types to constant pools.
+    setOperationAction(ISD::ConstantFP, T, Legal);
+    // Expand floating-point comparisons.
+    for (auto CC : {ISD::SETO, ISD::SETUO, ISD::SETUEQ, ISD::SETONE,
+                    ISD::SETULT, ISD::SETULE, ISD::SETUGT, ISD::SETUGE})
+      setCondCodeAction(CC, T, Expand);
+    // Expand floating-point library function operators.
+    for (auto Op : {ISD::FSIN, ISD::FCOS, ISD::FSINCOS, ISD::FPOWI, ISD::FPOW,
+                    ISD::FLOG, ISD::FLOG2, ISD::FLOG10, ISD::FEXP, ISD::FEXP2,
+                    ISD::FMINNAN, ISD::FMAXNAN})
+      setOperationAction(Op, T, Expand);
+  }
+
+  for (auto T : {MVT::i32, MVT::i64}) {
+    // Expand unavailable integer operations.
+    for (auto Op : {ISD::BSWAP, ISD::ROTL, ISD::ROTR,
+                    ISD::SMUL_LOHI, ISD::UMUL_LOHI,
+                    ISD::MULHS, ISD::MULHU, ISD::SDIVREM, ISD::UDIVREM,
+                    ISD::SHL_PARTS, ISD::SRA_PARTS, ISD::SRL_PARTS,
+                    ISD::ADDC, ISD::ADDE, ISD::SUBC, ISD::SUBE}) {
+      setOperationAction(Op, T, Expand);
+    }
+  }
+
+  // As a special case, these operators use the type to mean the type to
+  // sign-extend from.
+  for (auto T : {MVT::i1, MVT::i8, MVT::i16})
+    setOperationAction(ISD::SIGN_EXTEND_INREG, T, Expand);
+
+  // Dynamic stack allocation: use the default expansion.
+  setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
+  setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
+  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32, Expand);
+}
+
+MVT WebAssemblyTargetLowering::getScalarShiftAmountTy(const DataLayout &DL,
+                                                      EVT VT) const {
+  return VT.getSimpleVT();
+}
+
+const char *
+WebAssemblyTargetLowering::getTargetNodeName(unsigned Opcode) const {
+  switch (static_cast<WebAssemblyISD::NodeType>(Opcode)) {
+  case WebAssemblyISD::FIRST_NUMBER: break;
+  case WebAssemblyISD::RETURN: return "WebAssemblyISD::RETURN";
+  case WebAssemblyISD::ARGUMENT: return "WebAssemblyISD::ARGUMENT";
+  }
+  return nullptr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -141,8 +193,12 @@ SDValue WebAssemblyTargetLowering::LowerReturn(
   assert(Outs.size() <= 1 && "WebAssembly can only return up to one value");
   if (CallConv != CallingConv::C)
     fail(DL, DAG, "WebAssembly doesn't support non-C calling conventions");
+  if (IsVarArg)
+    fail(DL, DAG, "WebAssembly doesn't support varargs yet");
 
-  // FIXME: Implement LowerReturn.
+  SmallVector<SDValue, 4> RetOps(1, Chain);
+  RetOps.append(OutVals.begin(), OutVals.end());
+  Chain = DAG.getNode(WebAssemblyISD::RETURN, DL, MVT::Other, RetOps);
 
   return Chain;
 }
@@ -160,9 +216,38 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
   if (MF.getFunction()->hasStructRetAttr())
     fail(DL, DAG, "WebAssembly doesn't support struct return yet");
 
-  // FIXME: Implement LowerFormalArguments.
-  for (const ISD::InputArg &In : Ins)
-    InVals.push_back(DAG.getNode(ISD::UNDEF, DL, In.VT));
+  unsigned ArgNo = 0;
+  for (const ISD::InputArg &In : Ins) {
+    if (In.Flags.isZExt())
+      fail(DL, DAG, "WebAssembly hasn't implemented zext arguments");
+    if (In.Flags.isSExt())
+      fail(DL, DAG, "WebAssembly hasn't implemented sext arguments");
+    if (In.Flags.isInReg())
+      fail(DL, DAG, "WebAssembly hasn't implemented inreg arguments");
+    if (In.Flags.isSRet())
+      fail(DL, DAG, "WebAssembly hasn't implemented sret arguments");
+    if (In.Flags.isByVal())
+      fail(DL, DAG, "WebAssembly hasn't implemented byval arguments");
+    if (In.Flags.isInAlloca())
+      fail(DL, DAG, "WebAssembly hasn't implemented inalloca arguments");
+    if (In.Flags.isNest())
+      fail(DL, DAG, "WebAssembly hasn't implemented nest arguments");
+    if (In.Flags.isReturned())
+      fail(DL, DAG, "WebAssembly hasn't implemented returned arguments");
+    if (In.Flags.isInConsecutiveRegs())
+      fail(DL, DAG, "WebAssembly hasn't implemented cons regs arguments");
+    if (In.Flags.isInConsecutiveRegsLast())
+      fail(DL, DAG, "WebAssembly hasn't implemented cons regs last arguments");
+    if (In.Flags.isSplit())
+      fail(DL, DAG, "WebAssembly hasn't implemented split arguments");
+    // FIXME Do something with In.getOrigAlign()?
+    InVals.push_back(
+        In.Used
+            ? DAG.getNode(WebAssemblyISD::ARGUMENT, DL, In.VT,
+                          DAG.getTargetConstant(ArgNo, DL, MVT::i32))
+            : DAG.getNode(ISD::UNDEF, DL, In.VT));
+    ++ArgNo;
+  }
 
   return Chain;
 }

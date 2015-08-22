@@ -230,6 +230,8 @@ public:
 
   bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
 
+  bool enableInterleavedAccessVectorization() { return false; }
+
   TTI::PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) {
     return TTI::PSK_Software;
   }
@@ -325,8 +327,8 @@ public:
     return nullptr;
   }
 
-  bool hasCompatibleFunctionAttributes(const Function *Caller,
-                                       const Function *Callee) const {
+  bool areInlineCompatible(const Function *Caller,
+                           const Function *Callee) const {
     return (Caller->getFnAttribute("target-cpu") ==
             Callee->getFnAttribute("target-cpu")) &&
            (Caller->getFnAttribute("target-features") ==
