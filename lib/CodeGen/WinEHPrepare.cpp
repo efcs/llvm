@@ -2608,7 +2608,8 @@ static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
       HT.TypeDescriptor =
           cast<GlobalVariable>(CS->getAggregateElement(1)->stripPointerCasts());
     }
-    HT.Handler = CPI->getParent();
+    HT.Handler = CPI->getNormalDest();
+    HT.HandlerMBB = nullptr;
     // FIXME: Pass CPI->getArgOperand(1).
     HT.CatchObjRecoverIdx = -1;
     TBME.HandlerArray.push_back(HT);
@@ -2684,6 +2685,7 @@ void WinEHNumbering::createTryBlockMapEntry(int TryLow, int TryHigh,
           cast<GlobalVariable>(CS->getAggregateElement(1)->stripPointerCasts());
     }
     HT.Handler = cast<Function>(CH->getHandlerBlockOrFunc());
+    HT.HandlerMBB = nullptr;
     HT.CatchObjRecoverIdx = CH->getExceptionVarIndex();
     TBME.HandlerArray.push_back(HT);
   }
@@ -2956,8 +2958,7 @@ static const BasicBlock *getEHPadFromPredecessor(const BasicBlock *BB) {
   if (isa<CatchPadInst>(TI) || isa<CatchEndPadInst>(TI) ||
       isa<TerminatePadInst>(TI))
     return BB;
-  return cast<CleanupPadInst>(cast<CleanupReturnInst>(TI)->getReturnValue())
-      ->getParent();
+  return cast<CleanupReturnInst>(TI)->getCleanupPad()->getParent();
 }
 
 static void calculateExplicitStateNumbers(WinEHFuncInfo &FuncInfo,
@@ -3242,11 +3243,11 @@ bool WinEHPrepare::prepareExplicitEH(Function &F) {
       // The token consumed by a CatchReturnInst must match the funclet token.
       bool IsUnreachableCatchret = false;
       if (auto *CRI = dyn_cast<CatchReturnInst>(TI))
-        IsUnreachableCatchret = CRI->getReturnValue() != CatchPad;
+        IsUnreachableCatchret = CRI->getCatchPad() != CatchPad;
       // The token consumed by a CleanupPadInst must match the funclet token.
       bool IsUnreachableCleanupret = false;
       if (auto *CRI = dyn_cast<CleanupReturnInst>(TI))
-        IsUnreachableCleanupret = CRI->getReturnValue() != CleanupPad;
+        IsUnreachableCleanupret = CRI->getCleanupPad() != CleanupPad;
       if (IsUnreachableRet || IsUnreachableCatchret || IsUnreachableCleanupret) {
         new UnreachableInst(BB->getContext(), TI);
         TI->eraseFromParent();

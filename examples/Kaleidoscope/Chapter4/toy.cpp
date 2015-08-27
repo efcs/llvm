@@ -1,11 +1,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/Passes.h"
-#include "llvm/ExecutionEngine/ExecutionEngine.h"
-#include "llvm/ExecutionEngine/MCJIT.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
-#include "llvm/IR/DataLayout.h"
-#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -18,7 +13,10 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "../include/KaleidoscopeJIT.h"
+
 using namespace llvm;
+using namespace llvm::orc;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -100,45 +98,49 @@ namespace {
 class ExprAST {
 public:
   virtual ~ExprAST() {}
-  virtual Value *Codegen() = 0;
+  virtual Value *codegen() = 0;
 };
 
 /// NumberExprAST - Expression class for numeric literals like "1.0".
 class NumberExprAST : public ExprAST {
   double Val;
+
 public:
   NumberExprAST(double Val) : Val(Val) {}
-  Value *Codegen() override;
+  Value *codegen() override;
 };
 
 /// VariableExprAST - Expression class for referencing a variable, like "a".
 class VariableExprAST : public ExprAST {
   std::string Name;
+
 public:
   VariableExprAST(const std::string &Name) : Name(Name) {}
-  Value *Codegen() override;
+  Value *codegen() override;
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
 class BinaryExprAST : public ExprAST {
   char Op;
   std::unique_ptr<ExprAST> LHS, RHS;
+
 public:
   BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
-  Value *Codegen() override;
+  Value *codegen() override;
 };
 
 /// CallExprAST - Expression class for function calls.
 class CallExprAST : public ExprAST {
   std::string Callee;
   std::vector<std::unique_ptr<ExprAST>> Args;
+
 public:
   CallExprAST(const std::string &Callee,
               std::vector<std::unique_ptr<ExprAST>> Args)
       : Callee(Callee), Args(std::move(Args)) {}
-  Value *Codegen() override;
+  Value *codegen() override;
 };
 
 /// PrototypeAST - This class represents the "prototype" for a function,
@@ -147,21 +149,24 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+
 public:
-  PrototypeAST(const std::string &name, std::vector<std::string> Args)
-      : Name(name), Args(std::move(Args)) {}
-  Function *Codegen();
+  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
+      : Name(Name), Args(std::move(Args)) {}
+  Function *codegen();
+  const std::string &getName() const { return Name; }
 };
 
 /// FunctionAST - This class represents a function definition itself.
 class FunctionAST {
   std::unique_ptr<PrototypeAST> Proto;
   std::unique_ptr<ExprAST> Body;
+
 public:
   FunctionAST(std::unique_ptr<PrototypeAST> Proto,
               std::unique_ptr<ExprAST> Body)
-    : Proto(std::move(Proto)), Body(std::move(Body)) {}
-  Function *Codegen();
+      : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  Function *codegen();
 };
 } // end anonymous namespace
 
@@ -200,12 +205,28 @@ std::unique_ptr<PrototypeAST> ErrorP(const char *Str) {
   Error(Str);
   return nullptr;
 }
-std::unique_ptr<FunctionAST> ErrorF(const char *Str) {
-  Error(Str);
-  return nullptr;
-}
 
 static std::unique_ptr<ExprAST> ParseExpression();
+
+/// numberexpr ::= number
+static std::unique_ptr<ExprAST> ParseNumberExpr() {
+  auto Result = llvm::make_unique<NumberExprAST>(NumVal);
+  getNextToken(); // consume the number
+  return std::move(Result);
+}
+
+/// parenexpr ::= '(' expression ')'
+static std::unique_ptr<ExprAST> ParseParenExpr() {
+  getNextToken(); // eat (.
+  auto V = ParseExpression();
+  if (!V)
+    return nullptr;
+
+  if (CurTok != ')')
+    return Error("expected ')'");
+  getNextToken(); // eat ).
+  return V;
+}
 
 /// identifierexpr
 ///   ::= identifier
@@ -241,26 +262,6 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken();
 
   return llvm::make_unique<CallExprAST>(IdName, std::move(Args));
-}
-
-/// numberexpr ::= number
-static std::unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = llvm::make_unique<NumberExprAST>(NumVal);
-  getNextToken(); // consume the number
-  return std::move(Result);
-}
-
-/// parenexpr ::= '(' expression ')'
-static std::unique_ptr<ExprAST> ParseParenExpr() {
-  getNextToken(); // eat (.
-  auto V = ParseExpression();
-  if (!V)
-    return nullptr;
-
-  if (CurTok != ')')
-    return Error("expected ')'");
-  getNextToken(); // eat ).
-  return V;
 }
 
 /// primary
@@ -312,8 +313,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     }
 
     // Merge LHS/RHS.
-    LHS = llvm::make_unique<BinaryExprAST>(BinOp, std::move(LHS),
-                                           std::move(RHS));
+    LHS =
+        llvm::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
   }
 }
 
@@ -368,7 +369,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     // Make an anonymous proto.
-    auto Proto = llvm::make_unique<PrototypeAST>("",
+    auto Proto = llvm::make_unique<PrototypeAST>("__anon_expr",
                                                  std::vector<std::string>());
     return llvm::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -382,266 +383,51 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 }
 
 //===----------------------------------------------------------------------===//
-// Quick and dirty hack
-//===----------------------------------------------------------------------===//
-
-// FIXME: Obviously we can do better than this
-std::string GenerateUniqueName(const char *root) {
-  static int i = 0;
-  char s[16];
-  sprintf(s, "%s%d", root, i++);
-  std::string S = s;
-  return S;
-}
-
-std::string MakeLegalFunctionName(std::string Name) {
-  std::string NewName;
-  if (!Name.length())
-    return GenerateUniqueName("anon_func_");
-
-  // Start with what we have
-  NewName = Name;
-
-  // Look for a numberic first character
-  if (NewName.find_first_of("0123456789") == 0) {
-    NewName.insert(0, 1, 'n');
-  }
-
-  // Replace illegal characters with their ASCII equivalent
-  std::string legal_elements =
-      "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  size_t pos;
-  while ((pos = NewName.find_first_not_of(legal_elements)) !=
-         std::string::npos) {
-    char old_c = NewName.at(pos);
-    char new_str[16];
-    sprintf(new_str, "%d", (int)old_c);
-    NewName = NewName.replace(pos, 1, new_str);
-  }
-
-  return NewName;
-}
-
-//===----------------------------------------------------------------------===//
-// MCJIT helper class
-//===----------------------------------------------------------------------===//
-
-class MCJITHelper {
-public:
-  MCJITHelper(LLVMContext &C) : Context(C), OpenModule(NULL) {}
-  ~MCJITHelper();
-
-  Function *getFunction(const std::string FnName);
-  Module *getModuleForNewFunction();
-  void *getPointerToFunction(Function *F);
-  void *getSymbolAddress(const std::string &Name);
-  void dump();
-
-private:
-  typedef std::vector<Module *> ModuleVector;
-  typedef std::vector<ExecutionEngine *> EngineVector;
-
-  LLVMContext &Context;
-  Module *OpenModule;
-  ModuleVector Modules;
-  EngineVector Engines;
-};
-
-class HelpingMemoryManager : public SectionMemoryManager {
-  HelpingMemoryManager(const HelpingMemoryManager &) = delete;
-  void operator=(const HelpingMemoryManager &) = delete;
-
-public:
-  HelpingMemoryManager(MCJITHelper *Helper) : MasterHelper(Helper) {}
-  ~HelpingMemoryManager() override {}
-
-  /// This method returns the address of the specified symbol.
-  /// Our implementation will attempt to find symbols in other
-  /// modules associated with the MCJITHelper to cross link symbols
-  /// from one generated module to another.
-  uint64_t getSymbolAddress(const std::string &Name) override;
-
-private:
-  MCJITHelper *MasterHelper;
-};
-
-uint64_t HelpingMemoryManager::getSymbolAddress(const std::string &Name) {
-  uint64_t FnAddr = SectionMemoryManager::getSymbolAddress(Name);
-  if (FnAddr)
-    return FnAddr;
-
-  uint64_t HelperFun = (uint64_t)MasterHelper->getSymbolAddress(Name);
-  if (!HelperFun)
-    report_fatal_error("Program used extern function '" + Name +
-                       "' which could not be resolved!");
-
-  return HelperFun;
-}
-
-MCJITHelper::~MCJITHelper() {
-  if (OpenModule)
-    delete OpenModule;
-  EngineVector::iterator begin = Engines.begin();
-  EngineVector::iterator end = Engines.end();
-  EngineVector::iterator it;
-  for (it = begin; it != end; ++it)
-    delete *it;
-}
-
-Function *MCJITHelper::getFunction(const std::string FnName) {
-  ModuleVector::iterator begin = Modules.begin();
-  ModuleVector::iterator end = Modules.end();
-  ModuleVector::iterator it;
-  for (it = begin; it != end; ++it) {
-    Function *F = (*it)->getFunction(FnName);
-    if (F) {
-      if (*it == OpenModule)
-        return F;
-
-      assert(OpenModule != NULL);
-
-      // This function is in a module that has already been JITed.
-      // We need to generate a new prototype for external linkage.
-      Function *PF = OpenModule->getFunction(FnName);
-      if (PF && !PF->empty()) {
-        ErrorF("redefinition of function across modules");
-        return nullptr;
-      }
-
-      // If we don't have a prototype yet, create one.
-      if (!PF)
-        PF = Function::Create(F->getFunctionType(), Function::ExternalLinkage,
-                              FnName, OpenModule);
-      return PF;
-    }
-  }
-  return NULL;
-}
-
-Module *MCJITHelper::getModuleForNewFunction() {
-  // If we have a Module that hasn't been JITed, use that.
-  if (OpenModule)
-    return OpenModule;
-
-  // Otherwise create a new Module.
-  std::string ModName = GenerateUniqueName("mcjit_module_");
-  Module *M = new Module(ModName, Context);
-  Modules.push_back(M);
-  OpenModule = M;
-  return M;
-}
-
-void *MCJITHelper::getPointerToFunction(Function *F) {
-  // See if an existing instance of MCJIT has this function.
-  EngineVector::iterator begin = Engines.begin();
-  EngineVector::iterator end = Engines.end();
-  EngineVector::iterator it;
-  for (it = begin; it != end; ++it) {
-    void *P = (*it)->getPointerToFunction(F);
-    if (P)
-      return P;
-  }
-
-  // If we didn't find the function, see if we can generate it.
-  if (OpenModule) {
-    std::string ErrStr;
-    ExecutionEngine *NewEngine =
-        EngineBuilder(std::unique_ptr<Module>(OpenModule))
-            .setErrorStr(&ErrStr)
-            .setMCJITMemoryManager(std::unique_ptr<HelpingMemoryManager>(
-                new HelpingMemoryManager(this)))
-            .create();
-    if (!NewEngine) {
-      fprintf(stderr, "Could not create ExecutionEngine: %s\n", ErrStr.c_str());
-      exit(1);
-    }
-
-    // Create a function pass manager for this engine
-    auto *FPM = new legacy::FunctionPassManager(OpenModule);
-
-    // Set up the optimizer pipeline.  Start with registering info about how the
-    // target lays out data structures.
-    OpenModule->setDataLayout(NewEngine->getDataLayout());
-    // Provide basic AliasAnalysis support for GVN.
-    FPM->add(createBasicAliasAnalysisPass());
-    // Promote allocas to registers.
-    FPM->add(createPromoteMemoryToRegisterPass());
-    // Do simple "peephole" optimizations and bit-twiddling optzns.
-    FPM->add(createInstructionCombiningPass());
-    // Reassociate expressions.
-    FPM->add(createReassociatePass());
-    // Eliminate Common SubExpressions.
-    FPM->add(createGVNPass());
-    // Simplify the control flow graph (deleting unreachable blocks, etc).
-    FPM->add(createCFGSimplificationPass());
-    FPM->doInitialization();
-
-    // For each function in the module
-    Module::iterator it;
-    Module::iterator end = OpenModule->end();
-    for (it = OpenModule->begin(); it != end; ++it) {
-      // Run the FPM on this function
-      FPM->run(*it);
-    }
-
-    // We don't need this anymore
-    delete FPM;
-
-    OpenModule = NULL;
-    Engines.push_back(NewEngine);
-    NewEngine->finalizeObject();
-    return NewEngine->getPointerToFunction(F);
-  }
-  return NULL;
-}
-
-void *MCJITHelper::getSymbolAddress(const std::string &Name) {
-  // Look for the symbol in each of our execution engines.
-  EngineVector::iterator begin = Engines.begin();
-  EngineVector::iterator end = Engines.end();
-  EngineVector::iterator it;
-  for (it = begin; it != end; ++it) {
-    uint64_t FAddr = (*it)->getFunctionAddress(Name);
-    if (FAddr) {
-      return (void *)FAddr;
-    }
-  }
-  return NULL;
-}
-
-void MCJITHelper::dump() {
-  ModuleVector::iterator begin = Modules.begin();
-  ModuleVector::iterator end = Modules.end();
-  ModuleVector::iterator it;
-  for (it = begin; it != end; ++it)
-    (*it)->dump();
-}
-//===----------------------------------------------------------------------===//
 // Code Generation
 //===----------------------------------------------------------------------===//
 
-static MCJITHelper *JITHelper;
+static std::unique_ptr<Module> TheModule;
 static IRBuilder<> Builder(getGlobalContext());
 static std::map<std::string, Value *> NamedValues;
+static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
+static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 Value *ErrorV(const char *Str) {
   Error(Str);
   return nullptr;
 }
 
-Value *NumberExprAST::Codegen() {
+Function *getFunction(std::string Name) {
+  // First, see if the function has already been added to the current module.
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  // If not, check whether we can codegen the declaration from some existing
+  // prototype.
+  auto FI = FunctionProtos.find(Name);
+  if (FI != FunctionProtos.end())
+    return FI->second->codegen();
+
+  // If no existing prototype exists, return null.
+  return nullptr;
+}
+
+Value *NumberExprAST::codegen() {
   return ConstantFP::get(getGlobalContext(), APFloat(Val));
 }
 
-Value *VariableExprAST::Codegen() {
+Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   Value *V = NamedValues[Name];
-  return V ? V : ErrorV("Unknown variable name");
+  if (!V)
+    return ErrorV("Unknown variable name");
+  return V;
 }
 
-Value *BinaryExprAST::Codegen() {
-  Value *L = LHS->Codegen();
-  Value *R = RHS->Codegen();
+Value *BinaryExprAST::codegen() {
+  Value *L = LHS->codegen();
+  Value *R = RHS->codegen();
   if (!L || !R)
     return nullptr;
 
@@ -662,9 +448,9 @@ Value *BinaryExprAST::Codegen() {
   }
 }
 
-Value *CallExprAST::Codegen() {
+Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
-  Function *CalleeF = JITHelper->getFunction(Callee);
+  Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return ErrorV("Unknown function referenced");
 
@@ -674,7 +460,7 @@ Value *CallExprAST::Codegen() {
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
-    ArgsV.push_back(Args[i]->Codegen());
+    ArgsV.push_back(Args[i]->codegen());
     if (!ArgsV.back())
       return nullptr;
   }
@@ -682,55 +468,30 @@ Value *CallExprAST::Codegen() {
   return Builder.CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Function *PrototypeAST::Codegen() {
+Function *PrototypeAST::codegen() {
   // Make the function type:  double(double,double) etc.
   std::vector<Type *> Doubles(Args.size(),
                               Type::getDoubleTy(getGlobalContext()));
   FunctionType *FT =
       FunctionType::get(Type::getDoubleTy(getGlobalContext()), Doubles, false);
 
-  std::string FnName = MakeLegalFunctionName(Name);
-
-  Module *M = JITHelper->getModuleForNewFunction();
-
-  Function *F = Function::Create(FT, Function::ExternalLinkage, FnName, M);
-
-  // If F conflicted, there was already something named 'Name'.  If it has a
-  // body, don't allow redefinition or reextern.
-  if (F->getName() != FnName) {
-    // Delete the one we just made and get the existing one.
-    F->eraseFromParent();
-    F = JITHelper->getFunction(Name);
-    // If F already has a body, reject this.
-    if (!F->empty()) {
-      ErrorF("redefinition of function");
-      return nullptr;
-    }
-
-    // If F took a different number of args, reject.
-    if (F->arg_size() != Args.size()) {
-      ErrorF("redefinition of function with different # args");
-      return nullptr;
-    }
-  }
+  Function *F =
+      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
   // Set names for all arguments.
   unsigned Idx = 0;
-  for (Function::arg_iterator AI = F->arg_begin(); Idx != Args.size();
-       ++AI, ++Idx) {
-    AI->setName(Args[Idx]);
-
-    // Add arguments to variable symbol table.
-    NamedValues[Args[Idx]] = AI;
-  }
+  for (auto &Arg : F->args())
+    Arg.setName(Args[Idx++]);
 
   return F;
 }
 
-Function *FunctionAST::Codegen() {
-  NamedValues.clear();
-
-  Function *TheFunction = Proto->Codegen();
+Function *FunctionAST::codegen() {
+  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
+  // reference to it for use below.
+  auto &P = *Proto;
+  FunctionProtos[Proto->getName()] = std::move(Proto);
+  Function *TheFunction = getFunction(P.getName());
   if (!TheFunction)
     return nullptr;
 
@@ -738,12 +499,20 @@ Function *FunctionAST::Codegen() {
   BasicBlock *BB = BasicBlock::Create(getGlobalContext(), "entry", TheFunction);
   Builder.SetInsertPoint(BB);
 
-  if (Value *RetVal = Body->Codegen()) {
+  // Record the function arguments in the NamedValues map.
+  NamedValues.clear();
+  for (auto &Arg : TheFunction->args())
+    NamedValues[Arg.getName()] = &Arg;
+
+  if (Value *RetVal = Body->codegen()) {
     // Finish off the function.
     Builder.CreateRet(RetVal);
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
+
+    // Run the optimizer on the function.
+    TheFPM->run(*TheFunction);
 
     return TheFunction;
   }
@@ -757,11 +526,35 @@ Function *FunctionAST::Codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
 
+static void InitializeModuleAndPassManager() {
+  // Open a new module.
+  TheModule = llvm::make_unique<Module>("my cool jit", getGlobalContext());
+  TheModule->setDataLayout(TheJIT->getTargetMachine().createDataLayout());
+
+  // Create a new pass manager attached to it.
+  TheFPM = llvm::make_unique<legacy::FunctionPassManager>(TheModule.get());
+
+  // Provide basic AliasAnalysis support for GVN.
+  TheFPM->add(createBasicAliasAnalysisPass());
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  TheFPM->add(createInstructionCombiningPass());
+  // Reassociate expressions.
+  TheFPM->add(createReassociatePass());
+  // Eliminate Common SubExpressions.
+  TheFPM->add(createGVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  TheFPM->add(createCFGSimplificationPass());
+
+  TheFPM->doInitialization();
+}
+
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
-    if (auto *FnIR = FnAST->Codegen()) {
+    if (auto *FnIR = FnAST->codegen()) {
       fprintf(stderr, "Read function definition:");
       FnIR->dump();
+      TheJIT->addModule(std::move(TheModule));
+      InitializeModuleAndPassManager();
     }
   } else {
     // Skip token for error recovery.
@@ -771,9 +564,10 @@ static void HandleDefinition() {
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
-    if (auto *FnIR = ProtoAST->Codegen()) {
+    if (auto *FnIR = ProtoAST->codegen()) {
       fprintf(stderr, "Read extern: ");
       FnIR->dump();
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
     // Skip token for error recovery.
@@ -784,14 +578,24 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
-    if (auto *FnIR = FnAST->Codegen()) {
-      // JIT the function, returning a function pointer.
-      void *FPtr = JITHelper->getPointerToFunction(FnIR);
+    if (FnAST->codegen()) {
 
-      // Cast it to the right type (takes no arguments, returns a double) so we
-      // can call it as a native function.
-      double (*FP)() = (double (*)())(intptr_t)FPtr;
+      // JIT the module containing the anonymous expression, keeping a handle so
+      // we can free it later.
+      auto H = TheJIT->addModule(std::move(TheModule));
+      InitializeModuleAndPassManager();
+
+      // Search the JIT for the __anon_expr symbol.
+      auto ExprSymbol = TheJIT->findSymbol("__anon_expr");
+      assert(ExprSymbol && "Function not found");
+
+      // Get the symbol's address and cast it to the right type (takes no
+      // arguments, returns a double) so we can call it as a native function.
+      double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
       fprintf(stderr, "Evaluated to %f\n", FP());
+
+      // Delete the anonymous expression module from the JIT.
+      TheJIT->removeModule(H);
     }
   } else {
     // Skip token for error recovery.
@@ -806,9 +610,9 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_eof:
       return;
-    case ';':
+    case ';': // ignore top-level semicolons.
       getNextToken();
-      break; // ignore top-level semicolons.
+      break;
     case tok_def:
       HandleDefinition();
       break;
@@ -827,8 +631,14 @@ static void MainLoop() {
 //===----------------------------------------------------------------------===//
 
 /// putchard - putchar that takes a double and returns 0.
-extern "C" double putchard(double X) {
-  putchar((char)X);
+__attribute__((used)) extern "C" double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - printf that takes a double prints it as "%f\n", returning 0.
+__attribute__((used)) extern "C" double printd(double X) {
+  fprintf(stderr, "%f\n", X);
   return 0;
 }
 
@@ -840,8 +650,6 @@ int main() {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
-  LLVMContext &Context = getGlobalContext();
-  JITHelper = new MCJITHelper(Context);
 
   // Install standard binary operators.
   // 1 is lowest precedence.
@@ -854,11 +662,12 @@ int main() {
   fprintf(stderr, "ready> ");
   getNextToken();
 
+  TheJIT = llvm::make_unique<KaleidoscopeJIT>();
+
+  InitializeModuleAndPassManager();
+
   // Run the main "interpreter loop" now.
   MainLoop();
-
-  // Print out all of the generated code.
-  JITHelper->dump();
 
   return 0;
 }

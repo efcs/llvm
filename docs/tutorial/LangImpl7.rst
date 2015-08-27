@@ -355,10 +355,11 @@ from the stack slot:
 
 .. code-block:: c++
 
-    Value *VariableExprAST::Codegen() {
+    Value *VariableExprAST::codegen() {
       // Look this variable up in the function.
       Value *V = NamedValues[Name];
-      if (V == 0) return ErrorV("Unknown variable name");
+      if (!V)
+        return ErrorV("Unknown variable name");
 
       // Load the value.
       return Builder.CreateLoad(V, Name.c_str());
@@ -366,7 +367,7 @@ from the stack slot:
 
 As you can see, this is pretty straightforward. Now we need to update
 the things that define the variables to set up the alloca. We'll start
-with ``ForExprAST::Codegen`` (see the `full code listing <#code>`_ for
+with ``ForExprAST::codegen()`` (see the `full code listing <#code>`_ for
 the unabridged code):
 
 .. code-block:: c++
@@ -377,16 +378,18 @@ the unabridged code):
       AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
 
         // Emit the start code first, without 'variable' in scope.
-      Value *StartVal = Start->Codegen();
-      if (StartVal == 0) return 0;
+      Value *StartVal = Start->codegen();
+      if (!StartVal)
+        return nullptr;
 
       // Store the value into the alloca.
       Builder.CreateStore(StartVal, Alloca);
       ...
 
       // Compute the end condition.
-      Value *EndCond = End->Codegen();
-      if (EndCond == 0) return EndCond;
+      Value *EndCond = End->codegen();
+      if (!EndCond)
+        return nullptr;
 
       // Reload, increment, and restore the alloca.  This handles the case where
       // the body of the loop mutates the variable.
@@ -423,7 +426,7 @@ them. The code for this is also pretty simple:
 
 For each argument, we make an alloca, store the input value to the
 function into the alloca, and register the alloca as the memory location
-for the argument. This method gets invoked by ``FunctionAST::Codegen``
+for the argument. This method gets invoked by ``FunctionAST::codegen()``
 right after it sets up the entry block for the function.
 
 The final missing piece is adding the mem2reg pass, which allows us to
@@ -569,7 +572,7 @@ implement codegen for the assignment operator. This looks like:
 
 .. code-block:: c++
 
-    Value *BinaryExprAST::Codegen() {
+    Value *BinaryExprAST::codegen() {
       // Special case '=' because we don't want to emit the LHS as an expression.
       if (Op == '=') {
         // Assignment requires the LHS to be an identifier.
@@ -587,12 +590,14 @@ allowed.
 .. code-block:: c++
 
         // Codegen the RHS.
-        Value *Val = RHS->Codegen();
-        if (Val == 0) return 0;
+        Value *Val = RHS->codegen();
+        if (!Val)
+          return nullptr;
 
         // Look up the name.
         Value *Variable = NamedValues[LHSE->getName()];
-        if (Variable == 0) return ErrorV("Unknown variable name");
+        if (!Variable)
+          return ErrorV("Unknown variable name");
 
         Builder.CreateStore(Val, Variable);
         return Val;
@@ -649,10 +654,14 @@ this:
     ...
     static int gettok() {
     ...
-        if (IdentifierStr == "in") return tok_in;
-        if (IdentifierStr == "binary") return tok_binary;
-        if (IdentifierStr == "unary") return tok_unary;
-        if (IdentifierStr == "var") return tok_var;
+        if (IdentifierStr == "in")
+          return tok_in;
+        if (IdentifierStr == "binary")
+          return tok_binary;
+        if (IdentifierStr == "unary")
+          return tok_unary;
+        if (IdentifierStr == "var")
+          return tok_var;
         return tok_identifier;
     ...
 
@@ -665,12 +674,13 @@ var/in, it looks like this:
     class VarExprAST : public ExprAST {
       std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
       std::unique_ptr<ExprAST> Body;
+
     public:
       VarExprAST(std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
                  std::unique_ptr<ExprAST> body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
 
-      virtual Value *Codegen();
+      virtual Value *codegen();
     };
 
 var/in allows a list of names to be defined all at once, and each name
@@ -692,13 +702,20 @@ do is add it as a primary expression:
     ///   ::= varexpr
     static std::unique_ptr<ExprAST> ParsePrimary() {
       switch (CurTok) {
-      default: return Error("unknown token when expecting an expression");
-      case tok_identifier: return ParseIdentifierExpr();
-      case tok_number:     return ParseNumberExpr();
-      case '(':            return ParseParenExpr();
-      case tok_if:         return ParseIfExpr();
-      case tok_for:        return ParseForExpr();
-      case tok_var:        return ParseVarExpr();
+      default:
+        return Error("unknown token when expecting an expression");
+      case tok_identifier:
+        return ParseIdentifierExpr();
+      case tok_number:
+        return ParseNumberExpr();
+      case '(':
+        return ParseParenExpr();
+      case tok_if:
+        return ParseIfExpr();
+      case tok_for:
+        return ParseForExpr();
+      case tok_var:
+        return ParseVarExpr();
       }
     }
 
@@ -756,7 +773,8 @@ AST node:
       getNextToken();  // eat 'in'.
 
       auto Body = ParseExpression();
-      if (!Body) return nullptr;
+      if (!Body)
+        return nullptr;
 
       return llvm::make_unique<VarExprAST>(std::move(VarNames),
                                            std::move(Body));
@@ -767,7 +785,7 @@ emission of LLVM IR for it. This code starts out with:
 
 .. code-block:: c++
 
-    Value *VarExprAST::Codegen() {
+    Value *VarExprAST::codegen() {
       std::vector<AllocaInst *> OldBindings;
 
       Function *TheFunction = Builder.GetInsertBlock()->getParent();
@@ -790,8 +808,9 @@ previous value that we replace in OldBindings.
         //    var a = a in ...   # refers to outer 'a'.
         Value *InitVal;
         if (Init) {
-          InitVal = Init->Codegen();
-          if (InitVal == 0) return 0;
+          InitVal = Init->codegen();
+          if (!InitVal)
+            return nullptr;
         } else { // If not specified, use 0.0.
           InitVal = ConstantFP::get(getGlobalContext(), APFloat(0.0));
         }
@@ -815,8 +834,9 @@ we evaluate the body of the var/in expression:
 .. code-block:: c++
 
       // Codegen the body, now that all vars are in scope.
-      Value *BodyVal = Body->Codegen();
-      if (BodyVal == 0) return 0;
+      Value *BodyVal = Body->codegen();
+      if (!BodyVal)
+        return nullptr;
 
 Finally, before returning, we restore the previous variable bindings:
 

@@ -185,6 +185,14 @@ bool llvm::isKnownNonZero(Value *V, const DataLayout &DL, unsigned Depth,
   return ::isKnownNonZero(V, DL, Depth, Query(AC, safeCxtI(V, CxtI), DT));
 }
 
+bool llvm::isKnownNonNegative(Value *V, const DataLayout &DL, unsigned Depth,
+                              AssumptionCache *AC, const Instruction *CxtI,
+                              const DominatorTree *DT) {
+  bool NonNegative, Negative;
+  ComputeSignBit(V, NonNegative, Negative, DL, Depth, AC, CxtI, DT);
+  return NonNegative;
+}
+
 static bool MaskedValueIsZero(Value *V, const APInt &Mask, const DataLayout &DL,
                               unsigned Depth, const Query &Q);
 
@@ -3139,46 +3147,10 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
         LI->getPointerOperand(), LI->getAlignment(), DL, CtxI, DT, TLI);
   }
   case Instruction::Call: {
-    if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(Inst)) {
-      switch (II->getIntrinsicID()) {
-      // These synthetic intrinsics have no side-effects and just mark
-      // information about their operands.
-      // FIXME: There are other no-op synthetic instructions that potentially
-      // should be considered at least *safe* to speculate...
-      case Intrinsic::dbg_declare:
-      case Intrinsic::dbg_value:
-        return true;
-
-      case Intrinsic::bswap:
-      case Intrinsic::ctlz:
-      case Intrinsic::ctpop:
-      case Intrinsic::cttz:
-      case Intrinsic::objectsize:
-      case Intrinsic::sadd_with_overflow:
-      case Intrinsic::smul_with_overflow:
-      case Intrinsic::ssub_with_overflow:
-      case Intrinsic::uadd_with_overflow:
-      case Intrinsic::umul_with_overflow:
-      case Intrinsic::usub_with_overflow:
-        return true;
-      // Sqrt should be OK, since the llvm sqrt intrinsic isn't defined to set
-      // errno like libm sqrt would.
-      case Intrinsic::sqrt:
-      case Intrinsic::fma:
-      case Intrinsic::fmuladd:
-      case Intrinsic::fabs:
-      case Intrinsic::minnum:
-      case Intrinsic::maxnum:
-        return true;
-      // TODO: some fp intrinsics are marked as having the same error handling
-      // as libm. They're safe to speculate when they won't error.
-      // TODO: are convert_{from,to}_fp16 safe?
-      // TODO: can we list target-specific intrinsics here?
-      default: break;
-      }
-    }
+    if (cast<CallInst>(Inst)->doesNotAccessMemory())
+      return true;
     return false; // The called function could have undefined behavior or
-                  // side-effects, even if marked readnone nounwind.
+                  // side-effects.
   }
   case Instruction::VAArg:
   case Instruction::Alloca:
@@ -3218,9 +3190,12 @@ bool llvm::isKnownNonNull(const Value *V, const TargetLibraryInfo *TLI) {
   if (const Argument *A = dyn_cast<Argument>(V))
     return A->hasByValOrInAllocaAttr() || A->hasNonNullAttr();
 
-  // Global values are not null unless extern weak.
+  // A global variable in address space 0 is non null unless extern weak.
+  // Other address spaces may have null as a valid address for a global,
+  // so we can't assume anything.
   if (const GlobalValue *GV = dyn_cast<GlobalValue>(V))
-    return !GV->hasExternalWeakLinkage();
+    return !GV->hasExternalWeakLinkage() &&
+           GV->getType()->getAddressSpace() == 0;
 
   // A Load tagged w/nonnull metadata is never null. 
   if (const LoadInst *LI = dyn_cast<LoadInst>(V))
@@ -3368,6 +3343,67 @@ OverflowResult llvm::computeOverflowForUnsignedAdd(Value *LHS, Value *RHS,
   }
 
   return OverflowResult::MayOverflow;
+}
+
+static OverflowResult computeOverflowForSignedAdd(
+    Value *LHS, Value *RHS, AddOperator *Add, const DataLayout &DL,
+    AssumptionCache *AC, const Instruction *CxtI, const DominatorTree *DT) {
+  if (Add && Add->hasNoSignedWrap()) {
+    return OverflowResult::NeverOverflows;
+  }
+
+  bool LHSKnownNonNegative, LHSKnownNegative;
+  bool RHSKnownNonNegative, RHSKnownNegative;
+  ComputeSignBit(LHS, LHSKnownNonNegative, LHSKnownNegative, DL, /*Depth=*/0,
+                 AC, CxtI, DT);
+  ComputeSignBit(RHS, RHSKnownNonNegative, RHSKnownNegative, DL, /*Depth=*/0,
+                 AC, CxtI, DT);
+
+  if ((LHSKnownNonNegative && RHSKnownNegative) ||
+      (LHSKnownNegative && RHSKnownNonNegative)) {
+    // The sign bits are opposite: this CANNOT overflow.
+    return OverflowResult::NeverOverflows;
+  }
+
+  // The remaining code needs Add to be available. Early returns if not so.
+  if (!Add)
+    return OverflowResult::MayOverflow;
+
+  // If the sign of Add is the same as at least one of the operands, this add
+  // CANNOT overflow. This is particularly useful when the sum is
+  // @llvm.assume'ed non-negative rather than proved so from analyzing its
+  // operands.
+  bool LHSOrRHSKnownNonNegative =
+      (LHSKnownNonNegative || RHSKnownNonNegative);
+  bool LHSOrRHSKnownNegative = (LHSKnownNegative || RHSKnownNegative);
+  if (LHSOrRHSKnownNonNegative || LHSOrRHSKnownNegative) {
+    bool AddKnownNonNegative, AddKnownNegative;
+    ComputeSignBit(Add, AddKnownNonNegative, AddKnownNegative, DL,
+                   /*Depth=*/0, AC, CxtI, DT);
+    if ((AddKnownNonNegative && LHSOrRHSKnownNonNegative) ||
+        (AddKnownNegative && LHSOrRHSKnownNegative)) {
+      return OverflowResult::NeverOverflows;
+    }
+  }
+
+  return OverflowResult::MayOverflow;
+}
+
+OverflowResult llvm::computeOverflowForSignedAdd(AddOperator *Add,
+                                                 const DataLayout &DL,
+                                                 AssumptionCache *AC,
+                                                 const Instruction *CxtI,
+                                                 const DominatorTree *DT) {
+  return ::computeOverflowForSignedAdd(Add->getOperand(0), Add->getOperand(1),
+                                       Add, DL, AC, CxtI, DT);
+}
+
+OverflowResult llvm::computeOverflowForSignedAdd(Value *LHS, Value *RHS,
+                                                 const DataLayout &DL,
+                                                 AssumptionCache *AC,
+                                                 const Instruction *CxtI,
+                                                 const DominatorTree *DT) {
+  return ::computeOverflowForSignedAdd(LHS, RHS, nullptr, DL, AC, CxtI, DT);
 }
 
 bool llvm::isGuaranteedToTransferExecutionToSuccessor(const Instruction *I) {

@@ -181,6 +181,15 @@ namespace opts {
   COFFBaseRelocs("coff-basereloc",
                  cl::desc("Display the PE/COFF .reloc section"));
 
+  // -macho-data-in-code
+  cl::opt<bool>
+  MachODataInCode("macho-data-in-code",
+                  cl::desc("Display MachO Data in Code command"));
+
+  // -macho-version-min
+  cl::opt<bool>
+  MachOVersionMin("macho-version-min",
+                  cl::desc("Display MachO version min command"));
   // -stackmap
   cl::opt<bool>
   PrintStackMap("stackmap",
@@ -312,6 +321,11 @@ static void dumpObject(const ObjectFile *Obj) {
     if (opts::COFFBaseRelocs)
       Dumper->printCOFFBaseReloc();
   }
+  if (Obj->isMachO())
+    if (opts::MachODataInCode)
+      Dumper->printMachODataInCode();
+    if (opts::MachOVersionMin)
+      Dumper->printMachOVersionMin();
   if (opts::PrintStackMap)
     Dumper->printStackMap();
 }

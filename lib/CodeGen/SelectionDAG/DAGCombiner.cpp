@@ -245,6 +245,7 @@ namespace {
     SDValue visitUMULO(SDNode *N);
     SDValue visitSDIVREM(SDNode *N);
     SDValue visitUDIVREM(SDNode *N);
+    SDValue visitIMINMAX(SDNode *N);
     SDValue visitAND(SDNode *N);
     SDValue visitANDLike(SDValue N0, SDValue N1, SDNode *LocReference);
     SDValue visitOR(SDNode *N);
@@ -312,6 +313,7 @@ namespace {
     SDValue visitMGATHER(SDNode *N);
     SDValue visitMSCATTER(SDNode *N);
     SDValue visitFP_TO_FP16(SDNode *N);
+    SDValue visitFP16_TO_FP(SDNode *N);
 
     SDValue visitFADDForFMACombine(SDNode *N);
     SDValue visitFSUBForFMACombine(SDNode *N);
@@ -1341,6 +1343,10 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::UMULO:              return visitUMULO(N);
   case ISD::SDIVREM:            return visitSDIVREM(N);
   case ISD::UDIVREM:            return visitUDIVREM(N);
+  case ISD::SMIN:
+  case ISD::SMAX:
+  case ISD::UMIN:
+  case ISD::UMAX:               return visitIMINMAX(N);
   case ISD::AND:                return visitAND(N);
   case ISD::OR:                 return visitOR(N);
   case ISD::XOR:                return visitXOR(N);
@@ -1406,6 +1412,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::MSCATTER:           return visitMSCATTER(N);
   case ISD::MSTORE:             return visitMSTORE(N);
   case ISD::FP_TO_FP16:         return visitFP_TO_FP16(N);
+  case ISD::FP16_TO_FP:         return visitFP16_TO_FP(N);
   }
   return SDValue();
 }
@@ -2184,11 +2191,6 @@ SDValue DAGCombiner::visitSDIV(SDNode *N) {
       !cast<BinaryWithFlagsSDNode>(N)->Flags.hasExact() &&
       (N1C->getAPIntValue().isPowerOf2() ||
        (-N1C->getAPIntValue()).isPowerOf2())) {
-    // If dividing by powers of two is cheap, then don't perform the following
-    // fold.
-    if (TLI.isPow2SDivCheap())
-      return SDValue();
-
     // Target-specific implementation of sdiv x, pow2.
     if (SDValue Res = BuildSDIVPow2(N))
       return Res;
@@ -2225,8 +2227,10 @@ SDValue DAGCombiner::visitSDIV(SDNode *N) {
   }
 
   // If integer divide is expensive and we satisfy the requirements, emit an
-  // alternate sequence.
-  if (N1C && !TLI.isIntDivCheap())
+  // alternate sequence.  Targets may check function attributes for size/speed
+  // trade-offs.
+  AttributeSet Attr = DAG.getMachineFunction().getFunction()->getAttributes();
+  if (N1C && !TLI.isIntDivCheap(N->getValueType(0), Attr))
     if (SDValue Op = BuildSDIV(N))
       return Op;
 
@@ -2280,8 +2284,10 @@ SDValue DAGCombiner::visitUDIV(SDNode *N) {
       }
     }
   }
+
   // fold (udiv x, c) -> alternate
-  if (N1C && !TLI.isIntDivCheap())
+  AttributeSet Attr = DAG.getMachineFunction().getFunction()->getAttributes();
+  if (N1C && !TLI.isIntDivCheap(N->getValueType(0), Attr))
     if (SDValue Op = BuildUDIV(N))
       return Op;
 
@@ -2618,6 +2624,30 @@ SDValue DAGCombiner::visitSDIVREM(SDNode *N) {
 SDValue DAGCombiner::visitUDIVREM(SDNode *N) {
   if (SDValue Res = SimplifyNodeWithTwoResults(N, ISD::UDIV, ISD::UREM))
     return Res;
+
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitIMINMAX(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+  SDValue N1 = N->getOperand(1);
+  EVT VT = N0.getValueType();
+
+  // fold vector ops
+  if (VT.isVector())
+    if (SDValue FoldedVOp = SimplifyVBinOp(N))
+      return FoldedVOp;
+
+  // fold (add c1, c2) -> c1+c2
+  ConstantSDNode *N0C = getAsNonOpaqueConstant(N0);
+  ConstantSDNode *N1C = getAsNonOpaqueConstant(N1);
+  if (N0C && N1C)
+    return DAG.FoldConstantArithmetic(N->getOpcode(), SDLoc(N), VT, N0C, N1C);
+
+  // canonicalize constant to RHS
+  if (isConstantIntBuildVectorOrConstantInt(N0) &&
+     !isConstantIntBuildVectorOrConstantInt(N1))
+    return DAG.getNode(N->getOpcode(), SDLoc(N), VT, N1, N0);
 
   return SDValue();
 }
@@ -4422,6 +4452,15 @@ SDValue DAGCombiner::visitSHL(SDNode *N) {
     SDValue Shl0 = DAG.getNode(ISD::SHL, SDLoc(N0), VT, N0.getOperand(0), N1);
     SDValue Shl1 = DAG.getNode(ISD::SHL, SDLoc(N1), VT, N0.getOperand(1), N1);
     return DAG.getNode(ISD::ADD, SDLoc(N), VT, Shl0, Shl1);
+  }
+
+  // fold (shl (mul x, c1), c2) -> (mul x, c1 << c2)
+  if (N1C && N0.getOpcode() == ISD::MUL && N0.getNode()->hasOneUse()) {
+    if (ConstantSDNode *N0C1 = isConstOrConstSplat(N0.getOperand(1))) {
+      if (SDValue Folded =
+              DAG.FoldConstantArithmetic(ISD::SHL, SDLoc(N1), VT, N0C1, N1C))
+        return DAG.getNode(ISD::MUL, SDLoc(N), VT, N0.getOperand(0), Folded);
+    }
   }
 
   if (N1C && !N1C->isOpaque())
@@ -9745,8 +9784,8 @@ struct LoadedSlice {
     void addSliceGain(const LoadedSlice &LS) {
       // Each slice saves a truncate.
       const TargetLowering &TLI = LS.DAG->getTargetLoweringInfo();
-      if (!TLI.isTruncateFree(LS.Inst->getValueType(0),
-                              LS.Inst->getOperand(0).getValueType()))
+      if (!TLI.isTruncateFree(LS.Inst->getOperand(0).getValueType(),
+                              LS.Inst->getValueType(0)))
         ++Truncates;
       // If there is a shift amount, this slice gets rid of it.
       if (LS.Shift)
@@ -12202,12 +12241,90 @@ static SDValue combineConcatVectorOfScalars(SDNode *N, SelectionDAG &DAG) {
                      DAG.getNode(ISD::BUILD_VECTOR, DL, VecVT, Ops));
 }
 
-SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
-  // TODO: Check to see if this is a CONCAT_VECTORS of a bunch of
-  // EXTRACT_SUBVECTOR operations.  If so, and if the EXTRACT_SUBVECTOR vector
-  // inputs come from at most two distinct vectors, turn this into a shuffle
-  // node.
+// Check to see if this is a CONCAT_VECTORS of a bunch of EXTRACT_SUBVECTOR
+// operations. If so, and if the EXTRACT_SUBVECTOR vector inputs come from at
+// most two distinct vectors the same size as the result, attempt to turn this
+// into a legal shuffle.
+static SDValue combineConcatVectorOfExtracts(SDNode *N, SelectionDAG &DAG) {
+  EVT VT = N->getValueType(0);
+  EVT OpVT = N->getOperand(0).getValueType();
+  int NumElts = VT.getVectorNumElements();
+  int NumOpElts = OpVT.getVectorNumElements();
 
+  SDValue SV0 = DAG.getUNDEF(VT), SV1 = DAG.getUNDEF(VT);
+  SmallVector<int, 8> Mask;
+
+  for (SDValue Op : N->ops()) {
+    // Peek through any bitcast.
+    while (Op.getOpcode() == ISD::BITCAST)
+      Op = Op.getOperand(0);
+
+    // UNDEF nodes convert to UNDEF shuffle mask values.
+    if (Op.getOpcode() == ISD::UNDEF) {
+      Mask.append((unsigned)NumOpElts, -1);
+      continue;
+    }
+
+    if (Op.getOpcode() != ISD::EXTRACT_SUBVECTOR)
+      return SDValue();
+
+    // What vector are we extracting the subvector from and at what index?
+    SDValue ExtVec = Op.getOperand(0);
+
+    // We want the EVT of the original extraction to correctly scale the
+    // extraction index.
+    EVT ExtVT = ExtVec.getValueType();
+
+    // Peek through any bitcast.
+    while (ExtVec.getOpcode() == ISD::BITCAST)
+      ExtVec = ExtVec.getOperand(0);
+
+    // UNDEF nodes convert to UNDEF shuffle mask values.
+    if (ExtVec.getOpcode() == ISD::UNDEF) {
+      Mask.append((unsigned)NumOpElts, -1);
+      continue;
+    }
+
+    if (!isa<ConstantSDNode>(Op.getOperand(1)))
+      return SDValue();
+    int ExtIdx = cast<ConstantSDNode>(Op.getOperand(1))->getZExtValue();
+
+    // Ensure that we are extracting a subvector from a vector the same
+    // size as the result.
+    if (ExtVT.getSizeInBits() != VT.getSizeInBits())
+      return SDValue();
+
+    // Scale the subvector index to account for any bitcast.
+    int NumExtElts = ExtVT.getVectorNumElements();
+    if (0 == (NumExtElts % NumElts))
+      ExtIdx /= (NumExtElts / NumElts);
+    else if (0 == (NumElts % NumExtElts))
+      ExtIdx *= (NumElts / NumExtElts);
+    else
+      return SDValue();
+
+    // At most we can reference 2 inputs in the final shuffle.
+    if (SV0.getOpcode() == ISD::UNDEF || SV0 == ExtVec) {
+      SV0 = ExtVec;
+      for (int i = 0; i != NumOpElts; ++i)
+        Mask.push_back(i + ExtIdx);
+    } else if (SV1.getOpcode() == ISD::UNDEF || SV1 == ExtVec) {
+      SV1 = ExtVec;
+      for (int i = 0; i != NumOpElts; ++i)
+        Mask.push_back(i + ExtIdx + NumElts);
+    } else {
+      return SDValue();
+    }
+  }
+
+  if (!DAG.getTargetLoweringInfo().isShuffleMaskLegal(Mask, VT))
+    return SDValue();
+
+  return DAG.getVectorShuffle(VT, SDLoc(N), DAG.getBitcast(VT, SV0),
+                              DAG.getBitcast(VT, SV1), Mask);
+}
+
+SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
   // If we only have one input vector, we don't need to do any concatenation.
   if (N->getNumOperands() == 1)
     return N->getOperand(0);
@@ -12307,6 +12424,11 @@ SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
   // Fold CONCAT_VECTORS of only bitcast scalars (or undef) to BUILD_VECTOR.
   if (SDValue V = combineConcatVectorOfScalars(N, DAG))
     return V;
+
+  // Fold CONCAT_VECTORS of EXTRACT_SUBVECTOR (or undef) to VECTOR_SHUFFLE.
+  if (Level < AfterLegalizeVectorOps && TLI.isTypeLegal(VT))
+    if (SDValue V = combineConcatVectorOfExtracts(N, DAG))
+      return V;
 
   // Type legalization of vectors and DAG canonicalization of SHUFFLE_VECTOR
   // nodes often generate nop CONCAT_VECTOR nodes.
@@ -12996,6 +13118,21 @@ SDValue DAGCombiner::visitFP_TO_FP16(SDNode *N) {
   // fold (fp_to_fp16 (fp16_to_fp op)) -> op
   if (N0->getOpcode() == ISD::FP16_TO_FP)
     return N0->getOperand(0);
+
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitFP16_TO_FP(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+
+  // fold fp16_to_fp(op & 0xffff) -> fp16_to_fp(op)
+  if (N0->getOpcode() == ISD::AND) {
+    ConstantSDNode *AndConst = getAsNonOpaqueConstant(N0.getOperand(1));
+    if (AndConst && AndConst->getAPIntValue() == 0xffff) {
+      return DAG.getNode(ISD::FP16_TO_FP, SDLoc(N), N->getValueType(0),
+                         N0.getOperand(0));
+    }
+  }
 
   return SDValue();
 }
