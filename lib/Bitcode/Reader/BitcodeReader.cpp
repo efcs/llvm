@@ -166,7 +166,7 @@ class BitcodeReader : public GVMaterializer {
   /// is thus not represented here.  As such all indices are off by one.
   std::vector<AttributeSet> MAttributes;
 
-  /// \brief The set of attribute groups.
+  /// The set of attribute groups.
   std::map<unsigned, AttributeSet> MAttributeGroups;
 
   /// While parsing a function body, this is a list of the basic blocks for the
@@ -1950,7 +1950,8 @@ std::error_code BitcodeReader::parseMetadata() {
 
       MDValueList.assignValue(
           GET_OR_DISTINCT(
-              DISubprogram, Record[0],
+              DISubprogram,
+              Record[0] || Record[8], // All definitions should be distinct.
               (Context, getMDOrNull(Record[1]), getMDString(Record[2]),
                getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
                getMDOrNull(Record[6]), Record[7], Record[8], Record[9],
@@ -2474,11 +2475,12 @@ std::error_code BitcodeReader::parseConstants() {
 
       Type *SelectorTy = Type::getInt1Ty(Context);
 
-      // If CurTy is a vector of length n, then Record[0] must be a <n x i1>
-      // vector. Otherwise, it must be a single bit.
+      // The selector might be an i1 or an <n x i1>
+      // Get the type from the ValueList before getting a forward ref.
       if (VectorType *VTy = dyn_cast<VectorType>(CurTy))
-        SelectorTy = VectorType::get(Type::getInt1Ty(Context),
-                                     VTy->getNumElements());
+        if (Value *V = ValueList[Record[0]])
+          if (SelectorTy != V->getType())
+            SelectorTy = VectorType::get(SelectorTy, VTy->getNumElements());
 
       V = ConstantExpr::getSelect(ValueList.getConstantFwdRef(Record[0],
                                                               SelectorTy),

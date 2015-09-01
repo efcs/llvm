@@ -51,7 +51,7 @@ return: ret void
 ; CHECK-LABEL: simple_ranges
 ; CHECK: leal -100
 ; CHECK: cmpl $4
-; CHECK: jae
+; CHECK: jb
 ; CHECK: cmpl $3
 ; CHECK: ja
 
@@ -90,7 +90,7 @@ return: ret void
 ; but with 6-8, the whole switch is suitable for a jump table.
 ; CHECK-LABEL: jt_is_better
 ; CHECK: cmpl $8
-; CHECK: jbe
+; CHECK: ja
 ; CHECK: jmpq *.LJTI
 }
 
