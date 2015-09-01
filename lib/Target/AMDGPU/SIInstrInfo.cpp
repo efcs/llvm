@@ -508,14 +508,23 @@ void SIInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
   }
 
   if (Opcode != -1) {
+    MachinePointerInfo PtrInfo
+      = MachinePointerInfo::getFixedStack(*MF, FrameIndex);
+    unsigned Size = FrameInfo->getObjectSize(FrameIndex);
+    unsigned Align = FrameInfo->getObjectAlignment(FrameIndex);
+    MachineMemOperand *MMO
+      = MF->getMachineMemOperand(PtrInfo, MachineMemOperand::MOStore,
+                                 Size, Align);
+
     FrameInfo->setObjectAlignment(FrameIndex, 4);
     BuildMI(MBB, MI, DL, get(Opcode))
-            .addReg(SrcReg)
-            .addFrameIndex(FrameIndex)
-            // Place-holder registers, these will be filled in by
-            // SIPrepareScratchRegs.
-            .addReg(AMDGPU::SGPR0_SGPR1_SGPR2_SGPR3, RegState::Undef)
-            .addReg(AMDGPU::SGPR0, RegState::Undef);
+      .addReg(SrcReg)
+      .addFrameIndex(FrameIndex)
+      // Place-holder registers, these will be filled in by
+      // SIPrepareScratchRegs.
+      .addReg(AMDGPU::SGPR0_SGPR1_SGPR2_SGPR3, RegState::Undef)
+      .addReg(AMDGPU::SGPR0, RegState::Undef)
+      .addMemOperand(MMO);
   } else {
     LLVMContext &Ctx = MF->getFunction()->getContext();
     Ctx.emitError("SIInstrInfo::storeRegToStackSlot - Do not know how to"
@@ -556,14 +565,22 @@ void SIInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   }
 
   if (Opcode != -1) {
-    FrameInfo->setObjectAlignment(FrameIndex, 4);
-    BuildMI(MBB, MI, DL, get(Opcode), DestReg)
-            .addFrameIndex(FrameIndex)
-            // Place-holder registers, these will be filled in by
-            // SIPrepareScratchRegs.
-            .addReg(AMDGPU::SGPR0_SGPR1_SGPR2_SGPR3, RegState::Undef)
-            .addReg(AMDGPU::SGPR0, RegState::Undef);
+    unsigned Align = 4;
+    FrameInfo->setObjectAlignment(FrameIndex, Align);
+    unsigned Size = FrameInfo->getObjectSize(FrameIndex);
 
+    MachinePointerInfo PtrInfo
+      = MachinePointerInfo::getFixedStack(*MF, FrameIndex);
+    MachineMemOperand *MMO = MF->getMachineMemOperand(
+      PtrInfo, MachineMemOperand::MOLoad, Size, Align);
+
+    BuildMI(MBB, MI, DL, get(Opcode), DestReg)
+      .addFrameIndex(FrameIndex)
+      // Place-holder registers, these will be filled in by
+      // SIPrepareScratchRegs.
+      .addReg(AMDGPU::SGPR0_SGPR1_SGPR2_SGPR3, RegState::Undef)
+      .addReg(AMDGPU::SGPR0, RegState::Undef)
+      .addMemOperand(MMO);
   } else {
     LLVMContext &Ctx = MF->getFunction()->getContext();
     Ctx.emitError("SIInstrInfo::loadRegFromStackSlot - Do not know how to"
@@ -1864,19 +1881,15 @@ void SIInstrInfo::legalizeOperands(MachineInstr *MI) const {
       NewVAddrHi = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
 
       // NewVaddrLo = SRsrcPtrLo + VAddr:sub0
-      BuildMI(MBB, MI, MI->getDebugLoc(), get(AMDGPU::V_ADD_I32_e32),
-              NewVAddrLo)
-              .addReg(SRsrcPtrLo)
-              .addReg(VAddr->getReg(), 0, AMDGPU::sub0)
-              .addReg(AMDGPU::VCC, RegState::ImplicitDefine);
+      DebugLoc DL = MI->getDebugLoc();
+      BuildMI(MBB, MI, DL, get(AMDGPU::V_ADD_I32_e32), NewVAddrLo)
+        .addReg(SRsrcPtrLo)
+        .addReg(VAddr->getReg(), 0, AMDGPU::sub0);
 
       // NewVaddrHi = SRsrcPtrHi + VAddr:sub1
-      BuildMI(MBB, MI, MI->getDebugLoc(), get(AMDGPU::V_ADDC_U32_e32),
-              NewVAddrHi)
-              .addReg(SRsrcPtrHi)
-              .addReg(VAddr->getReg(), 0, AMDGPU::sub1)
-              .addReg(AMDGPU::VCC, RegState::ImplicitDefine)
-              .addReg(AMDGPU::VCC, RegState::Implicit);
+      BuildMI(MBB, MI, DL, get(AMDGPU::V_ADDC_U32_e32), NewVAddrHi)
+        .addReg(SRsrcPtrHi)
+        .addReg(VAddr->getReg(), 0, AMDGPU::sub1);
 
     } else {
       // This instructions is the _OFFSET variant, so we need to convert it to
@@ -1888,17 +1901,18 @@ void SIInstrInfo::legalizeOperands(MachineInstr *MI) const {
       // Create the new instruction.
       unsigned Addr64Opcode = AMDGPU::getAddr64Inst(MI->getOpcode());
       MachineInstr *Addr64 =
-          BuildMI(MBB, MI, MI->getDebugLoc(), get(Addr64Opcode))
-                  .addOperand(*VData)
-                  .addReg(AMDGPU::NoRegister) // Dummy value for vaddr.
-                                              // This will be replaced later
-                                              // with the new value of vaddr.
-                  .addOperand(*SRsrc)
-                  .addOperand(*SOffset)
-                  .addOperand(*Offset)
-                  .addImm(0) // glc
-                  .addImm(0) // slc
-                  .addImm(0); // tfe
+        BuildMI(MBB, MI, MI->getDebugLoc(), get(Addr64Opcode))
+        .addOperand(*VData)
+        .addReg(AMDGPU::NoRegister) // Dummy value for vaddr.
+                                    // This will be replaced later
+                                    // with the new value of vaddr.
+        .addOperand(*SRsrc)
+        .addOperand(*SOffset)
+        .addOperand(*Offset)
+        .addImm(0) // glc
+        .addImm(0) // slc
+        .addImm(0) // tfe
+        .setMemRefs(MI->memoperands_begin(), MI->memoperands_end());
 
       MI->removeFromParent();
       MI = Addr64;
