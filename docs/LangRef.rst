@@ -1219,10 +1219,8 @@ example:
 ``convergent``
     This attribute indicates that the callee is dependent on a convergent
     thread execution pattern under certain parallel execution models.
-    Transformations that are execution model agnostic may only move or
-    tranform this call if the final location is control equivalent to its
-    original position in the program, where control equivalence is defined as
-    A dominates B and B post-dominates A, or vice versa.
+    Transformations that are execution model agnostic may not make the execution
+    of a convergent operation control dependent on any additional values.
 ``inlinehint``
     This attribute indicates that the source code contained a hint that
     inlining this function is desirable (such as the "inline" keyword in
@@ -1437,6 +1435,53 @@ example:
     show that no exceptions passes by it. This is normally the case for
     the ELF x86-64 abi, but it can be disabled for some compilation
     units.
+
+
+.. _opbundles:
+
+Operand Bundles
+---------------
+
+Note: operand bundles are a work in progress, and they should be
+considered experimental at this time.
+
+Operand bundles are tagged sets of SSA values that can be associated
+with certain LLVM instructions (currently only ``call`` s and
+``invoke`` s).  In a way they are like metadata, but dropping them is
+incorrect and will change program semantics.
+
+Syntax::
+    operand bundle set ::= '[' operand bundle ']'
+    operand bundle ::= tag '(' [ bundle operand ] (, bundle operand )* ')'
+    bundle operand ::= SSA value
+    tag ::= string constant
+
+Operand bundles are **not** part of a function's signature, and a
+given function may be called from multiple places with different kinds
+of operand bundles.  This reflects the fact that the operand bundles
+are conceptually a part of the ``call`` (or ``invoke``), not the
+callee being dispatched to.
+
+Operand bundles are a generic mechanism intended to support
+runtime-introspection-like functionality for managed languages.  While
+the exact semantics of an operand bundle depend on the bundle tag,
+there are certain limitations to how much the presence of an operand
+bundle can influence the semantics of a program.  These restrictions
+are described as the semantics of an "unknown" operand bundle.  As
+long as the behavior of an operand bundle is describable within these
+restrictions, LLVM does not need to have special knowledge of the
+operand bundle to not miscompile programs containing it.
+
+ - The bundle operands for an unknown operand bundle escape in unknown
+   ways before control is transferred to the callee or invokee.
+
+ - Calls and invokes with operand bundles have unknown read / write
+   effect on the heap on entry and exit (even if the call target is
+   ``readnone`` or ``readonly``).
+
+ - An operand bundle at a call site cannot change the implementation
+   of the called function.  Inter-procedural optimizations work as
+   usual as long as they take into account the first two properties.
 
 .. _moduleasm:
 
@@ -3875,7 +3920,7 @@ DILexicalBlock
 """"""""""""""
 
 ``DILexicalBlock`` nodes describe nested blocks within a :ref:`subprogram
-<DISubprogram>`. The line number and column numbers are used to dinstinguish
+<DISubprogram>`. The line number and column numbers are used to distinguish
 two lexical blocks at same depth. They are valid targets for ``scope:``
 fields.
 
@@ -4060,13 +4105,13 @@ alias.
 
 The metadata identifying each domain is itself a list containing one or two
 entries. The first entry is the name of the domain. Note that if the name is a
-string then it can be combined accross functions and translation units. A
+string then it can be combined across functions and translation units. A
 self-reference can be used to create globally unique domain names. A
 descriptive string may optionally be provided as a second list entry.
 
 The metadata identifying each scope is also itself a list containing two or
 three entries. The first entry is the name of the scope. Note that if the name
-is a string then it can be combined accross functions and translation units. A
+is a string then it can be combined across functions and translation units. A
 self-reference can be used to create globally unique scope names. A metadata
 reference to the scope's domain is the second entry. A descriptive string may
 optionally be provided as a third list entry.
@@ -4420,6 +4465,50 @@ the loop identifier metadata node directly:
 
 The ``llvm.bitsets`` global metadata is used to implement
 :doc:`bitsets <BitSets>`.
+
+'``invariant.group``' Metadata
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``invariant.group`` metadata may be attached to ``load``/``store`` instructions.
+The existence of the ``invariant.group`` metadata on the instruction tells 
+the optimizer that every ``load`` and ``store`` to the same pointer operand 
+within the same invariant group can be assumed to load or store the same  
+value (but see the ``llvm.invariant.group.barrier`` intrinsic which affects 
+when two pointers are considered the same).
+
+Examples:
+
+.. code-block:: llvm
+
+   @unknownPtr = external global i8
+   ...
+   %ptr = alloca i8
+   store i8 42, i8* %ptr, !invariant.group !0
+   call void @foo(i8* %ptr)
+   
+   %a = load i8, i8* %ptr, !invariant.group !0 ; Can assume that value under %ptr didn't change
+   call void @foo(i8* %ptr)
+   %b = load i8, i8* %ptr, !invariant.group !1 ; Can't assume anything, because group changed
+  
+   %newPtr = call i8* @getPointer(i8* %ptr) 
+   %c = load i8, i8* %newPtr, !invariant.group !0 ; Can't assume anything, because we only have information about %ptr
+   
+   %unknownValue = load i8, i8* @unknownPtr
+   store i8 %unknownValue, i8* %ptr, !invariant.group !0 ; Can assume that %unknownValue == 42
+   
+   call void @foo(i8* %ptr)
+   %newPtr2 = call i8* @llvm.invariant.group.barrier(i8* %ptr)
+   %d = load i8, i8* %newPtr2, !invariant.group !0  ; Can't step through invariant.group.barrier to get value of %ptr
+   
+   ...
+   declare void @foo(i8*)
+   declare i8* @getPointer(i8*)
+   declare i8* @llvm.invariant.group.barrier(i8*)
+   
+   !0 = !{!"magic ptr"}
+   !1 = !{!"other ptr"}
+
+
 
 Module Flags Metadata
 =====================
@@ -5017,7 +5106,7 @@ Syntax:
 ::
 
       <result> = invoke [cconv] [ret attrs] <ptr to function ty> <function ptr val>(<function args>) [fn attrs]
-                    to label <normal label> unwind label <exception label>
+                    [operand bundles] to label <normal label> unwind label <exception label>
 
 Overview:
 """""""""
@@ -5071,6 +5160,7 @@ This instruction requires several arguments:
 #. The optional :ref:`function attributes <fnattrs>` list. Only
    '``noreturn``', '``nounwind``', '``readonly``' and '``readnone``'
    attributes are valid here.
+#. The optional :ref:`operand bundles <opbundles>` list.
 
 Semantics:
 """"""""""
@@ -5161,7 +5251,7 @@ is a catch block --- one where a personality routine attempts to transfer
 control to catch an exception.
 The ``args`` correspond to whatever information the personality
 routine requires to know if this is an appropriate place to catch the
-exception. Control is tranfered to the ``exception`` label if the
+exception. Control is transfered to the ``exception`` label if the
 ``catchpad`` is not an appropriate handler for the in-flight exception.
 The ``normal`` label should contain the code found in the ``catch``
 portion of a ``try``/``catch`` sequence. The ``resultval`` has the type
@@ -6768,9 +6858,11 @@ Syntax:
 
 ::
 
-      <result> = load [volatile] <ty>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>][, !nonnull !<index>][, !dereferenceable !<index>][, !dereferenceable_or_null !<index>]
-      <result> = load atomic [volatile] <ty>* <pointer> [singlethread] <ordering>, align <alignment>
+      <result> = load [volatile] <ty>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>][, !invariant.group !<index>][, !nonnull !<index>][, !dereferenceable !<deref_bytes_node>][, !dereferenceable_or_null !<deref_bytes_node>][, !align !<align_node>]
+      <result> = load atomic [volatile] <ty>* <pointer> [singlethread] <ordering>, align <alignment> [, !invariant.group !<index>]
       !<index> = !{ i32 1 }
+      !<deref_bytes_node> = !{i64 <dereferenceable_bytes>}
+      !<align_node> = !{ i64 <value_alignment> }
 
 Overview:
 """""""""
@@ -6825,6 +6917,9 @@ Being invariant does not imply that a location is dereferenceable,
 but it does imply that once the location is known dereferenceable
 its value is henceforth unchanging.
 
+The optional ``!invariant.group`` metadata must reference a single metadata name
+ ``<index>`` corresponding to a metadata node. See ``invariant.group`` metadata.
+
 The optional ``!nonnull`` metadata must reference a single
 metadata name ``<index>`` corresponding to a metadata node with no
 entries. The existence of the ``!nonnull`` metadata on the
@@ -6833,8 +6928,8 @@ never be null. This is analogous to the ``nonnull`` attribute
 on parameters and return values. This metadata can only be applied
 to loads of a pointer type.
 
-The optional ``!dereferenceable`` metadata must reference a single
-metadata name ``<index>`` corresponding to a metadata node with one ``i64``
+The optional ``!dereferenceable`` metadata must reference a single metadata
+name ``<deref_bytes_node>`` corresponding to a metadata node with one ``i64``
 entry. The existence of the ``!dereferenceable`` metadata on the instruction
 tells the optimizer that the value loaded is known to be dereferenceable.
 The number of bytes known to be dereferenceable is specified by the integer
@@ -6843,14 +6938,22 @@ attribute on parameters and return values. This metadata can only be applied
 to loads of a pointer type.
 
 The optional ``!dereferenceable_or_null`` metadata must reference a single
-metadata name ``<index>`` corresponding to a metadata node with one ``i64``
-entry. The existence of the ``!dereferenceable_or_null`` metadata on the
+metadata name ``<deref_bytes_node>`` corresponding to a metadata node with one
+``i64`` entry. The existence of the ``!dereferenceable_or_null`` metadata on the
 instruction tells the optimizer that the value loaded is known to be either
 dereferenceable or null.
 The number of bytes known to be dereferenceable is specified by the integer
 value in the metadata node. This is analogous to the ''dereferenceable_or_null''
 attribute on parameters and return values. This metadata can only be applied
 to loads of a pointer type.
+
+The optional ``!align`` metadata must reference a single metadata name
+``<align_node>`` corresponding to a metadata node with one ``i64`` entry.
+The existence of the ``!align`` metadata on the instruction tells the
+optimizer that the value loaded is known to be aligned to a boundary specified
+by the integer value in the metadata node. The alignment must be a power of 2.
+This is analogous to the ''align'' attribute on parameters and return values.
+This metadata can only be applied to loads of a pointer type.
 
 Semantics:
 """"""""""
@@ -6882,8 +6985,8 @@ Syntax:
 
 ::
 
-      store [volatile] <ty> <value>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>]        ; yields void
-      store atomic [volatile] <ty> <value>, <ty>* <pointer> [singlethread] <ordering>, align <alignment>  ; yields void
+      store [volatile] <ty> <value>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.group !<index>]        ; yields void
+      store atomic [volatile] <ty> <value>, <ty>* <pointer> [singlethread] <ordering>, align <alignment> [, !invariant.group !<index>] ; yields void
 
 Overview:
 """""""""
@@ -6929,6 +7032,9 @@ tells the optimizer and code generator that this load is not expected to
 be reused in the cache. The code generator may select special
 instructions to save cache bandwidth, such as the MOVNT instruction on
 x86.
+
+The optional ``!invariant.group`` metadata must reference a 
+single metadata name ``<index>``. See ``invariant.group`` metadata.
 
 Semantics:
 """"""""""
@@ -8259,6 +8365,7 @@ Syntax:
 ::
 
       <result> = [tail | musttail] call [cconv] [ret attrs] <ty> [<fnty>*] <fnptrval>(<function args>) [fn attrs]
+                   [ operand bundles ]
 
 Overview:
 """""""""
@@ -8338,6 +8445,7 @@ This instruction requires several arguments:
 #. The optional :ref:`function attributes <fnattrs>` list. Only
    '``noreturn``', '``nounwind``', '``readonly``' and '``readnone``'
    attributes are valid here.
+#. The optional :ref:`operand bundles <opbundles>` list.
 
 Semantics:
 """"""""""
@@ -10869,16 +10977,19 @@ This is an overloaded intrinsic. The loaded data is a vector of any integer bit 
 Overview:
 """""""""
 
-The ``llvm.uabsdiff`` intrinsic returns a vector result of the absolute difference of
-the two operands, treating them both as unsigned integers.
+The ``llvm.uabsdiff`` intrinsic returns a vector result of the absolute difference
+of the two operands, treating them both as unsigned integers. The intermediate
+calculations are computed using infinitely precise unsigned arithmetic. The final
+result will be truncated to the given type.
 
 The ``llvm.sabsdiff`` intrinsic returns a vector result of the absolute difference of
-the two operands, treating them both as signed integers.
+the two operands, treating them both as signed integers. If the result overflows, the
+behavior is undefined.
 
 .. note::
 
     These intrinsics are primarily used during the code generation stage of compilation.
-    They are generated by compiler passes such as the Loop and SLP vectorizers.it is not
+    They are generated by compiler passes such as the Loop and SLP vectorizers. It is not
     recommended for users to create them manually.
 
 Arguments:
@@ -10895,19 +11006,19 @@ The expression::
 
 is equivalent to::
 
-    %sub = sub <4 x i32> %a, %b
-    %ispos = icmp ugt <4 x i32> %sub, <i32 -1, i32 -1, i32 -1, i32 -1>
-    %neg = sub <4 x i32> zeroinitializer, %sub
-    %1 = select <4 x i1> %ispos, <4 x i32> %sub, <4 x i32> %neg
+    %1 = zext <4 x i32> %a to <4 x i64>
+    %2 = zext <4 x i32> %b to <4 x i64>
+    %sub = sub <4 x i64> %1, %2
+    %trunc = trunc <4 x i64> to <4 x i32>
 
-Similarly the expression::
+and the expression::
 
     call <4 x i32> @llvm.sabsdiff.v4i32(<4 x i32> %a, <4 x i32> %b)
 
 is equivalent to::
 
     %sub = sub nsw <4 x i32> %a, %b
-    %ispos = icmp sgt <4 x i32> %sub, <i32 -1, i32 -1, i32 -1, i32 -1>
+    %ispos = icmp sge <4 x i32> %sub, zeroinitializer
     %neg = sub nsw <4 x i32> zeroinitializer, %sub
     %1 = select <4 x i1> %ispos, <4 x i32> %sub, <4 x i32> %neg
 
@@ -11311,7 +11422,7 @@ The first operand is a vector value to be written to memory. The second operand 
 Semantics:
 """"""""""
 
-The '``llvm.masked.scatter``' intrinsics is designed for writing selected vector elements to arbitrary memory addresses in a single IR operation. The operation may be conditional, when not all bits in the mask are switched on. It is useful for targets that support vector masked scatter and allows vectorizing basic blocks with data and control divergency. Other targets may support this intrinsic differently, for example by lowering it into a sequence of branches that guard scalar store operations.
+The '``llvm.masked.scatter``' intrinsics is designed for writing selected vector elements to arbitrary memory addresses in a single IR operation. The operation may be conditional, when not all bits in the mask are switched on. It is useful for targets that support vector masked scatter and allows vectorizing basic blocks with data and control divergence. Other targets may support this intrinsic differently, for example by lowering it into a sequence of branches that guard scalar store operations.
 
 ::
 
@@ -11464,6 +11575,36 @@ Semantics:
 """"""""""
 
 This intrinsic indicates that the memory is mutable again.
+
+'``llvm.invariant.group.barrier``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare i8* @llvm.invariant.group.barrier(i8* <ptr>)
+
+Overview:
+"""""""""
+
+The '``llvm.invariant.group.barrier``' intrinsic can be used when an invariant 
+established by invariant.group metadata no longer holds, to obtain a new pointer
+value that does not carry the invariant information.
+
+
+Arguments:
+""""""""""
+
+The ``llvm.invariant.group.barrier`` takes only one argument, which is
+the pointer to the memory for which the ``invariant.group`` no longer holds.
+
+Semantics:
+""""""""""
+
+Returns another pointer that aliases its argument but which is considered different 
+for the purposes of ``load``/``store`` ``invariant.group`` metadata.
 
 General Intrinsics
 ------------------
@@ -11837,7 +11978,7 @@ Arguments:
 """"""""""
 
 The first argument is a pointer to be tested. The second argument is a
-metadata string containing the name of a :doc:`bitset <BitSets>`.
+metadata object representing an identifier for a :doc:`bitset <BitSets>`.
 
 Overview:
 """""""""

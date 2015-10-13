@@ -220,10 +220,9 @@ public:
   void setModule(const Module *M) { TheModule = M; }
   const Module *getModule() const { return TheModule; }
 
-  const Function *getWinEHParent(const Function *F) const;
   WinEHFuncInfo &getWinEHFuncInfo(const Function *F);
   bool hasWinEHFuncInfo(const Function *F) const {
-    return FuncInfoMap.count(getWinEHParent(F)) > 0;
+    return FuncInfoMap.count(F) > 0;
   }
 
   /// getInfo - Keep track of various per-function pieces of information for
@@ -251,6 +250,9 @@ public:
 
   bool callsUnwindInit() const { return CallsUnwindInit; }
   void setCallsUnwindInit(bool b) { CallsUnwindInit = b; }
+
+  bool hasEHFunclets() const { return HasEHFunclets; }
+  void setHasEHFunclets(bool V) { HasEHFunclets = V; }
 
   bool usesVAFloatArgument() const {
     return UsesVAFloatArgument;
@@ -364,12 +366,6 @@ public:
   const std::vector<LandingPadInfo> &getLandingPads() const {
     return LandingPads;
   }
-
-  bool hasEHFunclets() const {
-    return HasEHFunclets;
-  }
-
-  void setHasEHFunclets(bool V) { HasEHFunclets = true; }
 
   /// setCallSiteLandingPad - Map the landing pad's EH symbol to the call
   /// site indexes.

@@ -31,8 +31,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -114,7 +116,7 @@ static bool processInstruction(Loop &L, Instruction &Inst, DominatorTree &DT,
       continue;
 
     PHINode *PN = PHINode::Create(Inst.getType(), PredCache.size(ExitBB),
-                                  Inst.getName() + ".lcssa", ExitBB->begin());
+                                  Inst.getName() + ".lcssa", &ExitBB->front());
 
     // Add inputs from inside the loop for this PHI.
     for (BasicBlock *Pred : PredCache.get(ExitBB)) {
@@ -162,8 +164,8 @@ static bool processInstruction(Loop &L, Instruction &Inst, DominatorTree &DT,
     if (isa<PHINode>(UserBB->begin()) && isExitBlock(UserBB, ExitBlocks)) {
       // Tell the VHs that the uses changed. This updates SCEV's caches.
       if (UsesToRewrite[i]->get()->hasValueHandle())
-        ValueHandleBase::ValueIsRAUWd(*UsesToRewrite[i], UserBB->begin());
-      UsesToRewrite[i]->set(UserBB->begin());
+        ValueHandleBase::ValueIsRAUWd(*UsesToRewrite[i], &UserBB->front());
+      UsesToRewrite[i]->set(&UserBB->front());
       continue;
     }
 
@@ -297,8 +299,10 @@ struct LCSSA : public FunctionPass {
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<LoopInfoWrapperPass>();
     AU.addPreservedID(LoopSimplifyID);
-    AU.addPreserved<AliasAnalysis>();
+    AU.addPreserved<AAResultsWrapperPass>();
+    AU.addPreserved<GlobalsAAWrapperPass>();
     AU.addPreserved<ScalarEvolutionWrapperPass>();
+    AU.addPreserved<SCEVAAWrapperPass>();
   }
 };
 }
@@ -307,6 +311,8 @@ char LCSSA::ID = 0;
 INITIALIZE_PASS_BEGIN(LCSSA, "lcssa", "Loop-Closed SSA Form Pass", false, false)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(GlobalsAAWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(SCEVAAWrapperPass)
 INITIALIZE_PASS_END(LCSSA, "lcssa", "Loop-Closed SSA Form Pass", false, false)
 
 Pass *llvm::createLCSSAPass() { return new LCSSA(); }

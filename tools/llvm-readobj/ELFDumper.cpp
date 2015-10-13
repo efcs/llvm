@@ -1152,6 +1152,8 @@ void ELFDumper<ELFT>::printRelocation(Elf_Rela Rel, const Elf_Shdr *SymTab) {
 template<class ELFT>
 void ELFDumper<ELFT>::printSymbolsHelper(bool IsDynamic) {
   const Elf_Shdr *Symtab = (IsDynamic) ? DotDynSymSec : DotSymtabSec;
+  if (!Symtab)
+    return;
   ErrorOr<StringRef> StrTableOrErr = Obj->getStringTableForSymtab(*Symtab);
   error(StrTableOrErr.getError());
   StringRef StrTable = *StrTableOrErr;
@@ -1472,12 +1474,11 @@ void ELFDumper<ELFT>::printDynamicTable() {
      << "                 " << "Name/Value\n";
   while (I != E) {
     const Elf_Dyn &Entry = *I;
+    uintX_t Tag = Entry.getTag();
     ++I;
-    W.startLine()
-       << "  "
-       << format(Is64 ? "0x%016" PRIX64 : "0x%08" PRIX64, Entry.getTag())
-       << " " << format("%-21s", getTypeString(Entry.getTag()));
-    printValue(Entry.getTag(), Entry.getVal());
+    W.startLine() << "  " << format_hex(Tag, Is64 ? 18 : 10, true) << " "
+                  << format("%-21s", getTypeString(Tag));
+    printValue(Tag, Entry.getVal());
     OS << "\n";
   }
 

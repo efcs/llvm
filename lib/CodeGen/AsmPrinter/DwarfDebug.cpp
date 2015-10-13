@@ -459,6 +459,16 @@ DwarfDebug::constructDwarfCompileUnit(const DICompileUnit *DIUnit) {
   else
     NewCU.initSection(Asm->getObjFileLowering().getDwarfInfoSection());
 
+  if (DIUnit->getDWOId()) {
+    // This CU is either a clang module DWO or a skeleton CU.
+    NewCU.addUInt(Die, dwarf::DW_AT_GNU_dwo_id, dwarf::DW_FORM_data8,
+                  DIUnit->getDWOId());
+    if (!DIUnit->getSplitDebugFilename().empty())
+      // This is a prefabricated skeleton CU.
+      NewCU.addString(Die, dwarf::DW_AT_GNU_dwo_name,
+                      DIUnit->getSplitDebugFilename());
+  }
+
   CUMap.insert(std::make_pair(DIUnit, &NewCU));
   CUDieMap.insert(std::make_pair(&Die, &NewCU));
   return NewCU;
@@ -1107,12 +1117,8 @@ static DebugLoc findPrologueEndLoc(const MachineFunction *MF) {
   for (const auto &MBB : *MF)
     for (const auto &MI : MBB)
       if (!MI.isDebugValue() && !MI.getFlag(MachineInstr::FrameSetup) &&
-          MI.getDebugLoc()) {
-        // Did the target forget to set the FrameSetup flag for CFI insns?
-        assert(!MI.isCFIInstruction() &&
-               "First non-frame-setup instruction is a CFI instruction.");
+          MI.getDebugLoc())
         return MI.getDebugLoc();
-      }
   return DebugLoc();
 }
 

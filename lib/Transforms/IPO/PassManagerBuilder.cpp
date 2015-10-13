@@ -95,7 +95,7 @@ static cl::opt<bool> EnableLoopDistribute(
     cl::desc("Enable the new, experimental LoopDistribution Pass"));
 
 static cl::opt<bool> EnableNonLTOGlobalsModRef(
-    "enable-non-lto-gmr", cl::init(false), cl::Hidden,
+    "enable-non-lto-gmr", cl::init(true), cl::Hidden,
     cl::desc(
         "Enable the GlobalsModRef AliasAnalysis outside of the LTO pipeline."));
 
@@ -153,10 +153,9 @@ void PassManagerBuilder::addInitialAliasAnalysisPasses(
   // BasicAliasAnalysis wins if they disagree. This is intended to help
   // support "obvious" type-punning idioms.
   if (UseCFLAA)
-    PM.add(createCFLAliasAnalysisPass());
-  PM.add(createTypeBasedAliasAnalysisPass());
-  PM.add(createScopedNoAliasAAPass());
-  PM.add(createBasicAliasAnalysisPass());
+    PM.add(createCFLAAWrapperPass());
+  PM.add(createTypeBasedAAWrapperPass());
+  PM.add(createScopedNoAliasAAWrapperPass());
 }
 
 void PassManagerBuilder::populateFunctionPassManager(
@@ -227,7 +226,7 @@ void PassManagerBuilder::populateModulePassManager(
     // We add a module alias analysis pass here. In part due to bugs in the
     // analysis infrastructure this "works" in that the analysis stays alive
     // for the entire SCC pass run below.
-    MPM.add(createGlobalsModRefPass());
+    MPM.add(createGlobalsAAWrapperPass());
 
   // Start of CallGraph SCC passes.
   if (!DisableUnitAtATime)
@@ -261,6 +260,7 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createLoopRotatePass(SizeLevel == 2 ? 0 : -1));
   MPM.add(createLICMPass());                  // Hoist loop invariants
   MPM.add(createLoopUnswitchPass(SizeLevel || OptLevel < 3));
+  MPM.add(createCFGSimplificationPass());
   MPM.add(createInstructionCombiningPass());
   MPM.add(createIndVarSimplifyPass());        // Canonicalize indvars
   MPM.add(createLoopIdiomPass());             // Recognize idioms like memset.
@@ -360,7 +360,7 @@ void PassManagerBuilder::populateModulePassManager(
     // this to work. Fortunately, it is trivial to preserve AliasAnalysis
     // (doing nothing preserves it as it is required to be conservatively
     // correct in the face of IR changes).
-    MPM.add(createGlobalsModRefPass());
+    MPM.add(createGlobalsAAWrapperPass());
 
   if (RunFloat2Int)
     MPM.add(createFloat2IntPass());
@@ -519,7 +519,7 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
 
   // Run a few AA driven optimizations here and now, to cleanup the code.
   PM.add(createFunctionAttrsPass()); // Add nocapture.
-  PM.add(createGlobalsModRefPass()); // IP alias analysis.
+  PM.add(createGlobalsAAWrapperPass()); // IP alias analysis.
 
   PM.add(createLICMPass());                 // Hoist loop invariants.
   if (EnableMLSM)

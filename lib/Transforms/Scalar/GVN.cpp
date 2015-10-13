@@ -28,6 +28,7 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
@@ -693,10 +694,10 @@ namespace {
       AU.addRequired<TargetLibraryInfoWrapperPass>();
       if (!NoLoads)
         AU.addRequired<MemoryDependenceAnalysis>();
-      AU.addRequired<AliasAnalysis>();
+      AU.addRequired<AAResultsWrapperPass>();
 
       AU.addPreserved<DominatorTreeWrapperPass>();
-      AU.addPreserved<AliasAnalysis>();
+      AU.addPreserved<GlobalsAAWrapperPass>();
     }
 
 
@@ -745,7 +746,8 @@ INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(MemoryDependenceAnalysis)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
-INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
+INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(GlobalsAAWrapperPass)
 INITIALIZE_PASS_END(GVN, "gvn", "Global Value Numbering", false, false)
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
@@ -1667,6 +1669,9 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     if (Tags)
       NewLoad->setAAMetadata(Tags);
 
+    if (auto *InvGroupMD = LI->getMetadata(LLVMContext::MD_invariant_group))
+      NewLoad->setMetadata(LLVMContext::MD_invariant_group, InvGroupMD);
+
     // Transfer DebugLoc.
     NewLoad->setDebugLoc(LI->getDebugLoc());
 
@@ -1844,13 +1849,10 @@ static void patchReplacementInstruction(Instruction *I, Value *Repl) {
     // regions, and so we need a conservative combination of the noalias
     // scopes.
     static const unsigned KnownIDs[] = {
-      LLVMContext::MD_tbaa,
-      LLVMContext::MD_alias_scope,
-      LLVMContext::MD_noalias,
-      LLVMContext::MD_range,
-      LLVMContext::MD_fpmath,
-      LLVMContext::MD_invariant_load,
-    };
+        LLVMContext::MD_tbaa,           LLVMContext::MD_alias_scope,
+        LLVMContext::MD_noalias,        LLVMContext::MD_range,
+        LLVMContext::MD_fpmath,         LLVMContext::MD_invariant_load,
+        LLVMContext::MD_invariant_group};
     combineMetadata(ReplInst, I, KnownIDs);
   }
 }
@@ -1937,10 +1939,8 @@ bool GVN::processLoad(LoadInst *L) {
       ++NumGVNLoad;
       return true;
     }
-  }
 
-  // If the value isn't available, don't do anything!
-  if (Dep.isClobber()) {
+    // If the value isn't available, don't do anything!
     DEBUG(
       // fast print dep, using operator<< on instruction is too slow.
       dbgs() << "GVN: load ";
@@ -2106,6 +2106,8 @@ bool GVN::replaceOperandsWithConsts(Instruction *Instr) const {
     if (it != ReplaceWithConstMap.end()) {
       assert(!isa<Constant>(Operand) &&
              "Replacing constants with constants is invalid");
+      DEBUG(dbgs() << "GVN replacing: " << *Operand << " with " << *it->second
+                   << " in instruction " << *Instr << '\n');
       Instr->setOperand(OpNum, it->second);
       Changed = true;
     }
@@ -2410,7 +2412,7 @@ bool GVN::runOnFunction(Function& F) {
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
   TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
-  VN.setAliasAnalysis(&getAnalysis<AliasAnalysis>());
+  VN.setAliasAnalysis(&getAnalysis<AAResultsWrapperPass>().getAAResults());
   VN.setMemDep(MD);
   VN.setDomTree(DT);
 
@@ -2420,7 +2422,7 @@ bool GVN::runOnFunction(Function& F) {
   // Merge unconditional branches, allowing PRE to catch more
   // optimization opportunities.
   for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
-    BasicBlock *BB = FI++;
+    BasicBlock *BB = &*FI++;
 
     bool removedBlock =
         MergeBlockIntoPredecessor(BB, DT, /* LoopInfo */ nullptr, MD);
@@ -2461,7 +2463,6 @@ bool GVN::runOnFunction(Function& F) {
   return Changed;
 }
 
-
 bool GVN::processBlock(BasicBlock *BB) {
   // FIXME: Kill off InstrsToErase by doing erasing eagerly in a helper function
   // (and incrementing BI before processing an instruction).
@@ -2477,8 +2478,8 @@ bool GVN::processBlock(BasicBlock *BB) {
   for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();
        BI != BE;) {
     if (!ReplaceWithConstMap.empty())
-      ChangedFunction |= replaceOperandsWithConsts(BI);
-    ChangedFunction |= processInstruction(BI);
+      ChangedFunction |= replaceOperandsWithConsts(&*BI);
+    ChangedFunction |= processInstruction(&*BI);
 
     if (InstrsToErase.empty()) {
       ++BI;
@@ -2654,7 +2655,7 @@ bool GVN::performScalarPRE(Instruction *CurInst) {
   // Create a PHI to make the value available in this block.
   PHINode *Phi =
       PHINode::Create(CurInst->getType(), predMap.size(),
-                      CurInst->getName() + ".pre-phi", CurrentBlock->begin());
+                      CurInst->getName() + ".pre-phi", &CurrentBlock->front());
   for (unsigned i = 0, e = predMap.size(); i != e; ++i) {
     if (Value *V = predMap[i].first)
       Phi->addIncoming(V, predMap[i].second);
@@ -2697,7 +2698,7 @@ bool GVN::performPRE(Function &F) {
     for (BasicBlock::iterator BI = CurrentBlock->begin(),
                               BE = CurrentBlock->end();
          BI != BE;) {
-      Instruction *CurInst = BI++;
+      Instruction *CurInst = &*BI++;
       Changed = performScalarPRE(CurInst);
     }
   }

@@ -47,7 +47,7 @@ void AsmPrinter::EmitSLEB128(int64_t Value, const char *Desc) const {
   OutStreamer->EmitSLEB128IntValue(Value);
 }
 
-/// EmitULEB128 - emit the specified signed leb128 value.
+/// EmitULEB128 - emit the specified unsigned leb128 value.
 void AsmPrinter::EmitULEB128(uint64_t Value, const char *Desc,
                              unsigned PadTo) const {
   if (isVerbose() && Desc)
@@ -246,6 +246,12 @@ void AsmPrinter::emitCFIInstruction(const MCCFIInstruction &Inst) const {
   case MCCFIInstruction::OpSameValue:
     OutStreamer->EmitCFISameValue(Inst.getRegister());
     break;
+  case MCCFIInstruction::OpGnuArgsSize:
+    OutStreamer->EmitCFIGnuArgsSize(Inst.getOffset());
+    break;
+  case MCCFIInstruction::OpEscape:
+    OutStreamer->EmitCFIEscape(Inst.getValues());
+    break;
   }
 }
 
@@ -286,9 +292,9 @@ void AsmPrinter::emitDwarfDIE(const DIE &Die) const {
 
 void
 AsmPrinter::emitDwarfAbbrevs(const std::vector<DIEAbbrev *>& Abbrevs) const {
-  // For each abbrevation.
+  // For each abbreviation.
   for (const DIEAbbrev *Abbrev : Abbrevs) {
-    // Emit the abbrevations code (base 1 index.)
+    // Emit the abbreviations code (base 1 index.)
     EmitULEB128(Abbrev->getNumber(), "Abbreviation Code");
 
     // Emit the abbreviations data.

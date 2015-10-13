@@ -86,7 +86,7 @@ ehcleanup:                                        ; preds = %entry
   cleanupret %0 unwind label %catch.dispatch
 
 catch.dispatch:                                   ; preds = %ehcleanup
-  %1 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %1 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   catchret %1 to label %catchret.dest
@@ -126,7 +126,8 @@ ehcleanup.1:                                      ; preds = %catchendblock
 ; CHECK:   invoke void @g()
 ; CHECK:           to label %try.cont unwind label %catch.dispatch
 ; CHECK: catch.dispatch:
-; CHECK:   catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+; CHECK:   catchpad [i8* null, i32 64, i8* null]
+; CHECK-NEXT: to label %catch unwind label %catchendblock
 ; CHECK: catch:
 ; CHECK:   catchret
 ; CHECK: catchendblock:
@@ -150,7 +151,7 @@ ehcleanup:                                        ; preds = %entry
   cleanupret %0 unwind label %catch.dispatch
 
 catch.dispatch:                                   ; preds = %ehcleanup
-  %1 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %1 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   catchret %1 to label %catchret.dest
@@ -213,7 +214,7 @@ invoke.cont:                                      ; preds = %entry
           to label %try.cont unwind label %catch.dispatch
 
 catch.dispatch:                                   ; preds = %invoke.cont
-  %0 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %0 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   catchret %0 to label %try.cont
@@ -328,7 +329,7 @@ ehcleanup:                                        ; preds = %invoke.cont, %entry
   cleanupret %0 unwind label %catch.dispatch
 
 catch.dispatch:                                   ; preds = %ehcleanup
-  %1 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %1 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   catchret %1 to label %return
@@ -394,7 +395,7 @@ ehcleanup:                                        ; preds = %invoke.cont.1, %inv
 
 catch.dispatch:                                   ; preds = %ehcleanup, %entry
   %state.1 = phi i32 [ %state.0, %ehcleanup ], [ 1, %entry ]
-  %1 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %1 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   catchret %1 to label %return
@@ -459,7 +460,7 @@ ehcleanup:                                        ; preds = %invoke.cont, %entry
   cleanupret %0 unwind label %catch.dispatch
 
 catch.dispatch:                                   ; preds = %ehcleanup, %catch.cont
-  %1 = catchpad [i8* null, i8* null] to label %catch unwind label %catchendblock
+  %1 = catchpad [i8* null, i32 u0x40, i8* null] to label %catch unwind label %catchendblock
 
 catch:                                            ; preds = %catch.dispatch
   call void @use_x(i32 %x)

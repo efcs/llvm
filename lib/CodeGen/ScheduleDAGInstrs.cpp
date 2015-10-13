@@ -242,9 +242,9 @@ void ScheduleDAGInstrs::addSchedBarrierDeps() {
     assert(Uses.empty() && "Uses in set before adding deps?");
     for (MachineBasicBlock::succ_iterator SI = BB->succ_begin(),
            SE = BB->succ_end(); SI != SE; ++SI)
-      for (unsigned LI : (*SI)->liveins()) {
-        if (!Uses.contains(LI))
-          Uses.insert(PhysRegSUOper(&ExitSU, -1, LI));
+      for (const auto &LI : (*SI)->liveins()) {
+        if (!Uses.contains(LI.PhysReg))
+          Uses.insert(PhysRegSUOper(&ExitSU, -1, LI.PhysReg));
       }
   }
 }
@@ -1078,9 +1078,9 @@ void ScheduleDAGInstrs::startBlockForKills(MachineBasicBlock *BB) {
   // Examine the live-in regs of all successors.
   for (MachineBasicBlock::succ_iterator SI = BB->succ_begin(),
        SE = BB->succ_end(); SI != SE; ++SI) {
-    for (unsigned LI : (*SI)->liveins()) {
+    for (const auto &LI : (*SI)->liveins()) {
       // Repeat, for reg and all subregs.
-      for (MCSubRegIterator SubRegs(LI, TRI, /*IncludeSelf=*/true);
+      for (MCSubRegIterator SubRegs(LI.PhysReg, TRI, /*IncludeSelf=*/true);
            SubRegs.isValid(); ++SubRegs)
         LiveRegs.set(*SubRegs);
     }
@@ -1099,7 +1099,7 @@ static void toggleBundleKillFlag(MachineInstr *MI, unsigned Reg,
   // Once we set a kill flag on an instruction, we bail out, as otherwise we
   // might set it on too many operands.  We will clear as many flags as we
   // can though.
-  MachineBasicBlock::instr_iterator Begin = MI;
+  MachineBasicBlock::instr_iterator Begin = MI->getIterator();
   MachineBasicBlock::instr_iterator End = getBundleEnd(MI);
   while (Begin != End) {
     for (MachineOperand &MO : (--End)->operands()) {
@@ -1233,7 +1233,7 @@ void ScheduleDAGInstrs::fixupKills(MachineBasicBlock *MBB) {
         toggleKillFlag(MI, MO);
         DEBUG(MI->dump());
         DEBUG(if (MI->getOpcode() == TargetOpcode::BUNDLE) {
-          MachineBasicBlock::instr_iterator Begin = MI;
+          MachineBasicBlock::instr_iterator Begin = MI->getIterator();
           MachineBasicBlock::instr_iterator End = getBundleEnd(MI);
           while (++Begin != End)
             DEBUG(Begin->dump());

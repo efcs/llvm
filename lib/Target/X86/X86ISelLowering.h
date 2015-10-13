@@ -268,8 +268,6 @@ namespace llvm {
       // Exception Handling helpers.
       EH_RETURN,
 
-      CATCHRET,
-
       // SjLj exception handling setjmp.
       EH_SJLJ_SETJMP,
 
@@ -399,6 +397,8 @@ namespace llvm {
       VREDUCE,
       // RndScale - Round FP Values To Include A Given Number Of Fraction Bits
       VRNDSCALE,
+      // VFPCLASS - Tests Types Of a FP Values
+      VFPCLASS, 
       // Broadcast scalar to vector
       VBROADCAST,
       // Broadcast subvector to vector
@@ -409,6 +409,11 @@ namespace llvm {
 
       /// SSE4A Extraction and Insertion.
       EXTRQI, INSERTQI,
+
+      // XOP arithmetic/logical shifts
+      VPSHA, VPSHL,
+      // XOP signed/unsigned integer comparisons
+      VPCOM, VPCOMU,
 
       // Vector multiply packed unsigned doubleword integers
       PMULUDQ,
@@ -891,6 +896,12 @@ namespace llvm {
     bool getStackCookieLocation(unsigned &AddressSpace,
                                 unsigned &Offset) const override;
 
+    /// Return true if the target stores SafeStack pointer at a fixed offset in
+    /// some non-standard address space, and populates the address space and
+    /// offset as appropriate.
+    bool getSafeStackPointerLocation(unsigned &AddressSpace,
+                                     unsigned &Offset) const override;
+
     SDValue BuildFILD(SDValue Op, EVT SrcVT, SDValue Chain, SDValue StackSlot,
                       SelectionDAG &DAG) const;
 
@@ -1008,7 +1019,7 @@ namespace llvm {
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFRAME_TO_ARGS_OFFSET(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCATCHRET(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerCLEANUPRET(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
@@ -1046,9 +1057,10 @@ namespace llvm {
 
     const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
 
-    bool shouldExpandAtomicLoadInIR(LoadInst *SI) const override;
+    TargetLoweringBase::AtomicExpansionKind
+    shouldExpandAtomicLoadInIR(LoadInst *SI) const override;
     bool shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
-    TargetLoweringBase::AtomicRMWExpansionKind
+    TargetLoweringBase::AtomicExpansionKind
     shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
 
     LoadInst *

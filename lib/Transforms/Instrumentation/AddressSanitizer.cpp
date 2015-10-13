@@ -338,7 +338,7 @@ struct ShadowMapping {
 
 static ShadowMapping getShadowMapping(Triple &TargetTriple, int LongSize,
                                       bool IsKasan) {
-  bool IsAndroid = TargetTriple.getEnvironment() == llvm::Triple::Android;
+  bool IsAndroid = TargetTriple.isAndroid();
   bool IsIOS = TargetTriple.isiOS();
   bool IsFreeBSD = TargetTriple.isOSFreeBSD();
   bool IsLinux = TargetTriple.isOSLinux();
@@ -729,7 +729,7 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
                      Instruction *ThenTerm, Value *ValueIfFalse);
 };
 
-}  // namespace
+} // anonymous namespace
 
 char AddressSanitizer::ID = 0;
 INITIALIZE_PASS_BEGIN(
@@ -959,7 +959,7 @@ void AddressSanitizer::instrumentMop(ObjectSizeOffsetVisitor &ObjSizeVis,
     // If initialization order checking is disabled, a simple access to a
     // dynamically initialized global is always valid.
     GlobalVariable *G = dyn_cast<GlobalVariable>(GetUnderlyingObject(Addr, DL));
-    if (G != NULL && (!ClInitializers || GlobalIsLinkerInitialized(G)) &&
+    if (G && (!ClInitializers || GlobalIsLinkerInitialized(G)) &&
         isSafeAccess(ObjSizeVis, Addr, TypeSize)) {
       NumOptimizedAccessesToGlobalVar++;
       return;
@@ -1124,7 +1124,8 @@ void AddressSanitizer::instrumentUnusualSizeOrAlignment(
 void AddressSanitizerModule::poisonOneInitializer(Function &GlobalInit,
                                                   GlobalValue *ModuleName) {
   // Set up the arguments to our poison/unpoison functions.
-  IRBuilder<> IRB(GlobalInit.begin()->getFirstInsertionPt());
+  IRBuilder<> IRB(&GlobalInit.front(),
+                  GlobalInit.front().getFirstInsertionPt());
 
   // Add a call to poison all external globals before the given function starts.
   Value *ModuleNameAddr = ConstantExpr::getPointerCast(ModuleName, IntptrTy);
@@ -1186,6 +1187,14 @@ bool AddressSanitizerModule::ShouldInstrumentGlobal(GlobalVariable *G) {
     if (Section == "llvm.metadata") return false;
     // Do not instrument globals from special LLVM sections.
     if (Section.find("__llvm") != StringRef::npos) return false;
+
+    // Do not instrument function pointers to initialization and termination
+    // routines: dynamic linker will not properly handle redzones.
+    if (Section.startswith(".preinit_array") ||
+        Section.startswith(".init_array") ||
+        Section.startswith(".fini_array")) {
+      return false;
+    }
 
     // Callbacks put into the CRT initializer/terminator sections
     // should not be instrumented.
@@ -1506,7 +1515,7 @@ bool AddressSanitizer::maybeInsertAsanInitAtFunctionEntry(Function &F) {
   // We cannot just ignore these methods, because they may call other
   // instrumented functions.
   if (F.getName().find(" load]") != std::string::npos) {
-    IRBuilder<> IRB(F.begin()->begin());
+    IRBuilder<> IRB(&F.front(), F.front().begin());
     IRB.CreateCall(AsanInitFunction, {});
     return true;
   }
@@ -1797,7 +1806,7 @@ void FunctionStackPoisoner::poisonStack() {
     unpoisonDynamicAllocas();
   }
 
-  if (AllocaVec.size() == 0) return;
+  if (AllocaVec.empty()) return;
 
   int StackMallocIdx = -1;
   DebugLoc EntryDebugLocation;
@@ -1813,8 +1822,8 @@ void FunctionStackPoisoner::poisonStack() {
   // regular stack slots.
   auto InsBeforeB = InsBefore->getParent();
   assert(InsBeforeB == &F.getEntryBlock());
-  for (BasicBlock::iterator I = InsBefore; I != InsBeforeB->end(); ++I)
-    if (auto *AI = dyn_cast_or_null<AllocaInst>(I))
+  for (BasicBlock::iterator I(InsBefore); I != InsBeforeB->end(); ++I)
+    if (auto *AI = dyn_cast<AllocaInst>(I))
       if (NonInstrumentedStaticAllocaVec.count(AI) > 0)
         AI->moveBefore(InsBefore);
 

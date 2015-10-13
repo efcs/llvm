@@ -338,6 +338,7 @@ option(LLVM_INCLUDE_EXAMPLES "Generate build targets for the LLVM examples" ON)
 option(LLVM_BUILD_TESTS
   "Build LLVM unit tests. If OFF, just generate build targets." OFF)
 option(LLVM_INCLUDE_TESTS "Generate build targets for the LLVM unit tests." ON)
+option(LLVM_INCLUDE_GO_TESTS "Include the Go bindings tests in test build targets." ON)
 
 option (LLVM_BUILD_DOCS "Build the llvm documentation." OFF)
 option (LLVM_INCLUDE_DOCS "Generate build targets for llvm documentation." ON)
@@ -542,6 +543,15 @@ else(UNIX)
   endif(NOT DEFINED CMAKE_INSTALL_RPATH)
 endif()
 
+if(APPLE AND DARWIN_LTO_LIBRARY)
+  set(CMAKE_EXE_LINKER_FLAGS
+    "${CMAKE_EXE_LINKER_FLAGS} -Wl,-lto_library -Wl,${DARWIN_LTO_LIBRARY}")
+  set(CMAKE_SHARED_LINKER_FLAGS
+    "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-lto_library -Wl,${DARWIN_LTO_LIBRARY}")
+  set(CMAKE_MODULE_LINKER_FLAGS
+    "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-lto_library -Wl,${DARWIN_LTO_LIBRARY}")
+endif()
+
 # Work around a broken bfd ld behavior. When linking a binary with a
 # foo.so library, it will try to find any library that foo.so uses and
 # check its symbols. This is wasteful (the check was done when foo.so
@@ -560,6 +570,10 @@ include_directories( ${LLVM_INCLUDE_DIR} ${LLVM_MAIN_INCLUDE_DIR})
 if(LLVM_USE_HOST_TOOLS)
   include(CrossCompile)
 endif(LLVM_USE_HOST_TOOLS)
+if(LLVM_TARGET_IS_CROSSCOMPILE_HOST)
+# Dummy use to avoid CMake Wraning: Manually-specified variables were not used
+# (this is a variable that CrossCompile sets on recursive invocations)
+endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "(FreeBSD|DragonFly)")
   # On FreeBSD, /usr/local/* is not used by default. In order to build LLVM
@@ -575,6 +589,17 @@ endif( ${CMAKE_SYSTEM_NAME} MATCHES SunOS )
 # Make sure we don't get -rdynamic in every binary. For those that need it,
 # use export_executable_symbols(target).
 set(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "")
+
+set(LLVM_PROFDATA_FILE "" CACHE FILEPATH
+  "Profiling data file to use when compiling in order to improve runtime performance.")
+
+if(LLVM_PROFDATA_FILE AND EXISTS ${LLVM_PROFDATA_FILE})
+  if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" )
+    add_definitions("-fprofile-instr-use=${LLVM_PROFDATA_FILE}")
+  else()
+    message(FATAL_ERROR "LLVM_PROFDATA_FILE can only be specified when compiling with clang")
+  endif()
+endif()
 
 include(AddLLVM)
 include(TableGen)

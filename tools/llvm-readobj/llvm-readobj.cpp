@@ -192,6 +192,11 @@ namespace opts {
   MachOIndirectSymbols("macho-indirect-symbols",
                   cl::desc("Display MachO indirect symbols"));
 
+  // -macho-linker-options
+  cl::opt<bool>
+  MachOLinkerOptions("macho-linker-options",
+                  cl::desc("Display MachO linker options"));
+
   // -macho-segment
   cl::opt<bool>
   MachOSegment("macho-segment",
@@ -343,6 +348,8 @@ static void dumpObject(const ObjectFile *Obj) {
       Dumper->printMachODataInCode();
     if (opts::MachOIndirectSymbols)
       Dumper->printMachOIndirectSymbols();
+    if (opts::MachOLinkerOptions)
+      Dumper->printMachOLinkerOptions();
     if (opts::MachOSegment)
       Dumper->printMachOSegment();
     if (opts::MachOVersionMin)
@@ -387,11 +394,6 @@ static void dumpMachOUniversalBinary(const MachOUniversalBinary *UBinary) {
 
 /// @brief Opens \a File and dumps it.
 static void dumpInput(StringRef File) {
-  // If file isn't stdin, check that it exists.
-  if (File != "-" && !sys::fs::exists(File)) {
-    reportError(File, readobj_error::file_not_found);
-    return;
-  }
 
   // Attempt to open the binary.
   ErrorOr<OwningBinary<Binary>> BinaryOrErr = createBinary(File);

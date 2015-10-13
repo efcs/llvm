@@ -35,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
@@ -114,6 +115,9 @@ static const char *GetBlockName(unsigned BlockID,
   case bitc::METADATA_BLOCK_ID:        return "METADATA_BLOCK";
   case bitc::METADATA_ATTACHMENT_ID:   return "METADATA_ATTACHMENT_BLOCK";
   case bitc::USELIST_BLOCK_ID:         return "USELIST_BLOCK_ID";
+  case bitc::FUNCTION_SUMMARY_BLOCK_ID:
+                                       return "FUNCTION_SUMMARY_BLOCK";
+  case bitc::MODULE_STRTAB_BLOCK_ID:   return "MODULE_STRTAB_BLOCK";
   }
 }
 
@@ -165,6 +169,7 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
       STRINGIFY_CODE(MODULE_CODE, ALIAS)
       STRINGIFY_CODE(MODULE_CODE, PURGEVALS)
       STRINGIFY_CODE(MODULE_CODE, GCNAME)
+      STRINGIFY_CODE(MODULE_CODE, VSTOFFSET)
     }
   case bitc::PARAMATTR_BLOCK_ID:
     switch (CodeID) {
@@ -266,6 +271,19 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
     default: return nullptr;
     STRINGIFY_CODE(VST_CODE, ENTRY)
     STRINGIFY_CODE(VST_CODE, BBENTRY)
+    STRINGIFY_CODE(VST_CODE, FNENTRY)
+    STRINGIFY_CODE(VST_CODE, COMBINED_FNENTRY)
+    }
+  case bitc::MODULE_STRTAB_BLOCK_ID:
+    switch (CodeID) {
+    default: return nullptr;
+    STRINGIFY_CODE(MST_CODE, ENTRY)
+    }
+  case bitc::FUNCTION_SUMMARY_BLOCK_ID:
+    switch (CodeID) {
+    default: return nullptr;
+    STRINGIFY_CODE(FS_CODE, PERMODULE_ENTRY)
+    STRINGIFY_CODE(FS_CODE, COMBINED_ENTRY)
     }
   case bitc::METADATA_ATTACHMENT_ID:
     switch(CodeID) {
@@ -318,11 +336,20 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
 }
 
 struct PerRecordStats {
+  /// The number of times this record code has been seen.
   unsigned NumInstances;
+  /// The number of times this record code has been seen abbreviated.
   unsigned NumAbbrev;
+  /// The total number of bits used for this record on disk.
   uint64_t TotalBits;
+  /// The number of bits that would have been used if no abbrevs were used.
+  uint64_t UnabbrevBits;
+  /// The number of bits that would be used if "good" abbreviations were used.
+  uint64_t GoodAbbrevBits;
 
-  PerRecordStats() : NumInstances(0), NumAbbrev(0), TotalBits(0) {}
+  PerRecordStats()
+      : NumInstances(0), NumAbbrev(0), TotalBits(0), UnabbrevBits(0),
+        GoodAbbrevBits(0) {}
 };
 
 struct PerBlockIDStats {
@@ -359,6 +386,58 @@ static std::map<unsigned, PerBlockIDStats> BlockIDStats;
 static bool Error(const Twine &Err) {
   errs() << Err << "\n";
   return true;
+}
+
+static unsigned computeVBR6Bits(uint64_t Val) {
+  unsigned Bits = 0;
+  do {
+    Bits += 6;
+  } while (Val >>= 5);
+  return Bits;
+}
+
+static void addBlobSize(uint64_t &Bits, StringRef Blob) {
+  // Blob size is always VBR6.
+  Bits += computeVBR6Bits(Blob.size());
+
+  // Blob is always 32-bit aligned, and padded to a multiple of 32 bits.
+  RoundUpToAlignment(Bits, 32);
+  Bits += Blob.size() * 8;
+  RoundUpToAlignment(Bits, 32);
+}
+
+/// \brief Compute the number of bits that would be used by the record if it
+/// were unabbreviated.
+static uint64_t computeUnabbrevBits(unsigned AbbrevIDWidth, unsigned Code,
+                                    ArrayRef<uint64_t> Record, StringRef Blob) {
+  uint64_t Bits =
+      AbbrevIDWidth + computeVBR6Bits(Code) + computeVBR6Bits(Record.size());
+  // Use VBR6 for all fields.
+  for (uint64_t Val : Record)
+    Bits += computeVBR6Bits(Val);
+  // Assume Blob representation for the blob, even though a Blob cannot
+  // be unabbreviated.
+  if (!Blob.empty())
+    addBlobSize(Bits, Blob);
+  return Bits;
+}
+
+/// \brief Compute the number of bits that would be used by the record if a
+/// "good" abbreviation were used. We use an extremely simple heuristic for
+/// "good"ness: pick the best abbrev that uses a Literal for the record code,
+/// a normal Blob field for the blob (if present), and a minimal-width Fixed
+/// field for everything else.
+static uint64_t computeGoodAbbrevBits(unsigned AbbrevIDWidth, unsigned Code,
+                                      ArrayRef<uint64_t> Record,
+                                      StringRef Blob) {
+  uint64_t Bits = AbbrevIDWidth;
+  // Use Fixed for all fields (other than the record code).
+  for (uint64_t Val : Record)
+    Bits += 64 - llvm::countLeadingZeros(Val);
+  // Assume Blob representation for the blob.
+  if (!Blob.empty())
+    addBlobSize(Bits, Blob);
+  return Bits;
 }
 
 /// ParseBlock - Read a block, updating statistics, etc.
@@ -465,6 +544,10 @@ static bool ParseBlock(BitstreamCursor &Stream, unsigned BlockID,
     BlockStats.CodeFreq[Code].NumInstances++;
     BlockStats.CodeFreq[Code].TotalBits +=
       Stream.GetCurrentBitNo()-RecordStartBit;
+    BlockStats.CodeFreq[Code].UnabbrevBits +=
+      computeUnabbrevBits(Stream.getAbbrevIDWidth(), Code, Record, Blob);
+    BlockStats.CodeFreq[Code].GoodAbbrevBits +=
+      computeGoodAbbrevBits(Stream.getAbbrevIDWidth(), Code, Record, Blob);
     if (Entry.ID != bitc::UNABBREV_RECORD) {
       BlockStats.CodeFreq[Code].NumAbbrev++;
       ++BlockStats.NumAbbreviatedRecords;
@@ -482,13 +565,36 @@ static bool ParseBlock(BitstreamCursor &Stream, unsigned BlockID,
           GetCodeName(Code, BlockID, *Stream.getBitStreamReader(),
                       CurStreamType))
         outs() << " codeid=" << Code;
-      if (Entry.ID != bitc::UNABBREV_RECORD)
+      const BitCodeAbbrev *Abbv = nullptr;
+      if (Entry.ID != bitc::UNABBREV_RECORD) {
+        Abbv = Stream.getAbbrev(Entry.ID);
         outs() << " abbrevid=" << Entry.ID;
+      }
 
       for (unsigned i = 0, e = Record.size(); i != e; ++i)
         outs() << " op" << i << "=" << (int64_t)Record[i];
 
       outs() << "/>";
+
+      if (Abbv) {
+        for (unsigned i = 1, e = Abbv->getNumOperandInfos(); i != e; ++i) {
+          const BitCodeAbbrevOp &Op = Abbv->getOperandInfo(i);
+          if (!Op.isEncoding() || Op.getEncoding() != BitCodeAbbrevOp::Array)
+            continue;
+          assert(i + 2 == e && "Array op not second to last");
+          std::string Str;
+          bool ArrayIsPrintable = true;
+          for (unsigned j = i - 1, je = Record.size(); j != je; ++j) {
+            if (!isprint(static_cast<unsigned char>(Record[j]))) {
+              ArrayIsPrintable = false;
+              break;
+            }
+            Str += (char)Record[j];
+          }
+          if (ArrayIsPrintable) outs() << " record string = '" << Str << "'";
+          break;
+        }
+      }
 
       if (Blob.data()) {
         outs() << " blob data = ";
@@ -680,28 +786,36 @@ static int AnalyzeBitcode() {
 
     // Print a histogram of the codes we see.
     if (!NoHistogram && !Stats.CodeFreq.empty()) {
-      std::vector<std::pair<unsigned, unsigned> > FreqPairs;  // <freq,code>
+      std::vector<std::pair<uint64_t, unsigned> > FreqPairs;  // <bits,code>
       for (unsigned i = 0, e = Stats.CodeFreq.size(); i != e; ++i)
-        if (unsigned Freq = Stats.CodeFreq[i].NumInstances)
+        if (unsigned Freq = Stats.CodeFreq[i].TotalBits)
           FreqPairs.push_back(std::make_pair(Freq, i));
       std::stable_sort(FreqPairs.begin(), FreqPairs.end());
       std::reverse(FreqPairs.begin(), FreqPairs.end());
 
       outs() << "\tRecord Histogram:\n";
-      outs() << "\t\t  Count    # Bits   %% Abv  Record Kind\n";
+      outs() << "\t\t  Count    # Bits   % Abv  % Cmp (cur/best)  Record Kind\n";
       for (unsigned i = 0, e = FreqPairs.size(); i != e; ++i) {
         const PerRecordStats &RecStats = Stats.CodeFreq[FreqPairs[i].second];
 
-        outs() << format("\t\t%7d %9lu",
+        outs() << format("\t\t%7d %9lu ",
                          RecStats.NumInstances,
                          (unsigned long)RecStats.TotalBits);
 
         if (RecStats.NumAbbrev)
           outs() <<
-              format("%7.2f  ",
+              format("%7.2f ",
                      (double)RecStats.NumAbbrev/RecStats.NumInstances*100);
         else
-          outs() << "         ";
+          outs() << "        ";
+
+        if (RecStats.UnabbrevBits)
+          outs() << format(
+              "%7.2f / %7.2f  ",
+              (double)RecStats.TotalBits / RecStats.UnabbrevBits * 100,
+              (double)RecStats.GoodAbbrevBits / RecStats.UnabbrevBits * 100);
+        else
+          outs() << "                   ";
 
         if (const char *CodeName =
               GetCodeName(FreqPairs[i].second, I->first, StreamFile,

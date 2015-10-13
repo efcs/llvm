@@ -118,9 +118,9 @@ bool FastISel::lowerArguments() {
   for (Function::const_arg_iterator I = FuncInfo.Fn->arg_begin(),
                                     E = FuncInfo.Fn->arg_end();
        I != E; ++I) {
-    DenseMap<const Value *, unsigned>::iterator VI = LocalValueMap.find(I);
+    DenseMap<const Value *, unsigned>::iterator VI = LocalValueMap.find(&*I);
     assert(VI != LocalValueMap.end() && "Missed an argument?");
-    FuncInfo.ValueMap[I] = VI->second;
+    FuncInfo.ValueMap[&*I] = VI->second;
   }
   return true;
 }
@@ -1103,13 +1103,6 @@ bool FastISel::selectIntrinsicCall(const IntrinsicInst *II) {
   // The donothing intrinsic does, well, nothing.
   case Intrinsic::donothing:
     return true;
-  case Intrinsic::eh_actions: {
-    unsigned ResultReg = getRegForValue(UndefValue::get(II->getType()));
-    if (!ResultReg)
-      return false;
-    updateValueMap(II, ResultReg);
-    return true;
-  }
   case Intrinsic::dbg_declare: {
     const DbgDeclareInst *DI = cast<DbgDeclareInst>(II);
     assert(DI->getVariable() && "Missing variable");

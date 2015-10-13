@@ -18,10 +18,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+#include <string>
 
 namespace fuzzer {
 
-typedef void (*UserCallback)(const uint8_t *Data, size_t Size);
+typedef void (*DeprecatedUserCallback)(const uint8_t *Data, size_t Size);
+/// Returns an int 0. Values other than zero are reserved for future.
+typedef int (*UserCallback)(const uint8_t *Data, size_t Size);
 /** Simple C-like interface with a single user-supplied callback.
 
 Usage:
@@ -29,8 +33,9 @@ Usage:
 #\code
 #include "FuzzerInterface.h"
 
-void LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
+int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
   DoStuffWithData(Data, Size);
+  return 0;
 }
 
 // Implement your own main() or use the one from FuzzerMain.cpp.
@@ -41,6 +46,7 @@ int main(int argc, char **argv) {
 #\endcode
 */
 int FuzzerDriver(int argc, char **argv, UserCallback Callback);
+int FuzzerDriver(int argc, char **argv, DeprecatedUserCallback Callback);
 
 class FuzzerRandomBase {
  public:
@@ -81,6 +87,8 @@ class MutationDispatcher {
   size_t Mutate_AddWordFromDictionary(uint8_t *Data, size_t Size,
                                       size_t MaxSize);
 
+  size_t Mutate_ChangeASCIIInteger(uint8_t *Data, size_t Size, size_t MaxSize);
+
   /// Applies one of the above mutations.
   /// Returns the new size of data which could be up to MaxSize.
   size_t Mutate(uint8_t *Data, size_t Size, size_t MaxSize);
@@ -114,7 +122,7 @@ class MyFuzzer : public fuzzer::UserSuppliedFuzzer {
  public:
   MyFuzzer(fuzzer::FuzzerRandomBase *Rand);
   // Must define the target function.
-  void TargetFunction(...) { ... }
+  int TargetFunction(...) { ...; return 0; }
   // Optionally define the mutator.
   size_t Mutate(...) { ... }
   // Optionally define the CrossOver method.
@@ -132,7 +140,7 @@ class UserSuppliedFuzzer {
   UserSuppliedFuzzer();  // Deprecated, don't use.
   UserSuppliedFuzzer(FuzzerRandomBase *Rand);
   /// Executes the target function on 'Size' bytes of 'Data'.
-  virtual void TargetFunction(const uint8_t *Data, size_t Size) = 0;
+  virtual int TargetFunction(const uint8_t *Data, size_t Size) = 0;
   /// Mutates 'Size' bytes of data in 'Data' inplace into up to 'MaxSize' bytes,
   /// returns the new size of the data, which should be positive.
   virtual size_t Mutate(uint8_t *Data, size_t Size, size_t MaxSize) {
@@ -159,6 +167,10 @@ class UserSuppliedFuzzer {
 
 /// Runs the fuzzing with the UserSuppliedFuzzer.
 int FuzzerDriver(int argc, char **argv, UserSuppliedFuzzer &USF);
+
+/// More C++-ish interface.
+int FuzzerDriver(const std::vector<std::string> &Args, UserSuppliedFuzzer &USF);
+int FuzzerDriver(const std::vector<std::string> &Args, UserCallback Callback);
 
 }  // namespace fuzzer
 

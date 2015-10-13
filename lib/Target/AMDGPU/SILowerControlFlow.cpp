@@ -103,6 +103,10 @@ public:
     return "SI Lower control flow instructions";
   }
 
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.setPreservesCFG();
+    MachineFunctionPass::getAnalysisUsage(AU);
+  }
 };
 
 } // End anonymous namespace
@@ -537,7 +541,11 @@ bool SILowerControlFlowPass::runOnMachineFunction(MachineFunction &MF) {
           Branch(MI);
           break;
 
-        case AMDGPU::SI_INDIRECT_SRC:
+        case AMDGPU::SI_INDIRECT_SRC_V1:
+        case AMDGPU::SI_INDIRECT_SRC_V2:
+        case AMDGPU::SI_INDIRECT_SRC_V4:
+        case AMDGPU::SI_INDIRECT_SRC_V8:
+        case AMDGPU::SI_INDIRECT_SRC_V16:
           IndirectSrc(MI);
           break;
 

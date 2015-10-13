@@ -120,6 +120,16 @@ using namespace llvm;
 
 #define DEBUG_TYPE "msan"
 
+// VMA size definition for architecture that support multiple sizes.
+// AArch64 has 3 VMA sizes: 39, 42 and 48.
+#ifndef SANITIZER_AARCH64_VMA
+# define SANITIZER_AARCH64_VMA 39
+#else
+# if SANITIZER_AARCH64_VMA != 39 && SANITIZER_AARCH64_VMA != 42
+#  error "invalid SANITIZER_AARCH64_VMA size"
+# endif
+#endif
+
 static const unsigned kOriginSize = 4;
 static const unsigned kMinOriginAlignment = 4;
 static const unsigned kShadowTLSAlignment = 8;
@@ -148,7 +158,7 @@ static cl::opt<bool> ClPoisonStackWithCall("msan-poison-stack-with-call",
        cl::desc("poison uninitialized stack variables with a call"),
        cl::Hidden, cl::init(false));
 static cl::opt<int> ClPoisonStackPattern("msan-poison-stack-pattern",
-       cl::desc("poison uninitialized stack variables with the given patter"),
+       cl::desc("poison uninitialized stack variables with the given pattern"),
        cl::Hidden, cl::init(0xff));
 static cl::opt<bool> ClPoisonUndef("msan-poison-undef",
        cl::desc("poison undef temps"),
@@ -222,10 +232,17 @@ static const MemoryMapParams Linux_I386_MemoryMapParams = {
 
 // x86_64 Linux
 static const MemoryMapParams Linux_X86_64_MemoryMapParams = {
+#ifdef MSAN_LINUX_X86_64_OLD_MAPPING
   0x400000000000,  // AndMask
   0,               // XorMask (not used)
   0,               // ShadowBase (not used)
   0x200000000000,  // OriginBase
+#else
+  0,               // AndMask (not used)
+  0x500000000000,  // XorMask
+  0,               // ShadowBase (not used)
+  0x100000000000,  // OriginBase
+#endif
 };
 
 // mips64 Linux
@@ -242,6 +259,21 @@ static const MemoryMapParams Linux_PowerPC64_MemoryMapParams = {
   0x100000000000,  // XorMask
   0x080000000000,  // ShadowBase
   0x1C0000000000,  // OriginBase
+};
+
+// aarch64 Linux
+static const MemoryMapParams Linux_AArch64_MemoryMapParams = {
+#if SANITIZER_AARCH64_VMA == 39
+  0x007C00000000,  // AndMask
+  0x000100000000,  // XorMask
+  0x004000000000,  // ShadowBase
+  0x004300000000,  // OriginBase
+#elif SANITIZER_AARCH64_VMA == 42
+  0x03E000000000,  // AndMask
+  0x001000000000,  // XorMask
+  0x010000000000,  // ShadowBase
+  0x012000000000,  // OriginBase
+#endif
 };
 
 // i386 FreeBSD
@@ -266,13 +298,18 @@ static const PlatformMemoryMapParams Linux_X86_MemoryMapParams = {
 };
 
 static const PlatformMemoryMapParams Linux_MIPS_MemoryMapParams = {
-  NULL,
+  nullptr,
   &Linux_MIPS64_MemoryMapParams,
 };
 
 static const PlatformMemoryMapParams Linux_PowerPC_MemoryMapParams = {
-  NULL,
+  nullptr,
   &Linux_PowerPC64_MemoryMapParams,
+};
+
+static const PlatformMemoryMapParams Linux_ARM_MemoryMapParams = {
+  nullptr,
+  &Linux_AArch64_MemoryMapParams,
 };
 
 static const PlatformMemoryMapParams FreeBSD_X86_MemoryMapParams = {
@@ -354,7 +391,7 @@ class MemorySanitizer : public FunctionPass {
   friend struct VarArgAMD64Helper;
   friend struct VarArgMIPS64Helper;
 };
-}  // namespace
+} // anonymous namespace
 
 char MemorySanitizer::ID = 0;
 INITIALIZE_PASS(MemorySanitizer, "msan",
@@ -376,7 +413,6 @@ static GlobalVariable *createPrivateNonConstGlobalForString(Module &M,
   return new GlobalVariable(M, StrConst->getType(), /*isConstant=*/false,
                             GlobalValue::PrivateLinkage, StrConst, "");
 }
-
 
 /// \brief Insert extern declaration of runtime-provided functions and globals.
 void MemorySanitizer::initializeCallbacks(Module &M) {
@@ -495,6 +531,10 @@ bool MemorySanitizer::doInitialization(Module &M) {
         case Triple::ppc64:
         case Triple::ppc64le:
           MapParams = Linux_PowerPC_MemoryMapParams.bits64;
+          break;
+        case Triple::aarch64:
+        case Triple::aarch64_be:
+          MapParams = Linux_ARM_MemoryMapParams.bits64;
           break;
         default:
           report_fatal_error("unsupported architecture");
@@ -697,7 +737,7 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
         Value *Cmp = IRB.CreateICmpNE(
             ConvertedShadow, getCleanShadow(ConvertedShadow), "_mscmp");
         Instruction *CheckTerm = SplitBlockAndInsertIfThen(
-            Cmp, IRB.GetInsertPoint(), false, MS.OriginStoreWeights);
+            Cmp, &*IRB.GetInsertPoint(), false, MS.OriginStoreWeights);
         IRBuilder<> IRBNew(CheckTerm);
         paintOrigin(IRBNew, updateOrigin(Origin, IRBNew),
                     getOriginPtr(Addr, IRBNew, Alignment), StoreSize,
@@ -893,16 +933,17 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
   ///
   /// Offset = (Addr & ~AndMask) ^ XorMask
   Value *getShadowPtrOffset(Value *Addr, IRBuilder<> &IRB) {
+    Value *OffsetLong = IRB.CreatePointerCast(Addr, MS.IntptrTy);
+
     uint64_t AndMask = MS.MapParams->AndMask;
-    assert(AndMask != 0 && "AndMask shall be specified");
-    Value *OffsetLong =
-      IRB.CreateAnd(IRB.CreatePointerCast(Addr, MS.IntptrTy),
-                    ConstantInt::get(MS.IntptrTy, ~AndMask));
+    if (AndMask)
+      OffsetLong =
+          IRB.CreateAnd(OffsetLong, ConstantInt::get(MS.IntptrTy, ~AndMask));
 
     uint64_t XorMask = MS.MapParams->XorMask;
-    if (XorMask != 0)
-      OffsetLong = IRB.CreateXor(OffsetLong,
-                                 ConstantInt::get(MS.IntptrTy, XorMask));
+    if (XorMask)
+      OffsetLong =
+          IRB.CreateXor(OffsetLong, ConstantInt::get(MS.IntptrTy, XorMask));
     return OffsetLong;
   }
 
@@ -2510,9 +2551,10 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
     // Until we have full dynamic coverage, make sure the retval shadow is 0.
     Value *Base = getShadowPtrForRetval(&I, IRBBefore);
     IRBBefore.CreateAlignedStore(getCleanShadow(&I), Base, kShadowTLSAlignment);
-    Instruction *NextInsn = nullptr;
+    BasicBlock::iterator NextInsn;
     if (CS.isCall()) {
-      NextInsn = I.getNextNode();
+      NextInsn = ++I.getIterator();
+      assert(NextInsn != I.getParent()->end());
     } else {
       BasicBlock *NormalDest = cast<InvokeInst>(&I)->getNormalDest();
       if (!NormalDest->getSinglePredecessor()) {
@@ -2524,10 +2566,10 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
         return;
       }
       NextInsn = NormalDest->getFirstInsertionPt();
-      assert(NextInsn &&
+      assert(NextInsn != NormalDest->end() &&
              "Could not find insertion point for retval shadow load");
     }
-    IRBuilder<> IRBAfter(NextInsn);
+    IRBuilder<> IRBAfter(&*NextInsn);
     Value *RetvalShadow =
       IRBAfter.CreateAlignedLoad(getShadowPtrForRetval(&I, IRBAfter),
                                  kShadowTLSAlignment, "_msret");
@@ -3071,7 +3113,7 @@ VarArgHelper *CreateVarArgHelper(Function &Func, MemorySanitizer &Msan,
     return new VarArgNoOpHelper(Func, Msan, Visitor);
 }
 
-}  // namespace
+} // anonymous namespace
 
 bool MemorySanitizer::runOnFunction(Function &F) {
   if (&F == MsanCtorFunction)
