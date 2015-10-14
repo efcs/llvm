@@ -279,6 +279,7 @@ NVPTXTargetLowering::NVPTXTargetLowering(const NVPTXTargetMachine &TM,
   setTargetDAGCombine(ISD::FADD);
   setTargetDAGCombine(ISD::MUL);
   setTargetDAGCombine(ISD::SHL);
+  setTargetDAGCombine(ISD::SELECT);
 
   // Now deduce the information based on the above mentioned
   // actions
@@ -4059,6 +4060,67 @@ static SDValue PerformANDCombine(SDNode *N,
   return SDValue();
 }
 
+static SDValue PerformSELECTCombine(SDNode *N,
+                                    TargetLowering::DAGCombinerInfo &DCI) {
+  // Currently this detects patterns for integer min and max and
+  // lowers them to PTX-specific intrinsics that enable hardware
+  // support.
+
+  const SDValue Cond = N->getOperand(0);
+  if (Cond.getOpcode() != ISD::SETCC) return SDValue();
+
+  const SDValue LHS = Cond.getOperand(0);
+  const SDValue RHS = Cond.getOperand(1);
+  const SDValue True = N->getOperand(1);
+  const SDValue False = N->getOperand(2);
+  if (!(LHS == True && RHS == False) && !(LHS == False && RHS == True))
+    return SDValue();
+
+  const EVT VT = N->getValueType(0);
+  if (VT != MVT::i32 && VT != MVT::i64) return SDValue();
+
+  const ISD::CondCode CC = cast<CondCodeSDNode>(Cond.getOperand(2))->get();
+  SDValue Larger;  // The larger of LHS and RHS when condition is true.
+  switch (CC) {
+    case ISD::SETULT:
+    case ISD::SETULE:
+    case ISD::SETLT:
+    case ISD::SETLE:
+      Larger = RHS;
+      break;
+
+    case ISD::SETGT:
+    case ISD::SETGE:
+    case ISD::SETUGT:
+    case ISD::SETUGE:
+      Larger = LHS;
+      break;
+
+    default:
+      return SDValue();
+  }
+  const bool IsMax = (Larger == True);
+  const bool IsSigned = ISD::isSignedIntSetCC(CC);
+
+  unsigned IntrinsicId;
+  if (VT == MVT::i32) {
+    if (IsSigned)
+      IntrinsicId = IsMax ? Intrinsic::nvvm_max_i : Intrinsic::nvvm_min_i;
+    else
+      IntrinsicId = IsMax ? Intrinsic::nvvm_max_ui : Intrinsic::nvvm_min_ui;
+  } else {
+    assert(VT == MVT::i64);
+    if (IsSigned)
+      IntrinsicId = IsMax ? Intrinsic::nvvm_max_ll : Intrinsic::nvvm_min_ll;
+    else
+      IntrinsicId = IsMax ? Intrinsic::nvvm_max_ull : Intrinsic::nvvm_min_ull;
+  }
+
+  SDLoc DL(N);
+  return DCI.DAG.getNode(ISD::INTRINSIC_WO_CHAIN, DL, VT,
+                         DCI.DAG.getConstant(IntrinsicId, DL, VT), LHS, RHS);
+}
+
 enum OperandSignedness {
   Signed = 0,
   Unsigned,
@@ -4240,6 +4302,8 @@ SDValue NVPTXTargetLowering::PerformDAGCombine(SDNode *N,
       return PerformSHLCombine(N, DCI, OptLevel);
     case ISD::AND:
       return PerformANDCombine(N, DCI);
+    case ISD::SELECT:
+      return PerformSELECTCombine(N, DCI);
   }
   return SDValue();
 }
@@ -4502,25 +4566,25 @@ void NVPTXTargetLowering::ReplaceNodeResults(
 void NVPTXSection::anchor() {}
 
 NVPTXTargetObjectFile::~NVPTXTargetObjectFile() {
-  delete TextSection;
-  delete DataSection;
-  delete BSSSection;
-  delete ReadOnlySection;
+  delete static_cast<NVPTXSection *>(TextSection);
+  delete static_cast<NVPTXSection *>(DataSection);
+  delete static_cast<NVPTXSection *>(BSSSection);
+  delete static_cast<NVPTXSection *>(ReadOnlySection);
 
-  delete StaticCtorSection;
-  delete StaticDtorSection;
-  delete LSDASection;
-  delete EHFrameSection;
-  delete DwarfAbbrevSection;
-  delete DwarfInfoSection;
-  delete DwarfLineSection;
-  delete DwarfFrameSection;
-  delete DwarfPubTypesSection;
-  delete DwarfDebugInlineSection;
-  delete DwarfStrSection;
-  delete DwarfLocSection;
-  delete DwarfARangesSection;
-  delete DwarfRangesSection;
+  delete static_cast<NVPTXSection *>(StaticCtorSection);
+  delete static_cast<NVPTXSection *>(StaticDtorSection);
+  delete static_cast<NVPTXSection *>(LSDASection);
+  delete static_cast<NVPTXSection *>(EHFrameSection);
+  delete static_cast<NVPTXSection *>(DwarfAbbrevSection);
+  delete static_cast<NVPTXSection *>(DwarfInfoSection);
+  delete static_cast<NVPTXSection *>(DwarfLineSection);
+  delete static_cast<NVPTXSection *>(DwarfFrameSection);
+  delete static_cast<NVPTXSection *>(DwarfPubTypesSection);
+  delete static_cast<const NVPTXSection *>(DwarfDebugInlineSection);
+  delete static_cast<NVPTXSection *>(DwarfStrSection);
+  delete static_cast<NVPTXSection *>(DwarfLocSection);
+  delete static_cast<NVPTXSection *>(DwarfARangesSection);
+  delete static_cast<NVPTXSection *>(DwarfRangesSection);
 }
 
 MCSection *

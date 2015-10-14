@@ -697,7 +697,7 @@ StringRef sys::getHostCPUName() {
     if (Lines[I].startswith("features")) {
       size_t Pos = Lines[I].find(":");
       if (Pos != StringRef::npos) {
-        Lines[I].drop_front(Pos + 1).split(CPUFeatures, " ");
+        Lines[I].drop_front(Pos + 1).split(CPUFeatures, ' ');
         break;
       }
     }
@@ -769,6 +769,7 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
   Features["movbe"]  = (ECX >> 22) & 1;
   Features["popcnt"] = (ECX >> 23) & 1;
   Features["aes"]    = (ECX >> 25) & 1;
+  Features["xsave"]  = (ECX >> 26) & 1;
   Features["rdrnd"]  = (ECX >> 30) & 1;
 
   // If CPUID indicates support for XSAVE, XRESTORE and AVX, and XGETBV
@@ -819,6 +820,14 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
   Features["avx512bw"] = HasLeaf7 && ((EBX >> 30) & 1) && HasAVX512Save;
   Features["avx512vl"] = HasLeaf7 && ((EBX >> 31) & 1) && HasAVX512Save;
 
+
+  bool HasLeafD = MaxLevel >= 0xd &&
+    !GetX86CpuIDAndInfoEx(0xd, 0x1, &EAX, &EBX, &ECX, &EDX);
+
+  Features["xsaveopt"] = Features["xsave"] && HasLeafD && ((EAX >> 0) & 1);
+  Features["xsavec"]   = Features["xsave"] && HasLeafD && ((EAX >> 1) & 1);
+  Features["xsaves"]   = Features["xsave"] && HasLeafD && ((EAX >> 3) & 1);
+
   return true;
 }
 #elif defined(__linux__) && (defined(__arm__) || defined(__aarch64__))
@@ -840,7 +849,7 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
   // Look for the CPU features.
   for (unsigned I = 0, E = Lines.size(); I != E; ++I)
     if (Lines[I].startswith("Features")) {
-      Lines[I].split(CPUFeatures, " ");
+      Lines[I].split(CPUFeatures, ' ');
       break;
     }
 

@@ -121,7 +121,7 @@ Function* cloneFunctionDecl(Module &Dst, const Function &F,
     auto NewArgI = NewF->arg_begin();
     for (auto ArgI = F.arg_begin(), ArgE = F.arg_end(); ArgI != ArgE;
          ++ArgI, ++NewArgI)
-      (*VMap)[ArgI] = NewArgI;
+      (*VMap)[&*ArgI] = &*NewArgI;
   }
 
   return NewF;
@@ -175,6 +175,20 @@ void moveGlobalVariableInitializer(GlobalVariable &OrigGV,
 
   NewGV->setInitializer(MapValue(OrigGV.getInitializer(), VMap, RF_None,
                                  nullptr, Materializer));
+}
+
+GlobalAlias* cloneGlobalAlias(Module &Dst, const GlobalAlias &OrigA,
+                              ValueToValueMapTy &VMap,
+                              ValueMaterializer *Materializer) {
+  assert(OrigA.getAliasee() && "Original alias doesn't have an aliasee?");
+  auto *NewA = GlobalAlias::create(OrigA.getValueType(),
+                                   OrigA.getType()->getPointerAddressSpace(),
+                                   OrigA.getLinkage(), OrigA.getName(), &Dst);
+  NewA->copyAttributesFrom(&OrigA);
+  VMap[&OrigA] = NewA;
+  NewA->setAliasee(cast<Constant>(MapValue(OrigA.getAliasee(), VMap, RF_None,
+                                           nullptr, Materializer)));
+  return NewA;
 }
 
 } // End namespace orc.

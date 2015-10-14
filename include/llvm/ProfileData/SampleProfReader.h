@@ -24,6 +24,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ErrorOr.h"
+#include "llvm/Support/GCOV.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -57,7 +58,7 @@ namespace sampleprof {
 ///
 /// The reader supports two file formats: text and binary. The text format
 /// is useful for debugging and testing, while the binary format is more
-/// compact. They can both be used interchangeably.
+/// compact and I/O efficient. They can both be used interchangeably.
 class SampleProfileReader {
 public:
   SampleProfileReader(std::unique_ptr<MemoryBuffer> B, LLVMContext &C)
@@ -86,7 +87,7 @@ public:
   StringMap<FunctionSamples> &getProfiles() { return Profiles; }
 
   /// \brief Report a parse error message.
-  void reportParseError(int64_t LineNumber, Twine Msg) const {
+  void reportError(int64_t LineNumber, Twine Msg) const {
     Ctx.diagnose(DiagnosticInfoSampleProfile(Buffer->getBufferIdentifier(),
                                              LineNumber, Msg));
   }
@@ -153,14 +154,75 @@ protected:
   /// \returns the read value.
   ErrorOr<StringRef> readString();
 
+  /// Read a string indirectly via the name table.
+  ErrorOr<StringRef> readStringFromTable();
+
   /// \brief Return true if we've reached the end of file.
   bool at_eof() const { return Data >= End; }
+
+  /// Read the contents of the given profile instance.
+  std::error_code readProfile(FunctionSamples &FProfile);
 
   /// \brief Points to the current location in the buffer.
   const uint8_t *Data;
 
   /// \brief Points to the end of the buffer.
   const uint8_t *End;
+
+  /// Function name table.
+  std::vector<StringRef> NameTable;
+};
+
+typedef SmallVector<FunctionSamples *, 10> InlineCallStack;
+
+// Supported histogram types in GCC.  Currently, we only need support for
+// call target histograms.
+enum HistType {
+  HIST_TYPE_INTERVAL,
+  HIST_TYPE_POW2,
+  HIST_TYPE_SINGLE_VALUE,
+  HIST_TYPE_CONST_DELTA,
+  HIST_TYPE_INDIR_CALL,
+  HIST_TYPE_AVERAGE,
+  HIST_TYPE_IOR,
+  HIST_TYPE_INDIR_CALL_TOPN
+};
+
+class SampleProfileReaderGCC : public SampleProfileReader {
+public:
+  SampleProfileReaderGCC(std::unique_ptr<MemoryBuffer> B, LLVMContext &C)
+      : SampleProfileReader(std::move(B), C), GcovBuffer(Buffer.get()) {}
+
+  /// \brief Read and validate the file header.
+  std::error_code readHeader() override;
+
+  /// \brief Read sample profiles from the associated file.
+  std::error_code read() override;
+
+  /// \brief Return true if \p Buffer is in the format supported by this class.
+  static bool hasFormat(const MemoryBuffer &Buffer);
+
+protected:
+  std::error_code readNameTable();
+  std::error_code readOneFunctionProfile(const InlineCallStack &InlineStack,
+                                         bool Update, uint32_t Offset);
+  std::error_code readFunctionProfiles();
+  std::error_code skipNextWord();
+  template <typename T> ErrorOr<T> readNumber();
+  ErrorOr<StringRef> readString();
+
+  /// \brief Read the section tag and check that it's the same as \p Expected.
+  std::error_code readSectionTag(uint32_t Expected);
+
+  /// GCOV buffer containing the profile.
+  GCOVBuffer GcovBuffer;
+
+  /// Function names in this profile.
+  std::vector<std::string> Names;
+
+  /// GCOV tags used to separate sections in the profile file.
+  static const uint32_t GCOVTagAFDOFileNames = 0xaa000000;
+  static const uint32_t GCOVTagAFDOFunction = 0xac000000;
 };
 
 } // End namespace sampleprof

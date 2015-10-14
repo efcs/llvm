@@ -72,7 +72,10 @@ public:
   /// ValueMap - Since we emit code for the function a basic block at a time,
   /// we must remember which virtual registers hold the values for
   /// cross-basic-block values.
-  DenseMap<const Value*, unsigned> ValueMap;
+  DenseMap<const Value *, unsigned> ValueMap;
+
+  /// Track virtual registers created for exception pointers.
+  DenseMap<const Value *, unsigned> CatchPadExceptionPointers;
 
   // Keep track of frame indices allocated for statepoints as they could be used
   // across basic block boundaries.
@@ -99,7 +102,7 @@ public:
   /// RegFixups - Registers which need to be replaced after isel is done.
   DenseMap<unsigned, unsigned> RegFixups;
 
-  /// StatepointStackSlots - A list of temporary stack slots (frame indices) 
+  /// StatepointStackSlots - A list of temporary stack slots (frame indices)
   /// used to spill values at a statepoint.  We store them here to enable
   /// reuse of the same stack slots across different statepoints in different
   /// basic blocks.
@@ -161,10 +164,13 @@ public:
   }
 
   unsigned CreateReg(MVT VT);
-  
+
   unsigned CreateRegs(Type *Ty);
-  
+
   unsigned InitializeRegForValue(const Value *V) {
+    // Tokens never live in vregs.
+    if (V->getType()->isTokenTy())
+      return 0;
     unsigned &R = ValueMap[V];
     assert(R == 0 && "Already initialized this value register!");
     return R = CreateRegs(V->getType());
@@ -230,6 +236,9 @@ public:
 
   /// getArgumentFrameIndex - Get frame index for the byval argument.
   int getArgumentFrameIndex(const Argument *A);
+
+  unsigned getCatchPadExceptionPointerVReg(const Value *CPI,
+                                           const TargetRegisterClass *RC);
 
 private:
   void addSEHHandlersForLPads(ArrayRef<const LandingPadInst *> LPads);

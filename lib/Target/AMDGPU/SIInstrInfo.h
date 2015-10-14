@@ -39,12 +39,6 @@ private:
                                          unsigned SubIdx,
                                          const TargetRegisterClass *SubRC) const;
 
-  unsigned split64BitImm(SmallVectorImpl<MachineInstr *> &Worklist,
-                         MachineBasicBlock::iterator MI,
-                         MachineRegisterInfo &MRI,
-                         const TargetRegisterClass *RC,
-                         const MachineOperand &Op) const;
-
   void swapOperands(MachineBasicBlock::iterator Inst) const;
 
   void splitScalar64BitUnaryOp(SmallVectorImpl<MachineInstr *> &Worklist,
@@ -58,10 +52,23 @@ private:
   void splitScalar64BitBFE(SmallVectorImpl<MachineInstr *> &Worklist,
                            MachineInstr *Inst) const;
 
+  void addUsersToMoveToVALUWorklist(
+    unsigned Reg, MachineRegisterInfo &MRI,
+    SmallVectorImpl<MachineInstr *> &Worklist) const;
+
+  const TargetRegisterClass *
+  getDestEquivalentVGPRClass(const MachineInstr &Inst) const;
+
   bool checkInstOffsetsDoNotOverlap(MachineInstr *MIa,
                                     MachineInstr *MIb) const;
 
   unsigned findUsedSGPR(const MachineInstr *MI, int OpIndices[3]) const;
+
+protected:
+  MachineInstr *commuteInstructionImpl(MachineInstr *MI,
+                                       bool NewMI,
+                                       unsigned OpIdx0,
+                                       unsigned OpIdx1) const override;
 
 public:
   explicit SIInstrInfo(const AMDGPUSubtarget &st);
@@ -115,10 +122,10 @@ public:
   // register.  If there is no hardware instruction that can store to \p
   // DstRC, then AMDGPU::COPY is returned.
   unsigned getMovOpcode(const TargetRegisterClass *DstRC) const;
+
+  LLVM_READONLY
   int commuteOpcode(const MachineInstr &MI) const;
 
-  MachineInstr *commuteInstruction(MachineInstr *MI,
-                                   bool NewMI = false) const override;
   bool findCommutedOpIndices(MachineInstr *MI,
                              unsigned &SrcOpIdx1,
                              unsigned &SrcOpIdx2) const override;
@@ -305,7 +312,8 @@ public:
                  unsigned HalfImmOp, unsigned HalfSGPROp,
                  MachineInstr *&Lo, MachineInstr *&Hi) const;
 
-  void moveSMRDToVALU(MachineInstr *MI, MachineRegisterInfo &MRI) const;
+  void moveSMRDToVALU(MachineInstr *MI, MachineRegisterInfo &MRI,
+                      SmallVectorImpl<MachineInstr *> &Worklist) const;
 
   /// \brief Replace this instruction's opcode with the equivalent VALU
   /// opcode.  This function will also move the users of \p MI to the
@@ -338,25 +346,39 @@ public:
 
   /// \brief Returns the operand named \p Op.  If \p MI does not have an
   /// operand named \c Op, this function returns nullptr.
+  LLVM_READONLY
   MachineOperand *getNamedOperand(MachineInstr &MI, unsigned OperandName) const;
 
+  LLVM_READONLY
   const MachineOperand *getNamedOperand(const MachineInstr &MI,
                                         unsigned OpName) const {
     return getNamedOperand(const_cast<MachineInstr &>(MI), OpName);
   }
 
   uint64_t getDefaultRsrcDataFormat() const;
-
+  uint64_t getScratchRsrcWords23() const;
 };
 
 namespace AMDGPU {
-
+  LLVM_READONLY
   int getVOPe64(uint16_t Opcode);
+
+  LLVM_READONLY
   int getVOPe32(uint16_t Opcode);
+
+  LLVM_READONLY
   int getCommuteRev(uint16_t Opcode);
+
+  LLVM_READONLY
   int getCommuteOrig(uint16_t Opcode);
+
+  LLVM_READONLY
   int getAddr64Inst(uint16_t Opcode);
+
+  LLVM_READONLY
   int getAtomicRetOp(uint16_t Opcode);
+
+  LLVM_READONLY
   int getAtomicNoRetOp(uint16_t Opcode);
 
   const uint64_t RSRC_DATA_FORMAT = 0xf00000000000LL;

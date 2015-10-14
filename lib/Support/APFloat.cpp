@@ -841,6 +841,21 @@ APFloat::semanticsPrecision(const fltSemantics &semantics)
 {
   return semantics.precision;
 }
+APFloat::ExponentType
+APFloat::semanticsMaxExponent(const fltSemantics &semantics)
+{
+  return semantics.maxExponent;
+}
+APFloat::ExponentType
+APFloat::semanticsMinExponent(const fltSemantics &semantics)
+{
+  return semantics.minExponent;
+}
+unsigned int
+APFloat::semanticsSizeInBits(const fltSemantics &semantics)
+{
+  return semantics.sizeInBits;
+}
 
 const integerPart *
 APFloat::significandParts() const
@@ -1756,7 +1771,7 @@ APFloat::remainder(const APFloat &rhs)
 /* Normalized llvm frem (C fmod).
    This is not currently correct in all cases.  */
 APFloat::opStatus
-APFloat::mod(const APFloat &rhs, roundingMode rounding_mode)
+APFloat::mod(const APFloat &rhs)
 {
   opStatus fs;
   fs = modSpecials(rhs);
@@ -1781,10 +1796,10 @@ APFloat::mod(const APFloat &rhs, roundingMode rounding_mode)
                                           rmNearestTiesToEven);
     assert(fs==opOK);   // should always work
 
-    fs = V.multiply(rhs, rounding_mode);
+    fs = V.multiply(rhs, rmNearestTiesToEven);
     assert(fs==opOK || fs==opInexact);   // should not overflow or underflow
 
-    fs = subtract(V, rounding_mode);
+    fs = subtract(V, rmNearestTiesToEven);
     assert(fs==opOK || fs==opInexact);   // likewise
 
     if (isZero())
