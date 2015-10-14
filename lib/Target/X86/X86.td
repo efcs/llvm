@@ -37,6 +37,18 @@ def FeatureCMOV    : SubtargetFeature<"cmov","HasCMov", "true",
 def FeaturePOPCNT   : SubtargetFeature<"popcnt", "HasPOPCNT", "true",
                                        "Support POPCNT instruction">;
 
+def FeatureXSAVE   : SubtargetFeature<"xsave", "HasXSAVE", "true",
+                                       "Support xsave instructions">;
+
+def FeatureXSAVEOPT: SubtargetFeature<"xsaveopt", "HasXSAVEOPT", "true",
+                                       "Support xsaveopt instructions">;
+
+def FeatureXSAVEC  : SubtargetFeature<"xsavec", "HasXSAVEC", "true",
+                                       "Support xsavec instructions">;
+
+def FeatureXSAVES  : SubtargetFeature<"xsaves", "HasXSAVES", "true",
+                                       "Support xsaves instructions">;
+
 // The MMX subtarget feature is separate from the rest of the SSE features
 // because it's important (for odd compatibility reasons) to be able to
 // turn it off explicitly while allowing SSE+ to be on.
@@ -170,7 +182,7 @@ def FeatureRDSEED  : SubtargetFeature<"rdseed", "HasRDSEED", "true",
                                       "Support RDSEED instruction">;
 def FeatureMPX     : SubtargetFeature<"mpx", "HasMPX", "true",
                                       "Support MPX instructions">;
-def FeatureLeaForSP : SubtargetFeature<"lea-sp", "UseLeaForSP", "true",
+def FeatureLEAForSP : SubtargetFeature<"lea-sp", "UseLeaForSP", "true",
                                      "Use LEA for adjusting the stack pointer">;
 def FeatureSlowDivide32 : SubtargetFeature<"idivl-to-divb",
                                      "HasSlowDivide32", "true",
@@ -272,7 +284,7 @@ class BonnellProc<string Name> : ProcessorModel<Name, AtomModel, [
   FeatureCMPXCHG16B,
   FeatureMOVBE,
   FeatureSlowBTMem,
-  FeatureLeaForSP,
+  FeatureLEAForSP,
   FeatureSlowDivide32,
   FeatureSlowDivide64,
   FeatureCallRegIndirect,
@@ -335,7 +347,9 @@ class SandyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
   FeatureSlowUAMem32,
   FeaturePOPCNT,
   FeatureAES,
-  FeaturePCLMUL
+  FeaturePCLMUL,
+  FeatureXSAVE,
+  FeatureXSAVEOPT
 ]>;
 def : SandyBridgeProc<"sandybridge">;
 def : SandyBridgeProc<"corei7-avx">; // Legacy alias.
@@ -349,6 +363,8 @@ class IvyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
   FeaturePOPCNT,
   FeatureAES,
   FeaturePCLMUL,
+  FeatureXSAVE,
+  FeatureXSAVEOPT,
   FeatureRDRAND,
   FeatureF16C,
   FeatureFSGSBase
@@ -365,6 +381,8 @@ class HaswellProc<string Name> : ProcessorModel<Name, HaswellModel, [
   FeatureAES,
   FeaturePCLMUL,
   FeatureRDRAND,
+  FeatureXSAVE,
+  FeatureXSAVEOPT,
   FeatureF16C,
   FeatureFSGSBase,
   FeatureMOVBE,
@@ -387,6 +405,8 @@ class BroadwellProc<string Name> : ProcessorModel<Name, HaswellModel, [
   FeaturePOPCNT,
   FeatureAES,
   FeaturePCLMUL,
+  FeatureXSAVE,
+  FeatureXSAVEOPT,
   FeatureRDRAND,
   FeatureF16C,
   FeatureFSGSBase,
@@ -442,6 +462,8 @@ class SkylakeProc<string Name> : ProcessorModel<Name, HaswellModel, [
   FeaturePOPCNT,
   FeatureAES,
   FeaturePCLMUL,
+  FeatureXSAVE,
+  FeatureXSAVEOPT,
   FeatureRDRAND,
   FeatureF16C,
   FeatureFSGSBase,
@@ -455,7 +477,9 @@ class SkylakeProc<string Name> : ProcessorModel<Name, HaswellModel, [
   FeatureADX,
   FeatureRDSEED,
   FeatureSlowIncDec,
-  FeatureMPX
+  FeatureMPX,
+  FeatureXSAVEC,
+  FeatureXSAVES
 ]>;
 def : SkylakeProc<"skylake">;
 def : SkylakeProc<"skx">; // Legacy alias.
@@ -515,6 +539,7 @@ def : Proc<"btver1", [
   FeaturePRFCHW,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
   FeatureSlowSHLD
 ]>;
 
@@ -532,6 +557,8 @@ def : ProcessorModel<"btver2", BtVer2Model, [
   FeatureMOVBE,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
+  FeatureXSAVEOPT,
   FeatureSlowSHLD
 ]>;
 
@@ -548,6 +575,7 @@ def : Proc<"bdver1", [
   FeatureSSE4A,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
   FeatureSlowSHLD
 ]>;
 // Piledriver
@@ -564,6 +592,7 @@ def : Proc<"bdver2", [
   FeatureF16C,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
   FeatureBMI,
   FeatureTBM,
   FeatureFMA,
@@ -584,9 +613,11 @@ def : Proc<"bdver3", [
   FeatureF16C,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
   FeatureBMI,
   FeatureTBM,
   FeatureFMA,
+  FeatureXSAVEOPT,
   FeatureSlowSHLD,
   FeatureFSGSBase
 ]>;
@@ -604,11 +635,12 @@ def : Proc<"bdver4", [
   FeatureF16C,
   FeatureLZCNT,
   FeaturePOPCNT,
+  FeatureXSAVE,
   FeatureBMI,
   FeatureBMI2,
   FeatureTBM,
   FeatureFMA,
-  FeatureSSE4A,
+  FeatureXSAVEOPT,
   FeatureFSGSBase
 ]>;
 

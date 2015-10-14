@@ -255,9 +255,9 @@ def MOV32ri64 : Ii32<0xb8, AddRegFrm, (outs GR32:$dst), (ins i64i32imm:$src),
                      "", [], IIC_ALU_NONMEM>, Sched<[WriteALU]>;
 
 // This 64-bit pseudo-move can be used for both a 64-bit constant that is
-// actually the zero-extension of a 32-bit constant, and for labels in the
+// actually the zero-extension of a 32-bit constant and for labels in the
 // x86-64 small code model.
-def mov64imm32 : ComplexPattern<i64, 1, "SelectMOV64Imm32", [imm, X86Wrapper]>;
+def mov64imm32 : ComplexPattern<i64, 1, "selectMOV64Imm32", [imm, X86Wrapper]>;
 
 let AddedComplexity = 1 in
 def : Pat<(i64 mov64imm32:$src),
@@ -774,12 +774,14 @@ multiclass RELEASE_BINOP_MI<SDNode op> {
         [(atomic_store_64 addr:$dst, (op
             (atomic_load_64 addr:$dst), GR64:$src))]>;
 }
-defm RELEASE_ADD : RELEASE_BINOP_MI<add>;
-defm RELEASE_AND : RELEASE_BINOP_MI<and>;
-defm RELEASE_OR  : RELEASE_BINOP_MI<or>;
-defm RELEASE_XOR : RELEASE_BINOP_MI<xor>;
-// Note: we don't deal with sub, because substractions of constants are
-// optimized into additions before this code can run
+let Defs = [EFLAGS] in {
+  defm RELEASE_ADD : RELEASE_BINOP_MI<add>;
+  defm RELEASE_AND : RELEASE_BINOP_MI<and>;
+  defm RELEASE_OR  : RELEASE_BINOP_MI<or>;
+  defm RELEASE_XOR : RELEASE_BINOP_MI<xor>;
+  // Note: we don't deal with sub, because substractions of constants are
+  //       optimized into additions before this code can run.
+}
 
 // Same as above, but for floating-point.
 // FIXME: imm version.
