@@ -29,7 +29,6 @@
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
@@ -1607,8 +1606,7 @@ void JumpThreading::UpdateBlockFreqAndEdgeWeight(BasicBlock *PredBB,
   }
 
   // Normalize edge weights in Weights64 so that the sum of them can fit in
-  MachineBranchProbabilityInfo::normalizeEdgeWeights(BBSuccFreq.begin(),
-                                                     BBSuccFreq.end());
+  BranchProbability::normalizeEdgeWeights(BBSuccFreq.begin(), BBSuccFreq.end());
 
   SmallVector<uint32_t, 4> Weights;
   for (auto Freq : BBSuccFreq)

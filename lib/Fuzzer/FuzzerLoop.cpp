@@ -13,8 +13,12 @@
 #include <sanitizer/coverage_interface.h>
 #include <algorithm>
 
+extern "C" {
+__attribute__((weak)) void __sanitizer_print_stack_trace();
+}
+
 namespace fuzzer {
-static const size_t kMaxUnitSizeToPrint = 4096;
+static const size_t kMaxUnitSizeToPrint = 256;
 
 // Only one Fuzzer per process.
 static Fuzzer *F;
@@ -76,6 +80,11 @@ void Fuzzer::AlarmCallback() {
       PrintUnitInASCIIOrTokens(CurrentUnit, "\n");
     }
     WriteUnitToFileWithPrefix(CurrentUnit, "timeout-");
+    Printf("==%d== ERROR: libFuzzer: timeout after %d seconds\n", GetPid(),
+           Seconds);
+    if (__sanitizer_print_stack_trace)
+      __sanitizer_print_stack_trace();
+    Printf("SUMMARY: libFuzzer: timeout\n");
     exit(1);
   }
 }
@@ -237,6 +246,8 @@ void Fuzzer::WriteToOutputCorpus(const Unit &U) {
 }
 
 void Fuzzer::WriteUnitToFileWithPrefix(const Unit &U, const char *Prefix) {
+  if (!Options.SaveArtifacts)
+    return;
   std::string Path = Options.ArtifactPrefix + Prefix + Hash(U);
   WriteToFile(U, Path);
   Printf("artifact_prefix='%s'; Test unit written to %s\n",
