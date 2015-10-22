@@ -15,6 +15,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
@@ -272,8 +273,8 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool hasARM() const {
     return !STI.getFeatureBits()[ARM::FeatureNoARM];
   }
-  bool hasThumb2DSP() const {
-    return STI.getFeatureBits()[ARM::FeatureDSPThumb2];
+  bool hasDSP() const {
+    return STI.getFeatureBits()[ARM::FeatureDSP];
   }
   bool hasD16() const {
     return STI.getFeatureBits()[ARM::FeatureD16];
@@ -3972,7 +3973,7 @@ ARMAsmParser::parseMSRMaskOperand(OperandVector &Operands) {
     if (FlagsVal == ~0U)
       return MatchOperand_NoMatch;
 
-    if (!hasThumb2DSP() && (FlagsVal & 0x400))
+    if (!hasDSP() && (FlagsVal & 0x400))
       // The _g and _nzcvqg versions are only valid if the DSP extension is
       // available.
       return MatchOperand_NoMatch;
@@ -9016,12 +9017,16 @@ bool ARMAsmParser::parseDirectiveUnreq(SMLoc L) {
 bool ARMAsmParser::parseDirectiveArch(SMLoc L) {
   StringRef Arch = getParser().parseStringToEndOfStatement().trim();
 
-  unsigned ID = ARMTargetParser::parseArch(Arch);
+  unsigned ID = ARM::parseArch(Arch);
 
   if (ID == ARM::AK_INVALID) {
     Error(L, "Unknown arch name");
     return false;
   }
+
+  Triple T;
+  STI.setDefaultFeatures(T.getARMCPUForArch(Arch));
+  setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
 
   getTargetStreamer().emitArch(ID);
   return false;
@@ -9163,9 +9168,9 @@ bool ARMAsmParser::parseDirectiveFPU(SMLoc L) {
   SMLoc FPUNameLoc = getTok().getLoc();
   StringRef FPU = getParser().parseStringToEndOfStatement().trim();
 
-  unsigned ID = ARMTargetParser::parseFPU(FPU);
+  unsigned ID = ARM::parseFPU(FPU);
   std::vector<const char *> Features;
-  if (!ARMTargetParser::getFPUFeatures(ID, Features)) {
+  if (!ARM::getFPUFeatures(ID, Features)) {
     Error(FPUNameLoc, "Unknown FPU name");
     return false;
   }
@@ -9809,7 +9814,7 @@ bool ARMAsmParser::parseDirectiveObjectArch(SMLoc L) {
   SMLoc ArchLoc = Parser.getTok().getLoc();
   getLexer().Lex();
 
-  unsigned ID = ARMTargetParser::parseArch(Arch);
+  unsigned ID = ARM::parseArch(Arch);
 
   if (ID == ARM::AK_INVALID) {
     Error(ArchLoc, "unknown architecture '" + Arch + "'");
@@ -9902,8 +9907,7 @@ static const struct {
     {ARM::FeatureHWDiv, ARM::FeatureHWDivARM} },
   { ARM::AEK_MP, Feature_HasV7 | Feature_IsNotMClass, {ARM::FeatureMP} },
   { ARM::AEK_SIMD, Feature_HasV8, {ARM::FeatureNEON, ARM::FeatureFPARMv8} },
-  // FIXME: Also available in ARMv6-K
-  { ARM::AEK_SEC, Feature_HasV7, {ARM::FeatureTrustZone} },
+  { ARM::AEK_SEC, Feature_HasV6K, {ARM::FeatureTrustZone} },
   // FIXME: Only available in A-class, isel not predicated
   { ARM::AEK_VIRT, Feature_HasV7, {ARM::FeatureVirtualization} },
   // FIXME: Unsupported extensions.
@@ -9934,7 +9938,7 @@ bool ARMAsmParser::parseDirectiveArchExtension(SMLoc L) {
     EnableFeature = false;
     Name = Name.substr(2);
   }
-  unsigned FeatureKind = ARMTargetParser::parseArchExt(Name);
+  unsigned FeatureKind = ARM::parseArchExt(Name);
   if (FeatureKind == ARM::AEK_INVALID)
     Error(ExtLoc, "unknown architectural extension: " + Name);
 

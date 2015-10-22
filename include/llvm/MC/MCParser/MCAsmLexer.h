@@ -135,7 +135,7 @@ protected: // Can only create subclasses.
 
   virtual AsmToken LexToken() = 0;
 
-  void SetError(const SMLoc &errLoc, const std::string &err) {
+  void SetError(SMLoc errLoc, const std::string &err) {
     ErrLoc = errLoc;
     Err = err;
   }
@@ -179,7 +179,7 @@ public:
                             bool ShouldSkipSpace = true) = 0;
 
   /// Get the current error location
-  const SMLoc &getErrLoc() {
+  SMLoc getErrLoc() {
     return ErrLoc;
   }
 
@@ -189,13 +189,13 @@ public:
   }
 
   /// Get the kind of current token.
-  AsmToken::TokenKind getKind() const { return CurTok.getKind(); }
+  AsmToken::TokenKind getKind() const { return getTok().getKind(); }
 
   /// Check if the current token has kind \p K.
-  bool is(AsmToken::TokenKind K) const { return CurTok.is(K); }
+  bool is(AsmToken::TokenKind K) const { return getTok().is(K); }
 
   /// Check if the current token has kind \p K.
-  bool isNot(AsmToken::TokenKind K) const { return CurTok.isNot(K); }
+  bool isNot(AsmToken::TokenKind K) const { return getTok().isNot(K); }
 
   /// Set whether spaces should be ignored by the lexer
   void setSkipSpace(bool val) { SkipSpace = val; }

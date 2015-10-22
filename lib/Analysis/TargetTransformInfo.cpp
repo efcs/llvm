@@ -113,14 +113,12 @@ bool TargetTransformInfo::isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV,
                                         Scale, AddrSpace);
 }
 
-bool TargetTransformInfo::isLegalMaskedStore(Type *DataType,
-                                             int Consecutive) const {
-  return TTIImpl->isLegalMaskedStore(DataType, Consecutive);
+bool TargetTransformInfo::isLegalMaskedStore(Type *DataType) const {
+  return TTIImpl->isLegalMaskedStore(DataType);
 }
 
-bool TargetTransformInfo::isLegalMaskedLoad(Type *DataType,
-                                            int Consecutive) const {
-  return TTIImpl->isLegalMaskedLoad(DataType, Consecutive);
+bool TargetTransformInfo::isLegalMaskedLoad(Type *DataType) const {
+  return TTIImpl->isLegalMaskedLoad(DataType);
 }
 
 int TargetTransformInfo::getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
@@ -344,16 +342,16 @@ TargetTransformInfo::Concept::~Concept() {}
 TargetIRAnalysis::TargetIRAnalysis() : TTICallback(&getDefaultTTI) {}
 
 TargetIRAnalysis::TargetIRAnalysis(
-    std::function<Result(Function &)> TTICallback)
+    std::function<Result(const Function &)> TTICallback)
     : TTICallback(TTICallback) {}
 
-TargetIRAnalysis::Result TargetIRAnalysis::run(Function &F) {
+TargetIRAnalysis::Result TargetIRAnalysis::run(const Function &F) {
   return TTICallback(F);
 }
 
 char TargetIRAnalysis::PassID;
 
-TargetIRAnalysis::Result TargetIRAnalysis::getDefaultTTI(Function &F) {
+TargetIRAnalysis::Result TargetIRAnalysis::getDefaultTTI(const Function &F) {
   return Result(F.getParent()->getDataLayout());
 }
 
@@ -377,7 +375,7 @@ TargetTransformInfoWrapperPass::TargetTransformInfoWrapperPass(
       *PassRegistry::getPassRegistry());
 }
 
-TargetTransformInfo &TargetTransformInfoWrapperPass::getTTI(Function &F) {
+TargetTransformInfo &TargetTransformInfoWrapperPass::getTTI(const Function &F) {
   TTI = TIRA.run(F);
   return *TTI;
 }

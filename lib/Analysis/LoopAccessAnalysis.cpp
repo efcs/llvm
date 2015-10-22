@@ -1397,7 +1397,7 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &Strides) {
       if (it->mayWriteToMemory()) {
         StoreInst *St = dyn_cast<StoreInst>(it);
         if (!St) {
-          emitAnalysis(LoopAccessReport(it) <<
+          emitAnalysis(LoopAccessReport(&*it) <<
                        "instruction cannot be vectorized");
           CanVecMem = false;
           return;
@@ -1802,7 +1802,7 @@ bool LoopAccessAnalysis::runOnFunction(Function &F) {
   SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   auto *TLIP = getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
   TLI = TLIP ? &TLIP->getTLI() : nullptr;
-  AA = &getAnalysis<AliasAnalysis>();
+  AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
 
@@ -1811,7 +1811,7 @@ bool LoopAccessAnalysis::runOnFunction(Function &F) {
 
 void LoopAccessAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequired<ScalarEvolutionWrapperPass>();
-    AU.addRequired<AliasAnalysis>();
+    AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<LoopInfoWrapperPass>();
 
@@ -1823,7 +1823,7 @@ static const char laa_name[] = "Loop Access Analysis";
 #define LAA_NAME "loop-accesses"
 
 INITIALIZE_PASS_BEGIN(LoopAccessAnalysis, LAA_NAME, laa_name, false, true)
-INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
+INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)

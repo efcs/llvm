@@ -138,6 +138,7 @@ public:
   bool storeOfVectorConstantIsCheap(EVT MemVT,
                                     unsigned NumElem,
                                     unsigned AS) const override;
+  bool aggressivelyPreferBuildVectorSources(EVT VecVT) const override;
   bool isCheapToSpeculateCttz() const override;
   bool isCheapToSpeculateCtlz() const override;
 
@@ -148,6 +149,9 @@ public:
                       SDLoc DL, SelectionDAG &DAG) const override;
   SDValue LowerCall(CallLoweringInfo &CLI,
                     SmallVectorImpl<SDValue> &InVals) const override;
+
+  SDValue LowerDYNAMIC_STACKALLOC(SDValue Op,
+                                  SelectionDAG &DAG) const;
 
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
   SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;

@@ -50,6 +50,7 @@ public:
     armeb,      // ARM (big endian): armeb
     aarch64,    // AArch64 (little endian): aarch64
     aarch64_be, // AArch64 (big endian): aarch64_be
+    avr,        // AVR: Atmel AVR microcontroller
     bpfel,      // eBPF or extended BPF or 64-bit BPF (little endian)
     bpfeb,      // eBPF or extended BPF or 64-bit BPF (big endian)
     hexagon,    // Hexagon: hexagon
@@ -124,7 +125,8 @@ public:
     MipsTechnologies,
     NVIDIA,
     CSR,
-    LastVendorType = CSR
+    Myriad,
+    LastVendorType = Myriad
   };
   enum OSType {
     UnknownOS,
@@ -509,6 +511,9 @@ public:
            getOS() == Triple::PS4;
   }
 
+  /// \brief Tests whether the target is Android
+  bool isAndroid() const { return getEnvironment() == Triple::Android; }
+
   /// @}
   /// @name Mutators
   /// @{
@@ -595,7 +600,7 @@ public:
   ///
   /// \param Arch the architecture name (e.g., "armv7s"). If it is an empty
   /// string then the triple's arch name is used.
-  const char* getARMCPUForArch(StringRef Arch = StringRef()) const;
+  StringRef getARMCPUForArch(StringRef Arch = StringRef()) const;
 
   /// @}
   /// @name Static helpers for IDs.

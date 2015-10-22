@@ -99,6 +99,7 @@ class DITypeRefArray {
   const MDTuple *N = nullptr;
 
 public:
+  DITypeRefArray() = default;
   DITypeRefArray(const MDTuple *N) : N(N) {}
 
   explicit operator bool() const { return get(); }
@@ -1025,7 +1026,8 @@ public:
   DIImportedEntityArray getImportedEntities() const {
     return cast_or_null<MDTuple>(getRawImportedEntities());
   }
-  unsigned getDWOId() const { return DWOId; }
+  uint64_t getDWOId() const { return DWOId; }
+  void setDWOId(uint64_t DwoId) { DWOId = DwoId; }
 
   MDString *getRawProducer() const { return getOperandAs<MDString>(1); }
   MDString *getRawFlags() const { return getOperandAs<MDString>(2); }
@@ -1411,13 +1413,6 @@ public:
 
   Metadata *getRawScope() const { return getOperand(1); }
 
-  /// \brief Forwarding accessors to LexicalBlock.
-  ///
-  /// TODO: Remove these and update code to use \a DILexicalBlock directly.
-  /// @{
-  inline unsigned getLine() const;
-  inline unsigned getColumn() const;
-  /// @}
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == DILexicalBlockKind ||
            MD->getMetadataID() == DILexicalBlockFileKind;
@@ -1429,12 +1424,14 @@ class DILexicalBlock : public DILexicalBlockBase {
   friend class MDNode;
 
   unsigned Line;
-  unsigned Column;
+  uint16_t Column;
 
   DILexicalBlock(LLVMContext &C, StorageType Storage, unsigned Line,
                  unsigned Column, ArrayRef<Metadata *> Ops)
       : DILexicalBlockBase(C, DILexicalBlockKind, Storage, Ops), Line(Line),
-        Column(Column) {}
+        Column(Column) {
+    assert(Column < (1u << 16) && "Expected 16-bit column");
+  }
   ~DILexicalBlock() = default;
 
   static DILexicalBlock *getImpl(LLVMContext &Context, DILocalScope *Scope,
@@ -1472,18 +1469,6 @@ public:
     return MD->getMetadataID() == DILexicalBlockKind;
   }
 };
-
-unsigned DILexicalBlockBase::getLine() const {
-  if (auto *N = dyn_cast<DILexicalBlock>(this))
-    return N->getLine();
-  return 0;
-}
-
-unsigned DILexicalBlockBase::getColumn() const {
-  if (auto *N = dyn_cast<DILexicalBlock>(this))
-    return N->getColumn();
-  return 0;
-}
 
 class DILexicalBlockFile : public DILexicalBlockBase {
   friend class LLVMContextImpl;

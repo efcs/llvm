@@ -286,7 +286,7 @@ void PPCDAGToDAGISel::InsertVRSaveCode(MachineFunction &Fn) {
 
   // Find all return blocks, outputting a restore in each epilog.
   for (MachineFunction::iterator BB = Fn.begin(), E = Fn.end(); BB != E; ++BB) {
-    if (!BB->empty() && BB->back().isReturn()) {
+    if (BB->isReturnBlock()) {
       IP = BB->end(); --IP;
 
       // Skip over all terminator instructions, which are part of the return
@@ -2570,13 +2570,25 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
       return nullptr;
     }
     // ISD::OR doesn't get all the bitfield insertion fun.
-    // (and (or x, c1), c2) where isRunOfOnes(~(c1^c2)) is a bitfield insert
+    // (and (or x, c1), c2) where isRunOfOnes(~(c1^c2)) might be a
+    // bitfield insert.
     if (isInt32Immediate(N->getOperand(1), Imm) &&
         N->getOperand(0).getOpcode() == ISD::OR &&
         isInt32Immediate(N->getOperand(0).getOperand(1), Imm2)) {
+      // The idea here is to check whether this is equivalent to:
+      //   (c1 & m) | (x & ~m)
+      // where m is a run-of-ones mask. The logic here is that, for each bit in
+      // c1 and c2:
+      //  - if both are 1, then the output will be 1.
+      //  - if both are 0, then the output will be 0.
+      //  - if the bit in c1 is 0, and the bit in c2 is 1, then the output will
+      //    come from x.
+      //  - if the bit in c1 is 1, and the bit in c2 is 0, then the output will
+      //    be 0.
+      //  If that last condition is never the case, then we can form m from the
+      //  bits that are the same between c1 and c2.
       unsigned MB, ME;
-      Imm = ~(Imm^Imm2);
-      if (isRunOfOnes(Imm, MB, ME)) {
+      if (isRunOfOnes(~(Imm^Imm2), MB, ME) && !(~Imm & Imm2)) {
         SDValue Ops[] = { N->getOperand(0).getOperand(0),
                             N->getOperand(0).getOperand(1),
                             getI32Imm(0, dl), getI32Imm(MB, dl),
@@ -2787,6 +2799,8 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
         SDValue Base, Offset;
 
         if (LD->isUnindexed() &&
+            (LD->getMemoryVT() == MVT::f64 ||
+             LD->getMemoryVT() == MVT::i64) &&
             SelectAddrIdxOnly(LD->getBasePtr(), Base, Offset)) {
           SDValue Chain = LD->getChain();
           SDValue Ops[] = { Base, Offset, Chain };
@@ -3291,7 +3305,7 @@ void PPCDAGToDAGISel::PreprocessISelDAG() {
 
   bool MadeChange = false;
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     if (N->use_empty())
       continue;
 
@@ -3975,7 +3989,7 @@ void PPCDAGToDAGISel::PeepholePPC64ZExt() {
 
   bool MadeChange = false;
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     // Skip dead nodes and any non-machine opcodes.
     if (N->use_empty() || !N->isMachineOpcode())
       continue;
@@ -4131,7 +4145,7 @@ void PPCDAGToDAGISel::PeepholePPC64() {
   ++Position;
 
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     // Skip dead nodes and any non-machine opcodes.
     if (N->use_empty() || !N->isMachineOpcode())
       continue;

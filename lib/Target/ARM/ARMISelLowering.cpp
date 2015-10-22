@@ -368,11 +368,6 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
       { RTLIB::SINTTOFP_I64_F64, "__i64tod", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::UINTTOFP_I64_F32, "__u64tos", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::UINTTOFP_I64_F64, "__u64tod", CallingConv::ARM_AAPCS_VFP },
-
-      { RTLIB::SDIV_I32, "__rt_sdiv",   CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::UDIV_I32, "__rt_udiv",   CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::SDIV_I64, "__rt_sdiv64", CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::UDIV_I64, "__rt_udiv64", CallingConv::ARM_AAPCS_VFP },
     };
 
     for (const auto &LC : LibraryCalls) {
@@ -399,6 +394,14 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setLibcallCallingConv(RTLIB::FPROUND_F32_F16, CallingConv::ARM_APCS);
     setLibcallCallingConv(RTLIB::FPROUND_F64_F16, CallingConv::ARM_APCS);
     setLibcallCallingConv(RTLIB::FPEXT_F16_F32, CallingConv::ARM_APCS);
+  }
+
+  // In EABI, these functions have an __aeabi_ prefix, but in GNUEABI they have
+  // a __gnu_ prefix (which is the default).
+  if (Subtarget->isTargetAEABI()) {
+    setLibcallName(RTLIB::FPROUND_F32_F16, "__aeabi_f2h");
+    setLibcallName(RTLIB::FPROUND_F64_F16, "__aeabi_d2h");
+    setLibcallName(RTLIB::FPEXT_F16_F32,   "__aeabi_h2f");
   }
 
   if (Subtarget->isThumb1Only())
@@ -697,7 +700,7 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::SMUL_LOHI, MVT::i32, Expand);
   }
   if (Subtarget->isThumb1Only() || !Subtarget->hasV6Ops()
-      || (Subtarget->isThumb2() && !Subtarget->hasThumb2DSP()))
+      || (Subtarget->isThumb2() && !Subtarget->hasDSP()))
     setOperationAction(ISD::MULHS, MVT::i32, Expand);
 
   setOperationAction(ISD::SHL_PARTS, MVT::i32, Custom);
@@ -725,7 +728,12 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::CTTZ_ZERO_UNDEF  , MVT::i32  , Expand);
   setOperationAction(ISD::CTLZ_ZERO_UNDEF  , MVT::i32  , Expand);
 
-  setOperationAction(ISD::READCYCLECOUNTER, MVT::i64, Custom);
+  // @llvm.readcyclecounter requires the Performance Monitors extension.
+  // Default to the 0 expansion on unsupported platforms.
+  // FIXME: Technically there are older ARM CPUs that have
+  // implementation-specific ways of obtaining this information.
+  if (Subtarget->hasPerfMon())
+    setOperationAction(ISD::READCYCLECOUNTER, MVT::i64, Custom);
 
   // Only ARMv6 has BSWAP.
   if (!Subtarget->hasV6Ops())
@@ -734,15 +742,25 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   if (!(Subtarget->hasDivide() && Subtarget->isThumb2()) &&
       !(Subtarget->hasDivideInARMMode() && !Subtarget->isThumb())) {
     // These are expanded into libcalls if the cpu doesn't have HW divider.
-    setOperationAction(ISD::SDIV,  MVT::i32, Expand);
-    setOperationAction(ISD::UDIV,  MVT::i32, Expand);
+    setOperationAction(ISD::SDIV,  MVT::i32, LibCall);
+    setOperationAction(ISD::UDIV,  MVT::i32, LibCall);
   }
 
-  // FIXME: Also set divmod for SREM on EABI/androideabi
+  if (Subtarget->isTargetWindows() && !Subtarget->hasDivide()) {
+    setOperationAction(ISD::SDIV, MVT::i32, Custom);
+    setOperationAction(ISD::UDIV, MVT::i32, Custom);
+
+    setOperationAction(ISD::SDIV, MVT::i64, Custom);
+    setOperationAction(ISD::UDIV, MVT::i64, Custom);
+  }
+
   setOperationAction(ISD::SREM,  MVT::i32, Expand);
   setOperationAction(ISD::UREM,  MVT::i32, Expand);
   // Register based DivRem for AEABI (RTABI 4.2)
   if (Subtarget->isTargetAEABI() || Subtarget->isTargetAndroid()) {
+    setOperationAction(ISD::SREM, MVT::i64, Custom);
+    setOperationAction(ISD::UREM, MVT::i64, Custom);
+
     setLibcallName(RTLIB::SDIVREM_I8,  "__aeabi_idivmod");
     setLibcallName(RTLIB::SDIVREM_I16, "__aeabi_idivmod");
     setLibcallName(RTLIB::SDIVREM_I32, "__aeabi_idivmod");
@@ -1112,6 +1130,7 @@ const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case ARMISD::PRELOAD:       return "ARMISD::PRELOAD";
 
   case ARMISD::WIN__CHKSTK:   return "ARMISD:::WIN__CHKSTK";
+  case ARMISD::WIN__DBZCHK:   return "ARMISD::WIN__DBZCHK";
 
   case ARMISD::VCEQ:          return "ARMISD::VCEQ";
   case ARMISD::VCEQZ:         return "ARMISD::VCEQZ";
@@ -1167,6 +1186,7 @@ const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case ARMISD::VORRIMM:       return "ARMISD::VORRIMM";
   case ARMISD::VBICIMM:       return "ARMISD::VBICIMM";
   case ARMISD::VBSL:          return "ARMISD::VBSL";
+  case ARMISD::MEMCPY:        return "ARMISD::MEMCPY";
   case ARMISD::VLD2DUP:       return "ARMISD::VLD2DUP";
   case ARMISD::VLD3DUP:       return "ARMISD::VLD3DUP";
   case ARMISD::VLD4DUP:       return "ARMISD::VLD4DUP";
@@ -2045,6 +2065,8 @@ ARMTargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
   CallingConv::ID CallerCC = CallerF->getCallingConv();
   bool CCMatch = CallerCC == CalleeCC;
 
+  assert(Subtarget->supportsTailCall());
+
   // Look for obvious safe cases to perform tail call optimization that do not
   // require ABI changes. This is what gcc calls sibcall.
 
@@ -2062,26 +2084,6 @@ ARMTargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
   // Also avoid sibcall optimization if either caller or callee uses struct
   // return semantics.
   if (isCalleeStructRet || isCallerStructRet)
-    return false;
-
-  // FIXME: Completely disable sibcall for Thumb1 since ThumbRegisterInfo::
-  // emitEpilogue is not ready for them. Thumb tail calls also use t2B, as
-  // the Thumb1 16-bit unconditional branch doesn't have sufficient relocation
-  // support in the assembler and linker to be used. This would need to be
-  // fixed to fully support tail calls in Thumb1.
-  //
-  // Doing this is tricky, since the LDM/POP instruction on Thumb doesn't take
-  // LR.  This means if we need to reload LR, it takes an extra instructions,
-  // which outweighs the value of the tail call; but here we don't know yet
-  // whether LR is going to be used.  Probably the right approach is to
-  // generate the tail call here and turn it back into CALL/RET in
-  // emitEpilogue if LR is used.
-
-  // Thumb1 PIC calls to external symbols use BX, so they can be tail calls,
-  // but we need to make sure there are enough registers; the only valid
-  // registers are the 4 used for parameters.  We don't currently do this
-  // case.
-  if (Subtarget->isThumb1Only())
     return false;
 
   // Externally-defined functions with weak linkage should not be
@@ -2431,7 +2433,7 @@ bool ARMTargetLowering::mayBeEmittedAsTailCall(CallInst *CI) const {
   if (!CI->isTailCall() || Attr.getValueAsString() == "true")
     return false;
 
-  return !Subtarget->isThumb1Only();
+  return true;
 }
 
 // Trying to write a 64 bit value so need to split into two 32 bit values first,
@@ -3220,9 +3222,9 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
                    "Byval arguments cannot be implicit");
             unsigned CurByValIndex = CCInfo.getInRegsParamsProcessed();
 
-            int FrameIndex = StoreByValRegs(CCInfo, DAG, dl, Chain, CurOrigArg,
-                                            CurByValIndex, VA.getLocMemOffset(),
-                                            Flags.getByValSize());
+            int FrameIndex = StoreByValRegs(
+                CCInfo, DAG, dl, Chain, &*CurOrigArg, CurByValIndex,
+                VA.getLocMemOffset(), Flags.getByValSize());
             InVals.push_back(DAG.getFrameIndex(FrameIndex, PtrVT));
             CCInfo.nextInRegsParam();
           } else {
@@ -3913,7 +3915,7 @@ SDValue ARMTargetLowering::LowerFP_TO_INT(SDValue Op, SelectionDAG &DAG) const {
     else
       LC = RTLIB::getFPTOUINT(Op.getOperand(0).getValueType(),
                               Op.getValueType());
-    return makeLibCall(DAG, LC, Op.getValueType(), &Op.getOperand(0), 1,
+    return makeLibCall(DAG, LC, Op.getValueType(), Op.getOperand(0),
                        /*isSigned*/ false, SDLoc(Op)).first;
   }
 
@@ -3965,7 +3967,7 @@ SDValue ARMTargetLowering::LowerINT_TO_FP(SDValue Op, SelectionDAG &DAG) const {
     else
       LC = RTLIB::getUINTTOFP(Op.getOperand(0).getValueType(),
                               Op.getValueType());
-    return makeLibCall(DAG, LC, Op.getValueType(), &Op.getOperand(0), 1,
+    return makeLibCall(DAG, LC, Op.getValueType(), Op.getOperand(0),
                        /*isSigned*/ false, SDLoc(Op)).first;
   }
 
@@ -5043,10 +5045,16 @@ static bool isVTRNMask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
   if (M.size() != NumElts && M.size() != NumElts*2)
     return false;
 
-  // If the mask is twice as long as the result then we need to check the upper
-  // and lower parts of the mask
+  // If the mask is twice as long as the input vector then we need to check the
+  // upper and lower parts of the mask with a matching value for WhichResult
+  // FIXME: A mask with only even values will be rejected in case the first
+  // element is undefined, e.g. [-1, 4, 2, 6] will be rejected, because only
+  // M[0] is used to determine WhichResult
   for (unsigned i = 0; i < M.size(); i += NumElts) {
-    WhichResult = M[i] == 0 ? 0 : 1;
+    if (M.size() == NumElts * 2)
+      WhichResult = i / NumElts;
+    else
+      WhichResult = M[i] == 0 ? 0 : 1;
     for (unsigned j = 0; j < NumElts; j += 2) {
       if ((M[i+j] >= 0 && (unsigned) M[i+j] != j + WhichResult) ||
           (M[i+j+1] >= 0 && (unsigned) M[i+j+1] != j + NumElts + WhichResult))
@@ -5073,7 +5081,10 @@ static bool isVTRN_v_undef_Mask(ArrayRef<int> M, EVT VT, unsigned &WhichResult){
     return false;
 
   for (unsigned i = 0; i < M.size(); i += NumElts) {
-    WhichResult = M[i] == 0 ? 0 : 1;
+    if (M.size() == NumElts * 2)
+      WhichResult = i / NumElts;
+    else
+      WhichResult = M[i] == 0 ? 0 : 1;
     for (unsigned j = 0; j < NumElts; j += 2) {
       if ((M[i+j] >= 0 && (unsigned) M[i+j] != j + WhichResult) ||
           (M[i+j+1] >= 0 && (unsigned) M[i+j+1] != j + WhichResult))
@@ -5499,13 +5510,6 @@ SDValue ARMTargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
   return SDValue();
 }
 
-/// getExtFactor - Determine the adjustment factor for the position when
-/// generating an "extract from vector registers" instruction.
-static unsigned getExtFactor(SDValue &V) {
-  EVT EltType = V.getValueType().getVectorElementType();
-  return EltType.getSizeInBits() / 8;
-}
-
 // Gather data to see if the operation can be modelled as a
 // shuffle in combination with VEXTs.
 SDValue ARMTargetLowering::ReconstructShuffle(SDValue Op,
@@ -5546,6 +5550,10 @@ SDValue ARMTargetLowering::ReconstructShuffle(SDValue Op,
     else if (V.getOpcode() != ISD::EXTRACT_VECTOR_ELT) {
       // A shuffle can only come from building a vector from various
       // elements of other vectors.
+      return SDValue();
+    } else if (!isa<ConstantSDNode>(V.getOperand(1))) {
+      // Furthermore, shuffles require a constant mask, whereas extractelts
+      // accept variable indices.
       return SDValue();
     }
 
@@ -5632,11 +5640,10 @@ SDValue ARMTargetLowering::ReconstructShuffle(SDValue Op,
       SDValue VEXTSrc2 =
           DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, DestVT, Src.ShuffleVec,
                       DAG.getConstant(NumSrcElts, dl, MVT::i32));
-      unsigned Imm = Src.MinElt * getExtFactor(VEXTSrc1);
 
       Src.ShuffleVec = DAG.getNode(ARMISD::VEXT, dl, DestVT, VEXTSrc1,
                                    VEXTSrc2,
-                                   DAG.getConstant(Imm, dl, MVT::i32));
+                                   DAG.getConstant(Src.MinElt, dl, MVT::i32));
       Src.WindowBase = -Src.MinElt;
     }
   }
@@ -6365,6 +6372,8 @@ static SDValue LowerMUL(SDValue Op, SelectionDAG &DAG) {
 
 static SDValue
 LowerSDIV_v4i8(SDValue X, SDValue Y, SDLoc dl, SelectionDAG &DAG) {
+  // TODO: Should this propagate fast-math-flags?
+
   // Convert to float
   // float4 xf = vcvt_f32_s32(vmovl_s16(a.lo));
   // float4 yf = vcvt_f32_s32(vmovl_s16(b.lo));
@@ -6395,6 +6404,8 @@ LowerSDIV_v4i8(SDValue X, SDValue Y, SDLoc dl, SelectionDAG &DAG) {
 
 static SDValue
 LowerSDIV_v4i16(SDValue N0, SDValue N1, SDLoc dl, SelectionDAG &DAG) {
+  // TODO: Should this propagate fast-math-flags?
+
   SDValue N2;
   // Convert to float.
   // float4 yf = vcvt_f32_s32(vmovl_s16(y));
@@ -6467,6 +6478,7 @@ static SDValue LowerSDIV(SDValue Op, SelectionDAG &DAG) {
 }
 
 static SDValue LowerUDIV(SDValue Op, SelectionDAG &DAG) {
+  // TODO: Should this propagate fast-math-flags?
   EVT VT = Op.getValueType();
   assert((VT == MVT::v4i16 || VT == MVT::v8i8) &&
          "unexpected type for custom-lowering ISD::UDIV");
@@ -6602,8 +6614,8 @@ SDValue ARMTargetLowering::LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const {
   Entry.isZExt = false;
   Args.push_back(Entry);
 
-  const char *LibcallName  = (ArgVT == MVT::f64)
-  ? "__sincos_stret" : "__sincosf_stret";
+  const char *LibcallName =
+      (ArgVT == MVT::f64) ? "__sincos_stret" : "__sincosf_stret";
   SDValue Callee = DAG.getExternalSymbol(LibcallName, getPointerTy(DL));
 
   TargetLowering::CallLoweringInfo CLI(DAG);
@@ -6628,6 +6640,85 @@ SDValue ARMTargetLowering::LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const {
                      LoadSin.getValue(0), LoadCos.getValue(0));
 }
 
+SDValue ARMTargetLowering::LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG,
+                                                  bool Signed,
+                                                  SDValue &Chain) const {
+  EVT VT = Op.getValueType();
+  assert((VT == MVT::i32 || VT == MVT::i64) &&
+         "unexpected type for custom lowering DIV");
+  SDLoc dl(Op);
+
+  const auto &DL = DAG.getDataLayout();
+  const auto &TLI = DAG.getTargetLoweringInfo();
+
+  const char *Name = nullptr;
+  if (Signed)
+    Name = (VT == MVT::i32) ? "__rt_sdiv" : "__rt_sdiv64";
+  else
+    Name = (VT == MVT::i32) ? "__rt_udiv" : "__rt_udiv64";
+
+  SDValue ES = DAG.getExternalSymbol(Name, TLI.getPointerTy(DL));
+
+  ARMTargetLowering::ArgListTy Args;
+
+  for (auto AI : {1, 0}) {
+    ArgListEntry Arg;
+    Arg.Node = Op.getOperand(AI);
+    Arg.Ty = Arg.Node.getValueType().getTypeForEVT(*DAG.getContext());
+    Args.push_back(Arg);
+  }
+
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(dl)
+    .setChain(Chain)
+    .setCallee(CallingConv::ARM_AAPCS_VFP, VT.getTypeForEVT(*DAG.getContext()),
+               ES, std::move(Args), 0);
+
+  return LowerCallTo(CLI).first;
+}
+
+SDValue ARMTargetLowering::LowerDIV_Windows(SDValue Op, SelectionDAG &DAG,
+                                            bool Signed) const {
+  assert(Op.getValueType() == MVT::i32 &&
+         "unexpected type for custom lowering DIV");
+  SDLoc dl(Op);
+
+  SDValue DBZCHK = DAG.getNode(ARMISD::WIN__DBZCHK, dl, MVT::Other,
+                               DAG.getEntryNode(), Op.getOperand(1));
+
+  return LowerWindowsDIVLibCall(Op, DAG, Signed, DBZCHK);
+}
+
+void ARMTargetLowering::ExpandDIV_Windows(
+    SDValue Op, SelectionDAG &DAG, bool Signed,
+    SmallVectorImpl<SDValue> &Results) const {
+  const auto &DL = DAG.getDataLayout();
+  const auto &TLI = DAG.getTargetLoweringInfo();
+
+  assert(Op.getValueType() == MVT::i64 &&
+         "unexpected type for custom lowering DIV");
+  SDLoc dl(Op);
+
+  SDValue Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Op.getOperand(1),
+                           DAG.getConstant(0, dl, MVT::i32));
+  SDValue Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Op.getOperand(1),
+                           DAG.getConstant(1, dl, MVT::i32));
+  SDValue Or = DAG.getNode(ISD::OR, dl, MVT::i32, Lo, Hi);
+
+  SDValue DBZCHK =
+      DAG.getNode(ARMISD::WIN__DBZCHK, dl, MVT::Other, DAG.getEntryNode(), Or);
+
+  SDValue Result = LowerWindowsDIVLibCall(Op, DAG, Signed, DBZCHK);
+
+  SDValue Lower = DAG.getNode(ISD::TRUNCATE, dl, MVT::i32, Result);
+  SDValue Upper = DAG.getNode(ISD::SRL, dl, MVT::i64, Result,
+                              DAG.getConstant(32, dl, TLI.getPointerTy(DL)));
+  Upper = DAG.getNode(ISD::TRUNCATE, dl, MVT::i32, Upper);
+
+  Results.push_back(Lower);
+  Results.push_back(Upper);
+}
+
 static SDValue LowerAtomicLoadStore(SDValue Op, SelectionDAG &DAG) {
   // Monotonic load/store is legal for all targets
   if (cast<AtomicSDNode>(Op)->getOrdering() <= Monotonic)
@@ -6643,36 +6734,22 @@ static void ReplaceREADCYCLECOUNTER(SDNode *N,
                                     SelectionDAG &DAG,
                                     const ARMSubtarget *Subtarget) {
   SDLoc DL(N);
-  SDValue Cycles32, OutChain;
+  // Under Power Management extensions, the cycle-count is:
+  //    mrc p15, #0, <Rt>, c9, c13, #0
+  SDValue Ops[] = { N->getOperand(0), // Chain
+                    DAG.getConstant(Intrinsic::arm_mrc, DL, MVT::i32),
+                    DAG.getConstant(15, DL, MVT::i32),
+                    DAG.getConstant(0, DL, MVT::i32),
+                    DAG.getConstant(9, DL, MVT::i32),
+                    DAG.getConstant(13, DL, MVT::i32),
+                    DAG.getConstant(0, DL, MVT::i32)
+  };
 
-  if (Subtarget->hasPerfMon()) {
-    // Under Power Management extensions, the cycle-count is:
-    //    mrc p15, #0, <Rt>, c9, c13, #0
-    SDValue Ops[] = { N->getOperand(0), // Chain
-                      DAG.getConstant(Intrinsic::arm_mrc, DL, MVT::i32),
-                      DAG.getConstant(15, DL, MVT::i32),
-                      DAG.getConstant(0, DL, MVT::i32),
-                      DAG.getConstant(9, DL, MVT::i32),
-                      DAG.getConstant(13, DL, MVT::i32),
-                      DAG.getConstant(0, DL, MVT::i32)
-    };
-
-    Cycles32 = DAG.getNode(ISD::INTRINSIC_W_CHAIN, DL,
-                           DAG.getVTList(MVT::i32, MVT::Other), Ops);
-    OutChain = Cycles32.getValue(1);
-  } else {
-    // Intrinsic is defined to return 0 on unsupported platforms. Technically
-    // there are older ARM CPUs that have implementation-specific ways of
-    // obtaining this information (FIXME!).
-    Cycles32 = DAG.getConstant(0, DL, MVT::i32);
-    OutChain = DAG.getEntryNode();
-  }
-
-
-  SDValue Cycles64 = DAG.getNode(ISD::BUILD_PAIR, DL, MVT::i64,
-                                 Cycles32, DAG.getConstant(0, DL, MVT::i32));
-  Results.push_back(Cycles64);
-  Results.push_back(OutChain);
+  SDValue Cycles32 = DAG.getNode(ISD::INTRINSIC_W_CHAIN, DL,
+                                 DAG.getVTList(MVT::i32, MVT::Other), Ops);
+  Results.push_back(DAG.getNode(ISD::BUILD_PAIR, DL, MVT::i64, Cycles32,
+                                DAG.getConstant(0, DL, MVT::i32)));
+  Results.push_back(Cycles32.getValue(1));
 }
 
 SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
@@ -6716,6 +6793,8 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::SHL:
   case ISD::SRL:
   case ISD::SRA:           return LowerShift(Op.getNode(), DAG, Subtarget);
+  case ISD::SREM:          return LowerREM(Op.getNode(), DAG);
+  case ISD::UREM:          return LowerREM(Op.getNode(), DAG);
   case ISD::SHL_PARTS:     return LowerShiftLeftParts(Op, DAG);
   case ISD::SRL_PARTS:
   case ISD::SRA_PARTS:     return LowerShiftRightParts(Op, DAG);
@@ -6731,8 +6810,14 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::CONCAT_VECTORS: return LowerCONCAT_VECTORS(Op, DAG);
   case ISD::FLT_ROUNDS_:   return LowerFLT_ROUNDS_(Op, DAG);
   case ISD::MUL:           return LowerMUL(Op, DAG);
-  case ISD::SDIV:          return LowerSDIV(Op, DAG);
-  case ISD::UDIV:          return LowerUDIV(Op, DAG);
+  case ISD::SDIV:
+    if (Subtarget->isTargetWindows())
+      return LowerDIV_Windows(Op, DAG, /* Signed */ true);
+    return LowerSDIV(Op, DAG);
+  case ISD::UDIV:
+    if (Subtarget->isTargetWindows())
+      return LowerDIV_Windows(Op, DAG, /* Signed */ false);
+    return LowerUDIV(Op, DAG);
   case ISD::ADDC:
   case ISD::ADDE:
   case ISD::SUBC:
@@ -6753,13 +6838,14 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
     llvm_unreachable("Don't know how to custom lower this!");
   case ISD::FP_ROUND: return LowerFP_ROUND(Op, DAG);
   case ISD::FP_EXTEND: return LowerFP_EXTEND(Op, DAG);
+  case ARMISD::WIN__DBZCHK: return SDValue();
   }
 }
 
 /// ReplaceNodeResults - Replace the results of node with an illegal result
 /// type with new values built out of custom code.
 void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
-                                           SmallVectorImpl<SDValue>&Results,
+                                           SmallVectorImpl<SDValue> &Results,
                                            SelectionDAG &DAG) const {
   SDValue Res;
   switch (N->getOpcode()) {
@@ -6775,9 +6861,18 @@ void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
   case ISD::SRA:
     Res = Expand64BitShift(N, DAG, Subtarget);
     break;
+  case ISD::SREM:
+  case ISD::UREM:
+    Res = LowerREM(N, DAG);
+    break;
   case ISD::READCYCLECOUNTER:
     ReplaceREADCYCLECOUNTER(N, Results, DAG, Subtarget);
     return;
+  case ISD::UDIV:
+  case ISD::SDIV:
+    assert(Subtarget->isTargetWindows() && "can only expand DIV on Windows");
+    return ExpandDIV_Windows(SDValue(N, 0), DAG, N->getOpcode() == ISD::SDIV,
+                             Results);
   }
   if (Res.getNode())
     Results.push_back(Res);
@@ -6923,7 +7018,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
   MachineModuleInfo &MMI = MF->getMMI();
   for (MachineFunction::iterator BB = MF->begin(), E = MF->end(); BB != E;
        ++BB) {
-    if (!BB->isLandingPad()) continue;
+    if (!BB->isEHPad()) continue;
 
     // FIXME: We should assert that the EH_LABEL is the first MI in the landing
     // pad.
@@ -6938,7 +7033,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
       for (SmallVectorImpl<unsigned>::iterator
              CSI = CallSiteIdxs.begin(), CSE = CallSiteIdxs.end();
            CSI != CSE; ++CSI) {
-        CallSiteNumToLPad[*CSI].push_back(BB);
+        CallSiteNumToLPad[*CSI].push_back(&*BB);
         MaxCSNum = std::max(MaxCSNum, *CSI);
       }
       break;
@@ -6971,7 +7066,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
 
   // Shove the dispatch's address into the return slot in the function context.
   MachineBasicBlock *DispatchBB = MF->CreateMachineBasicBlock();
-  DispatchBB->setIsLandingPad();
+  DispatchBB->setIsEHPad();
 
   MachineBasicBlock *TrapBB = MF->CreateMachineBasicBlock();
   unsigned trap_opcode;
@@ -7237,7 +7332,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
                                                   BB->succ_end());
     while (!Successors.empty()) {
       MachineBasicBlock *SMBB = Successors.pop_back_val();
-      if (SMBB->isLandingPad()) {
+      if (SMBB->isEHPad()) {
         BB->removeSuccessor(SMBB);
         MBBLPads.push_back(SMBB);
       }
@@ -7285,7 +7380,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
   // landing pad now.
   for (SmallVectorImpl<MachineBasicBlock*>::iterator
          I = MBBLPads.begin(), E = MBBLPads.end(); I != E; ++I)
-    (*I)->setIsLandingPad(false);
+    (*I)->setIsEHPad(false);
 
   // The instruction is gone now.
   MI->eraseFromParent();
@@ -7408,8 +7503,7 @@ ARMTargetLowering::EmitStructByval(MachineInstr *MI,
   // Otherwise, we will generate unrolled scalar copies.
   const TargetInstrInfo *TII = Subtarget->getInstrInfo();
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
-  MachineFunction::iterator It = BB;
-  ++It;
+  MachineFunction::iterator It = ++BB->getIterator();
 
   unsigned dest = MI->getOperand(0).getReg();
   unsigned src = MI->getOperand(1).getReg();
@@ -7702,6 +7796,32 @@ ARMTargetLowering::EmitLowered__chkstk(MachineInstr *MI,
 }
 
 MachineBasicBlock *
+ARMTargetLowering::EmitLowered__dbzchk(MachineInstr *MI,
+                                       MachineBasicBlock *MBB) const {
+  DebugLoc DL = MI->getDebugLoc();
+  MachineFunction *MF = MBB->getParent();
+  const TargetInstrInfo *TII = Subtarget->getInstrInfo();
+
+  MachineBasicBlock *ContBB = MF->CreateMachineBasicBlock();
+  MF->push_back(ContBB);
+  ContBB->splice(ContBB->begin(), MBB,
+                 std::next(MachineBasicBlock::iterator(MI)), MBB->end());
+  MBB->addSuccessor(ContBB);
+
+  MachineBasicBlock *TrapBB = MF->CreateMachineBasicBlock();
+  MF->push_back(TrapBB);
+  BuildMI(TrapBB, DL, TII->get(ARM::t2UDF)).addImm(249);
+  MBB->addSuccessor(TrapBB);
+
+  BuildMI(*MBB, MI, DL, TII->get(ARM::tCBZ))
+      .addReg(MI->getOperand(0).getReg())
+      .addMBB(TrapBB);
+
+  MI->eraseFromParent();
+  return ContBB;
+}
+
+MachineBasicBlock *
 ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
                                                MachineBasicBlock *BB) const {
   const TargetInstrInfo *TII = Subtarget->getInstrInfo();
@@ -7771,8 +7891,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     // destination vreg to set, the condition code register to branch on, the
     // true/false values to select between, and a branch opcode to use.
     const BasicBlock *LLVM_BB = BB->getBasicBlock();
-    MachineFunction::iterator It = BB;
-    ++It;
+    MachineFunction::iterator It = ++BB->getIterator();
 
     //  thisMBB:
     //  ...
@@ -7890,8 +8009,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     //     RSBBB: V3 = RSBri V2, 0  (compute ABS if V2 < 0)
     //     SinkBB: V1 = PHI(V2, V3)
     const BasicBlock *LLVM_BB = BB->getBasicBlock();
-    MachineFunction::iterator BBI = BB;
-    ++BBI;
+    MachineFunction::iterator BBI = ++BB->getIterator();
     MachineFunction *Fn = BB->getParent();
     MachineBasicBlock *RSBBB = Fn->CreateMachineBasicBlock(LLVM_BB);
     MachineBasicBlock *SinkBB  = Fn->CreateMachineBasicBlock(LLVM_BB);
@@ -7955,11 +8073,46 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     return EmitStructByval(MI, BB);
   case ARM::WIN__CHKSTK:
     return EmitLowered__chkstk(MI, BB);
+  case ARM::WIN__DBZCHK:
+    return EmitLowered__dbzchk(MI, BB);
+  }
+}
+
+/// \brief Attaches vregs to MEMCPY that it will use as scratch registers
+/// when it is expanded into LDM/STM. This is done as a post-isel lowering
+/// instead of as a custom inserter because we need the use list from the SDNode.
+static void attachMEMCPYScratchRegs(const ARMSubtarget *Subtarget,
+                                   MachineInstr *MI, const SDNode *Node) {
+  bool isThumb1 = Subtarget->isThumb1Only();
+
+  DebugLoc DL = MI->getDebugLoc();
+  MachineFunction *MF = MI->getParent()->getParent();
+  MachineRegisterInfo &MRI = MF->getRegInfo();
+  MachineInstrBuilder MIB(*MF, MI);
+
+  // If the new dst/src is unused mark it as dead.
+  if (!Node->hasAnyUseOfValue(0)) {
+    MI->getOperand(0).setIsDead(true);
+  }
+  if (!Node->hasAnyUseOfValue(1)) {
+    MI->getOperand(1).setIsDead(true);
+  }
+
+  // The MEMCPY both defines and kills the scratch registers.
+  for (unsigned I = 0; I != MI->getOperand(4).getImm(); ++I) {
+    unsigned TmpReg = MRI.createVirtualRegister(isThumb1 ? &ARM::tGPRRegClass
+                                                         : &ARM::GPRRegClass);
+    MIB.addReg(TmpReg, RegState::Define|RegState::Dead);
   }
 }
 
 void ARMTargetLowering::AdjustInstrPostInstrSelection(MachineInstr *MI,
                                                       SDNode *Node) const {
+  if (MI->getOpcode() == ARM::MEMCPY) {
+    attachMEMCPYScratchRegs(Subtarget, MI, Node);
+    return;
+  }
+
   const MCInstrDesc *MCID = &MI->getDesc();
   // Adjust potentially 's' setting instructions after isel, i.e. ADC, SBC, RSB,
   // RSC. Coming out of isel, they have an implicit CPSR def, but the optional
@@ -9652,32 +9805,6 @@ static SDValue PerformSTORECombine(SDNode *N,
   return SDValue();
 }
 
-// isConstVecPow2 - Return true if each vector element is a power of 2, all
-// elements are the same constant, C, and Log2(C) ranges from 1 to 32.
-static bool isConstVecPow2(SDValue ConstVec, bool isSigned, uint64_t &C)
-{
-  integerPart cN;
-  integerPart c0 = 0;
-  for (unsigned I = 0, E = ConstVec.getValueType().getVectorNumElements();
-       I != E; I++) {
-    ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(ConstVec.getOperand(I));
-    if (!C)
-      return false;
-
-    bool isExact;
-    APFloat APF = C->getValueAPF();
-    if (APF.convertToInteger(&cN, 64, isSigned, APFloat::rmTowardZero, &isExact)
-        != APFloat::opOK || !isExact)
-      return false;
-
-    c0 = (I == 0) ? cN : c0;
-    if (!isPowerOf2_64(cN) || c0 != cN || Log2_64(c0) < 1 || Log2_64(c0) > 32)
-      return false;
-  }
-  C = c0;
-  return true;
-}
-
 /// PerformVCVTCombine - VCVT (floating-point to fixed-point, Advanced SIMD)
 /// can replace combinations of VMUL and VCVT (floating-point to integer)
 /// when the VMUL has a constant operand that is a power of 2.
@@ -9687,30 +9814,25 @@ static bool isConstVecPow2(SDValue ConstVec, bool isSigned, uint64_t &C)
 ///  vcvt.s32.f32    d16, d16
 /// becomes:
 ///  vcvt.s32.f32    d16, d16, #3
-static SDValue PerformVCVTCombine(SDNode *N,
-                                  TargetLowering::DAGCombinerInfo &DCI,
+static SDValue PerformVCVTCombine(SDNode *N, SelectionDAG &DAG,
                                   const ARMSubtarget *Subtarget) {
-  SelectionDAG &DAG = DCI.DAG;
-  SDValue Op = N->getOperand(0);
-
-  if (!Subtarget->hasNEON() || !Op.getValueType().isVector() ||
-      Op.getOpcode() != ISD::FMUL)
+  if (!Subtarget->hasNEON())
     return SDValue();
 
-  uint64_t C;
-  SDValue N0 = Op->getOperand(0);
-  SDValue ConstVec = Op->getOperand(1);
-  bool isSigned = N->getOpcode() == ISD::FP_TO_SINT;
+  SDValue Op = N->getOperand(0);
+  if (!Op.getValueType().isVector() || Op.getOpcode() != ISD::FMUL)
+    return SDValue();
 
-  if (ConstVec.getOpcode() != ISD::BUILD_VECTOR ||
-      !isConstVecPow2(ConstVec, isSigned, C))
+  SDValue ConstVec = Op->getOperand(1);
+  if (!isa<BuildVectorSDNode>(ConstVec))
     return SDValue();
 
   MVT FloatTy = Op.getSimpleValueType().getVectorElementType();
+  uint32_t FloatBits = FloatTy.getSizeInBits();
   MVT IntTy = N->getSimpleValueType(0).getVectorElementType();
+  uint32_t IntBits = IntTy.getSizeInBits();
   unsigned NumLanes = Op.getValueType().getVectorNumElements();
-  if (FloatTy.getSizeInBits() != 32 || IntTy.getSizeInBits() > 32 ||
-      NumLanes > 4) {
+  if (FloatBits != 32 || IntBits > 32 || NumLanes > 4) {
     // These instructions only exist converting from f32 to i32. We can handle
     // smaller integers by generating an extra truncate, but larger ones would
     // be lossy. We also can't handle more then 4 lanes, since these intructions
@@ -9718,16 +9840,22 @@ static SDValue PerformVCVTCombine(SDNode *N,
     return SDValue();
   }
 
+  BitVector UndefElements;
+  BuildVectorSDNode *BV = cast<BuildVectorSDNode>(ConstVec);
+  int32_t C = BV->getConstantFPSplatPow2ToLog2Int(&UndefElements, 33);
+  if (C == -1 || C == 0 || C > 32)
+    return SDValue();
+
   SDLoc dl(N);
+  bool isSigned = N->getOpcode() == ISD::FP_TO_SINT;
   unsigned IntrinsicOpcode = isSigned ? Intrinsic::arm_neon_vcvtfp2fxs :
     Intrinsic::arm_neon_vcvtfp2fxu;
-  SDValue FixConv =  DAG.getNode(ISD::INTRINSIC_WO_CHAIN, dl,
-                                 NumLanes == 2 ? MVT::v2i32 : MVT::v4i32,
-                                 DAG.getConstant(IntrinsicOpcode, dl, MVT::i32),
-                                 N0,
-                                 DAG.getConstant(Log2_64(C), dl, MVT::i32));
+  SDValue FixConv = DAG.getNode(
+      ISD::INTRINSIC_WO_CHAIN, dl, NumLanes == 2 ? MVT::v2i32 : MVT::v4i32,
+      DAG.getConstant(IntrinsicOpcode, dl, MVT::i32), Op->getOperand(0),
+      DAG.getConstant(C, dl, MVT::i32));
 
-  if (IntTy.getSizeInBits() < FloatTy.getSizeInBits())
+  if (IntBits < FloatBits)
     FixConv = DAG.getNode(ISD::TRUNCATE, dl, N->getValueType(0), FixConv);
 
   return FixConv;
@@ -9742,38 +9870,44 @@ static SDValue PerformVCVTCombine(SDNode *N,
 ///  vdiv.f32        d16, d17, d16
 /// becomes:
 ///  vcvt.f32.s32    d16, d16, #3
-static SDValue PerformVDIVCombine(SDNode *N,
-                                  TargetLowering::DAGCombinerInfo &DCI,
+static SDValue PerformVDIVCombine(SDNode *N, SelectionDAG &DAG,
                                   const ARMSubtarget *Subtarget) {
-  SelectionDAG &DAG = DCI.DAG;
+  if (!Subtarget->hasNEON())
+    return SDValue();
+
   SDValue Op = N->getOperand(0);
   unsigned OpOpcode = Op.getNode()->getOpcode();
-
-  if (!Subtarget->hasNEON() || !N->getValueType(0).isVector() ||
+  if (!N->getValueType(0).isVector() ||
       (OpOpcode != ISD::SINT_TO_FP && OpOpcode != ISD::UINT_TO_FP))
     return SDValue();
 
-  uint64_t C;
   SDValue ConstVec = N->getOperand(1);
-  bool isSigned = OpOpcode == ISD::SINT_TO_FP;
-
-  if (ConstVec.getOpcode() != ISD::BUILD_VECTOR ||
-      !isConstVecPow2(ConstVec, isSigned, C))
+  if (!isa<BuildVectorSDNode>(ConstVec))
     return SDValue();
 
   MVT FloatTy = N->getSimpleValueType(0).getVectorElementType();
+  uint32_t FloatBits = FloatTy.getSizeInBits();
   MVT IntTy = Op.getOperand(0).getSimpleValueType().getVectorElementType();
-  if (FloatTy.getSizeInBits() != 32 || IntTy.getSizeInBits() > 32) {
+  uint32_t IntBits = IntTy.getSizeInBits();
+  unsigned NumLanes = Op.getValueType().getVectorNumElements();
+  if (FloatBits != 32 || IntBits > 32 || NumLanes > 4) {
     // These instructions only exist converting from i32 to f32. We can handle
     // smaller integers by generating an extra extend, but larger ones would
-    // be lossy.
+    // be lossy. We also can't handle more then 4 lanes, since these intructions
+    // only support v2i32/v4i32 types.
     return SDValue();
   }
 
+  BitVector UndefElements;
+  BuildVectorSDNode *BV = cast<BuildVectorSDNode>(ConstVec);
+  int32_t C = BV->getConstantFPSplatPow2ToLog2Int(&UndefElements, 33);
+  if (C == -1 || C == 0 || C > 32)
+    return SDValue();
+
   SDLoc dl(N);
+  bool isSigned = OpOpcode == ISD::SINT_TO_FP;
   SDValue ConvInput = Op.getOperand(0);
-  unsigned NumLanes = Op.getValueType().getVectorNumElements();
-  if (IntTy.getSizeInBits() < FloatTy.getSizeInBits())
+  if (IntBits < FloatBits)
     ConvInput = DAG.getNode(isSigned ? ISD::SIGN_EXTEND : ISD::ZERO_EXTEND,
                             dl, NumLanes == 2 ? MVT::v2i32 : MVT::v4i32,
                             ConvInput);
@@ -9783,7 +9917,7 @@ static SDValue PerformVDIVCombine(SDNode *N,
   return DAG.getNode(ISD::INTRINSIC_WO_CHAIN, dl,
                      Op.getValueType(),
                      DAG.getConstant(IntrinsicOpcode, dl, MVT::i32),
-                     ConvInput, DAG.getConstant(Log2_64(C), dl, MVT::i32));
+                     ConvInput, DAG.getConstant(C, dl, MVT::i32));
 }
 
 /// Getvshiftimm - Check if this is a valid build_vector for the immediate
@@ -10167,8 +10301,10 @@ SDValue ARMTargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::VECTOR_SHUFFLE: return PerformVECTOR_SHUFFLECombine(N, DCI.DAG);
   case ARMISD::VDUPLANE: return PerformVDUPLANECombine(N, DCI);
   case ISD::FP_TO_SINT:
-  case ISD::FP_TO_UINT: return PerformVCVTCombine(N, DCI, Subtarget);
-  case ISD::FDIV:       return PerformVDIVCombine(N, DCI, Subtarget);
+  case ISD::FP_TO_UINT:
+    return PerformVCVTCombine(N, DCI.DAG, Subtarget);
+  case ISD::FDIV:
+    return PerformVDIVCombine(N, DCI.DAG, Subtarget);
   case ISD::INTRINSIC_WO_CHAIN: return PerformIntrinsicCombine(N, DCI.DAG);
   case ISD::SHL:
   case ISD::SRA:
@@ -11101,6 +11237,45 @@ void ARMTargetLowering::LowerAsmOperandForConstraint(SDValue Op,
   return TargetLowering::LowerAsmOperandForConstraint(Op, Constraint, Ops, DAG);
 }
 
+static RTLIB::Libcall getDivRemLibcall(
+    const SDNode *N, MVT::SimpleValueType SVT) {
+  assert((N->getOpcode() == ISD::SDIVREM || N->getOpcode() == ISD::UDIVREM ||
+          N->getOpcode() == ISD::SREM    || N->getOpcode() == ISD::UREM) &&
+         "Unhandled Opcode in getDivRemLibcall");
+  bool isSigned = N->getOpcode() == ISD::SDIVREM ||
+                  N->getOpcode() == ISD::SREM;
+  RTLIB::Libcall LC;
+  switch (SVT) {
+  default: llvm_unreachable("Unexpected request for libcall!");
+  case MVT::i8:  LC = isSigned ? RTLIB::SDIVREM_I8  : RTLIB::UDIVREM_I8;  break;
+  case MVT::i16: LC = isSigned ? RTLIB::SDIVREM_I16 : RTLIB::UDIVREM_I16; break;
+  case MVT::i32: LC = isSigned ? RTLIB::SDIVREM_I32 : RTLIB::UDIVREM_I32; break;
+  case MVT::i64: LC = isSigned ? RTLIB::SDIVREM_I64 : RTLIB::UDIVREM_I64; break;
+  }
+  return LC;
+}
+
+static TargetLowering::ArgListTy getDivRemArgList(
+    const SDNode *N, LLVMContext *Context) {
+  assert((N->getOpcode() == ISD::SDIVREM || N->getOpcode() == ISD::UDIVREM ||
+          N->getOpcode() == ISD::SREM    || N->getOpcode() == ISD::UREM) &&
+         "Unhandled Opcode in getDivRemArgList");
+  bool isSigned = N->getOpcode() == ISD::SDIVREM ||
+                  N->getOpcode() == ISD::SREM;
+  TargetLowering::ArgListTy Args;
+  TargetLowering::ArgListEntry Entry;
+  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
+    EVT ArgVT = N->getOperand(i).getValueType();
+    Type *ArgTy = ArgVT.getTypeForEVT(*Context);
+    Entry.Node = N->getOperand(i);
+    Entry.Ty = ArgTy;
+    Entry.isSExt = isSigned;
+    Entry.isZExt = !isSigned;
+    Args.push_back(Entry);
+  }
+  return Args;
+}
+
 SDValue ARMTargetLowering::LowerDivRem(SDValue Op, SelectionDAG &DAG) const {
   assert((Subtarget->isTargetAEABI() || Subtarget->isTargetAndroid()) &&
          "Register-based DivRem lowering only");
@@ -11111,28 +11286,12 @@ SDValue ARMTargetLowering::LowerDivRem(SDValue Op, SelectionDAG &DAG) const {
   EVT VT = Op->getValueType(0);
   Type *Ty = VT.getTypeForEVT(*DAG.getContext());
 
-  RTLIB::Libcall LC;
-  switch (VT.getSimpleVT().SimpleTy) {
-  default: llvm_unreachable("Unexpected request for libcall!");
-  case MVT::i8:  LC = isSigned ? RTLIB::SDIVREM_I8  : RTLIB::UDIVREM_I8;  break;
-  case MVT::i16: LC = isSigned ? RTLIB::SDIVREM_I16 : RTLIB::UDIVREM_I16; break;
-  case MVT::i32: LC = isSigned ? RTLIB::SDIVREM_I32 : RTLIB::UDIVREM_I32; break;
-  case MVT::i64: LC = isSigned ? RTLIB::SDIVREM_I64 : RTLIB::UDIVREM_I64; break;
-  }
-
+  RTLIB::Libcall LC = getDivRemLibcall(Op.getNode(),
+                                       VT.getSimpleVT().SimpleTy);
   SDValue InChain = DAG.getEntryNode();
 
-  TargetLowering::ArgListTy Args;
-  TargetLowering::ArgListEntry Entry;
-  for (unsigned i = 0, e = Op->getNumOperands(); i != e; ++i) {
-    EVT ArgVT = Op->getOperand(i).getValueType();
-    Type *ArgTy = ArgVT.getTypeForEVT(*DAG.getContext());
-    Entry.Node = Op->getOperand(i);
-    Entry.Ty = ArgTy;
-    Entry.isSExt = isSigned;
-    Entry.isZExt = !isSigned;
-    Args.push_back(Entry);
-  }
+  TargetLowering::ArgListTy Args = getDivRemArgList(Op.getNode(),
+                                                    DAG.getContext());
 
   SDValue Callee = DAG.getExternalSymbol(getLibcallName(LC),
                                          getPointerTy(DAG.getDataLayout()));
@@ -11147,6 +11306,47 @@ SDValue ARMTargetLowering::LowerDivRem(SDValue Op, SelectionDAG &DAG) const {
 
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
   return CallInfo.first;
+}
+
+// Lowers REM using divmod helpers
+// see RTABI section 4.2/4.3
+SDValue ARMTargetLowering::LowerREM(SDNode *N, SelectionDAG &DAG) const {
+  // Build return types (div and rem)
+  std::vector<Type*> RetTyParams;
+  Type *RetTyElement;
+
+  switch (N->getValueType(0).getSimpleVT().SimpleTy) {
+  default: llvm_unreachable("Unexpected request for libcall!");
+  case MVT::i8:   RetTyElement = Type::getInt8Ty(*DAG.getContext());  break;
+  case MVT::i16:  RetTyElement = Type::getInt16Ty(*DAG.getContext()); break;
+  case MVT::i32:  RetTyElement = Type::getInt32Ty(*DAG.getContext()); break;
+  case MVT::i64:  RetTyElement = Type::getInt64Ty(*DAG.getContext()); break;
+  }
+
+  RetTyParams.push_back(RetTyElement);
+  RetTyParams.push_back(RetTyElement);
+  ArrayRef<Type*> ret = ArrayRef<Type*>(RetTyParams);
+  Type *RetTy = StructType::get(*DAG.getContext(), ret);
+
+  RTLIB::Libcall LC = getDivRemLibcall(N, N->getValueType(0).getSimpleVT().
+                                                             SimpleTy);
+  SDValue InChain = DAG.getEntryNode();
+  TargetLowering::ArgListTy Args = getDivRemArgList(N, DAG.getContext());
+  bool isSigned = N->getOpcode() == ISD::SREM;
+  SDValue Callee = DAG.getExternalSymbol(getLibcallName(LC),
+                                         getPointerTy(DAG.getDataLayout()));
+
+  // Lower call
+  CallLoweringInfo CLI(DAG);
+  CLI.setChain(InChain)
+     .setCallee(CallingConv::ARM_AAPCS, RetTy, Callee, std::move(Args), 0)
+     .setSExtResult(isSigned).setZExtResult(!isSigned).setDebugLoc(SDLoc(N));
+  std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
+
+  // Return second (rem) result operand (first contains div)
+  SDNode *ResNode = CallResult.first.getNode();
+  assert(ResNode->getNumOperands() == 2 && "divmod should return two operands");
+  return ResNode->getOperand(1);
 }
 
 SDValue
@@ -11183,8 +11383,8 @@ SDValue ARMTargetLowering::LowerFP_EXTEND(SDValue Op, SelectionDAG &DAG) const {
   LC = RTLIB::getFPEXT(Op.getOperand(0).getValueType(), Op.getValueType());
 
   SDValue SrcVal = Op.getOperand(0);
-  return makeLibCall(DAG, LC, Op.getValueType(), &SrcVal, 1,
-                     /*isSigned*/ false, SDLoc(Op)).first;
+  return makeLibCall(DAG, LC, Op.getValueType(), SrcVal, /*isSigned*/ false,
+                     SDLoc(Op)).first;
 }
 
 SDValue ARMTargetLowering::LowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
@@ -11196,8 +11396,8 @@ SDValue ARMTargetLowering::LowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
   LC = RTLIB::getFPROUND(Op.getOperand(0).getValueType(), Op.getValueType());
 
   SDValue SrcVal = Op.getOperand(0);
-  return makeLibCall(DAG, LC, Op.getValueType(), &SrcVal, 1,
-                     /*isSigned*/ false, SDLoc(Op)).first;
+  return makeLibCall(DAG, LC, Op.getValueType(), SrcVal, /*isSigned*/ false,
+                     SDLoc(Op)).first;
 }
 
 bool
@@ -11354,8 +11554,6 @@ bool ARMTargetLowering::shouldConvertConstantLoadToIntImm(const APInt &Imm,
   return true;
 }
 
-bool ARMTargetLowering::hasLoadLinkedStoreConditional() const { return true; }
-
 Instruction* ARMTargetLowering::makeDMB(IRBuilder<> &Builder,
                                         ARM_MB::MemBOpt Domain) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
@@ -11451,19 +11649,26 @@ bool ARMTargetLowering::shouldExpandAtomicStoreInIR(StoreInst *SI) const {
 // FIXME: ldrd and strd are atomic if the CPU has LPAE (e.g. A15 has that
 // guarantee, see DDI0406C ARM architecture reference manual,
 // sections A8.8.72-74 LDRD)
-bool ARMTargetLowering::shouldExpandAtomicLoadInIR(LoadInst *LI) const {
+TargetLowering::AtomicExpansionKind
+ARMTargetLowering::shouldExpandAtomicLoadInIR(LoadInst *LI) const {
   unsigned Size = LI->getType()->getPrimitiveSizeInBits();
-  return (Size == 64) && !Subtarget->isMClass();
+  return ((Size == 64) && !Subtarget->isMClass()) ? AtomicExpansionKind::LLSC
+                                                  : AtomicExpansionKind::None;
 }
 
 // For the real atomic operations, we have ldrex/strex up to 32 bits,
 // and up to 64 bits on the non-M profiles
-TargetLoweringBase::AtomicRMWExpansionKind
+TargetLowering::AtomicExpansionKind
 ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
   unsigned Size = AI->getType()->getPrimitiveSizeInBits();
   return (Size <= (Subtarget->isMClass() ? 32U : 64U))
-             ? AtomicRMWExpansionKind::LLSC
-             : AtomicRMWExpansionKind::None;
+             ? AtomicExpansionKind::LLSC
+             : AtomicExpansionKind::None;
+}
+
+bool ARMTargetLowering::shouldExpandAtomicCmpXchgInIR(
+    AtomicCmpXchgInst *AI) const {
+  return true;
 }
 
 // This has so far only been implemented for MachO.
@@ -11536,6 +11741,14 @@ Value *ARMTargetLowering::emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
       cast<PointerType>(Addr->getType())->getElementType());
 }
 
+void ARMTargetLowering::emitAtomicCmpXchgNoStoreLLBalance(
+    IRBuilder<> &Builder) const {
+  if (!Subtarget->hasV7Ops())
+    return;
+  Module *M = Builder.GetInsertBlock()->getParent()->getParent();
+  Builder.CreateCall(llvm::Intrinsic::getDeclaration(M, Intrinsic::arm_clrex));
+}
+
 Value *ARMTargetLowering::emitStoreConditional(IRBuilder<> &Builder, Value *Val,
                                                Value *Addr,
                                                AtomicOrdering Ord) const {
@@ -11596,9 +11809,9 @@ bool ARMTargetLowering::lowerInterleavedLoad(
   unsigned VecSize = DL.getTypeAllocSizeInBits(VecTy);
   bool EltIs64Bits = DL.getTypeAllocSizeInBits(EltTy) == 64;
 
-  // Skip illegal vector types and vector types of i64/f64 element (vldN doesn't
-  // support i64/f64 element).
-  if ((VecSize != 64 && VecSize != 128) || EltIs64Bits)
+  // Skip if we do not have NEON and skip illegal vector types and vector types
+  // with i64/f64 elements (vldN doesn't support i64/f64 elements).
+  if (!Subtarget->hasNEON() || (VecSize != 64 && VecSize != 128) || EltIs64Bits)
     return false;
 
   // A pointer vector can not be the return type of the ldN intrinsics. Need to
@@ -11611,9 +11824,6 @@ bool ARMTargetLowering::lowerInterleavedLoad(
                                             Intrinsic::arm_neon_vld3,
                                             Intrinsic::arm_neon_vld4};
 
-  Function *VldnFunc =
-      Intrinsic::getDeclaration(LI->getModule(), LoadInts[Factor - 2], VecTy);
-
   IRBuilder<> Builder(LI);
   SmallVector<Value *, 2> Ops;
 
@@ -11621,6 +11831,9 @@ bool ARMTargetLowering::lowerInterleavedLoad(
   Ops.push_back(Builder.CreateBitCast(LI->getPointerOperand(), Int8Ptr));
   Ops.push_back(Builder.getInt32(LI->getAlignment()));
 
+  Type *Tys[] = { VecTy, Int8Ptr };
+  Function *VldnFunc =
+      Intrinsic::getDeclaration(LI->getModule(), LoadInts[Factor - 2], Tys);
   CallInst *VldN = Builder.CreateCall(VldnFunc, Ops, "vldN");
 
   // Replace uses of each shufflevector with the corresponding vector loaded
@@ -11686,9 +11899,10 @@ bool ARMTargetLowering::lowerInterleavedStore(StoreInst *SI,
   unsigned SubVecSize = DL.getTypeAllocSizeInBits(SubVecTy);
   bool EltIs64Bits = DL.getTypeAllocSizeInBits(EltTy) == 64;
 
-  // Skip illegal sub vector types and vector types of i64/f64 element (vstN
-  // doesn't support i64/f64 element).
-  if ((SubVecSize != 64 && SubVecSize != 128) || EltIs64Bits)
+  // Skip if we do not have NEON and skip illegal vector types and vector types
+  // with i64/f64 elements (vstN doesn't support i64/f64 elements).
+  if (!Subtarget->hasNEON() || (SubVecSize != 64 && SubVecSize != 128) ||
+      EltIs64Bits)
     return false;
 
   Value *Op0 = SVI->getOperand(0);
@@ -11709,16 +11923,17 @@ bool ARMTargetLowering::lowerInterleavedStore(StoreInst *SI,
     SubVecTy = VectorType::get(IntTy, NumSubElts);
   }
 
-  static Intrinsic::ID StoreInts[3] = {Intrinsic::arm_neon_vst2,
-                                       Intrinsic::arm_neon_vst3,
-                                       Intrinsic::arm_neon_vst4};
-  Function *VstNFunc = Intrinsic::getDeclaration(
-      SI->getModule(), StoreInts[Factor - 2], SubVecTy);
-
+  static const Intrinsic::ID StoreInts[3] = {Intrinsic::arm_neon_vst2,
+                                             Intrinsic::arm_neon_vst3,
+                                             Intrinsic::arm_neon_vst4};
   SmallVector<Value *, 6> Ops;
 
   Type *Int8Ptr = Builder.getInt8PtrTy(SI->getPointerAddressSpace());
   Ops.push_back(Builder.CreateBitCast(SI->getPointerOperand(), Int8Ptr));
+
+  Type *Tys[] = { Int8Ptr, SubVecTy };
+  Function *VstNFunc = Intrinsic::getDeclaration(
+      SI->getModule(), StoreInts[Factor - 2], Tys);
 
   // Split the shufflevector operands into sub vectors for the new vstN call.
   for (unsigned i = 0; i < Factor; i++)

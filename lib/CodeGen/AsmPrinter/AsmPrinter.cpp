@@ -965,7 +965,7 @@ void AsmPrinter::EmitFunctionBody() {
   EmitFunctionBodyEnd();
 
   if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
-      MAI->hasDotTypeDotSizeDirective()) {
+      MMI->hasEHFunclets() || MAI->hasDotTypeDotSizeDirective()) {
     // Create a symbol for the end of function.
     CurrentFnEnd = createTempSymbol("func_end");
     OutStreamer->EmitLabel(CurrentFnEnd);
@@ -1260,7 +1260,7 @@ void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   CurExceptionSym = nullptr;
   bool NeedsLocalForSize = MAI->needsLocalForSize();
   if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
-      NeedsLocalForSize) {
+      MMI->hasEHFunclets() || NeedsLocalForSize) {
     CurrentFnBegin = createTempSymbol("func_begin");
     if (NeedsLocalForSize)
       CurrentFnSymForSize = CurrentFnBegin;
@@ -2459,6 +2459,14 @@ static void emitBasicBlockLoopComments(const MachineBasicBlock &MBB,
 /// MachineBasicBlock, an alignment (if present) and a comment describing
 /// it if appropriate.
 void AsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) const {
+  // End the previous funclet and start a new one.
+  if (MBB.isEHFuncletEntry()) {
+    for (const HandlerInfo &HI : Handlers) {
+      HI.Handler->endFunclet();
+      HI.Handler->beginFunclet(MBB);
+    }
+  }
+
   // Emit an alignment directive for this block, if needed.
   if (unsigned Align = MBB.getAlignment())
     EmitAlignment(Align);
@@ -2485,7 +2493,8 @@ void AsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) const {
   }
 
   // Print the main label for the block.
-  if (MBB.pred_empty() || isBlockOnlyReachableByFallthrough(&MBB)) {
+  if (MBB.pred_empty() ||
+      (isBlockOnlyReachableByFallthrough(&MBB) && !MBB.isEHFuncletEntry())) {
     if (isVerbose()) {
       // NOTE: Want this comment at start of line, don't emit with AddComment.
       OutStreamer->emitRawComment(" BB#" + Twine(MBB.getNumber()) + ":", false);
@@ -2523,7 +2532,7 @@ bool AsmPrinter::
 isBlockOnlyReachableByFallthrough(const MachineBasicBlock *MBB) const {
   // If this is a landing pad, it isn't a fall through.  If it has no preds,
   // then nothing falls through to it.
-  if (MBB->isLandingPad() || MBB->pred_empty())
+  if (MBB->isEHPad() || MBB->pred_empty())
     return false;
 
   // If there isn't exactly one predecessor, it can't be a fall through.

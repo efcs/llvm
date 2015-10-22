@@ -1303,7 +1303,7 @@ TEST_F(DICompileUnitTest, get) {
   MDTuple *Subprograms = getTuple();
   MDTuple *GlobalVariables = getTuple();
   MDTuple *ImportedEntities = getTuple();
-  uint64_t DWOId = 0xc0ffee;
+  uint64_t DWOId = 0x10000000c0ffee;
   auto *N = DICompileUnit::getDistinct(
       Context, SourceLanguage, File, Producer, IsOptimized, Flags,
       RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
@@ -1589,6 +1589,32 @@ TEST_F(DILexicalBlockTest, get) {
 
   TempDILexicalBlock Temp = N->clone();
   EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
+}
+
+TEST_F(DILexicalBlockTest, Overflow) {
+  DISubprogram *SP = getSubprogram();
+  DIFile *F = getFile();
+  {
+    auto *LB = DILexicalBlock::get(Context, SP, F, 2, 7);
+    EXPECT_EQ(2u, LB->getLine());
+    EXPECT_EQ(7u, LB->getColumn());
+  }
+  unsigned U16 = 1u << 16;
+  {
+    auto *LB = DILexicalBlock::get(Context, SP, F, UINT32_MAX, U16 - 1);
+    EXPECT_EQ(UINT32_MAX, LB->getLine());
+    EXPECT_EQ(U16 - 1, LB->getColumn());
+  }
+  {
+    auto *LB = DILexicalBlock::get(Context, SP, F, UINT32_MAX, U16);
+    EXPECT_EQ(UINT32_MAX, LB->getLine());
+    EXPECT_EQ(0u, LB->getColumn());
+  }
+  {
+    auto *LB = DILexicalBlock::get(Context, SP, F, UINT32_MAX, U16 + 1);
+    EXPECT_EQ(UINT32_MAX, LB->getLine());
+    EXPECT_EQ(0u, LB->getColumn());
+  }
 }
 
 typedef MetadataTest DILexicalBlockFileTest;
@@ -2271,6 +2297,18 @@ TEST_F(FunctionAttachmentTest, EntryCount) {
   F->setEntryCount(12304);
   EXPECT_TRUE(F->getEntryCount().hasValue());
   EXPECT_EQ(12304u, *F->getEntryCount());
+}
+
+TEST_F(FunctionAttachmentTest, SubprogramAttachment) {
+  Function *F = getFunction("foo");
+  DISubprogram *SP = getSubprogram();
+  F->setSubprogram(SP);
+
+  // Note that the static_cast confirms that F->getSubprogram() actually
+  // returns an DISubprogram.
+  EXPECT_EQ(SP, static_cast<DISubprogram *>(F->getSubprogram()));
+  EXPECT_EQ(SP, F->getMetadata("dbg"));
+  EXPECT_EQ(SP, F->getMetadata(LLVMContext::MD_dbg));
 }
 
 }
