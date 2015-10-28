@@ -773,6 +773,7 @@ def NoVLX_Or_NoBWI : Predicate<"!Subtarget->hasVLX() || !Subtarget->hasBWI()">;
 
 def HasPOPCNT    : Predicate<"Subtarget->hasPOPCNT()">;
 def HasAES       : Predicate<"Subtarget->hasAES()">;
+def HasFXSR      : Predicate<"Subtarget->hasFXSR()">;
 def HasXSAVE     : Predicate<"Subtarget->hasXSAVE()">;
 def HasXSAVEOPT  : Predicate<"Subtarget->hasXSAVEOPT()">;
 def HasXSAVEC    : Predicate<"Subtarget->hasXSAVEC()">;
@@ -2399,6 +2400,32 @@ defm BLSIC   : tbm_binary_intr<0x01, "blsic", MRM6r, MRM6m>;
 defm T1MSKC  : tbm_binary_intr<0x01, "t1mskc", MRM7r, MRM7m>;
 defm TZMSK   : tbm_binary_intr<0x01, "tzmsk", MRM4r, MRM4m>;
 } // HasTBM, EFLAGS
+
+//===----------------------------------------------------------------------===//
+// MONITORX/MWAITX Instructions
+//
+let SchedRW = [WriteSystem] in {
+let Uses = [EAX, ECX, EDX] in
+def MONITORXrrr : I<0x01, MRM_FA, (outs), (ins), "monitorx", [],
+                    IIC_SSE_MONITOR>, TB;
+let Uses = [ECX, EAX, EBX] in
+def MWAITXrr   : I<0x01, MRM_FB, (outs), (ins), "mwaitx", [], IIC_SSE_MWAIT>,
+                 TB;
+} // SchedRW
+
+def : InstAlias<"mwaitx\t{%eax, %ecx, %ebx|ebx, ecx, eax}", (MWAITXrr)>, Requires<[Not64BitMode]>;
+def : InstAlias<"mwaitx\t{%rax, %rcx, %rbx|rbx, rcx, rax}", (MWAITXrr)>, Requires<[In64BitMode]>;
+
+def : InstAlias<"monitorx\t{%eax, %ecx, %edx|edx, ecx, eax}", (MONITORXrrr)>,
+      Requires<[Not64BitMode]>;
+def : InstAlias<"monitorx\t{%rax, %rcx, %rdx|rdx, rcx, rax}", (MONITORXrrr)>,
+      Requires<[In64BitMode]>;
+
+//===----------------------------------------------------------------------===//
+// CLZERO Instruction
+//
+let Uses = [EAX] in
+def CLZEROr : I<0x01, MRM_FC, (outs), (ins), "clzero", []>, TB;
 
 //===----------------------------------------------------------------------===//
 // Pattern fragments to auto generate TBM instructions.

@@ -487,8 +487,7 @@ bool LoopUnswitch::processCurrentLoop() {
 
   LLVMContext &Context = loopHeader->getContext();
 
-  // Probably we reach the quota of branches for this loop. If so
-  // stop unswitching.
+  // Analyze loop cost, and stop unswitching if loop content can not be duplicated.
   if (!BranchesInfo.countLoop(
           currentLoop, getAnalysis<TargetTransformInfoWrapperPass>().getTTI(
                            *currentLoop->getHeader()->getParent()),
@@ -671,20 +670,19 @@ bool LoopUnswitch::UnswitchIfProfitable(Value *LoopCond, Constant *Val,
 /// mapping the blocks with the specified map.
 static Loop *CloneLoop(Loop *L, Loop *PL, ValueToValueMapTy &VM,
                        LoopInfo *LI, LPPassManager *LPM) {
-  Loop *New = new Loop();
-  LPM->insertLoop(New, PL);
+  Loop &New = LPM->addLoop(PL);
 
   // Add all of the blocks in L to the new loop.
   for (Loop::block_iterator I = L->block_begin(), E = L->block_end();
        I != E; ++I)
     if (LI->getLoopFor(*I) == L)
-      New->addBasicBlockToLoop(cast<BasicBlock>(VM[*I]), *LI);
+      New.addBasicBlockToLoop(cast<BasicBlock>(VM[*I]), *LI);
 
   // Add all of the subloops to the new loop.
   for (Loop::iterator I = L->begin(), E = L->end(); I != E; ++I)
-    CloneLoop(*I, New, VM, LI, LPM);
+    CloneLoop(*I, &New, VM, LI, LPM);
 
-  return New;
+  return &New;
 }
 
 static void copyMetadata(Instruction *DstInst, const Instruction *SrcInst,

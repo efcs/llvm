@@ -1617,18 +1617,24 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
       Type *EltTy = Ty->getSequentialElementType();
       SmallVector<Constant *, 16> Elements;
       for (unsigned Idx = 0; Idx < NumElements; ++Idx) {
-        ConstantInt *Elt =
-            dyn_cast<ConstantInt>(ConstArg->getAggregateElement(Idx));
-        APInt V = Elt->getValue();
-        APInt V2 = APInt(V.getBitWidth(), 1) << V.countTrailingZeros();
-        Elements.push_back(ConstantInt::get(EltTy, V2));
+        if (ConstantInt *Elt =
+                dyn_cast<ConstantInt>(ConstArg->getAggregateElement(Idx))) {
+          APInt V = Elt->getValue();
+          APInt V2 = APInt(V.getBitWidth(), 1) << V.countTrailingZeros();
+          Elements.push_back(ConstantInt::get(EltTy, V2));
+        } else {
+          Elements.push_back(ConstantInt::get(EltTy, 1));
+        }
       }
       ShadowMul = ConstantVector::get(Elements);
     } else {
-      ConstantInt *Elt = dyn_cast<ConstantInt>(ConstArg);
-      APInt V = Elt->getValue();
-      APInt V2 = APInt(V.getBitWidth(), 1) << V.countTrailingZeros();
-      ShadowMul = ConstantInt::get(Elt->getType(), V2);
+      if (ConstantInt *Elt = dyn_cast<ConstantInt>(ConstArg)) {
+        APInt V = Elt->getValue();
+        APInt V2 = APInt(V.getBitWidth(), 1) << V.countTrailingZeros();
+        ShadowMul = ConstantInt::get(Ty, V2);
+      } else {
+        ShadowMul = ConstantInt::get(Ty, 1);
+      }
     }
 
     IRBuilder<> IRB(&I);
@@ -1912,25 +1918,6 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
     VAHelper->visitVACopyInst(I);
   }
 
-  enum IntrinsicKind {
-    IK_DoesNotAccessMemory,
-    IK_OnlyReadsMemory,
-    IK_WritesMemory
-  };
-
-  static IntrinsicKind getIntrinsicKind(Intrinsic::ID iid) {
-    const int FMRB_DoesNotAccessMemory = IK_DoesNotAccessMemory;
-    const int FMRB_OnlyReadsArgumentPointees = IK_OnlyReadsMemory;
-    const int FMRB_OnlyReadsMemory = IK_OnlyReadsMemory;
-    const int FMRB_OnlyAccessesArgumentPointees = IK_WritesMemory;
-    const int FMRB_UnknownModRefBehavior = IK_WritesMemory;
-#define GET_INTRINSIC_MODREF_BEHAVIOR
-#define FunctionModRefBehavior IntrinsicKind
-#include "llvm/IR/Intrinsics.gen"
-#undef FunctionModRefBehavior
-#undef GET_INTRINSIC_MODREF_BEHAVIOR
-  }
-
   /// \brief Handle vector store-like intrinsics.
   ///
   /// Instrument intrinsics that look like a simple SIMD store: writes memory,
@@ -2030,17 +2017,11 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
     if (NumArgOperands == 0)
       return false;
 
-    Intrinsic::ID iid = I.getIntrinsicID();
-    IntrinsicKind IK = getIntrinsicKind(iid);
-    bool OnlyReadsMemory = IK == IK_OnlyReadsMemory;
-    bool WritesMemory = IK == IK_WritesMemory;
-    assert(!(OnlyReadsMemory && WritesMemory));
-
     if (NumArgOperands == 2 &&
         I.getArgOperand(0)->getType()->isPointerTy() &&
         I.getArgOperand(1)->getType()->isVectorTy() &&
         I.getType()->isVoidTy() &&
-        WritesMemory) {
+        !I.onlyReadsMemory()) {
       // This looks like a vector store.
       return handleVectorStoreIntrinsic(I);
     }
@@ -2048,12 +2029,12 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
     if (NumArgOperands == 1 &&
         I.getArgOperand(0)->getType()->isPointerTy() &&
         I.getType()->isVectorTy() &&
-        OnlyReadsMemory) {
+        I.onlyReadsMemory()) {
       // This looks like a vector load.
       return handleVectorLoadIntrinsic(I);
     }
 
-    if (!OnlyReadsMemory && !WritesMemory)
+    if (I.doesNotAccessMemory())
       if (maybeHandleSimpleNomemIntrinsic(I))
         return true;
 

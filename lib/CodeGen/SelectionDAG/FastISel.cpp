@@ -1394,25 +1394,28 @@ void FastISel::fastEmitBranch(MachineBasicBlock *MSucc, DebugLoc DbgLoc) {
     TII.InsertBranch(*FuncInfo.MBB, MSucc, nullptr,
                      SmallVector<MachineOperand, 0>(), DbgLoc);
   }
-  uint32_t BranchWeight = 0;
-  if (FuncInfo.BPI)
-    BranchWeight = FuncInfo.BPI->getEdgeWeight(FuncInfo.MBB->getBasicBlock(),
-                                               MSucc->getBasicBlock());
-  FuncInfo.MBB->addSuccessor(MSucc, BranchWeight);
+  if (FuncInfo.BPI) {
+    uint32_t BranchWeight = FuncInfo.BPI->getEdgeWeight(
+        FuncInfo.MBB->getBasicBlock(), MSucc->getBasicBlock());
+    FuncInfo.MBB->addSuccessor(MSucc, BranchWeight);
+  } else
+    FuncInfo.MBB->addSuccessorWithoutWeight(MSucc);
 }
 
 void FastISel::finishCondBranch(const BasicBlock *BranchBB,
                                 MachineBasicBlock *TrueMBB,
                                 MachineBasicBlock *FalseMBB) {
-  uint32_t BranchWeight = 0;
-  if (FuncInfo.BPI)
-    BranchWeight = FuncInfo.BPI->getEdgeWeight(BranchBB,
-                                               TrueMBB->getBasicBlock());
   // Add TrueMBB as successor unless it is equal to the FalseMBB: This can
   // happen in degenerate IR and MachineIR forbids to have a block twice in the
   // successor/predecessor lists.
-  if (TrueMBB != FalseMBB)
-    FuncInfo.MBB->addSuccessor(TrueMBB, BranchWeight);
+  if (TrueMBB != FalseMBB) {
+    if (FuncInfo.BPI) {
+      uint32_t BranchWeight =
+          FuncInfo.BPI->getEdgeWeight(BranchBB, TrueMBB->getBasicBlock());
+      FuncInfo.MBB->addSuccessor(TrueMBB, BranchWeight);
+    } else
+      FuncInfo.MBB->addSuccessorWithoutWeight(TrueMBB);
+  }
 
   fastEmitBranch(FalseMBB, DbgLoc);
 }
@@ -1895,28 +1898,6 @@ unsigned FastISel::fastEmitInst_f(unsigned MachineInstOpcode,
   return ResultReg;
 }
 
-unsigned FastISel::fastEmitInst_rf(unsigned MachineInstOpcode,
-                                   const TargetRegisterClass *RC, unsigned Op0,
-                                   bool Op0IsKill, const ConstantFP *FPImm) {
-  const MCInstrDesc &II = TII.get(MachineInstOpcode);
-
-  unsigned ResultReg = createResultReg(RC);
-  Op0 = constrainOperandRegClass(II, Op0, II.getNumDefs());
-
-  if (II.getNumDefs() >= 1)
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II, ResultReg)
-        .addReg(Op0, getKillRegState(Op0IsKill))
-        .addFPImm(FPImm);
-  else {
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II)
-        .addReg(Op0, getKillRegState(Op0IsKill))
-        .addFPImm(FPImm);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-            TII.get(TargetOpcode::COPY), ResultReg).addReg(II.ImplicitDefs[0]);
-  }
-  return ResultReg;
-}
-
 unsigned FastISel::fastEmitInst_rri(unsigned MachineInstOpcode,
                                     const TargetRegisterClass *RC, unsigned Op0,
                                     bool Op0IsKill, unsigned Op1,
@@ -1943,35 +1924,6 @@ unsigned FastISel::fastEmitInst_rri(unsigned MachineInstOpcode,
   return ResultReg;
 }
 
-unsigned FastISel::fastEmitInst_rrii(unsigned MachineInstOpcode,
-                                     const TargetRegisterClass *RC,
-                                     unsigned Op0, bool Op0IsKill, unsigned Op1,
-                                     bool Op1IsKill, uint64_t Imm1,
-                                     uint64_t Imm2) {
-  const MCInstrDesc &II = TII.get(MachineInstOpcode);
-
-  unsigned ResultReg = createResultReg(RC);
-  Op0 = constrainOperandRegClass(II, Op0, II.getNumDefs());
-  Op1 = constrainOperandRegClass(II, Op1, II.getNumDefs() + 1);
-
-  if (II.getNumDefs() >= 1)
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II, ResultReg)
-        .addReg(Op0, getKillRegState(Op0IsKill))
-        .addReg(Op1, getKillRegState(Op1IsKill))
-        .addImm(Imm1)
-        .addImm(Imm2);
-  else {
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II)
-        .addReg(Op0, getKillRegState(Op0IsKill))
-        .addReg(Op1, getKillRegState(Op1IsKill))
-        .addImm(Imm1)
-        .addImm(Imm2);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-            TII.get(TargetOpcode::COPY), ResultReg).addReg(II.ImplicitDefs[0]);
-  }
-  return ResultReg;
-}
-
 unsigned FastISel::fastEmitInst_i(unsigned MachineInstOpcode,
                                   const TargetRegisterClass *RC, uint64_t Imm) {
   unsigned ResultReg = createResultReg(RC);
@@ -1982,25 +1934,6 @@ unsigned FastISel::fastEmitInst_i(unsigned MachineInstOpcode,
         .addImm(Imm);
   else {
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II).addImm(Imm);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-            TII.get(TargetOpcode::COPY), ResultReg).addReg(II.ImplicitDefs[0]);
-  }
-  return ResultReg;
-}
-
-unsigned FastISel::fastEmitInst_ii(unsigned MachineInstOpcode,
-                                   const TargetRegisterClass *RC, uint64_t Imm1,
-                                   uint64_t Imm2) {
-  unsigned ResultReg = createResultReg(RC);
-  const MCInstrDesc &II = TII.get(MachineInstOpcode);
-
-  if (II.getNumDefs() >= 1)
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II, ResultReg)
-        .addImm(Imm1)
-        .addImm(Imm2);
-  else {
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II).addImm(Imm1)
-        .addImm(Imm2);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
             TII.get(TargetOpcode::COPY), ResultReg).addReg(II.ImplicitDefs[0]);
   }

@@ -211,28 +211,6 @@ bool ISD::isBuildVectorOfConstantFPSDNodes(const SDNode *N) {
   return true;
 }
 
-/// isScalarToVector - Return true if the specified node is a
-/// ISD::SCALAR_TO_VECTOR node or a BUILD_VECTOR node where only the low
-/// element is not an undef.
-bool ISD::isScalarToVector(const SDNode *N) {
-  if (N->getOpcode() == ISD::SCALAR_TO_VECTOR)
-    return true;
-
-  if (N->getOpcode() != ISD::BUILD_VECTOR)
-    return false;
-  if (N->getOperand(0).getOpcode() == ISD::UNDEF)
-    return false;
-  unsigned NumElems = N->getNumOperands();
-  if (NumElems == 1)
-    return false;
-  for (unsigned i = 1; i < NumElems; ++i) {
-    SDValue V = N->getOperand(i);
-    if (V.getOpcode() != ISD::UNDEF)
-      return false;
-  }
-  return true;
-}
-
 /// allOperandsUndef - Return true if the node has at least one operand
 /// and all operands of the specified node are ISD::UNDEF.
 bool ISD::allOperandsUndef(const SDNode *N) {
@@ -1431,8 +1409,8 @@ SDValue SelectionDAG::getTargetIndex(int Index, EVT VT, int64_t Offset,
   if (SDNode *E = FindNodeOrInsertPos(ID, IP))
     return SDValue(E, 0);
 
-  SDNode *N = new (NodeAllocator) TargetIndexSDNode(Index, VT, Offset,
-                                                    TargetFlags);
+  SDNode *N =
+      new (NodeAllocator) TargetIndexSDNode(Index, VT, Offset, TargetFlags);
   CSEMap.InsertNode(N, IP);
   InsertNode(N);
   return SDValue(N, 0);
@@ -2306,7 +2284,8 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
       unsigned MemBits = VT.getScalarType().getSizeInBits();
       KnownZero |= APInt::getHighBitsSet(BitWidth, BitWidth - MemBits);
     } else if (const MDNode *Ranges = LD->getRanges()) {
-      computeKnownBitsFromRangeMetadata(*Ranges, KnownZero);
+      if (LD->getExtensionType() == ISD::NON_EXTLOAD)
+        computeKnownBitsFromRangeMetadata(*Ranges, KnownZero, KnownOne);
     }
     break;
   }
@@ -3361,11 +3340,11 @@ SDValue SelectionDAG::FoldConstantVectorArithmetic(unsigned Opcode, SDLoc DL,
   for (unsigned i = 0; i != NumElts; i++) {
     SmallVector<SDValue, 4> ScalarOps;
     for (SDValue Op : Ops) {
-      EVT InSVT = Op->getValueType(0).getScalarType();
+      EVT InSVT = Op.getValueType().getScalarType();
       BuildVectorSDNode *InBV = dyn_cast<BuildVectorSDNode>(Op);
       if (!InBV) {
         // We've checked that this is UNDEF above.
-        ScalarOps.push_back(getUNDEF(LegalSVT));
+        ScalarOps.push_back(getUNDEF(InSVT));
         continue;
       }
 
@@ -3404,11 +3383,18 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT, SDValue N1,
                               SDValue N2, const SDNodeFlags *Flags) {
   ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1);
   ConstantSDNode *N2C = dyn_cast<ConstantSDNode>(N2);
+  ConstantFPSDNode *N1CFP = dyn_cast<ConstantFPSDNode>(N1);
+  ConstantFPSDNode *N2CFP = dyn_cast<ConstantFPSDNode>(N2);
 
   // Canonicalize constant to RHS if commutative.
-  if (N1C && !N2C && isCommutativeBinOp(Opcode)) {
-    std::swap(N1C, N2C);
-    std::swap(N1, N2);
+  if (isCommutativeBinOp(Opcode)) {
+    if (N1C && !N2C) {
+      std::swap(N1C, N2C);
+      std::swap(N1, N2);
+    } else if (N1CFP && !N2CFP) {
+      std::swap(N1CFP, N2CFP);
+      std::swap(N1, N2);
+    }
   }
 
   switch (Opcode) {
@@ -3494,37 +3480,20 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT, SDValue N1,
   case ISD::FREM:
     if (getTarget().Options.UnsafeFPMath) {
       if (Opcode == ISD::FADD) {
-        // 0+x --> x
-        if (ConstantFPSDNode *CFP = dyn_cast<ConstantFPSDNode>(N1))
-          if (CFP->getValueAPF().isZero())
-            return N2;
         // x+0 --> x
-        if (ConstantFPSDNode *CFP = dyn_cast<ConstantFPSDNode>(N2))
-          if (CFP->getValueAPF().isZero())
-            return N1;
+        if (N2CFP && N2CFP->getValueAPF().isZero())
+          return N1;
       } else if (Opcode == ISD::FSUB) {
         // x-0 --> x
-        if (ConstantFPSDNode *CFP = dyn_cast<ConstantFPSDNode>(N2))
-          if (CFP->getValueAPF().isZero())
-            return N1;
+        if (N2CFP && N2CFP->getValueAPF().isZero())
+          return N1;
       } else if (Opcode == ISD::FMUL) {
-        ConstantFPSDNode *CFP = dyn_cast<ConstantFPSDNode>(N1);
-        SDValue V = N2;
-
-        // If the first operand isn't the constant, try the second
-        if (!CFP) {
-          CFP = dyn_cast<ConstantFPSDNode>(N2);
-          V = N1;
-        }
-
-        if (CFP) {
-          // 0*x --> 0
-          if (CFP->isZero())
-            return SDValue(CFP,0);
-          // 1*x --> x
-          if (CFP->isExactlyValue(1.0))
-            return V;
-        }
+        // x*0 --> 0
+        if (N2CFP && N2CFP->isZero())
+          return N2;
+        // x*1 --> x
+        if (N2CFP && N2CFP->isExactlyValue(1.0))
+          return N1;
       }
     }
     assert(VT.isFloatingPoint() && "This operator only applies to FP types!");
@@ -3757,14 +3726,8 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT, SDValue N1,
 
   // Constant fold FP operations.
   bool HasFPExceptions = TLI->hasFloatingPointExceptions();
-  ConstantFPSDNode *N1CFP = dyn_cast<ConstantFPSDNode>(N1);
-  ConstantFPSDNode *N2CFP = dyn_cast<ConstantFPSDNode>(N2);
   if (N1CFP) {
-    if (!N2CFP && isCommutativeBinOp(Opcode)) {
-      // Canonicalize constant to RHS if commutative.
-      std::swap(N1CFP, N2CFP);
-      std::swap(N1, N2);
-    } else if (N2CFP) {
+    if (N2CFP) {
       APFloat V1 = N1CFP->getValueAPF(), V2 = N2CFP->getValueAPF();
       APFloat::opStatus s;
       switch (Opcode) {
@@ -3916,7 +3879,6 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT, SDValue N1,
 SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT,
                               SDValue N1, SDValue N2, SDValue N3) {
   // Perform various simplifications.
-  ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1);
   switch (Opcode) {
   case ISD::FMA: {
     ConstantFPSDNode *N1CFP = dyn_cast<ConstantFPSDNode>(N1);
@@ -3948,12 +3910,12 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL, EVT VT,
     break;
   case ISD::SETCC: {
     // Use FoldSetCC to simplify SETCC's.
-    SDValue Simp = FoldSetCC(VT, N1, N2, cast<CondCodeSDNode>(N3)->get(), DL);
-    if (Simp.getNode()) return Simp;
+    if (SDValue V = FoldSetCC(VT, N1, N2, cast<CondCodeSDNode>(N3)->get(), DL))
+      return V;
     break;
   }
   case ISD::SELECT:
-    if (N1C) {
+    if (ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1)) {
      if (N1C->getZExtValue())
        return N2;             // select true, X, Y -> X
      return N3;             // select false, X, Y -> Y

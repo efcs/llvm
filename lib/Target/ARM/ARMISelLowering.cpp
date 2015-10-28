@@ -718,7 +718,11 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   }
 
   // ARM does not have ROTL.
-  setOperationAction(ISD::ROTL,  MVT::i32, Expand);
+  setOperationAction(ISD::ROTL, MVT::i32, Expand);
+  for (MVT VT : MVT::vector_valuetypes()) {
+    setOperationAction(ISD::ROTL, VT, Expand);
+    setOperationAction(ISD::ROTR, VT, Expand);
+  }
   setOperationAction(ISD::CTTZ,  MVT::i32, Custom);
   setOperationAction(ISD::CTPOP, MVT::i32, Expand);
   if (!Subtarget->hasV5TOps() || Subtarget->isThumb1Only())
@@ -742,8 +746,8 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   if (!(Subtarget->hasDivide() && Subtarget->isThumb2()) &&
       !(Subtarget->hasDivideInARMMode() && !Subtarget->isThumb())) {
     // These are expanded into libcalls if the cpu doesn't have HW divider.
-    setOperationAction(ISD::SDIV,  MVT::i32, Expand);
-    setOperationAction(ISD::UDIV,  MVT::i32, Expand);
+    setOperationAction(ISD::SDIV,  MVT::i32, LibCall);
+    setOperationAction(ISD::UDIV,  MVT::i32, LibCall);
   }
 
   if (Subtarget->isTargetWindows() && !Subtarget->hasDivide()) {
@@ -788,7 +792,6 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
 
   setOperationAction(ISD::GlobalAddress, MVT::i32,   Custom);
   setOperationAction(ISD::ConstantPool,  MVT::i32,   Custom);
-  setOperationAction(ISD::GLOBAL_OFFSET_TABLE, MVT::i32, Custom);
   setOperationAction(ISD::GlobalTLSAddress, MVT::i32, Custom);
   setOperationAction(ISD::BlockAddress, MVT::i32, Custom);
 
@@ -2637,10 +2640,19 @@ SDValue ARMTargetLowering::LowerGlobalAddressELF(SDValue Op,
   SDLoc dl(Op);
   const GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
   if (getTargetMachine().getRelocationModel() == Reloc::PIC_) {
-    bool UseGOTOFF = GV->hasLocalLinkage() || GV->hasHiddenVisibility();
-    ARMConstantPoolValue *CPV =
-      ARMConstantPoolConstant::Create(GV,
-                                      UseGOTOFF ? ARMCP::GOTOFF : ARMCP::GOT);
+    bool UseGOT_PREL =
+        !(GV->hasHiddenVisibility() || GV->hasLocalLinkage());
+
+    MachineFunction &MF = DAG.getMachineFunction();
+    ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
+    unsigned ARMPCLabelIndex = AFI->createPICLabelUId();
+    EVT PtrVT = getPointerTy(DAG.getDataLayout());
+    SDLoc dl(Op);
+    unsigned PCAdj = Subtarget->isThumb() ? 4 : 8;
+    ARMConstantPoolValue *CPV = ARMConstantPoolConstant::Create(
+        GV, ARMPCLabelIndex, ARMCP::CPValue, PCAdj,
+        UseGOT_PREL ? ARMCP::GOT_PREL : ARMCP::no_modifier,
+        /*AddCurrentAddress=*/UseGOT_PREL);
     SDValue CPAddr = DAG.getTargetConstantPool(CPV, PtrVT, 4);
     CPAddr = DAG.getNode(ARMISD::Wrapper, dl, MVT::i32, CPAddr);
     SDValue Result = DAG.getLoad(
@@ -2648,9 +2660,9 @@ SDValue ARMTargetLowering::LowerGlobalAddressELF(SDValue Op,
         MachinePointerInfo::getConstantPool(DAG.getMachineFunction()), false,
         false, false, 0);
     SDValue Chain = Result.getValue(1);
-    SDValue GOT = DAG.getGLOBAL_OFFSET_TABLE(PtrVT);
-    Result = DAG.getNode(ISD::ADD, dl, PtrVT, Result, GOT);
-    if (!UseGOTOFF)
+    SDValue PICLabel = DAG.getConstant(ARMPCLabelIndex, dl, MVT::i32);
+    Result = DAG.getNode(ARMISD::PIC_ADD, dl, PtrVT, Result, PICLabel);
+    if (UseGOT_PREL)
       Result = DAG.getLoad(PtrVT, dl, Chain, Result,
                            MachinePointerInfo::getGOT(DAG.getMachineFunction()),
                            false, false, false, 0);
@@ -2725,29 +2737,6 @@ SDValue ARMTargetLowering::LowerGlobalAddressWindows(SDValue Op,
                          MachinePointerInfo::getGOT(DAG.getMachineFunction()),
                          false, false, false, 0);
   return Result;
-}
-
-SDValue ARMTargetLowering::LowerGLOBAL_OFFSET_TABLE(SDValue Op,
-                                                    SelectionDAG &DAG) const {
-  assert(Subtarget->isTargetELF() &&
-         "GLOBAL OFFSET TABLE not implemented for non-ELF targets");
-  MachineFunction &MF = DAG.getMachineFunction();
-  ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
-  unsigned ARMPCLabelIndex = AFI->createPICLabelUId();
-  EVT PtrVT = getPointerTy(DAG.getDataLayout());
-  SDLoc dl(Op);
-  unsigned PCAdj = Subtarget->isThumb() ? 4 : 8;
-  ARMConstantPoolValue *CPV =
-    ARMConstantPoolSymbol::Create(*DAG.getContext(), "_GLOBAL_OFFSET_TABLE_",
-                                  ARMPCLabelIndex, PCAdj);
-  SDValue CPAddr = DAG.getTargetConstantPool(CPV, PtrVT, 4);
-  CPAddr = DAG.getNode(ARMISD::Wrapper, dl, MVT::i32, CPAddr);
-  SDValue Result =
-      DAG.getLoad(PtrVT, dl, DAG.getEntryNode(), CPAddr,
-                  MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
-                  false, false, false, 0);
-  SDValue PICLabel = DAG.getConstant(ARMPCLabelIndex, dl, MVT::i32);
-  return DAG.getNode(ARMISD::PIC_ADD, dl, PtrVT, Result, PICLabel);
 }
 
 SDValue
@@ -3222,9 +3211,9 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
                    "Byval arguments cannot be implicit");
             unsigned CurByValIndex = CCInfo.getInRegsParamsProcessed();
 
-            int FrameIndex = StoreByValRegs(CCInfo, DAG, dl, Chain, CurOrigArg,
-                                            CurByValIndex, VA.getLocMemOffset(),
-                                            Flags.getByValSize());
+            int FrameIndex = StoreByValRegs(
+                CCInfo, DAG, dl, Chain, &*CurOrigArg, CurByValIndex,
+                VA.getLocMemOffset(), Flags.getByValSize());
             InVals.push_back(DAG.getFrameIndex(FrameIndex, PtrVT));
             CCInfo.nextInRegsParam();
           } else {
@@ -3915,7 +3904,7 @@ SDValue ARMTargetLowering::LowerFP_TO_INT(SDValue Op, SelectionDAG &DAG) const {
     else
       LC = RTLIB::getFPTOUINT(Op.getOperand(0).getValueType(),
                               Op.getValueType());
-    return makeLibCall(DAG, LC, Op.getValueType(), &Op.getOperand(0), 1,
+    return makeLibCall(DAG, LC, Op.getValueType(), Op.getOperand(0),
                        /*isSigned*/ false, SDLoc(Op)).first;
   }
 
@@ -3967,7 +3956,7 @@ SDValue ARMTargetLowering::LowerINT_TO_FP(SDValue Op, SelectionDAG &DAG) const {
     else
       LC = RTLIB::getUINTTOFP(Op.getOperand(0).getValueType(),
                               Op.getValueType());
-    return makeLibCall(DAG, LC, Op.getValueType(), &Op.getOperand(0), 1,
+    return makeLibCall(DAG, LC, Op.getValueType(), Op.getOperand(0),
                        /*isSigned*/ false, SDLoc(Op)).first;
   }
 
@@ -6783,7 +6772,6 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::FCOPYSIGN:     return LowerFCOPYSIGN(Op, DAG);
   case ISD::RETURNADDR:    return LowerRETURNADDR(Op, DAG);
   case ISD::FRAMEADDR:     return LowerFRAMEADDR(Op, DAG);
-  case ISD::GLOBAL_OFFSET_TABLE: return LowerGLOBAL_OFFSET_TABLE(Op, DAG);
   case ISD::EH_SJLJ_SETJMP: return LowerEH_SJLJ_SETJMP(Op, DAG);
   case ISD::EH_SJLJ_LONGJMP: return LowerEH_SJLJ_LONGJMP(Op, DAG);
   case ISD::EH_SJLJ_SETUP_DISPATCH: return LowerEH_SJLJ_SETUP_DISPATCH(Op, DAG);
@@ -7033,7 +7021,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
       for (SmallVectorImpl<unsigned>::iterator
              CSI = CallSiteIdxs.begin(), CSE = CallSiteIdxs.end();
            CSI != CSE; ++CSI) {
-        CallSiteNumToLPad[*CSI].push_back(BB);
+        CallSiteNumToLPad[*CSI].push_back(&*BB);
         MaxCSNum = std::max(MaxCSNum, *CSI);
       }
       break;
@@ -7503,8 +7491,7 @@ ARMTargetLowering::EmitStructByval(MachineInstr *MI,
   // Otherwise, we will generate unrolled scalar copies.
   const TargetInstrInfo *TII = Subtarget->getInstrInfo();
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
-  MachineFunction::iterator It = BB;
-  ++It;
+  MachineFunction::iterator It = ++BB->getIterator();
 
   unsigned dest = MI->getOperand(0).getReg();
   unsigned src = MI->getOperand(1).getReg();
@@ -7892,8 +7879,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     // destination vreg to set, the condition code register to branch on, the
     // true/false values to select between, and a branch opcode to use.
     const BasicBlock *LLVM_BB = BB->getBasicBlock();
-    MachineFunction::iterator It = BB;
-    ++It;
+    MachineFunction::iterator It = ++BB->getIterator();
 
     //  thisMBB:
     //  ...
@@ -8011,8 +7997,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     //     RSBBB: V3 = RSBri V2, 0  (compute ABS if V2 < 0)
     //     SinkBB: V1 = PHI(V2, V3)
     const BasicBlock *LLVM_BB = BB->getBasicBlock();
-    MachineFunction::iterator BBI = BB;
-    ++BBI;
+    MachineFunction::iterator BBI = ++BB->getIterator();
     MachineFunction *Fn = BB->getParent();
     MachineBasicBlock *RSBBB = Fn->CreateMachineBasicBlock(LLVM_BB);
     MachineBasicBlock *SinkBB  = Fn->CreateMachineBasicBlock(LLVM_BB);
@@ -11386,8 +11371,8 @@ SDValue ARMTargetLowering::LowerFP_EXTEND(SDValue Op, SelectionDAG &DAG) const {
   LC = RTLIB::getFPEXT(Op.getOperand(0).getValueType(), Op.getValueType());
 
   SDValue SrcVal = Op.getOperand(0);
-  return makeLibCall(DAG, LC, Op.getValueType(), &SrcVal, 1,
-                     /*isSigned*/ false, SDLoc(Op)).first;
+  return makeLibCall(DAG, LC, Op.getValueType(), SrcVal, /*isSigned*/ false,
+                     SDLoc(Op)).first;
 }
 
 SDValue ARMTargetLowering::LowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
@@ -11399,8 +11384,8 @@ SDValue ARMTargetLowering::LowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
   LC = RTLIB::getFPROUND(Op.getOperand(0).getValueType(), Op.getValueType());
 
   SDValue SrcVal = Op.getOperand(0);
-  return makeLibCall(DAG, LC, Op.getValueType(), &SrcVal, 1,
-                     /*isSigned*/ false, SDLoc(Op)).first;
+  return makeLibCall(DAG, LC, Op.getValueType(), SrcVal, /*isSigned*/ false,
+                     SDLoc(Op)).first;
 }
 
 bool
@@ -11926,9 +11911,9 @@ bool ARMTargetLowering::lowerInterleavedStore(StoreInst *SI,
     SubVecTy = VectorType::get(IntTy, NumSubElts);
   }
 
-  static Intrinsic::ID StoreInts[3] = {Intrinsic::arm_neon_vst2,
-                                       Intrinsic::arm_neon_vst3,
-                                       Intrinsic::arm_neon_vst4};
+  static const Intrinsic::ID StoreInts[3] = {Intrinsic::arm_neon_vst2,
+                                             Intrinsic::arm_neon_vst3,
+                                             Intrinsic::arm_neon_vst4};
   SmallVector<Value *, 6> Ops;
 
   Type *Int8Ptr = Builder.getInt8PtrTy(SI->getPointerAddressSpace());

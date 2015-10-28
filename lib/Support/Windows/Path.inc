@@ -348,10 +348,12 @@ std::error_code equivalent(const Twine &A, const Twine &B, bool &result) {
 static bool isReservedName(StringRef path) {
   // This list of reserved names comes from MSDN, at:
   // http://msdn.microsoft.com/en-us/library/aa365247%28v=vs.85%29.aspx
-  static const char *sReservedNames[] = { "nul", "con", "prn", "aux",
-                              "com1", "com2", "com3", "com4", "com5", "com6",
-                              "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
-                              "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9" };
+  static const char *const sReservedNames[] = { "nul", "con", "prn", "aux",
+                                                "com1", "com2", "com3", "com4",
+                                                "com5", "com6", "com7", "com8",
+                                                "com9", "lpt1", "lpt2", "lpt3",
+                                                "lpt4", "lpt5", "lpt6", "lpt7",
+                                                "lpt8", "lpt9" };
 
   // First, check to see if this is a device namespace, which always
   // starts with \\.\, since device namespaces are not legal file paths.
@@ -753,16 +755,20 @@ std::error_code openFileForWrite(const Twine &Name, int &ResultFD,
 
 namespace path {
 
+namespace {
+bool getKnownFolderPath(KNOWNFOLDERID folderId, SmallVectorImpl<char> &result) {
+  wchar_t *path = nullptr;
+  if (::SHGetKnownFolderPath(folderId, KF_FLAG_CREATE, nullptr, &path) != S_OK)
+    return false;
+
+  bool ok = !UTF16ToUTF8(path, ::wcslen(path), result);
+  ::CoTaskMemFree(path);
+  return ok;
+}
+}
+
 bool home_directory(SmallVectorImpl<char> &result) {
-  wchar_t Path[MAX_PATH];
-  if (::SHGetFolderPathW(0, CSIDL_APPDATA | CSIDL_FLAG_CREATE, 0,
-                         /*SHGFP_TYPE_CURRENT*/0, Path) != S_OK)
-    return false;
-
-  if (UTF16ToUTF8(Path, ::wcslen(Path), result))
-    return false;
-
-  return true;
+  return getKnownFolderPath(FOLDERID_Profile, result);
 }
 
 static bool getTempDirEnvVar(const char *Var, SmallVectorImpl<char> &Res) {

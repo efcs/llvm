@@ -71,7 +71,6 @@ private:
   void addStateStoresToFunclet(Value *ParentRegNode, WinEHFuncInfo &FuncInfo,
                                Function &F, int BaseState);
   void insertStateNumberStore(Value *ParentRegNode, Instruction *IP, int State);
-  void insertRestoreFrame(BasicBlock *BB);
 
   Value *emitEHLSDA(IRBuilder<> &Builder, Function *F);
 
@@ -289,7 +288,7 @@ void WinEHStatePass::emitExceptionRegistrationRecord(Function *F) {
     Builder.CreateStore(SP, Builder.CreateStructGEP(RegNodeTy, RegNode, 0));
     // TryLevel = -1
     StateFieldIndex = 2;
-    insertStateNumberStore(RegNode, Builder.GetInsertPoint(), -1);
+    insertStateNumberStore(RegNode, &*Builder.GetInsertPoint(), -1);
     // Handler = __ehhandler$F
     Function *Trampoline = generateLSDAInEAXThunk(F);
     Link = Builder.CreateStructGEP(RegNodeTy, RegNode, 1);
@@ -306,7 +305,7 @@ void WinEHStatePass::emitExceptionRegistrationRecord(Function *F) {
     Builder.CreateStore(SP, Builder.CreateStructGEP(RegNodeTy, RegNode, 0));
     // TryLevel = -2 / -1
     StateFieldIndex = 4;
-    insertStateNumberStore(RegNode, Builder.GetInsertPoint(),
+    insertStateNumberStore(RegNode, &*Builder.GetInsertPoint(),
                            UseStackGuard ? -2 : -1);
     // ScopeTable = llvm.x86.seh.lsda(F)
     Value *FI8 = Builder.CreateBitCast(F, Int8PtrType);
@@ -375,7 +374,7 @@ Function *WinEHStatePass::generateLSDAInEAXThunk(Function *ParentFunc) {
   Value *CastPersonality =
       Builder.CreateBitCast(PersonalityFn, TargetFuncTy->getPointerTo());
   auto AI = Trampoline->arg_begin();
-  Value *Args[5] = {LSDA, AI++, AI++, AI++, AI++};
+  Value *Args[5] = {LSDA, &*AI++, &*AI++, &*AI++, &*AI++};
   CallInst *Call = Builder.CreateCall(CastPersonality, Args);
   // Can't use musttail due to prototype mismatch, but we can use tail.
   Call->setTailCall(true);
@@ -468,19 +467,11 @@ int WinEHStatePass::escapeRegNode(Function &F) {
   Instruction *InsertPt = EscapeCall;
   if (!EscapeCall)
     InsertPt = F.getEntryBlock().getTerminator();
-  IRBuilder<> Builder(&F.getEntryBlock(), InsertPt);
+  IRBuilder<> Builder(InsertPt);
   Builder.CreateCall(FrameEscape, Args);
   if (EscapeCall)
     EscapeCall->eraseFromParent();
   return Args.size() - 1;
-}
-
-void WinEHStatePass::insertRestoreFrame(BasicBlock *BB) {
-  Instruction *Start = BB->getFirstInsertionPt();
-  if (match(Start, m_Intrinsic<Intrinsic::x86_seh_restoreframe>()))
-    return;
-  IRBuilder<> Builder(Start);
-  Builder.CreateCall(RestoreFrame, {});
 }
 
 void WinEHStatePass::addStateStoresToFunclet(Value *ParentRegNode,
