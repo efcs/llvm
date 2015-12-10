@@ -1459,6 +1459,16 @@ public:
                           BasicBlock *InsertAtEnd) {
     return new(1) CallInst(F, NameStr, InsertAtEnd);
   }
+
+  /// \brief Create a clone of \p CI with a different set of operand bundles and
+  /// insert it before \p InsertPt.
+  ///
+  /// The returned call instruction is identical \p CI in every way except that
+  /// the operand bundles for the new instruction are set to the operand bundles
+  /// in \p Bundles.
+  static CallInst *Create(CallInst *CI, ArrayRef<OperandBundleDef> Bundles,
+                          Instruction *InsertPt = nullptr);
+
   /// CreateMalloc - Generate the IR for a call to malloc:
   /// 1. Compute the malloc call's argument as the specified type's size,
   ///    possibly multiplied by the array size if the array size is not
@@ -1489,15 +1499,20 @@ public:
   }
 
   // Note that 'musttail' implies 'tail'.
-  enum TailCallKind { TCK_None = 0, TCK_Tail = 1, TCK_MustTail = 2 };
+  enum TailCallKind { TCK_None = 0, TCK_Tail = 1, TCK_MustTail = 2,
+                      TCK_NoTail = 3 };
   TailCallKind getTailCallKind() const {
     return TailCallKind(getSubclassDataFromInstruction() & 3);
   }
   bool isTailCall() const {
-    return (getSubclassDataFromInstruction() & 3) != TCK_None;
+    unsigned Kind = getSubclassDataFromInstruction() & 3;
+    return Kind == TCK_Tail || Kind == TCK_MustTail;
   }
   bool isMustTailCall() const {
     return (getSubclassDataFromInstruction() & 3) == TCK_MustTail;
+  }
+  bool isNoTailCall() const {
+    return (getSubclassDataFromInstruction() & 3) == TCK_NoTail;
   }
   void setTailCall(bool isTC = true) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~3) |
@@ -1532,14 +1547,12 @@ public:
   iterator_range<op_iterator> arg_operands() {
     // The last operand in the op list is the callee - it's not one of the args
     // so we don't want to iterate over it.
-    return iterator_range<op_iterator>(
-        op_begin(), op_end() - getNumTotalBundleOperands() - 1);
+    return make_range(op_begin(), op_end() - getNumTotalBundleOperands() - 1);
   }
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<const_op_iterator> arg_operands() const {
-    return iterator_range<const_op_iterator>(
-        op_begin(), op_end() - getNumTotalBundleOperands() - 1);
+    return make_range(op_begin(), op_end() - getNumTotalBundleOperands() - 1);
   }
 
   /// \brief Wrappers for getting the \c Use of a call argument.
@@ -1602,6 +1615,21 @@ public:
 
   /// \brief Determine whether the call or the callee has the given attributes.
   bool paramHasAttr(unsigned i, Attribute::AttrKind A) const;
+
+  /// \brief Return true if the data operand at index \p i has the attribute \p
+  /// A.
+  ///
+  /// Data operands include call arguments and values used in operand bundles,
+  /// but does not include the callee operand.  This routine dispatches to the
+  /// underlying AttributeList or the OperandBundleUser as appropriate.
+  ///
+  /// The index \p i is interpreted as
+  ///
+  ///  \p i == Attribute::ReturnIndex  -> the return value
+  ///  \p i in [1, arg_size + 1)  -> argument number (\p i - 1)
+  ///  \p i in [arg_size + 1, data_operand_size + 1) -> bundle operand at index
+  ///     (\p i - 1) in the operand list.
+  bool dataOperandHasImpliedAttr(unsigned i, Attribute::AttrKind A) const;
 
   /// \brief Extract the alignment for a call or parameter (0=unknown).
   unsigned getParamAlignment(unsigned i) const {
@@ -1700,6 +1728,9 @@ public:
   /// \brief Determine if the call returns a structure through first
   /// pointer argument.
   bool hasStructRetAttr() const {
+    if (getNumArgOperands() == 0)
+      return false;
+
     // Be friendly and also check the callee.
     return paramHasAttr(1, Attribute::StructRet);
   }
@@ -2180,7 +2211,7 @@ public:
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
   inline iterator_range<idx_iterator> indices() const {
-    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+    return make_range(idx_begin(), idx_end());
   }
 
   Value *getAggregateOperand() {
@@ -2297,7 +2328,7 @@ public:
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
   inline iterator_range<idx_iterator> indices() const {
-    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+    return make_range(idx_begin(), idx_end());
   }
 
   Value *getAggregateOperand() {
@@ -3072,12 +3103,12 @@ public:
 
   /// cases - iteration adapter for range-for loops.
   iterator_range<CaseIt> cases() {
-    return iterator_range<CaseIt>(case_begin(), case_end());
+    return make_range(case_begin(), case_end());
   }
 
   /// cases - iteration adapter for range-for loops.
   iterator_range<ConstCaseIt> cases() const {
-    return iterator_range<ConstCaseIt>(case_begin(), case_end());
+    return make_range(case_begin(), case_end());
   }
 
   /// Returns an iterator that points to the default case.
@@ -3383,6 +3414,15 @@ public:
                    InsertAtEnd);
   }
 
+  /// \brief Create a clone of \p II with a different set of operand bundles and
+  /// insert it before \p InsertPt.
+  ///
+  /// The returned invoke instruction is identical to \p II in every way except
+  /// that the operand bundles for the new instruction are set to the operand
+  /// bundles in \p Bundles.
+  static InvokeInst *Create(InvokeInst *II, ArrayRef<OperandBundleDef> Bundles,
+                            Instruction *InsertPt = nullptr);
+
   /// Provide fast operand accessors
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
 
@@ -3412,14 +3452,12 @@ public:
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<op_iterator> arg_operands() {
-    return iterator_range<op_iterator>(
-        op_begin(), op_end() - getNumTotalBundleOperands() - 3);
+    return make_range(op_begin(), op_end() - getNumTotalBundleOperands() - 3);
   }
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<const_op_iterator> arg_operands() const {
-    return iterator_range<const_op_iterator>(
-        op_begin(), op_end() - getNumTotalBundleOperands() - 3);
+    return make_range(op_begin(), op_end() - getNumTotalBundleOperands() - 3);
   }
 
   /// \brief Wrappers for getting the \c Use of a invoke argument.
@@ -3473,6 +3511,22 @@ public:
 
   /// \brief Determine whether the call or the callee has the given attributes.
   bool paramHasAttr(unsigned i, Attribute::AttrKind A) const;
+
+  /// \brief Return true if the data operand at index \p i has the attribute \p
+  /// A.
+  ///
+  /// Data operands include invoke arguments and values used in operand bundles,
+  /// but does not include the invokee operand, or the two successor blocks.
+  /// This routine dispatches to the underlying AttributeList or the
+  /// OperandBundleUser as appropriate.
+  ///
+  /// The index \p i is interpreted as
+  ///
+  ///  \p i == Attribute::ReturnIndex  -> the return value
+  ///  \p i in [1, arg_size + 1)  -> argument number (\p i - 1)
+  ///  \p i in [arg_size + 1, data_operand_size + 1) -> bundle operand at index
+  ///     (\p i - 1) in the operand list.
+  bool dataOperandHasImpliedAttr(unsigned i, Attribute::AttrKind A) const;
 
   /// \brief Extract the alignment for a call or parameter (0=unknown).
   unsigned getParamAlignment(unsigned i) const {
@@ -3559,6 +3613,9 @@ public:
   /// \brief Determine if the call returns a structure through first
   /// pointer argument.
   bool hasStructRetAttr() const {
+    if (getNumArgOperands() == 0)
+      return false;
+
     // Be friendly and also check the callee.
     return paramHasAttr(1, Attribute::StructRet);
   }
@@ -3854,12 +3911,12 @@ public:
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<op_iterator> arg_operands() {
-    return iterator_range<op_iterator>(op_begin(), op_end() - 2);
+    return make_range(op_begin(), op_end() - 2);
   }
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<const_op_iterator> arg_operands() const {
-    return iterator_range<const_op_iterator>(op_begin(), op_end() - 2);
+    return make_range(op_begin(), op_end() - 2);
   }
 
   /// \brief Wrappers for getting the \c Use of a catchpad argument.
@@ -3978,12 +4035,12 @@ public:
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<op_iterator> arg_operands() {
-    return iterator_range<op_iterator>(op_begin(), arg_end());
+    return make_range(op_begin(), arg_end());
   }
 
   /// arg_operands - iteration adapter for range-for loops.
   iterator_range<const_op_iterator> arg_operands() const {
-    return iterator_range<const_op_iterator>(op_begin(), arg_end());
+    return make_range(op_begin(), arg_end());
   }
 
   /// \brief Wrappers for getting the \c Use of a terminatepad argument.

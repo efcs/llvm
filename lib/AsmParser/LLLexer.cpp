@@ -523,10 +523,12 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(zeroinitializer);
   KEYWORD(undef);
   KEYWORD(null);
+  KEYWORD(none);
   KEYWORD(to);
   KEYWORD(caller);
   KEYWORD(tail);
   KEYWORD(musttail);
+  KEYWORD(notail);
   KEYWORD(target);
   KEYWORD(triple);
   KEYWORD(unwind);
@@ -589,6 +591,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(ghccc);
   KEYWORD(hhvmcc);
   KEYWORD(hhvm_ccc);
+  KEYWORD(cxx_fast_tlscc);
 
   KEYWORD(cc);
   KEYWORD(c);
@@ -616,6 +619,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(noduplicate);
   KEYWORD(noimplicitfloat);
   KEYWORD(noinline);
+  KEYWORD(norecurse);
   KEYWORD(nonlazybind);
   KEYWORD(nonnull);
   KEYWORD(noredzone);

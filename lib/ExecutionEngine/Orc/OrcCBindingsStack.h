@@ -17,26 +17,24 @@
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm-c/OrcBindings.h"
 
 namespace llvm {
 
-class OrcCBindingsStack {
-private:
+class OrcCBindingsStack;
 
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(OrcCBindingsStack, LLVMOrcJITStackRef)
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TargetMachine, LLVMTargetMachineRef)
+
+class OrcCBindingsStack {
 public:
 
-  typedef orc::TargetAddress (*CExternalSymbolResolverFn)(const char *Name,
-                                                          void *Ctx);
-
-  typedef orc::JITCompileCallbackManagerBase CompileCallbackMgr;
+  typedef orc::JITCompileCallbackManager CompileCallbackMgr;
   typedef orc::ObjectLinkingLayer<> ObjLayerT;
   typedef orc::IRCompileLayer<ObjLayerT> CompileLayerT;
   typedef orc::CompileOnDemandLayer<CompileLayerT, CompileCallbackMgr> CODLayerT;
 
-  typedef std::function<
-            std::unique_ptr<CompileCallbackMgr>(CompileLayerT&,
-                                                RuntimeDyld::MemoryManager&,
-                                                LLVMContext&)>
+  typedef std::function<std::unique_ptr<CompileCallbackMgr>()>
     CallbackManagerBuilder;
 
   typedef CODLayerT::IndirectStubsManagerBuilderT IndirectStubsManagerBuilder;
@@ -85,19 +83,19 @@ public:
 
   typedef unsigned ModuleHandleT;
 
-  static CallbackManagerBuilder createCallbackManagerBuilder(Triple T);
+  static std::unique_ptr<CompileCallbackMgr> createCompileCallbackMgr(Triple T);
   static IndirectStubsManagerBuilder createIndirectStubsMgrBuilder(Triple T);
 
-  OrcCBindingsStack(TargetMachine &TM, LLVMContext &Context,
-                    CallbackManagerBuilder &BuildCallbackMgr,
+  OrcCBindingsStack(TargetMachine &TM,
+		    std::unique_ptr<CompileCallbackMgr> CCMgr, 
                     IndirectStubsManagerBuilder IndirectStubsMgrBuilder)
-    : DL(TM.createDataLayout()),
+    : DL(TM.createDataLayout()), CCMgr(std::move(CCMgr)),
       ObjectLayer(),
       CompileLayer(ObjectLayer, orc::SimpleCompiler(TM)),
-      CCMgr(BuildCallbackMgr(CompileLayer, CCMgrMemMgr, Context)),
       CODLayer(CompileLayer,
                [](Function &F) { std::set<Function*> S; S.insert(&F); return S; },
-               *CCMgr, std::move(IndirectStubsMgrBuilder), false),
+               *this->CCMgr, std::move(IndirectStubsMgrBuilder), false),
+      IndirectStubsMgr(IndirectStubsMgrBuilder()),
       CXXRuntimeOverrides([this](const std::string &S) { return mangle(S); }) {}
 
   ~OrcCBindingsStack() {
@@ -122,8 +120,27 @@ public:
     return reinterpret_cast<PtrTy>(static_cast<uintptr_t>(Addr));
   }
 
+  orc::TargetAddress
+  createLazyCompileCallback(LLVMOrcLazyCompileCallbackFn Callback,
+                            void *CallbackCtx) {
+    auto CCInfo = CCMgr->getCompileCallback();
+    CCInfo.setCompileAction(
+      [=]() -> orc::TargetAddress {
+        return Callback(wrap(this), CallbackCtx);
+      });
+    return CCInfo.getAddress();
+  }
+
+  void createIndirectStub(StringRef StubName, orc::TargetAddress Addr) {
+    IndirectStubsMgr->createStub(StubName, Addr, JITSymbolFlags::Exported);
+  }
+
+  void setIndirectStubPointer(StringRef Name, orc::TargetAddress Addr) {
+    IndirectStubsMgr->updatePointer(Name, Addr);
+  }
+
   std::shared_ptr<RuntimeDyld::SymbolResolver>
-  createResolver(CExternalSymbolResolverFn ExternalResolver,
+  createResolver(LLVMOrcSymbolResolverFn ExternalResolver,
                  void *ExternalResolverCtx) {
     auto Resolver = orc::createLambdaResolver(
       [this, ExternalResolver, ExternalResolverCtx](const std::string &Name) {
@@ -157,7 +174,7 @@ public:
   ModuleHandleT addIRModule(LayerT &Layer,
                             Module *M,
                             std::unique_ptr<RuntimeDyld::MemoryManager> MemMgr,
-                            CExternalSymbolResolverFn ExternalResolver,
+                            LLVMOrcSymbolResolverFn ExternalResolver,
                             void *ExternalResolverCtx) {
 
     // Attach a data-layout if one isn't already present.
@@ -194,7 +211,7 @@ public:
   }
 
   ModuleHandleT addIRModuleEager(Module* M,
-                                 CExternalSymbolResolverFn ExternalResolver,
+                                 LLVMOrcSymbolResolverFn ExternalResolver,
                                  void *ExternalResolverCtx) {
     return addIRModule(CompileLayer, std::move(M),
                        llvm::make_unique<SectionMemoryManager>(),
@@ -202,7 +219,7 @@ public:
   }
 
   ModuleHandleT addIRModuleLazy(Module* M,
-                                CExternalSymbolResolverFn ExternalResolver,
+                                LLVMOrcSymbolResolverFn ExternalResolver,
                                 void *ExternalResolverCtx) {
     return addIRModule(CODLayer, std::move(M), nullptr,
                        std::move(ExternalResolver), ExternalResolverCtx);
@@ -215,6 +232,8 @@ public:
   }
 
   orc::JITSymbol findSymbol(const std::string &Name, bool ExportedSymbolsOnly) {
+    if (auto Sym = IndirectStubsMgr->findStub(Name, ExportedSymbolsOnly))
+      return Sym;
     return CODLayer.findSymbol(mangle(Name), ExportedSymbolsOnly);
   }
 
@@ -244,10 +263,12 @@ private:
   DataLayout DL;
   SectionMemoryManager CCMgrMemMgr;
 
+  std::unique_ptr<CompileCallbackMgr> CCMgr;
   ObjLayerT ObjectLayer;
   CompileLayerT CompileLayer;
-  std::unique_ptr<CompileCallbackMgr> CCMgr;
   CODLayerT CODLayer;
+
+  std::unique_ptr<orc::IndirectStubsManager> IndirectStubsMgr;
 
   std::vector<std::unique_ptr<GenericHandle>> GenericHandles;
   std::vector<unsigned> FreeHandleIndexes;

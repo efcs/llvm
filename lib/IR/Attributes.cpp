@@ -232,6 +232,8 @@ std::string Attribute::getAsString(bool InAttrGrp) const {
     return "noredzone";
   if (hasAttribute(Attribute::NoReturn))
     return "noreturn";
+  if (hasAttribute(Attribute::NoRecurse))
+    return "norecurse";
   if (hasAttribute(Attribute::NoUnwind))
     return "nounwind";
   if (hasAttribute(Attribute::OptimizeNone))
@@ -442,6 +444,7 @@ uint64_t AttributeImpl::getAttrMask(Attribute::AttrKind Val) {
   case Attribute::JumpTable:       return 1ULL << 45;
   case Attribute::Convergent:      return 1ULL << 46;
   case Attribute::SafeStack:       return 1ULL << 47;
+  case Attribute::NoRecurse:       return 1ULL << 48;
   case Attribute::Dereferenceable:
     llvm_unreachable("dereferenceable attribute not supported in raw format");
     break;
@@ -765,6 +768,36 @@ AttributeSet AttributeSet::addAttribute(LLVMContext &C, unsigned Index,
   llvm::AttrBuilder B;
   B.addAttribute(Kind, Value);
   return addAttributes(C, Index, AttributeSet::get(C, Index, B));
+}
+
+AttributeSet AttributeSet::addAttribute(LLVMContext &C,
+                                        ArrayRef<unsigned> Indices,
+                                        Attribute A) const {
+  unsigned I = 0, E = pImpl ? pImpl->getNumAttributes() : 0;
+  auto IdxI = Indices.begin(), IdxE = Indices.end();
+  SmallVector<AttributeSet, 4> AttrSet;
+
+  while (I != E && IdxI != IdxE) {
+    if (getSlotIndex(I) < *IdxI)
+      AttrSet.emplace_back(getSlotAttributes(I++));
+    else if (getSlotIndex(I) > *IdxI)
+      AttrSet.emplace_back(AttributeSet::get(C, std::make_pair(*IdxI++, A)));
+    else {
+      AttrBuilder B(getSlotAttributes(I), *IdxI);
+      B.addAttribute(A);
+      AttrSet.emplace_back(AttributeSet::get(C, *IdxI, B));
+      ++I;
+      ++IdxI;
+    }
+  }
+
+  while (I != E)
+    AttrSet.emplace_back(getSlotAttributes(I++));
+
+  while (IdxI != IdxE)
+    AttrSet.emplace_back(AttributeSet::get(C, std::make_pair(*IdxI++, A)));
+
+  return get(C, AttrSet);
 }
 
 AttributeSet AttributeSet::addAttributes(LLVMContext &C, unsigned Index,

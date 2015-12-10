@@ -33,7 +33,8 @@ template <>
 struct SymbolTableListSentinelTraits<Instruction>
     : public ilist_half_embedded_sentinel_traits<Instruction> {};
 
-class Instruction : public User, public ilist_node<Instruction> {
+class Instruction : public User,
+                    public ilist_node_with_parent<Instruction, BasicBlock> {
   void operator=(const Instruction &) = delete;
   Instruction(const Instruction &) = delete;
 
@@ -64,6 +65,13 @@ public:
   /// parent, or the parent basic block does not have a parent function.
   const Module *getModule() const;
   Module *getModule();
+
+  /// \brief Return the function this instruction belongs to.
+  ///
+  /// Note: it is undefined behavior to call this on an instruction not
+  /// currently inserted into a function.
+  const Function *getFunction() const;
+  Function *getFunction();
 
   /// removeFromParent - This method unlinks 'this' from the containing basic
   /// block, but does not delete it.

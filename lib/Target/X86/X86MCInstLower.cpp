@@ -1140,12 +1140,29 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     EmitAndCountInstruction(MCInstBuilder(X86::CALLpcrel32)
       .addExpr(MCSymbolRefExpr::create(PICBase, OutContext)));
 
+    const X86FrameLowering* FrameLowering =
+        MF->getSubtarget<X86Subtarget>().getFrameLowering();
+    bool hasFP = FrameLowering->hasFP(*MF);
+    
+    // TODO: This is needed only if we require precise CFA.
+    bool NeedsDwarfCFI = 
+         (MMI->hasDebugInfo() || MF->getFunction()->needsUnwindTableEntry());
+    int stackGrowth = -RI->getSlotSize();
+
+    if (NeedsDwarfCFI && !hasFP) {
+      OutStreamer->EmitCFIAdjustCfaOffset(-stackGrowth);
+    }
+
     // Emit the label.
     OutStreamer->EmitLabel(PICBase);
 
     // popl $reg
     EmitAndCountInstruction(MCInstBuilder(X86::POP32r)
                             .addReg(MI->getOperand(0).getReg()));
+
+    if (NeedsDwarfCFI && !hasFP) {
+      OutStreamer->EmitCFIAdjustCfaOffset(stackGrowth);
+    }
     return;
   }
 
@@ -1358,7 +1375,19 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
           if (isa<UndefValue>(COp)) {
             CS << "u";
           } else if (auto *CI = dyn_cast<ConstantInt>(COp)) {
-            CS << CI->getZExtValue();
+            if (CI->getBitWidth() <= 64) {
+              CS << CI->getZExtValue();
+            } else {
+              // print multi-word constant as (w0,w1)
+              auto Val = CI->getValue();
+              CS << "(";
+              for (int i = 0, N = Val.getNumWords(); i < N; ++i) {
+                if (i > 0)
+                  CS << ",";
+                CS << Val.getRawData()[i];
+              }
+              CS << ")";
+            }
           } else if (auto *CF = dyn_cast<ConstantFP>(COp)) {
             SmallString<32> Str;
             CF->getValueAPF().toString(Str);

@@ -19,11 +19,10 @@
 
 namespace llvm {
 
-DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TargetMachine, LLVMTargetMachineRef);
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TargetMachine, LLVMTargetMachineRef)
 
 class OrcCAPIExecutionTest : public testing::Test, public OrcExecutionTest {
 protected:
-
   std::unique_ptr<Module> createTestModule(const Triple &TT) {
     ModuleBuilder MB(getGlobalContext(), TT.str(), "");
     Function *TestFunc = MB.createFunctionDecl<int()>("testFunc");
@@ -37,9 +36,9 @@ protected:
     return MB.takeModule();
   }
 
-  typedef int (*MainFnTy)(void);
+  typedef int (*MainFnTy)();
 
-  static int myTestFuncImpl(void) {
+  static int myTestFuncImpl() {
     return 42;
   }
 
@@ -51,25 +50,44 @@ protected:
     return 0;
   }
 
+  struct CompileContext {
+    CompileContext() : Compiled(false) { }
+
+    OrcCAPIExecutionTest* APIExecTest;
+    std::unique_ptr<Module> M;
+    LLVMOrcModuleHandle H;
+    bool Compiled;
+  };
+
+  static LLVMOrcTargetAddress myCompileCallback(LLVMOrcJITStackRef JITStack,
+                                                void *Ctx) {
+    CompileContext *CCtx = static_cast<CompileContext*>(Ctx);
+    auto *ET = CCtx->APIExecTest;
+    CCtx->M = ET->createTestModule(ET->TM->getTargetTriple());
+    CCtx->H = LLVMOrcAddEagerlyCompiledIR(JITStack, wrap(CCtx->M.get()),
+                                          myResolver, nullptr);
+    CCtx->Compiled = true;
+    LLVMOrcTargetAddress MainAddr = LLVMOrcGetSymbolAddress(JITStack, "main");
+    LLVMOrcSetIndirectStubPointer(JITStack, "foo", MainAddr);
+    return MainAddr;
+  }
 };
 
-char *OrcCAPIExecutionTest::testFuncName = 0;
+char *OrcCAPIExecutionTest::testFuncName = nullptr;
 
 TEST_F(OrcCAPIExecutionTest, TestEagerIRCompilation) {
-  auto TM = getHostTargetMachineIfSupported();
-
   if (!TM)
     return;
 
-  std::unique_ptr<Module> M = createTestModule(TM->getTargetTriple());
-
   LLVMOrcJITStackRef JIT =
-    LLVMOrcCreateInstance(wrap(TM.get()), LLVMGetGlobalContext());
+    LLVMOrcCreateInstance(wrap(TM.get()));
+
+  std::unique_ptr<Module> M = createTestModule(TM->getTargetTriple());
 
   LLVMOrcGetMangledSymbol(JIT, &testFuncName, "testFunc");
 
   LLVMOrcModuleHandle H =
-    LLVMOrcAddEagerlyCompiledIR(JIT, wrap(M.get()), myResolver, 0);
+    LLVMOrcAddEagerlyCompiledIR(JIT, wrap(M.get()), myResolver, nullptr);
   MainFnTy MainFn = (MainFnTy)LLVMOrcGetSymbolAddress(JIT, "main");
   int Result = MainFn();
   EXPECT_EQ(Result, 42)
@@ -82,19 +100,18 @@ TEST_F(OrcCAPIExecutionTest, TestEagerIRCompilation) {
 }
 
 TEST_F(OrcCAPIExecutionTest, TestLazyIRCompilation) {
-  auto TM = getHostTargetMachineIfSupported();
-
   if (!TM)
     return;
 
+  LLVMOrcJITStackRef JIT =
+    LLVMOrcCreateInstance(wrap(TM.get()));
+
   std::unique_ptr<Module> M = createTestModule(TM->getTargetTriple());
 
-  LLVMOrcJITStackRef JIT =
-    LLVMOrcCreateInstance(wrap(TM.get()), LLVMGetGlobalContext());
-
   LLVMOrcGetMangledSymbol(JIT, &testFuncName, "testFunc");
+
   LLVMOrcModuleHandle H =
-    LLVMOrcAddLazilyCompiledIR(JIT, wrap(M.get()), myResolver, 0);
+    LLVMOrcAddLazilyCompiledIR(JIT, wrap(M.get()), myResolver, nullptr);
   MainFnTy MainFn = (MainFnTy)LLVMOrcGetSymbolAddress(JIT, "main");
   int Result = MainFn();
   EXPECT_EQ(Result, 42)
@@ -106,4 +123,37 @@ TEST_F(OrcCAPIExecutionTest, TestLazyIRCompilation) {
   LLVMOrcDisposeInstance(JIT);
 }
 
+TEST_F(OrcCAPIExecutionTest, TestDirectCallbacksAPI) {
+  if (!TM)
+    return;
+
+  LLVMOrcJITStackRef JIT =
+    LLVMOrcCreateInstance(wrap(TM.get()));
+
+  LLVMOrcGetMangledSymbol(JIT, &testFuncName, "testFunc");
+
+  CompileContext C;
+  C.APIExecTest = this;
+  LLVMOrcCreateIndirectStub(JIT, "foo",
+                            LLVMOrcCreateLazyCompileCallback(JIT,
+                                                             myCompileCallback,
+                                                             &C));
+  MainFnTy FooFn = (MainFnTy)LLVMOrcGetSymbolAddress(JIT, "foo");
+  int Result = FooFn();
+  EXPECT_TRUE(C.Compiled)
+    << "Function wasn't lazily compiled";
+  EXPECT_EQ(Result, 42)
+    << "Direct-callback JIT'd code did not return expected result";
+
+  C.Compiled = false;
+  FooFn();
+  EXPECT_FALSE(C.Compiled)
+    << "Direct-callback JIT'd code was JIT'd twice";
+
+  LLVMOrcRemoveModule(JIT, C.H);
+
+  LLVMOrcDisposeMangledSymbol(testFuncName);
+  LLVMOrcDisposeInstance(JIT);
 }
+
+} // namespace llvm

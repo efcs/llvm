@@ -788,6 +788,16 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
+  case Intrinsic::bitreverse: {
+    Value *IIOperand = II->getArgOperand(0);
+    Value *X = nullptr;
+
+    // bitreverse(bitreverse(x)) -> x
+    if (match(IIOperand, m_Intrinsic<Intrinsic::bitreverse>(m_Value(X))))
+      return ReplaceInstUsesWith(CI, X);
+    break;
+  }
+
   case Intrinsic::powi:
     if (ConstantInt *Power = dyn_cast<ConstantInt>(II->getArgOperand(1))) {
       // powi(x, 0) -> 1.0
@@ -1932,19 +1942,26 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
   // Mark any parameters that are known to be non-null with the nonnull
   // attribute.  This is helpful for inlining calls to functions with null
   // checks on their arguments.
+  SmallVector<unsigned, 4> Indices;
   unsigned ArgNo = 0;
+
   for (Value *V : CS.args()) {
     if (V->getType()->isPointerTy() && !CS.paramHasAttr(ArgNo+1, Attribute::NonNull) &&
-        isKnownNonNullAt(V, CS.getInstruction(), DT, TLI)) {
-      AttributeSet AS = CS.getAttributes();
-      AS = AS.addAttribute(CS.getInstruction()->getContext(), ArgNo+1,
-                           Attribute::NonNull);
-      CS.setAttributes(AS);
-      Changed = true;
-    }
+        isKnownNonNullAt(V, CS.getInstruction(), DT, TLI))
+      Indices.push_back(ArgNo + 1);
     ArgNo++;
   }
+
   assert(ArgNo == CS.arg_size() && "sanity check");
+
+  if (!Indices.empty()) {
+    AttributeSet AS = CS.getAttributes();
+    LLVMContext &Ctx = CS.getInstruction()->getContext();
+    AS = AS.addAttribute(Ctx, Indices,
+                         Attribute::get(Ctx, Attribute::NonNull));
+    CS.setAttributes(AS);
+    Changed = true;
+  }
 
   // If the callee is a pointer to a function, attempt to move any casts to the
   // arguments of the call/invoke.
@@ -2257,16 +2274,19 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   const AttributeSet &NewCallerPAL = AttributeSet::get(Callee->getContext(),
                                                        attrVec);
 
+  SmallVector<OperandBundleDef, 1> OpBundles;
+  CS.getOperandBundlesAsDefs(OpBundles);
+
   Instruction *NC;
   if (InvokeInst *II = dyn_cast<InvokeInst>(Caller)) {
-    NC = Builder->CreateInvoke(Callee, II->getNormalDest(),
-                               II->getUnwindDest(), Args);
+    NC = Builder->CreateInvoke(Callee, II->getNormalDest(), II->getUnwindDest(),
+                               Args, OpBundles);
     NC->takeName(II);
     cast<InvokeInst>(NC)->setCallingConv(II->getCallingConv());
     cast<InvokeInst>(NC)->setAttributes(NewCallerPAL);
   } else {
     CallInst *CI = cast<CallInst>(Caller);
-    NC = Builder->CreateCall(Callee, Args);
+    NC = Builder->CreateCall(Callee, Args, OpBundles);
     NC->takeName(CI);
     if (CI->isTailCall())
       cast<CallInst>(NC)->setTailCall();

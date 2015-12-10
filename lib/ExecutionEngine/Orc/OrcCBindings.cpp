@@ -12,23 +12,18 @@
 
 using namespace llvm;
 
-DEFINE_SIMPLE_CONVERSION_FUNCTIONS(OrcCBindingsStack, LLVMOrcJITStackRef)
-DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TargetMachine, LLVMTargetMachineRef)
-
-LLVMOrcJITStackRef LLVMOrcCreateInstance(LLVMTargetMachineRef TM,
-                                         LLVMContextRef Context) {
+LLVMOrcJITStackRef LLVMOrcCreateInstance(LLVMTargetMachineRef TM) {
   TargetMachine *TM2(unwrap(TM));
-  LLVMContext &Ctx = *unwrap(Context);
 
   Triple T(TM2->getTargetTriple());
 
-  auto CallbackMgrBuilder = OrcCBindingsStack::createCallbackManagerBuilder(T);
+  auto CompileCallbackMgr = OrcCBindingsStack::createCompileCallbackMgr(T);
   auto IndirectStubsMgrBuilder =
     OrcCBindingsStack::createIndirectStubsMgrBuilder(T);
 
   OrcCBindingsStack *JITStack =
-    new OrcCBindingsStack(*TM2, Ctx, CallbackMgrBuilder,
-                          IndirectStubsMgrBuilder);
+    new OrcCBindingsStack(*TM2, std::move(CompileCallbackMgr),
+			  IndirectStubsMgrBuilder);
 
   return wrap(JITStack);
 }
@@ -43,6 +38,28 @@ void LLVMOrcGetMangledSymbol(LLVMOrcJITStackRef JITStack, char **MangledName,
 
 void LLVMOrcDisposeMangledSymbol(char *MangledName) {
   delete[] MangledName;
+}
+
+LLVMOrcTargetAddress
+LLVMOrcCreateLazyCompileCallback(LLVMOrcJITStackRef JITStack,
+                                 LLVMOrcLazyCompileCallbackFn Callback,
+                                 void *CallbackCtx) {
+  OrcCBindingsStack &J = *unwrap(JITStack);
+  return J.createLazyCompileCallback(Callback, CallbackCtx);
+}
+
+void LLVMOrcCreateIndirectStub(LLVMOrcJITStackRef JITStack,
+                               const char *StubName,
+                               LLVMOrcTargetAddress InitAddr) {
+  OrcCBindingsStack &J = *unwrap(JITStack);
+  J.createIndirectStub(StubName, InitAddr);
+}
+
+void LLVMOrcSetIndirectStubPointer(LLVMOrcJITStackRef JITStack,
+                                   const char *StubName,
+                                   LLVMOrcTargetAddress NewAddr) {
+  OrcCBindingsStack &J = *unwrap(JITStack);
+  J.setIndirectStubPointer(StubName, NewAddr);
 }
 
 LLVMOrcModuleHandle
