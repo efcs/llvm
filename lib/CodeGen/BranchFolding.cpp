@@ -371,7 +371,7 @@ static unsigned ComputeCommonTailLength(MachineBasicBlock *MBB1,
   }
   // Back past possible debugging pseudos at beginning of block.  This matters
   // when one block differs from the other only by whether debugging pseudos
-  // are present at the beginning.  (This way, the various checks later for
+  // are present at the beginning. (This way, the various checks later for
   // I1==MBB1->begin() work as expected.)
   if (I1 == MBB1->begin() && I2 != MBB2->begin()) {
     --I2;
@@ -620,11 +620,8 @@ ProfitableToMerge(MachineBasicBlock *MBB1, MachineBasicBlock *MBB2,
   // branch instruction, which is likely to be smaller than the 2
   // instructions that would be deleted in the merge.
   MachineFunction *MF = MBB1->getParent();
-  if (EffectiveTailLen >= 2 && MF->getFunction()->optForSize() &&
-      (I1 == MBB1->begin() || I2 == MBB2->begin()))
-    return true;
-
-  return false;
+  return EffectiveTailLen >= 2 && MF->getFunction()->optForSize() &&
+         (I1 == MBB1->begin() || I2 == MBB2->begin());
 }
 
 /// ComputeSameTails - Look through all the blocks in MergePotentials that have
@@ -1102,13 +1099,19 @@ void BranchFolder::setCommonTailEdgeWeights(MachineBasicBlock &TailMBB) {
   if (TailMBB.succ_size() <= 1)
     return;
 
-  auto MaxEdgeFreq = *std::max_element(EdgeFreqLs.begin(), EdgeFreqLs.end());
-  uint64_t Scale = MaxEdgeFreq.getFrequency() / UINT32_MAX + 1;
+  auto SumEdgeFreq =
+      std::accumulate(EdgeFreqLs.begin(), EdgeFreqLs.end(), BlockFrequency(0))
+          .getFrequency();
   auto EdgeFreq = EdgeFreqLs.begin();
 
-  for (auto SuccI = TailMBB.succ_begin(), SuccE = TailMBB.succ_end();
-       SuccI != SuccE; ++SuccI, ++EdgeFreq)
-    TailMBB.setSuccWeight(SuccI, EdgeFreq->getFrequency() / Scale);
+  if (SumEdgeFreq > 0) {
+    for (auto SuccI = TailMBB.succ_begin(), SuccE = TailMBB.succ_end();
+         SuccI != SuccE; ++SuccI, ++EdgeFreq) {
+      auto Prob = BranchProbability::getBranchProbability(
+          EdgeFreq->getFrequency(), SumEdgeFreq);
+      TailMBB.setSuccProbability(SuccI, Prob);
+    }
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -1407,7 +1410,7 @@ ReoptimizeBlock:
     // other blocks across it.
     if (CurTBB && CurCond.empty() && !CurFBB &&
         IsBranchOnlyBlock(MBB) && CurTBB != MBB &&
-        !MBB->hasAddressTaken()) {
+        !MBB->hasAddressTaken() && !MBB->isEHPad()) {
       DebugLoc dl = getBranchDebugLoc(*MBB);
       // This block may contain just an unconditional branch.  Because there can
       // be 'non-branch terminators' in the block, try removing the branch and
@@ -1561,6 +1564,14 @@ ReoptimizeBlock:
       // removed, move this block to the end of the function.
       MachineBasicBlock *PrevTBB = nullptr, *PrevFBB = nullptr;
       SmallVector<MachineOperand, 4> PrevCond;
+      // We're looking for cases where PrevBB could possibly fall through to
+      // FallThrough, but if FallThrough is an EH pad that wouldn't be useful
+      // so here we skip over any EH pads so we might have a chance to find
+      // a branch target from PrevBB.
+      while (FallThrough != MF.end() && FallThrough->isEHPad())
+        ++FallThrough;
+      // Now check to see if the current block is sitting between PrevBB and
+      // a block to which it could fall through.
       if (FallThrough != MF.end() &&
           !TII->AnalyzeBranch(PrevBB, PrevTBB, PrevFBB, PrevCond, true) &&
           PrevBB.isSuccessor(&*FallThrough)) {

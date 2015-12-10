@@ -148,20 +148,39 @@ public:
   /// arguments at this call site.
   typedef IterTy arg_iterator;
 
-  /// arg_begin/arg_end - Return iterators corresponding to the actual argument
-  /// list for a call site.
-  IterTy arg_begin() const {
-    assert(getInstruction() && "Not a call or invoke instruction!");
-    // Skip non-arguments
-    return (*this)->op_begin();
-  }
-
-  IterTy arg_end() const { return (*this)->op_end() - getArgumentEndOffset(); }
   iterator_range<IterTy> args() const {
-    return iterator_range<IterTy>(arg_begin(), arg_end());
+    return make_range(arg_begin(), arg_end());
   }
   bool arg_empty() const { return arg_end() == arg_begin(); }
   unsigned arg_size() const { return unsigned(arg_end() - arg_begin()); }
+
+  /// Type of iterator to use when looping over data operands at this call site
+  /// (see below).
+  typedef IterTy data_operand_iterator;
+
+  /// data_operands_begin/data_operands_end - Return iterators iterating over
+  /// the call / invoke argument list and bundle operands.  For invokes, this is
+  /// the set of instruction operands except the invoke target and the two
+  /// successor blocks; and for calls this is the set of instruction operands
+  /// except the call target.
+
+  IterTy data_operands_begin() const {
+    assert(getInstruction() && "Not a call or invoke instruction!");
+    return (*this)->op_begin();
+  }
+  IterTy data_operands_end() const {
+    assert(getInstruction() && "Not a call or invoke instruction!");
+    return (*this)->op_end() - (isCall() ? 1 : 3);
+  }
+  iterator_range<IterTy> data_ops() const {
+    return make_range(data_operands_begin(), data_operands_end());
+  }
+  bool data_operands_empty() const {
+    return data_operands_end() == data_operands_begin();
+  }
+  unsigned data_operands_size() const {
+    return std::distance(data_operands_begin(), data_operands_end());
+  }
 
   /// getType - Return the type of the instruction that generated this call site
   ///
@@ -245,6 +264,17 @@ public:
     CALLSITE_DELEGATE_GETTER(paramHasAttr(i, A));
   }
 
+  /// \brief Return true if the data operand at index \p i directly or
+  /// indirectly has the attribute \p A.
+  ///
+  /// Normal call or invoke arguments have per operand attributes, as specified
+  /// in the attribute set attached to this instruction, while operand bundle
+  /// operands may have some attributes implied by the type of its containing
+  /// operand bundle.
+  bool dataOperandHasImpliedAttr(unsigned i, Attribute::AttrKind A) const {
+    CALLSITE_DELEGATE_GETTER(dataOperandHasImpliedAttr(i, A));
+  }
+
   /// @brief Extract the alignment for a call or parameter (0=unknown).
   uint16_t getParamAlignment(uint16_t i) const {
     CALLSITE_DELEGATE_GETTER(getParamAlignment(i));
@@ -260,6 +290,13 @@ public:
   /// parameter (0=unknown).
   uint64_t getDereferenceableOrNullBytes(uint16_t i) const {
     CALLSITE_DELEGATE_GETTER(getDereferenceableOrNullBytes(i));
+  }
+
+  /// @brief Determine if the parameter or return value is marked with NoAlias
+  /// attribute.
+  /// @param n The parameter to check. 1 is the first parameter, 0 is the return
+  bool doesNotAlias(unsigned n) const {
+    CALLSITE_DELEGATE_GETTER(doesNotAlias(n));
   }
 
   /// \brief Return true if the call should not be treated as a call to a
@@ -329,20 +366,42 @@ public:
     CALLSITE_DELEGATE_GETTER(getNumTotalBundleOperands());
   }
 
-  OperandBundleUse getOperandBundle(unsigned Index) const {
-    CALLSITE_DELEGATE_GETTER(getOperandBundle(Index));
+  OperandBundleUse getOperandBundleAt(unsigned Index) const {
+    CALLSITE_DELEGATE_GETTER(getOperandBundleAt(Index));
   }
 
   Optional<OperandBundleUse> getOperandBundle(StringRef Name) const {
     CALLSITE_DELEGATE_GETTER(getOperandBundle(Name));
   }
 
+  Optional<OperandBundleUse> getOperandBundle(uint32_t ID) const {
+    CALLSITE_DELEGATE_GETTER(getOperandBundle(ID));
+  }
+
+  IterTy arg_begin() const {
+    CALLSITE_DELEGATE_GETTER(arg_begin());
+  }
+
+  IterTy arg_end() const {
+    CALLSITE_DELEGATE_GETTER(arg_end());
+  }
+
 #undef CALLSITE_DELEGATE_GETTER
 #undef CALLSITE_DELEGATE_SETTER
 
-  /// @brief Determine whether this argument is not captured.
-  bool doesNotCapture(unsigned ArgNo) const {
-    return paramHasAttr(ArgNo + 1, Attribute::NoCapture);
+  void getOperandBundlesAsDefs(SmallVectorImpl<OperandBundleDef> &Defs) const {
+    const Instruction *II = getInstruction();
+    // Since this is actually a getter that "looks like" a setter, don't use the
+    // above macros to avoid confusion.
+    if (isCall())
+      cast<CallInst>(II)->getOperandBundlesAsDefs(Defs);
+    else
+      cast<InvokeInst>(II)->getOperandBundlesAsDefs(Defs);
+  }
+
+  /// @brief Determine whether this data operand is not captured.
+  bool doesNotCapture(unsigned OpNo) const {
+    return dataOperandHasImpliedAttr(OpNo + 1, Attribute::NoCapture);
   }
 
   /// @brief Determine whether this argument is passed by value.
@@ -367,13 +426,13 @@ public:
     return paramHasAttr(arg_size(), Attribute::InAlloca);
   }
 
-  bool doesNotAccessMemory(unsigned ArgNo) const {
-    return paramHasAttr(ArgNo + 1, Attribute::ReadNone);
+  bool doesNotAccessMemory(unsigned OpNo) const {
+    return dataOperandHasImpliedAttr(OpNo + 1, Attribute::ReadNone);
   }
 
-  bool onlyReadsMemory(unsigned ArgNo) const {
-    return paramHasAttr(ArgNo + 1, Attribute::ReadOnly) ||
-           paramHasAttr(ArgNo + 1, Attribute::ReadNone);
+  bool onlyReadsMemory(unsigned OpNo) const {
+    return dataOperandHasImpliedAttr(OpNo + 1, Attribute::ReadOnly) ||
+           dataOperandHasImpliedAttr(OpNo + 1, Attribute::ReadNone);
   }
 
   /// @brief Return true if the return value is known to be not null.
@@ -400,18 +459,6 @@ public:
   }
 
 private:
-  unsigned getArgumentEndOffset() const {
-    if (isCall()) {
-      // Skip [ operand bundles ], Callee
-      auto *CI = cast<CallInst>(getInstruction());
-      return 1 + CI->getNumTotalBundleOperands();
-    } else {
-      // Skip [ operand bundles ], BB, BB, Callee
-      auto *II = cast<InvokeInst>(getInstruction());
-      return 3 + II->getNumTotalBundleOperands();
-    }
-  }
-
   IterTy getCallee() const {
     if (isCall()) // Skip Callee
       return cast<CallInst>(getInstruction())->op_end() - 1;

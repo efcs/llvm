@@ -1,5 +1,6 @@
 set(LLVM_TARGET_DEFINITIONS Hexagon.td)
 
+tablegen(LLVM HexagonGenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM HexagonGenAsmWriter.inc -gen-asm-writer)
 tablegen(LLVM HexagonGenCallingConv.inc -gen-callingconv)
 tablegen(LLVM HexagonGenDAGISel.inc -gen-dag-isel)
@@ -14,6 +15,7 @@ add_public_tablegen_target(HexagonCommonTableGen)
 add_llvm_target(HexagonCodeGen
   BitTracker.cpp
   HexagonAsmPrinter.cpp
+  HexagonBitSimplify.cpp
   HexagonBitTracker.cpp
   HexagonCFGOptimizer.cpp
   HexagonCommonGEP.cpp
@@ -35,6 +37,7 @@ add_llvm_target(HexagonCodeGen
   HexagonMachineScheduler.cpp
   HexagonMCInstLower.cpp
   HexagonNewValueJump.cpp
+  HexagonOptimizeSZextends.cpp
   HexagonPeephole.cpp
   HexagonRegisterInfo.cpp
   HexagonSelectionDAGInfo.cpp
@@ -48,6 +51,7 @@ add_llvm_target(HexagonCodeGen
   HexagonVLIWPacketizer.cpp
 )
 
+add_subdirectory(AsmParser)
 add_subdirectory(TargetInfo)
 add_subdirectory(MCTargetDesc)
 add_subdirectory(Disassembler)

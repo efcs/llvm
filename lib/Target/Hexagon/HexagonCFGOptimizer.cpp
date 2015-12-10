@@ -102,7 +102,7 @@ bool HexagonCFGOptimizer::runOnMachineFunction(MachineFunction &Fn) {
   // Loop over all of the basic blocks.
   for (MachineFunction::iterator MBBb = Fn.begin(), MBBe = Fn.end();
        MBBb != MBBe; ++MBBb) {
-    MachineBasicBlock* MBB = MBBb;
+    MachineBasicBlock *MBB = &*MBBb;
 
     // Traverse the basic block.
     MachineBasicBlock::iterator MII = MBB->getFirstTerminator();
@@ -186,13 +186,11 @@ bool HexagonCFGOptimizer::runOnMachineFunction(MachineFunction &Fn) {
 
             if (case1 || case2) {
               InvertAndChangeJumpTarget(MI, UncondTarget);
-              MBB->removeSuccessor(JumpAroundTarget);
-              MBB->addSuccessor(UncondTarget);
+              MBB->replaceSuccessor(JumpAroundTarget, UncondTarget);
 
               // Remove the unconditional branch in LayoutSucc.
               LayoutSucc->erase(LayoutSucc->begin());
-              LayoutSucc->removeSuccessor(UncondTarget);
-              LayoutSucc->addSuccessor(JumpAroundTarget);
+              LayoutSucc->replaceSuccessor(UncondTarget, JumpAroundTarget);
 
               // This code performs the conversion for case 2, which moves
               // the block to the fall-thru case (BB3 in the code above).

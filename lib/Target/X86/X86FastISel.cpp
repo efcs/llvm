@@ -298,8 +298,8 @@ bool X86FastISel::foldX86XALUIntrinsic(X86::CondCode &CC, const Instruction *I,
     return false;
 
   // Make sure nothing is in the way
-  BasicBlock::const_iterator Start = I;
-  BasicBlock::const_iterator End = II;
+  BasicBlock::const_iterator Start(I);
+  BasicBlock::const_iterator End(II);
   for (auto Itr = std::prev(Start); Itr != End; --Itr) {
     // We only expect extractvalue instructions between the intrinsic and the
     // instruction to be selected.
@@ -434,6 +434,7 @@ bool X86FastISel::X86FastEmitStore(EVT VT, unsigned ValReg, bool ValIsKill,
                                    X86AddressMode &AM,
                                    MachineMemOperand *MMO, bool Aligned) {
   bool HasSSE2 = Subtarget->hasSSE2();
+  bool HasSSE4A = Subtarget->hasSSE4A();
   bool HasAVX = Subtarget->hasAVX();
   bool IsNonTemporal = MMO && MMO->isNonTemporal();
 
@@ -461,12 +462,22 @@ bool X86FastISel::X86FastEmitStore(EVT VT, unsigned ValReg, bool ValIsKill,
     Opc = (IsNonTemporal && HasSSE2) ? X86::MOVNTI_64mr : X86::MOV64mr;
     break;
   case MVT::f32:
-    Opc = X86ScalarSSEf32 ? 
-          (HasAVX ? X86::VMOVSSmr : X86::MOVSSmr) : X86::ST_Fp32m;
+    if (X86ScalarSSEf32) {
+      if (IsNonTemporal && HasSSE4A)
+        Opc = X86::MOVNTSS;
+      else
+        Opc = HasAVX ? X86::VMOVSSmr : X86::MOVSSmr;
+    } else
+      Opc = X86::ST_Fp32m;
     break;
   case MVT::f64:
-    Opc = X86ScalarSSEf64 ?
-          (HasAVX ? X86::VMOVSDmr : X86::MOVSDmr) : X86::ST_Fp64m;
+    if (X86ScalarSSEf32) {
+      if (IsNonTemporal && HasSSE4A)
+        Opc = X86::MOVNTSD;
+      else
+        Opc = HasAVX ? X86::VMOVSDmr : X86::MOVSDmr;
+    } else
+      Opc = X86::ST_Fp64m;
     break;
   case MVT::v4f32:
     if (Aligned) {
@@ -2806,10 +2817,12 @@ static unsigned computeBytesPoppedByCallee(const X86Subtarget *Subtarget,
   if (CC == CallingConv::Fast || CC == CallingConv::GHC ||
       CC == CallingConv::HiPE)
     return 0;
-  if (CS && !CS->paramHasAttr(1, Attribute::StructRet))
-    return 0;
-  if (CS && CS->paramHasAttr(1, Attribute::InReg))
-    return 0;
+
+  if (CS)
+    if (CS->arg_empty() || !CS->paramHasAttr(1, Attribute::StructRet) ||
+        CS->paramHasAttr(1, Attribute::InReg))
+      return 0;
+
   return 4;
 }
 

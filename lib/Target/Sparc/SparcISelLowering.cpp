@@ -1040,8 +1040,8 @@ SparcTargetLowering::getSRetArgSize(SelectionDAG &DAG, SDValue Callee) const
   if (!CalleeFn)
     return 0;
 
-  assert(CalleeFn->hasStructRetAttr() &&
-         "Callee does not have the StructRet attribute.");
+  // It would be nice to check for the sret attribute on CalleeFn here,
+  // but since it is not part of the function type, any check will misfire.
 
   PointerType *Ty = cast<PointerType>(CalleeFn->arg_begin()->getType());
   Type *ElementTy = Ty->getElementType();
@@ -1674,9 +1674,6 @@ SparcTargetLowering::SparcTargetLowering(TargetMachine &TM,
   setOperationAction(ISD::STACKRESTORE      , MVT::Other, Expand);
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32  , Custom);
 
-  setExceptionPointerRegister(SP::I0);
-  setExceptionSelectorRegister(SP::I1);
-
   setStackPointerRegisterToSaveRestore(SP::O6);
 
   setOperationAction(ISD::CTPOP, MVT::i32,
@@ -1839,18 +1836,15 @@ void SparcTargetLowering::computeKnownBitsForTargetNode
 // set LHS/RHS and SPCC to the LHS/RHS of the setcc and SPCC to the condition.
 static void LookThroughSetCC(SDValue &LHS, SDValue &RHS,
                              ISD::CondCode CC, unsigned &SPCC) {
-  if (isa<ConstantSDNode>(RHS) &&
-      cast<ConstantSDNode>(RHS)->isNullValue() &&
+  if (isNullConstant(RHS) &&
       CC == ISD::SETNE &&
       (((LHS.getOpcode() == SPISD::SELECT_ICC ||
          LHS.getOpcode() == SPISD::SELECT_XCC) &&
         LHS.getOperand(3).getOpcode() == SPISD::CMPICC) ||
        (LHS.getOpcode() == SPISD::SELECT_FCC &&
         LHS.getOperand(3).getOpcode() == SPISD::CMPFCC)) &&
-      isa<ConstantSDNode>(LHS.getOperand(0)) &&
-      isa<ConstantSDNode>(LHS.getOperand(1)) &&
-      cast<ConstantSDNode>(LHS.getOperand(0))->isOne() &&
-      cast<ConstantSDNode>(LHS.getOperand(1))->isNullValue()) {
+      isOneConstant(LHS.getOperand(0)) &&
+      isNullConstant(LHS.getOperand(1))) {
     SDValue CMPCC = LHS.getOperand(3);
     SPCC = cast<ConstantSDNode>(LHS.getOperand(2))->getZExtValue();
     LHS = CMPCC.getOperand(0);
@@ -2885,7 +2879,7 @@ static SDValue LowerUMULO_SMULO(SDValue Op, SelectionDAG &DAG,
 
   SDValue MulResult = TLI.makeLibCall(DAG,
                                       RTLIB::MUL_I128, WideVT,
-                                      Args, 4, isSigned, dl).first;
+                                      Args, isSigned, dl).first;
   SDValue BottomHalf = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, VT,
                                    MulResult, DAG.getIntPtrConstant(0, dl));
   SDValue TopHalf = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, VT,
@@ -3053,8 +3047,7 @@ SparcTargetLowering::expandSelectCC(MachineInstr *MI,
   // to set, the condition code register to branch on, the true/false values to
   // select between, and a branch opcode to use.
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
-  MachineFunction::iterator It = BB;
-  ++It;
+  MachineFunction::iterator It = ++BB->getIterator();
 
   //  thisMBB:
   //  ...
@@ -3139,7 +3132,7 @@ SparcTargetLowering::expandAtomicRMW(MachineInstr *MI,
     .addReg(AddrReg).addImm(0);
 
   // Split the basic block MBB before MI and insert the loop block in the hole.
-  MachineFunction::iterator MFI = MBB;
+  MachineFunction::iterator MFI = MBB->getIterator();
   const BasicBlock *LLVM_BB = MBB->getBasicBlock();
   MachineFunction *MF = MBB->getParent();
   MachineBasicBlock *LoopMBB = MF->CreateMachineBasicBlock(LLVM_BB);

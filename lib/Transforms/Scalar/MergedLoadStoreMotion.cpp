@@ -108,7 +108,7 @@ class MergedLoadStoreMotion : public FunctionPass {
 
 public:
   static char ID; // Pass identification, replacement for typeid
-  explicit MergedLoadStoreMotion(void)
+  MergedLoadStoreMotion()
       : FunctionPass(ID), MD(nullptr), MagicCompileTimeControl(250) {
     initializeMergedLoadStoreMotionPass(*PassRegistry::getPassRegistry());
   }
@@ -118,6 +118,7 @@ public:
 private:
   // This transformation requires dominator postdominator info
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.setPreservesCFG();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
     AU.addRequired<AAResultsWrapperPass>();
     AU.addPreserved<GlobalsAAWrapperPass>();
@@ -158,7 +159,7 @@ private:
 };
 
 char MergedLoadStoreMotion::ID = 0;
-}
+} // anonymous namespace
 
 ///
 /// \brief createMergedLoadStoreMotionPass - The public interface to this file.

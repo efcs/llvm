@@ -607,6 +607,27 @@ TailDuplicatePass::shouldTailDuplicate(const MachineFunction &MF,
       return false;
   }
 
+  // Check if any of the successors of TailBB has a PHI node in which the
+  // value corresponding to TailBB uses a subregister.
+  // If a phi node uses a register paired with a subregister, the actual
+  // "value type" of the phi may differ from the type of the register without
+  // any subregisters. Due to a bug, tail duplication may add a new operand
+  // without a necessary subregister, producing an invalid code. This is
+  // demonstrated by test/CodeGen/Hexagon/tail-dup-subreg-abort.ll.
+  // Disable tail duplication for this case for now, until the problem is
+  // fixed.
+  for (auto SB : TailBB.successors()) {
+    for (auto &I : *SB) {
+      if (!I.isPHI())
+        break;
+      unsigned Idx = getPHISrcRegOpIdx(&I, &TailBB);
+      assert(Idx != 0);
+      MachineOperand &PU = I.getOperand(Idx);
+      if (PU.getSubReg() != 0)
+        return false;
+    }
+  }
+
   if (HasIndirectbr && PreRegAlloc)
     return true;
 
@@ -724,12 +745,12 @@ TailDuplicatePass::duplicateSimpleBB(MachineBasicBlock *TailBB,
     if (PredTBB)
       TII->InsertBranch(*PredBB, PredTBB, PredFBB, PredCond, DebugLoc());
 
-    uint32_t Weight = MBPI->getEdgeWeight(PredBB, TailBB);
+    auto Prob = MBPI->getEdgeProbability(PredBB, TailBB);
     PredBB->removeSuccessor(TailBB);
     unsigned NumSuccessors = PredBB->succ_size();
     assert(NumSuccessors <= 1);
     if (NumSuccessors == 0 || *PredBB->succ_begin() != NewTarget)
-      PredBB->addSuccessor(NewTarget, Weight);
+      PredBB->addSuccessor(NewTarget, Prob);
 
     TDBBs.push_back(PredBB);
   }
@@ -837,7 +858,7 @@ TailDuplicatePass::TailDuplicate(MachineBasicBlock *TailBB,
            "TailDuplicate called on block with multiple successors!");
     for (MachineBasicBlock::succ_iterator I = TailBB->succ_begin(),
            E = TailBB->succ_end(); I != E; ++I)
-      PredBB->addSuccessor(*I, MBPI->getEdgeWeight(TailBB, I));
+      PredBB->addSuccessor(*I, MBPI->getEdgeProbability(TailBB, I));
 
     Changed = true;
     ++NumTailDups;

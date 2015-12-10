@@ -54,13 +54,20 @@ namespace llvm {
   getBitcodeTargetTriple(MemoryBufferRef Buffer, LLVMContext &Context,
                          DiagnosticHandlerFunction DiagnosticHandler = nullptr);
 
+  /// Read the header of the specified bitcode buffer and extract just the
+  /// producer string information. If successful, this returns a string. On
+  /// error, this returns "".
+  std::string getBitcodeProducerString(
+      MemoryBufferRef Buffer, LLVMContext &Context,
+      DiagnosticHandlerFunction DiagnosticHandler = nullptr);
+
   /// Read the specified bitcode file, returning the module.
   ErrorOr<std::unique_ptr<Module>>
   parseBitcodeFile(MemoryBufferRef Buffer, LLVMContext &Context,
                    DiagnosticHandlerFunction DiagnosticHandler = nullptr);
 
   /// Check if the given bitcode buffer contains a function summary block.
-  bool hasFunctionSummary(MemoryBufferRef Buffer, LLVMContext &Context,
+  bool hasFunctionSummary(MemoryBufferRef Buffer,
                           DiagnosticHandlerFunction DiagnosticHandler);
 
   /// Parse the specified bitcode buffer, returning the function info index.
@@ -69,8 +76,8 @@ namespace llvm {
   /// an index object with a map from function name to function summary offset.
   /// The index is used to perform lazy function summary reading later.
   ErrorOr<std::unique_ptr<FunctionInfoIndex>> getFunctionInfoIndex(
-      MemoryBufferRef Buffer, LLVMContext &Context,
-      DiagnosticHandlerFunction DiagnosticHandler, bool IsLazy = false);
+      MemoryBufferRef Buffer, DiagnosticHandlerFunction DiagnosticHandler,
+      bool IsLazy = false);
 
   /// This method supports lazy reading of function summary data from the
   /// combined index during function importing. When reading the combined index
@@ -79,9 +86,8 @@ namespace llvm {
   /// to parse the summary information for the given function name into
   /// the index.
   std::error_code readFunctionSummary(
-      MemoryBufferRef Buffer, LLVMContext &Context,
-      DiagnosticHandlerFunction DiagnosticHandler, StringRef FunctionName,
-      std::unique_ptr<FunctionInfoIndex> Index);
+      MemoryBufferRef Buffer, DiagnosticHandlerFunction DiagnosticHandler,
+      StringRef FunctionName, std::unique_ptr<FunctionInfoIndex> Index);
 
   /// \brief Write the specified module to the specified raw output stream.
   ///
@@ -101,7 +107,7 @@ namespace llvm {
   /// Write the specified function summary index to the given raw output stream,
   /// where it will be written in a new bitcode block. This is used when
   /// writing the combined index file for ThinLTO.
-  void WriteFunctionSummaryToFile(const FunctionInfoIndex *Index,
+  void WriteFunctionSummaryToFile(const FunctionInfoIndex &Index,
                                   raw_ostream &Out);
 
   /// isBitcodeWrapper - Return true if the given bytes are the magic bytes

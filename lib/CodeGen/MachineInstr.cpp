@@ -631,10 +631,12 @@ void MachineMemOperand::print(raw_ostream &OS, ModuleSlotTracker &MST) const {
 
 void MachineInstr::addImplicitDefUseOperands(MachineFunction &MF) {
   if (MCID->ImplicitDefs)
-    for (const uint16_t *ImpDefs = MCID->getImplicitDefs(); *ImpDefs; ++ImpDefs)
+    for (const MCPhysReg *ImpDefs = MCID->getImplicitDefs(); *ImpDefs;
+           ++ImpDefs)
       addOperand(MF, MachineOperand::CreateReg(*ImpDefs, true, true));
   if (MCID->ImplicitUses)
-    for (const uint16_t *ImpUses = MCID->getImplicitUses(); *ImpUses; ++ImpUses)
+    for (const MCPhysReg *ImpUses = MCID->getImplicitUses(); *ImpUses;
+           ++ImpUses)
       addOperand(MF, MachineOperand::CreateReg(*ImpUses, false, true));
 }
 
@@ -1933,11 +1935,11 @@ void MachineInstr::clearRegisterDeads(unsigned Reg) {
   }
 }
 
-void MachineInstr::addRegisterDefReadUndef(unsigned Reg) {
+void MachineInstr::setRegisterDefReadUndef(unsigned Reg, bool IsUndef) {
   for (MachineOperand &MO : operands()) {
     if (!MO.isReg() || !MO.isDef() || MO.getReg() != Reg || MO.getSubReg() == 0)
       continue;
-    MO.setIsUndef();
+    MO.setIsUndef(IsUndef);
   }
 }
 

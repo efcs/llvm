@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=i686-pc-windows-msvc < %s | FileCheck --check-prefix=X86 %s
-; RUN: llc -mtriple=x86_64-pc-windows-msvc < %s | FileCheck --check-prefix=X64 %s
+; RUN: llc -verify-machineinstrs -mtriple=i686-pc-windows-msvc < %s | FileCheck --check-prefix=X86 %s
+; RUN: llc -verify-machineinstrs -mtriple=x86_64-pc-windows-msvc < %s | FileCheck --check-prefix=X64 %s
 
 %rtti.TypeDescriptor2 = type { i8**, i8*, [3 x i8] }
 %eh.CatchableType = type { i32, i8*, i32, i32, i32, i32, i8* }
@@ -67,7 +67,6 @@ catchendblock:                                    ; preds = %catch,
 ; X86: retl
 
 ; X86: [[restorebb:LBB0_[0-9]+]]:
-; X86: movl -16(%ebp), %esp
 ; X86: addl $12, %ebp
 ; X86: jmp [[contbb]]
 
@@ -106,6 +105,7 @@ catchendblock:                                    ; preds = %catch,
 ; X64: leaq 32(%rsp), %rbp
 ; X64: .seh_setframe 5, 32
 ; X64: .seh_endprologue
+; X64: movq $-2, (%rbp)
 ; X64: callq getint
 ; X64: callq getint
 ; X64: callq getint
@@ -113,7 +113,8 @@ catchendblock:                                    ; preds = %catch,
 ; X64: callq useints
 ; X64: movl $1, %ecx
 ; X64: callq f
-; X64: [[contbb:\.LBB0_[0-9]+]]: # %try.cont
+; X64: [[contbb:\.LBB0_[0-9]+]]: # Block address taken
+; X64-NEXT:                      # %try.cont
 ; X64: addq $40, %rsp
 ; X64: popq %rbp
 ; X64: retq
@@ -188,7 +189,8 @@ catchendblock:                                    ; preds = %catch,
 ; X64: callq useints
 ; X64: movl $1, %ecx
 ; X64: callq f
-; X64: [[contbb:\.LBB1_[0-9]+]]: # %try.cont
+; X64: [[contbb:\.LBB1_[0-9]+]]: # Block address taken
+; X64-NEXT:                      # %try.cont
 ; X64: addq $40, %rsp
 ; X64-NOT: popq
 ; X64: popq %rsi
@@ -249,7 +251,8 @@ catchendblock:                                    ; preds = %catch,
 ; X64: .seh_endprologue
 ; X64: movl $1, %ecx
 ; X64: callq f
-; X64: [[contbb:\.LBB2_[0-9]+]]: # %try.cont
+; X64: [[contbb:\.LBB2_[0-9]+]]: # Block address taken
+; X64-NEXT:                      # %try.cont
 ; X64: addq $48, %rsp
 ; X64-NOT: popq
 ; X64: popq %rbp

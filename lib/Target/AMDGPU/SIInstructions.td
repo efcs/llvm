@@ -1431,9 +1431,7 @@ defm V_INTERP_MOV_F32 : VINTRP_m <
 //===----------------------------------------------------------------------===//
 
 multiclass V_CNDMASK <vop2 op, string name> {
-  defm _e32 : VOP2_m <
-      op, VOP_CNDMASK.Outs, VOP_CNDMASK.Ins32, VOP_CNDMASK.Asm32, [],
-      name, name>;
+  defm _e32 : VOP2_m <op, name, VOP_CNDMASK, [], name>;
 
   defm _e64  : VOP3_m <
       op, VOP_CNDMASK.Outs, VOP_CNDMASK.Ins64,
@@ -1944,36 +1942,6 @@ def SI_KILL : InstSI <
 
 let Uses = [EXEC], Defs = [EXEC,VCC,M0] in {
 
-//defm SI_ : RegisterLoadStore <VGPR_32, FRAMEri, ADDRIndirect>;
-
-let UseNamedOperandTable = 1 in {
-
-def SI_RegisterLoad : InstSI <
-  (outs VGPR_32:$dst, SReg_64:$temp),
-  (ins FRAMEri32:$addr, i32imm:$chan),
-  "", []
-> {
-  let isRegisterLoad = 1;
-  let mayLoad = 1;
-}
-
-class SIRegStore<dag outs> : InstSI <
-  outs,
-  (ins VGPR_32:$val, FRAMEri32:$addr, i32imm:$chan),
-  "", []
-> {
-  let isRegisterStore = 1;
-  let mayStore = 1;
-}
-
-let usesCustomInserter = 1 in {
-def SI_RegisterStorePseudo : SIRegStore<(outs)>;
-} // End usesCustomInserter = 1
-def SI_RegisterStore : SIRegStore<(outs SReg_64:$temp)>;
-
-
-} // End UseNamedOperandTable = 1
-
 class SI_INDIRECT_SRC<RegisterClass rc> : InstSI <
   (outs VGPR_32:$dst, SReg_64:$temp),
   (ins rc:$src, VSrc_32:$idx, i32imm:$off),
@@ -2010,8 +1978,7 @@ multiclass SI_SPILL_SGPR <RegisterClass sgpr_class> {
   let UseNamedOperandTable = 1, Uses = [EXEC] in {
     def _SAVE : InstSI <
       (outs),
-      (ins sgpr_class:$src, i32imm:$frame_idx, SReg_128:$scratch_rsrc,
-           SReg_32:$scratch_offset),
+      (ins sgpr_class:$src, i32imm:$frame_idx),
       "", []
     > {
       let mayStore = 1;
@@ -2020,7 +1987,7 @@ multiclass SI_SPILL_SGPR <RegisterClass sgpr_class> {
 
     def _RESTORE : InstSI <
       (outs sgpr_class:$dst),
-      (ins i32imm:$frame_idx, SReg_128:$scratch_rsrc, SReg_32:$scratch_offset),
+      (ins i32imm:$frame_idx),
       "", []
     > {
       let mayStore = 0;
@@ -2072,8 +2039,8 @@ let Defs = [SCC] in {
 
 def SI_CONSTDATA_PTR : InstSI <
   (outs SReg_64:$dst),
-  (ins),
-  "", [(set SReg_64:$dst, (i64 SIconstdata_ptr))]
+  (ins const_ga:$ptr),
+  "", [(set SReg_64:$dst, (i64 (SIconstdata_ptr (tglobaladdr:$ptr))))]
 > {
   let SALU = 1;
 }
@@ -2175,6 +2142,11 @@ def : Pat <
     (i64 (REG_SEQUENCE SReg_64,
      (S_BCNT1_I32_B64 $src), sub0,
      (S_MOV_B32 0), sub1))
+>;
+
+def : Pat <
+  (i32 (smax i32:$x, (i32 (ineg i32:$x)))),
+  (S_ABS_I32 $x)
 >;
 
 //===----------------------------------------------------------------------===//
@@ -2504,6 +2476,11 @@ def : Pat <
 /********** Extraction, Insertion, Building and Casting  **********/
 /********** ============================================ **********/
 
+//def : Extract_Element<i64, v2i64, 0, sub0_sub1>;
+//def : Extract_Element<i64, v2i64, 1, sub2_sub3>;
+//def : Extract_Element<f64, v2f64, 0, sub0_sub1>;
+//def : Extract_Element<f64, v2f64, 1, sub2_sub3>;
+
 foreach Index = 0-2 in {
   def Extract_Element_v2i32_#Index : Extract_Element <
     i32, v2i32, Index, !cast<SubRegIndex>(sub#Index)
@@ -2589,6 +2566,16 @@ def : BitConvert <f64, v2i32, VReg_64>;
 def : BitConvert <v4f32, v4i32, VReg_128>;
 def : BitConvert <v4i32, v4f32, VReg_128>;
 
+
+def : BitConvert <v2i64, v4i32, SReg_128>;
+def : BitConvert <v4i32, v2i64, SReg_128>;
+
+def : BitConvert <v2f64, v4i32, VReg_128>;
+def : BitConvert <v4i32, v2f64, VReg_128>;
+
+
+
+
 def : BitConvert <v8f32, v8i32, SReg_256>;
 def : BitConvert <v8i32, v8f32, SReg_256>;
 def : BitConvert <v8i32, v32i8, SReg_256>;
@@ -2617,10 +2604,9 @@ def : Pat <
 
 // Prevent expanding both fneg and fabs.
 
-// FIXME: Should use S_OR_B32
 def : Pat <
   (fneg (fabs f32:$src)),
-  (V_OR_B32_e32 $src, (V_MOV_B32_e32 0x80000000)) /* Set sign bit */
+  (S_OR_B32 $src, 0x80000000) /* Set sign bit */
 >;
 
 // FIXME: Should use S_OR_B32
@@ -3183,12 +3169,12 @@ def : Pat <
 
 def : Pat <
   (i1 (trunc i32:$a)),
-  (V_CMP_EQ_I32_e64 (V_AND_B32_e64 (i32 1), $a), 1)
+  (V_CMP_EQ_I32_e64 (S_AND_B32 (i32 1), $a), 1)
 >;
 
 def : Pat <
   (i1 (trunc i64:$a)),
-  (V_CMP_EQ_I32_e64 (V_AND_B32_e64 (i32 1),
+  (V_CMP_EQ_I32_e64 (S_AND_B32 (i32 1),
                     (EXTRACT_SUBREG $a, sub0)), 1)
 >;
 

@@ -39,8 +39,7 @@
 //    only by the unwind edge of an invoke instruction.
 //  * A landingpad instruction must be the first non-PHI instruction in the
 //    block.
-//  * All landingpad instructions must use the same personality function with
-//    the same function.
+//  * Landingpad instructions must be in a function with a personality function.
 //  * All other things that are tested by asserts spread about the code...
 //
 //===----------------------------------------------------------------------===//
@@ -94,6 +93,12 @@ struct VerifierSupport {
 private:
   template <class NodeTy> void Write(const ilist_iterator<NodeTy> &I) {
     Write(&*I);
+  }
+
+  void Write(const Module *M) {
+    if (!M)
+      return;
+    OS << "; ModuleID = '" << M->getModuleIdentifier() << "'\n";
   }
 
   void Write(const Value *V) {
@@ -198,6 +203,9 @@ class Verifier : public InstVisitor<Verifier>, VerifierSupport {
   /// Stores the count of how many objects were passed to llvm.localescape for a
   /// given function and the largest index passed to llvm.localrecover.
   DenseMap<Function *, std::pair<unsigned, unsigned>> FrameEscapeInfo;
+
+  /// Cache of constants visited in search of ConstantExprs.
+  SmallPtrSet<const Constant *, 32> ConstantExprVisited;
 
 public:
   explicit Verifier(raw_ostream &OS)
@@ -415,7 +423,8 @@ private:
   void VerifyFunctionMetadata(
       const SmallVector<std::pair<unsigned, MDNode *>, 4> MDs);
 
-  void VerifyConstantExprBitcastType(const ConstantExpr *CE);
+  void visitConstantExprsRecursively(const Constant *EntryC);
+  void visitConstantExpr(const ConstantExpr *CE);
   void VerifyStatepoint(ImmutableCallSite CS);
   void verifyFrameRecoverIndices();
 
@@ -540,25 +549,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
   }
 
   // Walk any aggregate initializers looking for bitcasts between address spaces
-  SmallPtrSet<const Value *, 4> Visited;
-  SmallVector<const Value *, 4> WorkStack;
-  WorkStack.push_back(cast<Value>(GV.getInitializer()));
-
-  while (!WorkStack.empty()) {
-    const Value *V = WorkStack.pop_back_val();
-    if (!Visited.insert(V).second)
-      continue;
-
-    if (const User *U = dyn_cast<User>(V)) {
-      WorkStack.append(U->op_begin(), U->op_end());
-    }
-
-    if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(V)) {
-      VerifyConstantExprBitcastType(CE);
-      if (Broken)
-        return;
-    }
-  }
+  visitConstantExprsRecursively(GV.getInitializer());
 
   visitGlobalValue(GV);
 }
@@ -572,7 +563,8 @@ void Verifier::visitAliaseeSubExpr(const GlobalAlias &GA, const Constant &C) {
 void Verifier::visitAliaseeSubExpr(SmallPtrSetImpl<const GlobalAlias*> &Visited,
                                    const GlobalAlias &GA, const Constant &C) {
   if (const auto *GV = dyn_cast<GlobalValue>(&C)) {
-    Assert(!GV->isDeclaration(), "Alias must point to a definition", &GA);
+    Assert(!GV->isDeclarationForLinker(), "Alias must point to a definition",
+           &GA);
 
     if (const auto *GA2 = dyn_cast<GlobalAlias>(GV)) {
       Assert(Visited.insert(GA2).second, "Aliases cannot form a cycle", &GA);
@@ -587,7 +579,7 @@ void Verifier::visitAliaseeSubExpr(SmallPtrSetImpl<const GlobalAlias*> &Visited,
   }
 
   if (const auto *CE = dyn_cast<ConstantExpr>(&C))
-    VerifyConstantExprBitcastType(CE);
+    visitConstantExprsRecursively(CE);
 
   for (const Use &U : C.operands()) {
     Value *V = &*U;
@@ -854,8 +846,6 @@ void Verifier::visitDICompositeType(const DICompositeType &N) {
          "invalid composite elements", &N, N.getRawElements());
   Assert(isTypeRef(N, N.getRawVTableHolder()), "invalid vtable holder", &N,
          N.getRawVTableHolder());
-  Assert(!N.getRawElements() || isa<MDTuple>(N.getRawElements()),
-         "invalid composite elements", &N, N.getRawElements());
   Assert(!hasConflictingReferenceFlags(N.getFlags()), "invalid reference flags",
          &N);
   if (auto *Params = N.getRawTemplateParams())
@@ -929,6 +919,12 @@ void Verifier::visitDICompileUnit(const DICompileUnit &N) {
              Op);
     }
   }
+  if (auto *Array = N.getRawMacros()) {
+    Assert(isa<MDTuple>(Array), "invalid macro list", &N, Array);
+    for (Metadata *Op : N.getMacros()->operands()) {
+      Assert(Op && isa<DIMacroNode>(Op), "invalid macro ref", &N, Op);
+    }
+  }
 }
 
 void Verifier::visitDISubprogram(const DISubprogram &N) {
@@ -938,13 +934,6 @@ void Verifier::visitDISubprogram(const DISubprogram &N) {
     Assert(isa<DISubroutineType>(T), "invalid subroutine type", &N, T);
   Assert(isTypeRef(N, N.getRawContainingType()), "invalid containing type", &N,
          N.getRawContainingType());
-  if (auto *RawF = N.getRawFunction()) {
-    auto *FMD = dyn_cast<ConstantAsMetadata>(RawF);
-    auto *F = FMD ? FMD->getValue() : nullptr;
-    auto *FT = F ? dyn_cast<PointerType>(F->getType()) : nullptr;
-    Assert(F && FT && isa<FunctionType>(FT->getElementType()),
-           "invalid function", &N, F, FT);
-  }
   if (auto *Params = N.getRawTemplateParams())
     visitTemplateParams(N, *Params);
   if (auto *S = N.getRawDeclaration()) {
@@ -964,41 +953,6 @@ void Verifier::visitDISubprogram(const DISubprogram &N) {
 
   if (N.isDefinition())
     Assert(N.isDistinct(), "subprogram definitions must be distinct", &N);
-
-  auto *F = N.getFunction();
-  if (!F)
-    return;
-
-  // Check that all !dbg attachments lead to back to N (or, at least, another
-  // subprogram that describes the same function).
-  //
-  // FIXME: Check this incrementally while visiting !dbg attachments.
-  // FIXME: Only check when N is the canonical subprogram for F.
-  SmallPtrSet<const MDNode *, 32> Seen;
-  for (auto &BB : *F)
-    for (auto &I : BB) {
-      // Be careful about using DILocation here since we might be dealing with
-      // broken code (this is the Verifier after all).
-      DILocation *DL =
-          dyn_cast_or_null<DILocation>(I.getDebugLoc().getAsMDNode());
-      if (!DL)
-        continue;
-      if (!Seen.insert(DL).second)
-        continue;
-
-      DILocalScope *Scope = DL->getInlinedAtScope();
-      if (Scope && !Seen.insert(Scope).second)
-        continue;
-
-      DISubprogram *SP = Scope ? Scope->getSubprogram() : nullptr;
-      if (SP && !Seen.insert(SP).second)
-        continue;
-
-      // FIXME: Once N is canonical, check "SP == &N".
-      Assert(SP->describes(F),
-             "!dbg attachment points at wrong subprogram for function", &N, F,
-             &I, DL, Scope, SP);
-    }
 }
 
 void Verifier::visitDILexicalBlockBase(const DILexicalBlockBase &N) {
@@ -1022,6 +976,27 @@ void Verifier::visitDINamespace(const DINamespace &N) {
   Assert(N.getTag() == dwarf::DW_TAG_namespace, "invalid tag", &N);
   if (auto *S = N.getRawScope())
     Assert(isa<DIScope>(S), "invalid scope ref", &N, S);
+}
+
+void Verifier::visitDIMacro(const DIMacro &N) {
+  Assert(N.getMacinfoType() == dwarf::DW_MACINFO_define ||
+         N.getMacinfoType() == dwarf::DW_MACINFO_undef,
+         "invalid macinfo type", &N);
+  Assert(!N.getName().empty(), "anonymous macro", &N);
+}
+
+void Verifier::visitDIMacroFile(const DIMacroFile &N) {
+  Assert(N.getMacinfoType() == dwarf::DW_MACINFO_start_file,
+         "invalid macinfo type", &N);
+  if (auto *F = N.getRawFile())
+    Assert(isa<DIFile>(F), "invalid file", &N, F);
+
+  if (auto *Array = N.getRawElements()) {
+    Assert(isa<MDTuple>(Array), "invalid macro list", &N, Array);
+    for (Metadata *Op : N.getElements()->operands()) {
+      Assert(Op && isa<DIMacroNode>(Op), "invalid macro ref", &N, Op);
+    }
+  }
 }
 
 void Verifier::visitDIModule(const DIModule &N) {
@@ -1276,7 +1251,8 @@ void Verifier::VerifyAttributeTypes(AttributeSet Attrs, unsigned Idx,
         I->getKindAsEnum() == Attribute::OptimizeNone ||
         I->getKindAsEnum() == Attribute::JumpTable ||
         I->getKindAsEnum() == Attribute::Convergent ||
-        I->getKindAsEnum() == Attribute::ArgMemOnly) {
+        I->getKindAsEnum() == Attribute::ArgMemOnly ||
+        I->getKindAsEnum() == Attribute::NoRecurse) {
       if (!isFunction) {
         CheckFailed("Attribute '" + I->getAsString() +
                     "' only applies to functions!", V);
@@ -1503,7 +1479,35 @@ void Verifier::VerifyFunctionMetadata(
   }
 }
 
-void Verifier::VerifyConstantExprBitcastType(const ConstantExpr *CE) {
+void Verifier::visitConstantExprsRecursively(const Constant *EntryC) {
+  if (!ConstantExprVisited.insert(EntryC).second)
+    return;
+
+  SmallVector<const Constant *, 16> Stack;
+  Stack.push_back(EntryC);
+
+  while (!Stack.empty()) {
+    const Constant *C = Stack.pop_back_val();
+
+    // Check this constant expression.
+    if (const auto *CE = dyn_cast<ConstantExpr>(C))
+      visitConstantExpr(CE);
+
+    // Visit all sub-expressions.
+    for (const Use &U : C->operands()) {
+      const auto *OpC = dyn_cast<Constant>(U);
+      if (!OpC)
+        continue;
+      if (isa<GlobalValue>(OpC))
+        continue; // Global values get visited separately.
+      if (!ConstantExprVisited.insert(OpC).second)
+        continue;
+      Stack.push_back(OpC);
+    }
+  }
+}
+
+void Verifier::visitConstantExpr(const ConstantExpr *CE) {
   if (CE->getOpcode() != Instruction::BitCast)
     return;
 
@@ -1757,6 +1761,15 @@ void Verifier::visitFunction(const Function &F) {
   assert(F.hasMetadata() != MDs.empty() && "Bit out-of-sync");
   VerifyFunctionMetadata(MDs);
 
+  // Check validity of the personality function
+  if (F.hasPersonalityFn()) {
+    auto *Per = dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts());
+    if (Per)
+      Assert(Per->getParent() == F.getParent(),
+             "Referencing personality function in another module!",
+             &F, F.getParent(), Per, Per->getParent());
+  }
+
   if (F.isMaterializable()) {
     // Function has a body somewhere we can't see.
     Assert(MDs.empty(), "unmaterialized function cannot have metadata", &F,
@@ -1813,6 +1826,44 @@ void Verifier::visitFunction(const Function &F) {
              (F.isDeclaration() && F.hasExternalLinkage()) ||
              F.hasAvailableExternallyLinkage(),
          "Function is marked as dllimport, but not external.", &F);
+
+  auto *N = F.getSubprogram();
+  if (!N)
+    return;
+
+  // Check that all !dbg attachments lead to back to N (or, at least, another
+  // subprogram that describes the same function).
+  //
+  // FIXME: Check this incrementally while visiting !dbg attachments.
+  // FIXME: Only check when N is the canonical subprogram for F.
+  SmallPtrSet<const MDNode *, 32> Seen;
+  for (auto &BB : F)
+    for (auto &I : BB) {
+      // Be careful about using DILocation here since we might be dealing with
+      // broken code (this is the Verifier after all).
+      DILocation *DL =
+          dyn_cast_or_null<DILocation>(I.getDebugLoc().getAsMDNode());
+      if (!DL)
+        continue;
+      if (!Seen.insert(DL).second)
+        continue;
+
+      DILocalScope *Scope = DL->getInlinedAtScope();
+      if (Scope && !Seen.insert(Scope).second)
+        continue;
+
+      DISubprogram *SP = Scope ? Scope->getSubprogram() : nullptr;
+
+      // Scope and SP could be the same MDNode and we don't want to skip
+      // validation in that case
+      if (SP && ((Scope != SP) && !Seen.insert(SP).second))
+        continue;
+
+      // FIXME: Once N is canonical, check "SP == &N".
+      Assert(SP->describes(&F),
+             "!dbg attachment points at wrong subprogram for function", N, &F,
+             &I, DL, Scope, SP);
+    }
 }
 
 // verifyBasicBlock - Verify that a basic block is well formed...
@@ -2330,6 +2381,15 @@ void Verifier::VerifyCallSite(CallSite CS) {
   if (Function *F = CS.getCalledFunction())
     if (Intrinsic::ID ID = (Intrinsic::ID)F->getIntrinsicID())
       visitIntrinsicCallSite(ID, CS);
+
+  // Verify that a callsite has at most one "deopt" operand bundle.
+  bool FoundDeoptBundle = false;
+  for (unsigned i = 0, e = CS.getNumOperandBundles(); i < e; ++i) {
+    if (CS.getOperandBundleAt(i).getTagID() == LLVMContext::OB_deopt) {
+      Assert(!FoundDeoptBundle, "Multiple deopt operand bundles", I);
+      FoundDeoptBundle = true;
+    }
+  }
 
   visitInstruction(*I);
 }
@@ -3154,7 +3214,7 @@ void Verifier::visitInstruction(Instruction &I) {
           " donothing or patchpoint",
           &I);
       Assert(F->getParent() == M, "Referencing function in another module!",
-             &I);
+             &I, M, F, F->getParent());
     } else if (BasicBlock *OpBB = dyn_cast<BasicBlock>(I.getOperand(i))) {
       Assert(OpBB->getParent() == BB->getParent(),
              "Referring to a basic block in another function!", &I);
@@ -3162,7 +3222,7 @@ void Verifier::visitInstruction(Instruction &I) {
       Assert(OpArg->getParent() == BB->getParent(),
              "Referring to an argument in another function!", &I);
     } else if (GlobalValue *GV = dyn_cast<GlobalValue>(I.getOperand(i))) {
-      Assert(GV->getParent() == M, "Referencing global in another module!", &I);
+      Assert(GV->getParent() == M, "Referencing global in another module!", &I, M, GV, GV->getParent());
     } else if (isa<Instruction>(I.getOperand(i))) {
       verifyDominatesUse(I, i);
     } else if (isa<InlineAsm>(I.getOperand(i))) {
@@ -3173,22 +3233,7 @@ void Verifier::visitInstruction(Instruction &I) {
       if (CE->getType()->isPtrOrPtrVectorTy()) {
         // If we have a ConstantExpr pointer, we need to see if it came from an
         // illegal bitcast (inttoptr <constant int> )
-        SmallVector<const ConstantExpr *, 4> Stack;
-        SmallPtrSet<const ConstantExpr *, 4> Visited;
-        Stack.push_back(CE);
-
-        while (!Stack.empty()) {
-          const ConstantExpr *V = Stack.pop_back_val();
-          if (!Visited.insert(V).second)
-            continue;
-
-          VerifyConstantExprBitcastType(V);
-
-          for (unsigned I = 0, N = V->getNumOperands(); I != N; ++I) {
-            if (ConstantExpr *Op = dyn_cast<ConstantExpr>(V->getOperand(I)))
-              Stack.push_back(Op);
-          }
-        }
+        visitConstantExprsRecursively(CE);
       }
     }
   }

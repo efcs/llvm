@@ -50,7 +50,7 @@ struct SymbolTableListSentinelTraits<BasicBlock>
 /// modifying a program. However, the verifier will ensure that basic blocks
 /// are "well formed".
 class BasicBlock : public Value, // Basic blocks are data objects also
-                   public ilist_node<BasicBlock> {
+                   public ilist_node_with_parent<BasicBlock, Function> {
   friend class BlockAddress;
 public:
   typedef SymbolTableList<Instruction> InstListType;
@@ -290,6 +290,9 @@ public:
   /// Also note that this doesn't preserve any passes. To split blocks while
   /// keeping loop information consistent, use the SplitBlock utility function.
   BasicBlock *splitBasicBlock(iterator I, const Twine &BBName = "");
+  BasicBlock *splitBasicBlock(Instruction *I, const Twine &BBName = "") {
+    return splitBasicBlock(I->getIterator(), BBName);
+  }
 
   /// \brief Returns true if there are any uses of this basic block other than
   /// direct branches, switches, etc. to it.

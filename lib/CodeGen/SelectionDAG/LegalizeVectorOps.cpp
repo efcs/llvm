@@ -219,9 +219,8 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
             assert(Result.getValue(1).use_empty() &&
                    "There are still live users of the old chain!");
             return LegalizeOp(Lowered);
-          } else {
-            return TranslateLegalizeResults(Op, Lowered);
           }
+          return TranslateLegalizeResults(Op, Lowered);
         }
       case TargetLowering::Expand:
         Changed = true;
@@ -232,7 +231,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
     EVT StVT = ST->getMemoryVT();
     MVT ValVT = ST->getValue().getSimpleValueType();
     if (StVT.isVector() && ST->isTruncatingStore())
-      switch (TLI.getTruncStoreAction(ValVT, StVT.getSimpleVT())) {
+      switch (TLI.getTruncStoreAction(ValVT, StVT)) {
       default: llvm_unreachable("This action is not supported yet!");
       case TargetLowering::Legal:
         return TranslateLegalizeResults(Op, Result);
@@ -245,7 +244,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
         Changed = true;
         return LegalizeOp(ExpandStore(Op));
       }
-  } else if (Op.getOpcode() == ISD::MSCATTER)
+  } else if (Op.getOpcode() == ISD::MSCATTER || Op.getOpcode() == ISD::MSTORE)
     HasVectorValue = true;
 
   for (SDNode::value_iterator J = Node->value_begin(), E = Node->value_end();
@@ -266,6 +265,8 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
   case ISD::UDIV:
   case ISD::SREM:
   case ISD::UREM:
+  case ISD::SDIVREM:
+  case ISD::UDIVREM:
   case ISD::FADD:
   case ISD::FSUB:
   case ISD::FMUL:
@@ -343,9 +344,13 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
   case ISD::MSCATTER:
     QueryType = cast<MaskedScatterSDNode>(Node)->getValue().getValueType();
     break;
+  case ISD::MSTORE:
+    QueryType = cast<MaskedStoreSDNode>(Node)->getValue().getValueType();
+    break;
   }
 
   switch (TLI.getOperationAction(Node->getOpcode(), QueryType)) {
+  default: llvm_unreachable("This action is not supported yet!");
   case TargetLowering::Promote:
     Result = Promote(Op);
     Changed = true;

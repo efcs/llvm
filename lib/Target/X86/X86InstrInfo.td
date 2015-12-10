@@ -770,6 +770,7 @@ def HasVLX       : Predicate<"Subtarget->hasVLX()">,
                      AssemblerPredicate<"FeatureVLX", "AVX-512 VL ISA">;
 def NoVLX        : Predicate<"!Subtarget->hasVLX()">;
 def NoVLX_Or_NoBWI : Predicate<"!Subtarget->hasVLX() || !Subtarget->hasBWI()">;
+def NoVLX_Or_NoDQI : Predicate<"!Subtarget->hasVLX() || !Subtarget->hasDQI()">;
 
 def HasPOPCNT    : Predicate<"Subtarget->hasPOPCNT()">;
 def HasAES       : Predicate<"Subtarget->hasAES()">;
@@ -799,6 +800,7 @@ def HasSHA       : Predicate<"Subtarget->hasSHA()">;
 def HasPRFCHW    : Predicate<"Subtarget->hasPRFCHW()">;
 def HasRDSEED    : Predicate<"Subtarget->hasRDSEED()">;
 def HasPrefetchW : Predicate<"Subtarget->hasPRFCHW()">;
+def HasLAHFSAHF  : Predicate<"Subtarget->hasLAHFSAHF()">;
 def FPStackf32   : Predicate<"!Subtarget->hasSSE1()">;
 def FPStackf64   : Predicate<"!Subtarget->hasSSE2()">;
 def HasMPX       : Predicate<"Subtarget->hasMPX()">;
@@ -1502,10 +1504,12 @@ def MOV8rm_NOREX : I<0x8A, MRMSrcMem,
 let SchedRW = [WriteALU] in {
 let Defs = [EFLAGS], Uses = [AH] in
 def SAHF     : I<0x9E, RawFrm, (outs),  (ins), "sahf",
-                 [(set EFLAGS, (X86sahf AH))], IIC_AHF>;
+                 [(set EFLAGS, (X86sahf AH))], IIC_AHF>,
+               Requires<[HasLAHFSAHF]>;
 let Defs = [AH], Uses = [EFLAGS], hasSideEffects = 0 in
 def LAHF     : I<0x9F, RawFrm, (outs),  (ins), "lahf", [],
-                IIC_AHF>;  // AH = flags
+                IIC_AHF>,  // AH = flags
+               Requires<[HasLAHFSAHF]>;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
@@ -2402,6 +2406,32 @@ defm TZMSK   : tbm_binary_intr<0x01, "tzmsk", MRM4r, MRM4m>;
 } // HasTBM, EFLAGS
 
 //===----------------------------------------------------------------------===//
+// MONITORX/MWAITX Instructions
+//
+let SchedRW = [WriteSystem] in {
+let Uses = [EAX, ECX, EDX] in
+def MONITORXrrr : I<0x01, MRM_FA, (outs), (ins), "monitorx", [],
+                    IIC_SSE_MONITOR>, TB;
+let Uses = [ECX, EAX, EBX] in
+def MWAITXrr   : I<0x01, MRM_FB, (outs), (ins), "mwaitx", [], IIC_SSE_MWAIT>,
+                 TB;
+} // SchedRW
+
+def : InstAlias<"mwaitx\t{%eax, %ecx, %ebx|ebx, ecx, eax}", (MWAITXrr)>, Requires<[Not64BitMode]>;
+def : InstAlias<"mwaitx\t{%rax, %rcx, %rbx|rbx, rcx, rax}", (MWAITXrr)>, Requires<[In64BitMode]>;
+
+def : InstAlias<"monitorx\t{%eax, %ecx, %edx|edx, ecx, eax}", (MONITORXrrr)>,
+      Requires<[Not64BitMode]>;
+def : InstAlias<"monitorx\t{%rax, %rcx, %rdx|rdx, rcx, rax}", (MONITORXrrr)>,
+      Requires<[In64BitMode]>;
+
+//===----------------------------------------------------------------------===//
+// CLZERO Instruction
+//
+let Uses = [EAX] in
+def CLZEROr : I<0x01, MRM_FC, (outs), (ins), "clzero", []>, TB;
+
+//===----------------------------------------------------------------------===//
 // Pattern fragments to auto generate TBM instructions.
 //===----------------------------------------------------------------------===//
 
@@ -2543,8 +2573,8 @@ def : MnemonicAlias<"lret", "lretl", "att">, Requires<[Not16BitMode]>;
 def : MnemonicAlias<"leavel", "leave", "att">, Requires<[Not64BitMode]>;
 def : MnemonicAlias<"leaveq", "leave", "att">, Requires<[In64BitMode]>;
 
-def : MnemonicAlias<"loopz",  "loope",  "att">;
-def : MnemonicAlias<"loopnz", "loopne", "att">;
+def : MnemonicAlias<"loopz",  "loope">;
+def : MnemonicAlias<"loopnz", "loopne">;
 
 def : MnemonicAlias<"pop",   "popw",  "att">, Requires<[In16BitMode]>;
 def : MnemonicAlias<"pop",   "popl",  "att">, Requires<[In32BitMode]>;
@@ -2625,14 +2655,14 @@ def : MnemonicAlias<"fcmova",   "fcmovnbe", "att">;
 def : MnemonicAlias<"fcmovnae", "fcmovb",   "att">;
 def : MnemonicAlias<"fcmovna",  "fcmovbe",  "att">;
 def : MnemonicAlias<"fcmovae",  "fcmovnb",  "att">;
-def : MnemonicAlias<"fcomip",   "fcompi",   "att">;
+def : MnemonicAlias<"fcomip",   "fcompi">;
 def : MnemonicAlias<"fildq",    "fildll",   "att">;
 def : MnemonicAlias<"fistpq",   "fistpll",  "att">;
 def : MnemonicAlias<"fisttpq",  "fisttpll", "att">;
 def : MnemonicAlias<"fldcww",   "fldcw",    "att">;
 def : MnemonicAlias<"fnstcww",  "fnstcw",   "att">;
 def : MnemonicAlias<"fnstsww",  "fnstsw",   "att">;
-def : MnemonicAlias<"fucomip",  "fucompi",  "att">;
+def : MnemonicAlias<"fucomip",  "fucompi">;
 def : MnemonicAlias<"fwait",    "wait">;
 
 def : MnemonicAlias<"fxsaveq",   "fxsave64",   "att">;
@@ -2767,8 +2797,10 @@ def : InstAlias<"idiv{q}\t{$src, %rax|rax, $src}", (IDIV64m i64mem:$src)>;
 // Various unary fpstack operations default to operating on on ST1.
 // For example, "fxch" -> "fxch %st(1)"
 def : InstAlias<"faddp",        (ADD_FPrST0  ST1), 0>;
+def:  InstAlias<"fadd",         (ADD_FPrST0  ST1), 0>;
 def : InstAlias<"fsub{|r}p",    (SUBR_FPrST0 ST1), 0>;
 def : InstAlias<"fsub{r|}p",    (SUB_FPrST0  ST1), 0>;
+def : InstAlias<"fmul",         (MUL_FPrST0  ST1), 0>;
 def : InstAlias<"fmulp",        (MUL_FPrST0  ST1), 0>;
 def : InstAlias<"fdiv{|r}p",    (DIVR_FPrST0 ST1), 0>;
 def : InstAlias<"fdiv{r|}p",    (DIV_FPrST0  ST1), 0>;

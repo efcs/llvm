@@ -343,7 +343,7 @@ void ARMDAGToDAGISel::PreprocessISelDAG() {
   bool isThumb2 = Subtarget->isThumb();
   for (SelectionDAG::allnodes_iterator I = CurDAG->allnodes_begin(),
        E = CurDAG->allnodes_end(); I != E; ) {
-    SDNode *N = I++;  // Preincrement iterator to avoid invalidation issues.
+    SDNode *N = &*I++; // Preincrement iterator to avoid invalidation issues.
 
     if (N->getOpcode() != ISD::ADD)
       continue;
@@ -531,7 +531,7 @@ bool ARMDAGToDAGISel::canExtractShiftFromMul(const SDValue &N,
 }
 
 void ARMDAGToDAGISel::replaceDAGValue(const SDValue &N, SDValue M) {
-  CurDAG->RepositionNode(N.getNode(), M.getNode());
+  CurDAG->RepositionNode(N.getNode()->getIterator(), M.getNode());
   CurDAG->ReplaceAllUsesWith(N, M);
 }
 
@@ -548,8 +548,11 @@ bool ARMDAGToDAGISel::SelectImmShifterOperand(SDValue N,
     unsigned PowerOfTwo = 0;
     SDValue NewMulConst;
     if (canExtractShiftFromMul(N, 31, PowerOfTwo, NewMulConst)) {
+      BaseReg = SDValue(Select(CurDAG->getNode(ISD::MUL, SDLoc(N), MVT::i32,
+                                               N.getOperand(0), NewMulConst)
+                                   .getNode()),
+                        0);
       replaceDAGValue(N.getOperand(1), NewMulConst);
-      BaseReg = N;
       Opc = CurDAG->getTargetConstant(ARM_AM::getSORegOpc(ARM_AM::lsl,
                                                           PowerOfTwo),
                                       SDLoc(N), MVT::i32);
@@ -3924,6 +3927,7 @@ SelectInlineAsmMemoryOperand(const SDValue &Op, unsigned ConstraintID,
     //        be an immediate and not a memory constraint.
     // Fallthrough.
   case InlineAsm::Constraint_m:
+  case InlineAsm::Constraint_o:
   case InlineAsm::Constraint_Q:
   case InlineAsm::Constraint_Um:
   case InlineAsm::Constraint_Un:

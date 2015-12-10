@@ -473,7 +473,6 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
   unsigned VirtualIndex;
   unsigned Flags;
   bool IsOptimized;
-  Metadata *Function;
   Metadata *TemplateParams;
   Metadata *Declaration;
   Metadata *Variables;
@@ -483,15 +482,15 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
                 bool IsLocalToUnit, bool IsDefinition, unsigned ScopeLine,
                 Metadata *ContainingType, unsigned Virtuality,
                 unsigned VirtualIndex, unsigned Flags, bool IsOptimized,
-                Metadata *Function, Metadata *TemplateParams,
-                Metadata *Declaration, Metadata *Variables)
+                Metadata *TemplateParams, Metadata *Declaration,
+                Metadata *Variables)
       : Scope(Scope), Name(Name), LinkageName(LinkageName), File(File),
         Line(Line), Type(Type), IsLocalToUnit(IsLocalToUnit),
         IsDefinition(IsDefinition), ScopeLine(ScopeLine),
         ContainingType(ContainingType), Virtuality(Virtuality),
         VirtualIndex(VirtualIndex), Flags(Flags), IsOptimized(IsOptimized),
-        Function(Function), TemplateParams(TemplateParams),
-        Declaration(Declaration), Variables(Variables) {}
+        TemplateParams(TemplateParams), Declaration(Declaration),
+        Variables(Variables) {}
   MDNodeKeyImpl(const DISubprogram *N)
       : Scope(N->getRawScope()), Name(N->getName()),
         LinkageName(N->getLinkageName()), File(N->getRawFile()),
@@ -500,7 +499,6 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
         ScopeLine(N->getScopeLine()), ContainingType(N->getRawContainingType()),
         Virtuality(N->getVirtuality()), VirtualIndex(N->getVirtualIndex()),
         Flags(N->getFlags()), IsOptimized(N->isOptimized()),
-        Function(N->getRawFunction()),
         TemplateParams(N->getRawTemplateParams()),
         Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()) {}
 
@@ -515,7 +513,6 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
            Virtuality == RHS->getVirtuality() &&
            VirtualIndex == RHS->getVirtualIndex() && Flags == RHS->getFlags() &&
            IsOptimized == RHS->isOptimized() &&
-           Function == RHS->getRawFunction() &&
            TemplateParams == RHS->getRawTemplateParams() &&
            Declaration == RHS->getRawDeclaration() &&
            Variables == RHS->getRawVariables();
@@ -523,7 +520,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
   unsigned getHashValue() const {
     return hash_combine(Scope, Name, LinkageName, File, Line, Type,
                         IsLocalToUnit, IsDefinition, ScopeLine, ContainingType,
-                        Virtuality, VirtualIndex, Flags, IsOptimized, Function,
+                        Virtuality, VirtualIndex, Flags, IsOptimized,
                         TemplateParams, Declaration, Variables);
   }
 };
@@ -795,6 +792,49 @@ template <> struct MDNodeKeyImpl<DIImportedEntity> {
   }
 };
 
+template <> struct MDNodeKeyImpl<DIMacro> {
+  unsigned MIType;
+  unsigned Line;
+  StringRef Name;
+  StringRef Value;
+
+  MDNodeKeyImpl(unsigned MIType, unsigned Line, StringRef Name, StringRef Value)
+      : MIType(MIType), Line(Line), Name(Name), Value(Value) {}
+  MDNodeKeyImpl(const DIMacro *N)
+      : MIType(N->getMacinfoType()), Line(N->getLine()), Name(N->getName()),
+        Value(N->getValue()) {}
+
+  bool isKeyOf(const DIMacro *RHS) const {
+    return MIType == RHS->getMacinfoType() && Line == RHS->getLine() &&
+           Name == RHS->getName() && Value == RHS->getValue();
+  }
+  unsigned getHashValue() const {
+    return hash_combine(MIType, Line, Name, Value);
+  }
+};
+
+template <> struct MDNodeKeyImpl<DIMacroFile> {
+  unsigned MIType;
+  unsigned Line;
+  Metadata *File;
+  Metadata *Elements;
+
+  MDNodeKeyImpl(unsigned MIType, unsigned Line, Metadata *File,
+                Metadata *Elements)
+      : MIType(MIType), Line(Line), File(File), Elements(Elements) {}
+  MDNodeKeyImpl(const DIMacroFile *N)
+      : MIType(N->getMacinfoType()), Line(N->getLine()), File(N->getRawFile()),
+        Elements(N->getRawElements()) {}
+
+  bool isKeyOf(const DIMacroFile *RHS) const {
+    return MIType == RHS->getMacinfoType() && Line == RHS->getLine() &&
+           File == RHS->getRawFile() && File == RHS->getRawElements();
+  }
+  unsigned getHashValue() const {
+    return hash_combine(MIType, Line, File, Elements);
+  }
+};
+
 /// \brief DenseMapInfo for MDNode subclasses.
 template <class NodeTy> struct MDNodeInfo {
   typedef MDNodeKeyImpl<NodeTy> KeyTy;
@@ -926,6 +966,8 @@ public:
 
   ConstantInt *TheTrueVal;
   ConstantInt *TheFalseVal;
+
+  std::unique_ptr<ConstantTokenNone> TheNoneToken;
 
   // Basic type instances.
   Type VoidTy, LabelTy, HalfTy, FloatTy, DoubleTy, MetadataTy, TokenTy;

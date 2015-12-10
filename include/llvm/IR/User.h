@@ -65,7 +65,7 @@ protected:
   /// This is used for subclasses which have a fixed number of operands.
   void *operator new(size_t Size, unsigned Us, unsigned DescBytes);
 
-  User(Type *ty, unsigned vty, Use *OpList, unsigned NumOps)
+  User(Type *ty, unsigned vty, Use *, unsigned NumOps)
       : Value(ty, vty) {
     assert(NumOps < (1u << NumUserOperandsBits) && "Too many operands");
     NumUserOperands = NumOps;
@@ -233,7 +233,7 @@ public:
     return value_op_iterator(op_end());
   }
   iterator_range<value_op_iterator> operand_values() {
-    return iterator_range<value_op_iterator>(value_op_begin(), value_op_end());
+    return make_range(value_op_begin(), value_op_end());
   }
 
   /// \brief Drop all references to operands.

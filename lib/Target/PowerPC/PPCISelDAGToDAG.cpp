@@ -564,7 +564,6 @@ static unsigned SelectInt64CountDirect(int64_t Imm) {
 
   // Handle first 32 bits.
   unsigned Lo = Imm & 0xFFFF;
-  unsigned Hi = (Imm >> 16) & 0xFFFF;
 
   // Simple value.
   if (isInt<16>(Imm)) {
@@ -586,9 +585,9 @@ static unsigned SelectInt64CountDirect(int64_t Imm) {
     ++Result;
 
   // Add in the last bits as required.
-  if ((Hi = (Remainder >> 16) & 0xFFFF))
+  if ((Remainder >> 16) & 0xFFFF)
     ++Result;
-  if ((Lo = Remainder & 0xFFFF))
+  if (Remainder & 0xFFFF)
     ++Result;
 
   return Result;
@@ -2781,7 +2780,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
     if (PPCSubTarget->hasVSX() && (N->getValueType(0) == MVT::v2f64 ||
                                   N->getValueType(0) == MVT::v2i64)) {
       ShuffleVectorSDNode *SVN = cast<ShuffleVectorSDNode>(N);
-      
+
       SDValue Op1 = N->getOperand(SVN->getMaskElt(0) < 2 ? 0 : 1),
               Op2 = N->getOperand(SVN->getMaskElt(1) < 2 ? 0 : 1);
       unsigned DM[2];
@@ -2798,7 +2797,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
         LoadSDNode *LD = cast<LoadSDNode>(Op1.getOperand(0));
         SDValue Base, Offset;
 
-        if (LD->isUnindexed() &&
+        if (LD->isUnindexed() && LD->hasOneUse() && Op1.hasOneUse() &&
             (LD->getMemoryVT() == MVT::f64 ||
              LD->getMemoryVT() == MVT::i64) &&
             SelectAddrIdxOnly(LD->getBasePtr(), Base, Offset)) {
@@ -2903,9 +2902,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
       break;
 
     // The first source operand is a TargetGlobalAddress or a TargetJumpTable.
-    // If it is an externally defined symbol, a symbol with common linkage,
-    // a non-local function address, or a jump table address, or if we are
-    // generating code for large code model, we generate:
+    // If it must be toc-referenced according to PPCSubTarget, we generate:
     //   LDtocL(<ga:@sym>, ADDIStocHA(%X2, <ga:@sym>))
     // Otherwise we generate:
     //   ADDItocL(ADDIStocHA(%X2, <ga:@sym>), <ga:@sym>)
@@ -2920,13 +2917,12 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
                                       MVT::i64, GA, SDValue(Tmp, 0)));
 
     if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(GA)) {
-      const GlobalValue *GValue = G->getGlobal();
-      if ((GValue->getType()->getElementType()->isFunctionTy() &&
-           !GValue->isStrongDefinitionForLinker()) ||
-          GValue->isDeclaration() || GValue->hasCommonLinkage() ||
-          GValue->hasAvailableExternallyLinkage())
+      const GlobalValue *GV = G->getGlobal();
+      unsigned char GVFlags = PPCSubTarget->classifyGlobalReference(GV);
+      if (GVFlags & PPCII::MO_NLP_FLAG) {
         return transferMemOperands(N, CurDAG->getMachineNode(PPC::LDtocL, dl,
                                         MVT::i64, GA, SDValue(Tmp, 0)));
+      }
     }
 
     return CurDAG->getMachineNode(PPC::ADDItocL, dl, MVT::i64,
@@ -3110,7 +3106,7 @@ SDValue PPCDAGToDAGISel::combineToCMPB(SDNode *N) {
         if (!CurDAG->MaskedValueIsZero(Op0,
               APInt::getHighBitsSet(Bits, Bits - (b+1)*8)))
           return false;
-        
+
         LHS = Op0.getOperand(0);
         RHS = Op0.getOperand(1);
         return true;
@@ -3305,7 +3301,7 @@ void PPCDAGToDAGISel::PreprocessISelDAG() {
 
   bool MadeChange = false;
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     if (N->use_empty())
       continue;
 
@@ -3989,7 +3985,7 @@ void PPCDAGToDAGISel::PeepholePPC64ZExt() {
 
   bool MadeChange = false;
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     // Skip dead nodes and any non-machine opcodes.
     if (N->use_empty() || !N->isMachineOpcode())
       continue;
@@ -4145,7 +4141,7 @@ void PPCDAGToDAGISel::PeepholePPC64() {
   ++Position;
 
   while (Position != CurDAG->allnodes_begin()) {
-    SDNode *N = --Position;
+    SDNode *N = &*--Position;
     // Skip dead nodes and any non-machine opcodes.
     if (N->use_empty() || !N->isMachineOpcode())
       continue;
