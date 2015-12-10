@@ -1,4 +1,4 @@
-//===-- LLVMSymbolize.h ----------------------------------------- C++ -----===//
+//===-- Symbolize.h --------------------------------------------- C++ -----===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -10,8 +10,8 @@
 // Header for LLVM symbolization library.
 //
 //===----------------------------------------------------------------------===//
-#ifndef LLVM_TOOLS_LLVM_SYMBOLIZER_LLVMSYMBOLIZE_H
-#define LLVM_TOOLS_LLVM_SYMBOLIZER_LLVMSYMBOLIZE_H
+#ifndef LLVM_DEBUGINFO_SYMBOLIZE_SYMBOLIZE_H
+#define LLVM_DEBUGINFO_SYMBOLIZE_SYMBOLIZE_H
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/DebugInfo/DIContext.h"
@@ -24,12 +24,10 @@
 #include <string>
 
 namespace llvm {
-
-typedef DILineInfoSpecifier::FunctionNameKind FunctionNameKind;
-using namespace object;
-
 namespace symbolize {
 
+using namespace object;
+using FunctionNameKind = DILineInfoSpecifier::FunctionNameKind;
 class ModuleInfo;
 
 class LLVMSymbolizer {
@@ -92,8 +90,7 @@ private:
     MemoryBuffers.push_back(std::move(MemBuf));
   }
 
-  // Owns module info objects.
-  std::map<std::string, ModuleInfo *> Modules;
+  std::map<std::string, std::unique_ptr<ModuleInfo>> Modules;
   std::map<std::pair<MachOUniversalBinary *, std::string>, ObjectFile *>
       ObjectFileForArch;
   std::map<std::pair<std::string, std::string>, ObjectPair>
@@ -105,12 +102,13 @@ private:
 
 class ModuleInfo {
 public:
-  ModuleInfo(ObjectFile *Obj, DIContext *DICtx);
+  ModuleInfo(ObjectFile *Obj, std::unique_ptr<DIContext> DICtx);
 
-  DILineInfo symbolizeCode(uint64_t ModuleOffset,
-                           const LLVMSymbolizer::Options &Opts) const;
-  DIInliningInfo symbolizeInlinedCode(
-      uint64_t ModuleOffset, const LLVMSymbolizer::Options &Opts) const;
+  DILineInfo symbolizeCode(uint64_t ModuleOffset, FunctionNameKind FNKind,
+                           bool UseSymbolTable) const;
+  DIInliningInfo symbolizeInlinedCode(uint64_t ModuleOffset,
+                                      FunctionNameKind FNKind,
+                                      bool UseSymbolTable) const;
   bool symbolizeData(uint64_t ModuleOffset, std::string &Name, uint64_t &Start,
                      uint64_t &Size) const;
 

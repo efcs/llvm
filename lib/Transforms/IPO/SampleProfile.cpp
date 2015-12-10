@@ -122,6 +122,8 @@ protected:
   void buildEdges(Function &F);
   bool propagateThroughEdges(Function &F);
   void computeDominanceAndLoopInfo(Function &F);
+  unsigned getOffset(unsigned L, unsigned H) const;
+  void clearFunctionData();
 
   /// \brief Map basic blocks to their computed weights.
   ///
@@ -172,6 +174,31 @@ protected:
   /// \brief Flag indicating whether the profile input loaded successfully.
   bool ProfileIsValid;
 };
+}
+
+/// Clear all the per-function data used to load samples and propagate weights.
+void SampleProfileLoader::clearFunctionData() {
+  BlockWeights.clear();
+  EdgeWeights.clear();
+  VisitedBlocks.clear();
+  VisitedEdges.clear();
+  EquivalenceClass.clear();
+  DT = nullptr;
+  PDT = nullptr;
+  LI = nullptr;
+  Predecessors.clear();
+  Successors.clear();
+}
+
+/// \brief Returns the offset of lineno \p L to head_lineno \p H
+///
+/// \param L  Lineno
+/// \param H  Header lineno of the function
+///
+/// \returns offset to the header lineno. 16 bits are used to represent offset.
+/// We assume that a single function will not exceed 65535 LOC.
+unsigned SampleProfileLoader::getOffset(unsigned L, unsigned H) const {
+  return (L - H) & 0xffff;
 }
 
 /// \brief Print the weight of edge \p E on stream \p OS.
@@ -229,11 +256,9 @@ SampleProfileLoader::getInstWeight(const Instruction &Inst) const {
   const DILocation *DIL = DLoc;
   unsigned Lineno = DLoc.getLine();
   unsigned HeaderLineno = DIL->getScope()->getSubprogram()->getLine();
-  if (Lineno < HeaderLineno)
-    return std::error_code();
 
-  ErrorOr<uint64_t> R =
-      FS->findSamplesAt(Lineno - HeaderLineno, DIL->getDiscriminator());
+  ErrorOr<uint64_t> R = FS->findSamplesAt(getOffset(Lineno, HeaderLineno),
+                                          DIL->getDiscriminator());
   if (R)
     DEBUG(dbgs() << "    " << Lineno << "." << DIL->getDiscriminator() << ":"
                  << Inst << " (line offset: " << Lineno - HeaderLineno << "."
@@ -308,7 +333,7 @@ SampleProfileLoader::findCalleeFunctionSamples(const CallInst &Inst) const {
     return nullptr;
   }
   DISubprogram *SP = DIL->getScope()->getSubprogram();
-  if (!SP || DIL->getLine() < SP->getLine())
+  if (!SP)
     return nullptr;
 
   Function *CalleeFunc = Inst.getCalledFunction();
@@ -321,8 +346,9 @@ SampleProfileLoader::findCalleeFunctionSamples(const CallInst &Inst) const {
   if (FS == nullptr)
     return nullptr;
 
-  return FS->findFunctionSamplesAt(CallsiteLocation(
-      DIL->getLine() - SP->getLine(), DIL->getDiscriminator(), CalleeName));
+  return FS->findFunctionSamplesAt(
+      CallsiteLocation(getOffset(DIL->getLine(), SP->getLine()),
+                       DIL->getDiscriminator(), CalleeName));
 }
 
 /// \brief Get the FunctionSamples for an instruction.
@@ -345,10 +371,10 @@ SampleProfileLoader::findFunctionSamples(const Instruction &Inst) const {
   for (const DILocation *DIL = Inst.getDebugLoc(); DIL;
        DIL = DIL->getInlinedAt()) {
     DISubprogram *SP = DIL->getScope()->getSubprogram();
-    if (!SP || DIL->getLine() < SP->getLine())
+    if (!SP)
       return nullptr;
     if (!CalleeName.empty()) {
-      S.push_back(CallsiteLocation(DIL->getLine() - SP->getLine(),
+      S.push_back(CallsiteLocation(getOffset(DIL->getLine(), SP->getLine()),
                                    DIL->getDiscriminator(), CalleeName));
     }
     CalleeName = SP->getLinkageName();
@@ -376,6 +402,7 @@ SampleProfileLoader::findFunctionSamples(const Instruction &Inst) const {
 /// \returns True if there is any inline happened.
 bool SampleProfileLoader::inlineHotFunctions(Function &F) {
   bool Changed = false;
+  LLVMContext &Ctx = F.getContext();
   while (true) {
     bool LocalChanged = false;
     SmallVector<CallInst *, 10> CIS;
@@ -392,8 +419,17 @@ bool SampleProfileLoader::inlineHotFunctions(Function &F) {
     }
     for (auto CI : CIS) {
       InlineFunctionInfo IFI;
-      if (InlineFunction(CI, IFI))
+      Function *CalledFunction = CI->getCalledFunction();
+      DebugLoc DLoc = CI->getDebugLoc();
+      uint64_t NumSamples = findCalleeFunctionSamples(*CI)->getTotalSamples();
+      if (InlineFunction(CI, IFI)) {
         LocalChanged = true;
+        emitOptimizationRemark(Ctx, DEBUG_TYPE, F, DLoc,
+                               Twine("inlined hot callee '") +
+                                   CalledFunction->getName() + "' with " +
+                                   Twine(NumSamples) + " samples into '" +
+                                   F.getName() + "'");
+      }
     }
     if (LocalChanged) {
       Changed = true;
@@ -713,7 +749,8 @@ void SampleProfileLoader::propagateWeights(Function &F) {
   // Generate MD_prof metadata for every branch instruction using the
   // edge weights computed during propagation.
   DEBUG(dbgs() << "\nPropagation complete. Setting branch weights\n");
-  MDBuilder MDB(F.getContext());
+  LLVMContext &Ctx = F.getContext();
+  MDBuilder MDB(Ctx);
   for (auto &BI : F) {
     BasicBlock *BB = &BI;
     TerminatorInst *TI = BB->getTerminator();
@@ -725,7 +762,8 @@ void SampleProfileLoader::propagateWeights(Function &F) {
     DEBUG(dbgs() << "\nGetting weights for branch at line "
                  << TI->getDebugLoc().getLine() << ".\n");
     SmallVector<uint32_t, 4> Weights;
-    bool AllWeightsZero = true;
+    uint32_t MaxWeight = 0;
+    DebugLoc MaxDestLoc;
     for (unsigned I = 0; I < TI->getNumSuccessors(); ++I) {
       BasicBlock *Succ = TI->getSuccessor(I);
       Edge E = std::make_pair(BB, Succ);
@@ -739,16 +777,28 @@ void SampleProfileLoader::propagateWeights(Function &F) {
         Weight = std::numeric_limits<uint32_t>::max();
       }
       Weights.push_back(static_cast<uint32_t>(Weight));
-      if (Weight != 0)
-        AllWeightsZero = false;
+      if (Weight != 0) {
+        if (Weight > MaxWeight) {
+          MaxWeight = Weight;
+          MaxDestLoc = Succ->getFirstNonPHIOrDbgOrLifetime()->getDebugLoc();
+        }
+      }
     }
 
     // Only set weights if there is at least one non-zero weight.
     // In any other case, let the analyzer set weights.
-    if (!AllWeightsZero) {
+    if (MaxWeight > 0) {
       DEBUG(dbgs() << "SUCCESS. Found non-zero weights.\n");
       TI->setMetadata(llvm::LLVMContext::MD_prof,
                       MDB.createBranchWeights(Weights));
+      DebugLoc BranchLoc = TI->getDebugLoc();
+      emitOptimizationRemark(
+          Ctx, DEBUG_TYPE, F, MaxDestLoc,
+          Twine("most popular destination for conditional branches at ") +
+              ((BranchLoc) ? Twine(BranchLoc->getFilename() + ":" +
+                                   Twine(BranchLoc.getLine()) + ":" +
+                                   Twine(BranchLoc.getCol()))
+                           : Twine("<UNKNOWN LOCATION>")));
     } else {
       DEBUG(dbgs() << "SKIPPED. All branch weights are zero.\n");
     }
@@ -770,7 +820,7 @@ unsigned SampleProfileLoader::getFunctionLoc(Function &F) {
   if (DISubprogram *S = getDISubprogram(&F))
     return S->getLine();
 
-  // If could not find the start of \p F, emit a diagnostic to inform the user
+  // If the start of \p F is missing, emit a diagnostic to inform the user
   // about the missed opportunity.
   F.getContext().diagnose(DiagnosticInfoSampleProfile(
       "No debug information found in function " + F.getName() +
@@ -896,17 +946,19 @@ ModulePass *llvm::createSampleProfileLoaderPass(StringRef Name) {
 }
 
 bool SampleProfileLoader::runOnModule(Module &M) {
+  if (!ProfileIsValid)
+    return false;
+
   bool retval = false;
   for (auto &F : M)
-    if (!F.isDeclaration())
+    if (!F.isDeclaration()) {
+      clearFunctionData();
       retval |= runOnFunction(F);
+    }
   return retval;
 }
 
 bool SampleProfileLoader::runOnFunction(Function &F) {
-  if (!ProfileIsValid)
-    return false;
-
   Samples = Reader->getSamplesFor(F);
   if (!Samples->empty())
     return emitAnnotations(F);

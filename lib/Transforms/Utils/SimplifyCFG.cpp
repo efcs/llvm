@@ -2571,7 +2571,8 @@ static bool SimplifyTerminatorOnSelect(TerminatorInst *OldTerm, Value *Cond,
     else if (Succ == KeepEdge2)
       KeepEdge2 = nullptr;
     else
-      Succ->removePredecessor(OldTerm->getParent());
+      Succ->removePredecessor(OldTerm->getParent(),
+                              /*DontDeleteUselessPHIs=*/true);
   }
 
   IRBuilder<> Builder(OldTerm);
@@ -3177,8 +3178,7 @@ bool SimplifyCFGOpt::SimplifyUnreachable(UnreachableInst *UI) {
                isa<CatchEndPadInst>(TI) || isa<TerminatePadInst>(TI)) {
       removeUnwindEdge(TI->getParent());
       Changed = true;
-    } else if (isa<CleanupReturnInst>(TI) || isa<CleanupEndPadInst>(TI) ||
-               isa<CatchReturnInst>(TI)) {
+    } else if (isa<CleanupReturnInst>(TI) || isa<CleanupEndPadInst>(TI)) {
       new UnreachableInst(TI->getContext(), TI);
       TI->eraseFromParent();
       Changed = true;

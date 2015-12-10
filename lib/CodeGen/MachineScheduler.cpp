@@ -2722,8 +2722,8 @@ void GenericScheduler::tryCandidate(SchedCandidate &Cand,
 
   // Avoid serializing long latency dependence chains.
   // For acyclic path limited loops, latency was already checked above.
-  if (Cand.Policy.ReduceLatency && !Rem.IsAcyclicLatencyLimited
-      && tryLatency(TryCand, Cand, Zone)) {
+  if (!RegionPolicy.DisableLatencyHeuristic && Cand.Policy.ReduceLatency &&
+      !Rem.IsAcyclicLatencyLimited && tryLatency(TryCand, Cand, Zone)) {
     return;
   }
 
@@ -3308,11 +3308,6 @@ struct DOTGraphTraits<ScheduleDAGMI*> : public DefaultDOTGraphTraits {
       return false;
     return (Node->Preds.size() > ViewMISchedCutoff
          || Node->Succs.size() > ViewMISchedCutoff);
-  }
-
-  static bool hasNodeAddressLabel(const SUnit *Node,
-                                  const ScheduleDAG *Graph) {
-    return false;
   }
 
   /// If you want to override the dot attributes printed for a particular

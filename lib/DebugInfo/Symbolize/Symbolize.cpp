@@ -11,7 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "LLVMSymbolize.h"
+#include "llvm/DebugInfo/Symbolize/Symbolize.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/config.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -45,6 +46,7 @@
 namespace llvm {
 namespace symbolize {
 
+// FIXME: Move this to llvm-symbolizer tool.
 static bool error(std::error_code ec) {
   if (!ec)
     return false;
@@ -53,14 +55,13 @@ static bool error(std::error_code ec) {
 }
 
 static DILineInfoSpecifier
-getDILineInfoSpecifier(const LLVMSymbolizer::Options &Opts) {
+getDILineInfoSpecifier(FunctionNameKind FNKind) {
   return DILineInfoSpecifier(
-      DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath,
-      Opts.PrintFunctions);
+      DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath, FNKind);
 }
 
-ModuleInfo::ModuleInfo(ObjectFile *Obj, DIContext *DICtx)
-    : Module(Obj), DebugInfoContext(DICtx) {
+ModuleInfo::ModuleInfo(ObjectFile *Obj, std::unique_ptr<DIContext> DICtx)
+    : Module(Obj), DebugInfoContext(std::move(DICtx)) {
   std::unique_ptr<DataExtractor> OpdExtractor;
   uint64_t OpdAddress = 0;
   // Find the .opd (function descriptor) section if any, for big-endian
@@ -199,15 +200,16 @@ bool ModuleInfo::getNameFromSymbolTable(SymbolRef::Type Type, uint64_t Address,
   return true;
 }
 
-DILineInfo ModuleInfo::symbolizeCode(
-    uint64_t ModuleOffset, const LLVMSymbolizer::Options &Opts) const {
+DILineInfo ModuleInfo::symbolizeCode(uint64_t ModuleOffset,
+                                     FunctionNameKind FNKind,
+                                     bool UseSymbolTable) const {
   DILineInfo LineInfo;
   if (DebugInfoContext) {
     LineInfo = DebugInfoContext->getLineInfoForAddress(
-        ModuleOffset, getDILineInfoSpecifier(Opts));
+        ModuleOffset, getDILineInfoSpecifier(FNKind));
   }
   // Override function name from symbol table if necessary.
-  if (Opts.PrintFunctions != FunctionNameKind::None && Opts.UseSymbolTable) {
+  if (FNKind == FunctionNameKind::LinkageName && UseSymbolTable) {
     std::string FunctionName;
     uint64_t Start, Size;
     if (getNameFromSymbolTable(SymbolRef::ST_Function, ModuleOffset,
@@ -218,20 +220,21 @@ DILineInfo ModuleInfo::symbolizeCode(
   return LineInfo;
 }
 
-DIInliningInfo ModuleInfo::symbolizeInlinedCode(
-    uint64_t ModuleOffset, const LLVMSymbolizer::Options &Opts) const {
+DIInliningInfo ModuleInfo::symbolizeInlinedCode(uint64_t ModuleOffset,
+                                                FunctionNameKind FNKind,
+                                                bool UseSymbolTable) const {
   DIInliningInfo InlinedContext;
 
   if (DebugInfoContext) {
     InlinedContext = DebugInfoContext->getInliningInfoForAddress(
-        ModuleOffset, getDILineInfoSpecifier(Opts));
+        ModuleOffset, getDILineInfoSpecifier(FNKind));
   }
   // Make sure there is at least one frame in context.
   if (InlinedContext.getNumberOfFrames() == 0) {
     InlinedContext.addFrame(DILineInfo());
   }
   // Override the function name in lower frame with name from symbol table.
-  if (Opts.PrintFunctions != FunctionNameKind::None && Opts.UseSymbolTable) {
+  if (FNKind == FunctionNameKind::LinkageName && UseSymbolTable) {
     DIInliningInfo PatchedInlinedContext;
     for (uint32_t i = 0, n = InlinedContext.getNumberOfFrames(); i < n; i++) {
       DILineInfo LineInfo = InlinedContext.getFrame(i);
@@ -270,8 +273,8 @@ std::string LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
     ModuleOffset += Info->getModulePreferredBase();
 
   if (Opts.PrintInlining) {
-    DIInliningInfo InlinedContext =
-        Info->symbolizeInlinedCode(ModuleOffset, Opts);
+    DIInliningInfo InlinedContext = Info->symbolizeInlinedCode(
+        ModuleOffset, Opts.PrintFunctions, Opts.UseSymbolTable);
     uint32_t FramesNum = InlinedContext.getNumberOfFrames();
     assert(FramesNum > 0);
     std::string Result;
@@ -281,7 +284,8 @@ std::string LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
     }
     return Result;
   }
-  DILineInfo LineInfo = Info->symbolizeCode(ModuleOffset, Opts);
+  DILineInfo LineInfo = Info->symbolizeCode(ModuleOffset, Opts.PrintFunctions,
+                                            Opts.UseSymbolTable);
   return printDILineInfo(LineInfo, Info);
 }
 
@@ -306,7 +310,7 @@ std::string LLVMSymbolizer::symbolizeData(const std::string &ModuleName,
 }
 
 void LLVMSymbolizer::flush() {
-  DeleteContainerSeconds(Modules);
+  Modules.clear();
   ObjectPairForPathArch.clear();
   ObjectFileForArch.clear();
 }
@@ -510,7 +514,7 @@ ModuleInfo *
 LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
   const auto &I = Modules.find(ModuleName);
   if (I != Modules.end())
-    return I->second;
+    return I->second.get();
   std::string BinaryName = ModuleName;
   std::string ArchName = Opts.DefaultArch;
   size_t ColonPos = ModuleName.find_last_of(':');
@@ -526,10 +530,11 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
 
   if (!Objects.first) {
     // Failed to find valid object file.
-    Modules.insert(make_pair(ModuleName, (ModuleInfo *)nullptr));
+    Modules.insert(
+        std::make_pair(ModuleName, std::unique_ptr<ModuleInfo>(nullptr)));
     return nullptr;
   }
-  DIContext *Context = nullptr;
+  std::unique_ptr<DIContext> Context;
   if (auto CoffObject = dyn_cast<COFFObjectFile>(Objects.first)) {
     // If this is a COFF object, assume it contains PDB debug information.  If
     // we don't find any we will fall back to the DWARF case.
@@ -537,15 +542,16 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
     PDB_ErrorCode Error = loadDataForEXE(PDB_ReaderType::DIA,
                                          Objects.first->getFileName(), Session);
     if (Error == PDB_ErrorCode::Success) {
-      Context = new PDBContext(*CoffObject, std::move(Session));
+      Context.reset(new PDBContext(*CoffObject, std::move(Session)));
     }
   }
   if (!Context)
-    Context = new DWARFContextInMemory(*Objects.second);
+    Context.reset(new DWARFContextInMemory(*Objects.second));
   assert(Context);
-  ModuleInfo *Info = new ModuleInfo(Objects.first, Context);
-  Modules.insert(make_pair(ModuleName, Info));
-  return Info;
+  auto Info = llvm::make_unique<ModuleInfo>(Objects.first, std::move(Context));
+  ModuleInfo *Res = Info.get();
+  Modules.insert(std::make_pair(ModuleName, std::move(Info)));
+  return Res;
 }
 
 std::string LLVMSymbolizer::printDILineInfo(DILineInfo LineInfo,
