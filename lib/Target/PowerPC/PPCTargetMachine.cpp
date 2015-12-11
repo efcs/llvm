@@ -42,6 +42,10 @@ static cl::
 opt<bool> DisableVSXSwapRemoval("disable-ppc-vsx-swap-removal", cl::Hidden,
                                 cl::desc("Disable VSX Swap Removal for PPC"));
 
+static cl::
+opt<bool> DisableMIPeephole("disable-ppc-peephole", cl::Hidden,
+                            cl::desc("Disable machine peepholes for PPC"));
+
 static cl::opt<bool>
 EnableGEPOpt("ppc-gep-opt", cl::Hidden,
              cl::desc("Enable optimizations on complex GEPs"),
@@ -67,6 +71,9 @@ extern "C" void LLVMInitializePowerPCTarget() {
   RegisterTargetMachine<PPC32TargetMachine> A(ThePPC32Target);
   RegisterTargetMachine<PPC64TargetMachine> B(ThePPC64Target);
   RegisterTargetMachine<PPC64TargetMachine> C(ThePPC64LETarget);
+
+  PassRegistry &PR = *PassRegistry::getPassRegistry();
+  initializePPCBoolRetToIntPass(PR);
 }
 
 /// Return the datalayout string of a subtarget.
@@ -282,6 +289,8 @@ TargetPassConfig *PPCTargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 void PPCPassConfig::addIRPasses() {
+  if (TM->getOptLevel() != CodeGenOpt::None)
+    addPass(createPPCBoolRetToIntPass());
   addPass(createAtomicExpandPass(&getPPCTargetMachine()));
 
   // For the BG/Q (or if explicitly requested), add explicit data prefetch
@@ -348,6 +357,12 @@ void PPCPassConfig::addMachineSSAOptimization() {
   if (TM->getTargetTriple().getArch() == Triple::ppc64le &&
       !DisableVSXSwapRemoval)
     addPass(createPPCVSXSwapRemovalPass());
+  // Target-specific peephole cleanups performed after instruction
+  // selection.
+  if (!DisableMIPeephole) {
+    addPass(createPPCMIPeepholePass());
+    addPass(&DeadMachineInstructionElimID);
+  }
 }
 
 void PPCPassConfig::addPreRegAlloc() {

@@ -42,11 +42,13 @@ class Value;
 /// \brief Information about a load/store intrinsic defined by the target.
 struct MemIntrinsicInfo {
   MemIntrinsicInfo()
-      : ReadMem(false), WriteMem(false), Vol(false), MatchingId(0),
+      : ReadMem(false), WriteMem(false), IsSimple(false), MatchingId(0),
         NumMemRefs(0), PtrVal(nullptr) {}
   bool ReadMem;
   bool WriteMem;
-  bool Vol;
+  /// True only if this memory operation is non-volatile, non-atomic, and
+  /// unordered.  (See LoadInst/StoreInst for details on each)
+  bool IsSimple;
   // Same Id is set by the target for corresponding load/store intrinsics.
   unsigned short MatchingId;
   int NumMemRefs;
@@ -337,11 +339,6 @@ public:
   /// by referencing its sub-register AX.
   bool isTruncateFree(Type *Ty1, Type *Ty2) const;
 
-  /// \brief Return true if it's free to zero extend a value of type Ty1 to type
-  /// Ty2. e.g. on x86-64, all instructions that define 32-bit values implicit
-  /// zero-extend the result out to 64 bits.
-  bool isZExtFree(Type *Ty1, Type *Ty2) const;
-
   /// \brief Return true if it is profitable to hoist instruction in the
   /// then/else to before if.
   bool isProfitableToHoist(Instruction *I) const;
@@ -581,7 +578,6 @@ public:
                                    int64_t BaseOffset, bool HasBaseReg,
                                    int64_t Scale, unsigned AddrSpace) = 0;
   virtual bool isTruncateFree(Type *Ty1, Type *Ty2) = 0;
-  virtual bool isZExtFree(Type *Ty1, Type *Ty2) = 0;
   virtual bool isProfitableToHoist(Instruction *I) = 0;
   virtual bool isTypeLegal(Type *Ty) = 0;
   virtual unsigned getJumpBufAlignment() = 0;
@@ -720,9 +716,6 @@ public:
   }
   bool isTruncateFree(Type *Ty1, Type *Ty2) override {
     return Impl.isTruncateFree(Ty1, Ty2);
-  }
-  bool isZExtFree(Type *Ty1, Type *Ty2) override {
-    return Impl.isZExtFree(Ty1, Ty2);
   }
   bool isProfitableToHoist(Instruction *I) override {
     return Impl.isProfitableToHoist(I);

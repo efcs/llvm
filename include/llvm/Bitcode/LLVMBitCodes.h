@@ -50,10 +50,12 @@ enum BlockIDs {
   MODULE_STRTAB_BLOCK_ID,
   FUNCTION_SUMMARY_BLOCK_ID,
 
-  OPERAND_BUNDLE_TAGS_BLOCK_ID
+  OPERAND_BUNDLE_TAGS_BLOCK_ID,
+
+  METADATA_KIND_BLOCK_ID
 };
 
-/// Idenfitication block contains a string that describes the producer details,
+/// Identification block contains a string that describes the producer details,
 /// and an epoch that defines the auto-upgrade capability.
 enum IdentificationCodes {
   IDENTIFICATION_CODE_STRING = 1, // IDENTIFICATION:      [strchr x N]
@@ -100,6 +102,9 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
 
     // ALIAS: [alias value type, addrspace, aliasee val#, linkage, visibility]
     MODULE_CODE_ALIAS       = 14,
+
+    // METADATA_VALUES: [numvals]
+    MODULE_CODE_METADATA_VALUES = 15,
   };
 
   /// PARAMATTR blocks have code for defining a parameter attribute set.
@@ -215,7 +220,9 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
     METADATA_EXPRESSION    = 29,  // [distinct, n x element]
     METADATA_OBJC_PROPERTY = 30,  // [distinct, name, file, line, ...]
     METADATA_IMPORTED_ENTITY=31,  // [distinct, tag, scope, entity, line, name]
-    METADATA_MODULE=32,           // [distinct, scope, name, ...]
+    METADATA_MODULE        = 32,  // [distinct, scope, name, ...]
+    METADATA_MACRO         = 33,  // [distinct, macinfo, line, name, value]
+    METADATA_MACRO_FILE    = 34,  // [distinct, macinfo, line, file, ...]
   };
 
   // The constants block (CONSTANTS_BLOCK_ID) describes emission for each
@@ -333,6 +340,15 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
   enum AtomicSynchScopeCodes {
     SYNCHSCOPE_SINGLETHREAD = 0,
     SYNCHSCOPE_CROSSTHREAD = 1
+  };
+
+  /// Markers and flags for call instruction.
+  enum CallMarkersFlags {
+    CALL_TAIL = 0,
+    CALL_CCONV = 1,
+    CALL_MUSTTAIL = 14,
+    CALL_EXPLICIT_TYPE = 15,
+    CALL_NOTAIL = 16
   };
 
   // The function body block (FUNCTION_BLOCK_ID) describes function bodies.  It
@@ -466,7 +482,8 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
     ATTR_KIND_SAFESTACK = 44,
     ATTR_KIND_ARGMEMONLY = 45,
     ATTR_KIND_SWIFT_SELF = 46,
-    ATTR_KIND_SWIFT_ERROR = 47
+    ATTR_KIND_SWIFT_ERROR = 47,
+    ATTR_KIND_NO_RECURSE = 48
   };
 
   enum ComdatSelectionKindCodes {

@@ -35,6 +35,8 @@ typedef uint32_t LLVMOrcModuleHandle;
 typedef uint64_t LLVMOrcTargetAddress;
 typedef uint64_t (*LLVMOrcSymbolResolverFn)(const char *Name,
                                             void *LookupCtx);
+typedef uint64_t (*LLVMOrcLazyCompileCallbackFn)(LLVMOrcJITStackRef JITStack,
+                                                 void *CallbackCtx);
 
 /**
  * Create an ORC JIT stack.
@@ -45,8 +47,7 @@ typedef uint64_t (*LLVMOrcSymbolResolverFn)(const char *Name,
  * client should not attempt to dispose of the Target Machine, or it will result
  * in a double-free.
  */
-LLVMOrcJITStackRef LLVMOrcCreateInstance(LLVMTargetMachineRef TM,
-                                         LLVMContextRef Context);
+LLVMOrcJITStackRef LLVMOrcCreateInstance(LLVMTargetMachineRef TM);
 
 /**
  * Mangle the given symbol.
@@ -60,6 +61,28 @@ void LLVMOrcGetMangledSymbol(LLVMOrcJITStackRef JITStack, char **MangledSymbol,
  */
 
 void LLVMOrcDisposeMangledSymbol(char *MangledSymbol);
+
+/**
+ * Create a lazy compile callback.
+ */
+LLVMOrcTargetAddress
+LLVMOrcCreateLazyCompileCallback(LLVMOrcJITStackRef JITStack,
+                                 LLVMOrcLazyCompileCallbackFn Callback,
+                                 void *CallbackCtx);
+
+/**
+ * Create a named indirect call stub.
+ */
+void LLVMOrcCreateIndirectStub(LLVMOrcJITStackRef JITStack,
+                               const char *StubName,
+                               LLVMOrcTargetAddress InitAddr);
+
+/**
+ * Set the pointer for the given indirect stub.
+ */
+void LLVMOrcSetIndirectStubPointer(LLVMOrcJITStackRef JITStack,
+                                   const char *StubName,
+                                   LLVMOrcTargetAddress NewAddr);
 
 /**
  * Add module to be eagerly compiled.

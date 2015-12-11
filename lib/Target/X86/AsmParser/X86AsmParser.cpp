@@ -57,7 +57,6 @@ static const char OpPrecedence[] = {
 };
 
 class X86AsmParser : public MCTargetAsmParser {
-  MCSubtargetInfo &STI;
   const MCInstrInfo &MII;
   ParseInstructionInfo *InstInfo;
   std::unique_ptr<X86AsmInstrumentation> Instrumentation;
@@ -760,17 +759,18 @@ private:
 
   bool is64BitMode() const {
     // FIXME: Can tablegen auto-generate this?
-    return STI.getFeatureBits()[X86::Mode64Bit];
+    return getSTI().getFeatureBits()[X86::Mode64Bit];
   }
   bool is32BitMode() const {
     // FIXME: Can tablegen auto-generate this?
-    return STI.getFeatureBits()[X86::Mode32Bit];
+    return getSTI().getFeatureBits()[X86::Mode32Bit];
   }
   bool is16BitMode() const {
     // FIXME: Can tablegen auto-generate this?
-    return STI.getFeatureBits()[X86::Mode16Bit];
+    return getSTI().getFeatureBits()[X86::Mode16Bit];
   }
   void SwitchMode(unsigned mode) {
+    MCSubtargetInfo &STI = copySTI();
     FeatureBitset AllModes({X86::Mode64Bit, X86::Mode32Bit, X86::Mode16Bit});
     FeatureBitset OldMode = STI.getFeatureBits() & AllModes;
     unsigned FB = ComputeAvailableFeatures(
@@ -800,12 +800,12 @@ private:
   /// }
 
 public:
-  X86AsmParser(MCSubtargetInfo &sti, MCAsmParser &Parser,
+  X86AsmParser(const MCSubtargetInfo &sti, MCAsmParser &Parser,
                const MCInstrInfo &mii, const MCTargetOptions &Options)
-      : MCTargetAsmParser(Options), STI(sti), MII(mii), InstInfo(nullptr) {
+    : MCTargetAsmParser(Options, sti), MII(mii), InstInfo(nullptr) {
 
     // Initialize the set of available features.
-    setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
+    setAvailableFeatures(ComputeAvailableFeatures(getSTI().getFeatureBits()));
     Instrumentation.reset(
         CreateX86AsmInstrumentation(Options, Parser.getContext(), STI));
   }
@@ -1049,6 +1049,7 @@ static unsigned getIntelMemOperandSize(StringRef OpStr) {
     .Cases("BYTE", "byte", 8)
     .Cases("WORD", "word", 16)
     .Cases("DWORD", "dword", 32)
+    .Cases("FWORD", "fword", 48)
     .Cases("QWORD", "qword", 64)
     .Cases("MMWORD","mmword", 64)
     .Cases("XWORD", "xword", 80)
@@ -1693,12 +1694,14 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand() {
       return ParseIntelOperator(IOK_TYPE);
   }
 
+  bool PtrInOperand = false;
   unsigned Size = getIntelMemOperandSize(Tok.getString());
   if (Size) {
     Parser.Lex(); // Eat operand size (e.g., byte, word).
     if (Tok.getString() != "PTR" && Tok.getString() != "ptr")
       return ErrorOperand(Tok.getLoc(), "Expected 'PTR' or 'ptr' token!");
     Parser.Lex(); // Eat ptr.
+    PtrInOperand = true;
   }
   Start = Tok.getLoc();
 
@@ -1745,7 +1748,7 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand() {
   }
 
   // rounding mode token
-  if (STI.getFeatureBits()[X86::FeatureAVX512] &&
+  if (getSTI().getFeatureBits()[X86::FeatureAVX512] &&
       getLexer().is(AsmToken::LCurly))
     return ParseRoundingModeOp(Start, End);
 
@@ -1754,9 +1757,16 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand() {
   if (!ParseRegister(RegNo, Start, End)) {
     // If this is a segment register followed by a ':', then this is the start
     // of a segment override, otherwise this is a normal register reference.
-    if (getLexer().isNot(AsmToken::Colon))
+    // In case it is a normal register and there is ptr in the operand this 
+    // is an error
+    if (getLexer().isNot(AsmToken::Colon)){
+      if (PtrInOperand){
+        return ErrorOperand(Start, "expected memory operand after "
+                                   "'ptr', found register operand instead");
+      }
       return X86Operand::CreateReg(RegNo, Start, End);
-
+    }
+    
     return ParseIntelSegmentOverride(/*SegReg=*/RegNo, Start, Size);
   }
 
@@ -1803,7 +1813,7 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseATTOperand() {
   }
   case AsmToken::LCurly:{
     SMLoc Start = Parser.getTok().getLoc(), End;
-    if (STI.getFeatureBits()[X86::FeatureAVX512])
+    if (getSTI().getFeatureBits()[X86::FeatureAVX512])
       return ParseRoundingModeOp(Start, End);
     return ErrorOperand(Start, "unknown token in expression");
   }
@@ -1813,7 +1823,7 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseATTOperand() {
 bool X86AsmParser::HandleAVX512Operand(OperandVector &Operands,
                                        const MCParsedAsmOperand &Op) {
   MCAsmParser &Parser = getParser();
-  if(STI.getFeatureBits()[X86::FeatureAVX512]) {
+  if(getSTI().getFeatureBits()[X86::FeatureAVX512]) {
     if (getLexer().is(AsmToken::LCurly)) {
       // Eat "{" and mark the current place.
       const SMLoc consumedToken = consumeToken();
@@ -2217,6 +2227,20 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   if (getLexer().is(AsmToken::EndOfStatement) ||
       (isPrefix && getLexer().is(AsmToken::Slash)))
     Parser.Lex();
+
+  // This is for gas compatibility and cannot be done in td.
+  // Adding "p" for some floating point with no argument.
+  // For example: fsub --> fsubp
+  bool IsFp =
+    Name == "fsub" || Name == "fdiv" || Name == "fsubr" || Name == "fdivr";
+  if (IsFp && Operands.size() == 1) {
+    const char *Repl = StringSwitch<const char *>(Name)
+      .Case("fsub", "fsubp")
+      .Case("fdiv", "fdivp")
+      .Case("fsubr", "fsubrp")
+      .Case("fdivr", "fdivrp");
+    static_cast<X86Operand &>(*Operands[0]).setTokenValue(Repl);
+  }
 
   // This is a terrible hack to handle "out[bwl]? %al, (%dx)" ->
   // "outb %al, %dx".  Out doesn't take a memory form, but this is a widely

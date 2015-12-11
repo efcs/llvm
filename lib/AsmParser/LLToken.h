@@ -49,11 +49,12 @@ namespace lltok {
     kw_external, kw_thread_local,
     kw_localdynamic, kw_initialexec, kw_localexec,
     kw_zeroinitializer,
-    kw_undef, kw_null,
+    kw_undef, kw_null, kw_none,
     kw_to,
     kw_caller,
     kw_tail,
     kw_musttail,
+    kw_notail,
     kw_target,
     kw_triple,
     kw_unwind,
@@ -98,6 +99,7 @@ namespace lltok {
     kw_preserve_mostcc, kw_preserve_allcc,
     kw_ghccc,
     kw_hhvmcc, kw_hhvm_ccc,
+    kw_cxx_fast_tlscc,
 
     // Attributes:
     kw_attributes,
@@ -123,6 +125,7 @@ namespace lltok {
     kw_noduplicate,
     kw_noimplicitfloat,
     kw_noinline,
+    kw_norecurse,
     kw_nonlazybind,
     kw_nonnull,
     kw_noredzone,
@@ -212,6 +215,7 @@ namespace lltok {
     DwarfLang,         // DW_LANG_foo
     DwarfOp,           // DW_OP_foo
     DIFlag,            // DIFlagFoo
+    DwarfMacinfo,      // DW_MACINFO_foo
 
     // Type valued tokens (TyVal).
     Type,

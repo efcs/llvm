@@ -19,7 +19,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/CFG.h"
-#include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
@@ -264,13 +264,17 @@ namespace llvm {
         return;
       IS.OptLevel = NewOptLevel;
       IS.TM.setOptLevel(NewOptLevel);
-      SavedFastISel = IS.TM.Options.EnableFastISel;
-      if (NewOptLevel == CodeGenOpt::None)
-        IS.TM.setFastISel(true);
       DEBUG(dbgs() << "\nChanging optimization level for Function "
             << IS.MF->getFunction()->getName() << "\n");
       DEBUG(dbgs() << "\tBefore: -O" << SavedOptLevel
             << " ; After: -O" << NewOptLevel << "\n");
+      SavedFastISel = IS.TM.Options.EnableFastISel;
+      if (NewOptLevel == CodeGenOpt::None) {
+        IS.TM.setFastISel(IS.TM.getO0WantsFastISel());
+        DEBUG(dbgs() << "\tFastISel is "
+              << (IS.TM.Options.EnableFastISel ? "enabled" : "disabled")
+              << "\n");
+      }
     }
 
     ~OptLevelChanger() {
@@ -938,6 +942,7 @@ static bool hasExceptionPointerOrCodeUser(const CatchPadInst *CPI) {
 /// do other setup for EH landing-pad blocks.
 bool SelectionDAGISel::PrepareEHLandingPad() {
   MachineBasicBlock *MBB = FuncInfo->MBB;
+  const Constant *PersonalityFn = FuncInfo->Fn->getPersonalityFn();
   const BasicBlock *LLVMBB = MBB->getBasicBlock();
   const TargetRegisterClass *PtrRC =
       TLI->getRegClassFor(TLI->getPointerTy(CurDAG->getDataLayout()));
@@ -948,7 +953,7 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
     if (hasExceptionPointerOrCodeUser(CPI)) {
       // Get or create the virtual register to hold the pointer or code.  Mark
       // the live in physreg and copy into the vreg.
-      MCPhysReg EHPhysReg = TLI->getExceptionPointerRegister();
+      MCPhysReg EHPhysReg = TLI->getExceptionPointerRegister(PersonalityFn);
       assert(EHPhysReg && "target lacks exception pointer register");
       MBB->addLiveIn(EHPhysReg);
       unsigned VReg = FuncInfo->getCatchPadExceptionPointerVReg(CPI, PtrRC);
@@ -974,11 +979,11 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
     .addSym(Label);
 
   // Mark exception register as live in.
-  if (unsigned Reg = TLI->getExceptionPointerRegister())
+  if (unsigned Reg = TLI->getExceptionPointerRegister(PersonalityFn))
     FuncInfo->ExceptionPointerVirtReg = MBB->addLiveIn(Reg, PtrRC);
 
   // Mark exception selector register as live in.
-  if (unsigned Reg = TLI->getExceptionSelectorRegister())
+  if (unsigned Reg = TLI->getExceptionSelectorRegister(PersonalityFn))
     FuncInfo->ExceptionSelectorVirtReg = MBB->addLiveIn(Reg, PtrRC);
 
   return true;
@@ -1485,10 +1490,9 @@ SelectionDAGISel::FinishBasicBlock() {
       CodeGenAndEmitDAG();
     }
 
-    uint32_t UnhandledWeight = SDB->BitTestCases[i].Weight;
-
+    BranchProbability UnhandledProb = SDB->BitTestCases[i].Prob;
     for (unsigned j = 0, ej = SDB->BitTestCases[i].Cases.size(); j != ej; ++j) {
-      UnhandledWeight -= SDB->BitTestCases[i].Cases[j].ExtraWeight;
+      UnhandledProb -= SDB->BitTestCases[i].Cases[j].ExtraProb;
       // Set the current basic block to the mbb we wish to insert the code into
       FuncInfo->MBB = SDB->BitTestCases[i].Cases[j].ThisBB;
       FuncInfo->InsertPt = FuncInfo->MBB->end();
@@ -1508,7 +1512,7 @@ SelectionDAGISel::FinishBasicBlock() {
 
       SDB->visitBitTestCase(SDB->BitTestCases[i],
                             NextMBB,
-                            UnhandledWeight,
+                            UnhandledProb,
                             SDB->BitTestCases[i].Reg,
                             SDB->BitTestCases[i].Cases[j],
                             FuncInfo->MBB);

@@ -329,6 +329,15 @@ public:
     addFnAttr(Attribute::Convergent);
   }
 
+  /// Determine if the function is known not to recurse, directly or
+  /// indirectly.
+  bool doesNotRecurse() const {
+    return AttributeSets.hasAttribute(AttributeSet::FunctionIndex,
+                                      Attribute::NoRecurse);
+  }
+  void setDoesNotRecurse() {
+    addFnAttr(Attribute::NoRecurse);
+  }  
 
   /// @brief True if the ABI mandates (or the user requested) that this
   /// function be in a unwind table.
@@ -484,11 +493,11 @@ public:
   }
 
   iterator_range<arg_iterator> args() {
-    return iterator_range<arg_iterator>(arg_begin(), arg_end());
+    return make_range(arg_begin(), arg_end());
   }
 
   iterator_range<const_arg_iterator> args() const {
-    return iterator_range<const_arg_iterator>(arg_begin(), arg_end());
+    return make_range(arg_begin(), arg_end());
   }
 
 /// @}

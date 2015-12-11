@@ -13,6 +13,8 @@
 
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
 
+#include "SymbolizableObjectFile.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/config.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -20,7 +22,6 @@
 #include "llvm/DebugInfo/PDB/PDBContext.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachO.h"
-#include "llvm/Object/SymbolSize.h"
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compression.h"
@@ -29,7 +30,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include <sstream>
 #include <stdlib.h>
 
 #if defined(_MSC_VER)
@@ -46,267 +46,66 @@
 namespace llvm {
 namespace symbolize {
 
-// FIXME: Move this to llvm-symbolizer tool.
-static bool error(std::error_code ec) {
-  if (!ec)
-    return false;
-  errs() << "LLVMSymbolizer: error reading file: " << ec.message() << ".\n";
-  return true;
-}
-
-static DILineInfoSpecifier
-getDILineInfoSpecifier(FunctionNameKind FNKind) {
-  return DILineInfoSpecifier(
-      DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath, FNKind);
-}
-
-ModuleInfo::ModuleInfo(ObjectFile *Obj, std::unique_ptr<DIContext> DICtx)
-    : Module(Obj), DebugInfoContext(std::move(DICtx)) {
-  std::unique_ptr<DataExtractor> OpdExtractor;
-  uint64_t OpdAddress = 0;
-  // Find the .opd (function descriptor) section if any, for big-endian
-  // PowerPC64 ELF.
-  if (Module->getArch() == Triple::ppc64) {
-    for (section_iterator Section : Module->sections()) {
-      StringRef Name;
-      if (!error(Section->getName(Name)) && Name == ".opd") {
-        StringRef Data;
-        if (!error(Section->getContents(Data))) {
-          OpdExtractor.reset(new DataExtractor(Data, Module->isLittleEndian(),
-                                               Module->getBytesInAddress()));
-          OpdAddress = Section->getAddress();
-        }
-        break;
-      }
-    }
-  }
-  std::vector<std::pair<SymbolRef, uint64_t>> Symbols =
-      computeSymbolSizes(*Module);
-  for (auto &P : Symbols)
-    addSymbol(P.first, P.second, OpdExtractor.get(), OpdAddress);
-
-  // If this is a COFF object and we didn't find any symbols, try the export
-  // table.
-  if (Symbols.empty()) {
-    if (auto *CoffObj = dyn_cast<COFFObjectFile>(Obj))
-      addCoffExportSymbols(CoffObj);
-  }
-}
-
-namespace {
-struct OffsetNamePair {
-  uint32_t Offset;
-  StringRef Name;
-  bool operator<(const OffsetNamePair &R) const {
-    return Offset < R.Offset;
-  }
-};
-}
-
-void ModuleInfo::addCoffExportSymbols(const COFFObjectFile *CoffObj) {
-  // Get all export names and offsets.
-  std::vector<OffsetNamePair> ExportSyms;
-  for (const ExportDirectoryEntryRef &Ref : CoffObj->export_directories()) {
-    StringRef Name;
-    uint32_t Offset;
-    if (error(Ref.getSymbolName(Name)) || error(Ref.getExportRVA(Offset)))
-      return;
-    ExportSyms.push_back(OffsetNamePair{Offset, Name});
-  }
-  if (ExportSyms.empty())
-    return;
-
-  // Sort by ascending offset.
-  array_pod_sort(ExportSyms.begin(), ExportSyms.end());
-
-  // Approximate the symbol sizes by assuming they run to the next symbol.
-  // FIXME: This assumes all exports are functions.
-  uint64_t ImageBase = CoffObj->getImageBase();
-  for (auto I = ExportSyms.begin(), E = ExportSyms.end(); I != E; ++I) {
-    OffsetNamePair &Export = *I;
-    // FIXME: The last export has a one byte size now.
-    uint32_t NextOffset = I != E ? I->Offset : Export.Offset + 1;
-    uint64_t SymbolStart = ImageBase + Export.Offset;
-    uint64_t SymbolSize = NextOffset - Export.Offset;
-    SymbolDesc SD = {SymbolStart, SymbolSize};
-    Functions.insert(std::make_pair(SD, Export.Name));
-  }
-}
-
-void ModuleInfo::addSymbol(const SymbolRef &Symbol, uint64_t SymbolSize,
-                           DataExtractor *OpdExtractor, uint64_t OpdAddress) {
-  SymbolRef::Type SymbolType = Symbol.getType();
-  if (SymbolType != SymbolRef::ST_Function && SymbolType != SymbolRef::ST_Data)
-    return;
-  ErrorOr<uint64_t> SymbolAddressOrErr = Symbol.getAddress();
-  if (error(SymbolAddressOrErr.getError()))
-    return;
-  uint64_t SymbolAddress = *SymbolAddressOrErr;
-  if (OpdExtractor) {
-    // For big-endian PowerPC64 ELF, symbols in the .opd section refer to
-    // function descriptors. The first word of the descriptor is a pointer to
-    // the function's code.
-    // For the purposes of symbolization, pretend the symbol's address is that
-    // of the function's code, not the descriptor.
-    uint64_t OpdOffset = SymbolAddress - OpdAddress;
-    uint32_t OpdOffset32 = OpdOffset;
-    if (OpdOffset == OpdOffset32 && 
-        OpdExtractor->isValidOffsetForAddress(OpdOffset32))
-      SymbolAddress = OpdExtractor->getAddress(&OpdOffset32);
-  }
-  ErrorOr<StringRef> SymbolNameOrErr = Symbol.getName();
-  if (error(SymbolNameOrErr.getError()))
-    return;
-  StringRef SymbolName = *SymbolNameOrErr;
-  // Mach-O symbol table names have leading underscore, skip it.
-  if (Module->isMachO() && SymbolName.size() > 0 && SymbolName[0] == '_')
-    SymbolName = SymbolName.drop_front();
-  // FIXME: If a function has alias, there are two entries in symbol table
-  // with same address size. Make sure we choose the correct one.
-  auto &M = SymbolType == SymbolRef::ST_Function ? Functions : Objects;
-  SymbolDesc SD = { SymbolAddress, SymbolSize };
-  M.insert(std::make_pair(SD, SymbolName));
-}
-
-// Return true if this is a 32-bit x86 PE COFF module.
-bool ModuleInfo::isWin32Module() const {
-  auto *CoffObject = dyn_cast<COFFObjectFile>(Module);
-  return CoffObject && CoffObject->getMachine() == COFF::IMAGE_FILE_MACHINE_I386;
-}
-
-uint64_t ModuleInfo::getModulePreferredBase() const {
-  if (auto *CoffObject = dyn_cast<COFFObjectFile>(Module))
-    return CoffObject->getImageBase();
-  return 0;
-}
-
-bool ModuleInfo::getNameFromSymbolTable(SymbolRef::Type Type, uint64_t Address,
-                                        std::string &Name, uint64_t &Addr,
-                                        uint64_t &Size) const {
-  const auto &SymbolMap = Type == SymbolRef::ST_Function ? Functions : Objects;
-  if (SymbolMap.empty())
-    return false;
-  SymbolDesc SD = { Address, Address };
-  auto SymbolIterator = SymbolMap.upper_bound(SD);
-  if (SymbolIterator == SymbolMap.begin())
-    return false;
-  --SymbolIterator;
-  if (SymbolIterator->first.Size != 0 &&
-      SymbolIterator->first.Addr + SymbolIterator->first.Size <= Address)
-    return false;
-  Name = SymbolIterator->second.str();
-  Addr = SymbolIterator->first.Addr;
-  Size = SymbolIterator->first.Size;
-  return true;
-}
-
-DILineInfo ModuleInfo::symbolizeCode(uint64_t ModuleOffset,
-                                     FunctionNameKind FNKind,
-                                     bool UseSymbolTable) const {
-  DILineInfo LineInfo;
-  if (DebugInfoContext) {
-    LineInfo = DebugInfoContext->getLineInfoForAddress(
-        ModuleOffset, getDILineInfoSpecifier(FNKind));
-  }
-  // Override function name from symbol table if necessary.
-  if (FNKind == FunctionNameKind::LinkageName && UseSymbolTable) {
-    std::string FunctionName;
-    uint64_t Start, Size;
-    if (getNameFromSymbolTable(SymbolRef::ST_Function, ModuleOffset,
-                               FunctionName, Start, Size)) {
-      LineInfo.FunctionName = FunctionName;
-    }
-  }
-  return LineInfo;
-}
-
-DIInliningInfo ModuleInfo::symbolizeInlinedCode(uint64_t ModuleOffset,
-                                                FunctionNameKind FNKind,
-                                                bool UseSymbolTable) const {
-  DIInliningInfo InlinedContext;
-
-  if (DebugInfoContext) {
-    InlinedContext = DebugInfoContext->getInliningInfoForAddress(
-        ModuleOffset, getDILineInfoSpecifier(FNKind));
-  }
-  // Make sure there is at least one frame in context.
-  if (InlinedContext.getNumberOfFrames() == 0) {
-    InlinedContext.addFrame(DILineInfo());
-  }
-  // Override the function name in lower frame with name from symbol table.
-  if (FNKind == FunctionNameKind::LinkageName && UseSymbolTable) {
-    DIInliningInfo PatchedInlinedContext;
-    for (uint32_t i = 0, n = InlinedContext.getNumberOfFrames(); i < n; i++) {
-      DILineInfo LineInfo = InlinedContext.getFrame(i);
-      if (i == n - 1) {
-        std::string FunctionName;
-        uint64_t Start, Size;
-        if (getNameFromSymbolTable(SymbolRef::ST_Function, ModuleOffset,
-                                   FunctionName, Start, Size)) {
-          LineInfo.FunctionName = FunctionName;
-        }
-      }
-      PatchedInlinedContext.addFrame(LineInfo);
-    }
-    InlinedContext = PatchedInlinedContext;
-  }
-  return InlinedContext;
-}
-
-bool ModuleInfo::symbolizeData(uint64_t ModuleOffset, std::string &Name,
-                               uint64_t &Start, uint64_t &Size) const {
-  return getNameFromSymbolTable(SymbolRef::ST_Data, ModuleOffset, Name, Start,
-                                Size);
-}
-
-const char LLVMSymbolizer::kBadString[] = "??";
-
-std::string LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
-                                          uint64_t ModuleOffset) {
-  ModuleInfo *Info = getOrCreateModuleInfo(ModuleName);
-  if (!Info)
-    return printDILineInfo(DILineInfo(), Info);
+ErrorOr<DILineInfo> LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
+                                                  uint64_t ModuleOffset) {
+  auto InfoOrErr = getOrCreateModuleInfo(ModuleName);
+  if (auto EC = InfoOrErr.getError())
+    return EC;
+  SymbolizableModule *Info = InfoOrErr.get();
 
   // If the user is giving us relative addresses, add the preferred base of the
   // object to the offset before we do the query. It's what DIContext expects.
   if (Opts.RelativeAddresses)
     ModuleOffset += Info->getModulePreferredBase();
 
-  if (Opts.PrintInlining) {
-    DIInliningInfo InlinedContext = Info->symbolizeInlinedCode(
-        ModuleOffset, Opts.PrintFunctions, Opts.UseSymbolTable);
-    uint32_t FramesNum = InlinedContext.getNumberOfFrames();
-    assert(FramesNum > 0);
-    std::string Result;
-    for (uint32_t i = 0; i < FramesNum; i++) {
-      DILineInfo LineInfo = InlinedContext.getFrame(i);
-      Result += printDILineInfo(LineInfo, Info);
-    }
-    return Result;
-  }
   DILineInfo LineInfo = Info->symbolizeCode(ModuleOffset, Opts.PrintFunctions,
                                             Opts.UseSymbolTable);
-  return printDILineInfo(LineInfo, Info);
+  if (Opts.Demangle)
+    LineInfo.FunctionName = DemangleName(LineInfo.FunctionName, Info);
+  return LineInfo;
 }
 
-std::string LLVMSymbolizer::symbolizeData(const std::string &ModuleName,
-                                          uint64_t ModuleOffset) {
-  std::string Name = kBadString;
-  uint64_t Start = 0;
-  uint64_t Size = 0;
-  if (Opts.UseSymbolTable) {
-    if (ModuleInfo *Info = getOrCreateModuleInfo(ModuleName)) {
-      // If the user is giving us relative addresses, add the preferred base of the
-      // object to the offset before we do the query. It's what DIContext expects.
-      if (Opts.RelativeAddresses)
-        ModuleOffset += Info->getModulePreferredBase();
-      if (Info->symbolizeData(ModuleOffset, Name, Start, Size) && Opts.Demangle)
-        Name = DemangleName(Name, Info);
+ErrorOr<DIInliningInfo>
+LLVMSymbolizer::symbolizeInlinedCode(const std::string &ModuleName,
+                                     uint64_t ModuleOffset) {
+  auto InfoOrErr = getOrCreateModuleInfo(ModuleName);
+  if (auto EC = InfoOrErr.getError())
+    return EC;
+  SymbolizableModule *Info = InfoOrErr.get();
+
+  // If the user is giving us relative addresses, add the preferred base of the
+  // object to the offset before we do the query. It's what DIContext expects.
+  if (Opts.RelativeAddresses)
+    ModuleOffset += Info->getModulePreferredBase();
+
+  DIInliningInfo InlinedContext = Info->symbolizeInlinedCode(
+      ModuleOffset, Opts.PrintFunctions, Opts.UseSymbolTable);
+  if (Opts.Demangle) {
+    for (int i = 0, n = InlinedContext.getNumberOfFrames(); i < n; i++) {
+      auto *Frame = InlinedContext.getMutableFrame(i);
+      Frame->FunctionName = DemangleName(Frame->FunctionName, Info);
     }
   }
-  std::stringstream ss;
-  ss << Name << "\n" << Start << " " << Size << "\n";
-  return ss.str();
+  return InlinedContext;
+}
+
+ErrorOr<DIGlobal> LLVMSymbolizer::symbolizeData(const std::string &ModuleName,
+                                                uint64_t ModuleOffset) {
+  auto InfoOrErr = getOrCreateModuleInfo(ModuleName);
+  if (auto EC = InfoOrErr.getError())
+    return EC;
+  SymbolizableModule *Info = InfoOrErr.get();
+
+  // If the user is giving us relative addresses, add the preferred base of
+  // the object to the offset before we do the query. It's what DIContext
+  // expects.
+  if (Opts.RelativeAddresses)
+    ModuleOffset += Info->getModulePreferredBase();
+
+  DIGlobal Global = Info->symbolizeData(ModuleOffset);
+  if (Opts.Demangle)
+    Global.Name = DemangleName(Global.Name, Info);
+  return Global;
 }
 
 void LLVMSymbolizer::flush() {
@@ -426,72 +225,90 @@ ObjectFile *LLVMSymbolizer::lookUpDsymFile(const std::string &ExePath,
   }
   for (const auto &path : DsymPaths) {
     ErrorOr<OwningBinary<Binary>> BinaryOrErr = createBinary(path);
-    std::error_code EC = BinaryOrErr.getError();
-    if (EC != errc::no_such_file_or_directory && !error(EC)) {
-      OwningBinary<Binary> B = std::move(BinaryOrErr.get());
-      ObjectFile *DbgObj =
-          getObjectFileFromBinary(B.getBinary(), ArchName);
-      const MachOObjectFile *MachDbgObj =
-          dyn_cast<const MachOObjectFile>(DbgObj);
-      if (!MachDbgObj) continue;
-      if (darwinDsymMatchesBinary(MachDbgObj, MachExeObj)) {
-        addOwningBinary(std::move(B));
-        return DbgObj; 
-      }
+    if (!BinaryOrErr)
+      continue;
+    OwningBinary<Binary> &B = BinaryOrErr.get();
+    auto DbgObjOrErr = getObjectFileFromBinary(B.getBinary(), ArchName);
+    if (!DbgObjOrErr)
+      continue;
+    ObjectFile *DbgObj = DbgObjOrErr.get();
+    const MachOObjectFile *MachDbgObj =
+        dyn_cast<const MachOObjectFile>(DbgObj);
+    if (!MachDbgObj)
+      continue;
+    if (darwinDsymMatchesBinary(MachDbgObj, MachExeObj)) {
+      addOwningBinary(std::move(B));
+      return DbgObj;
     }
   }
   return nullptr;
 }
 
-LLVMSymbolizer::ObjectPair
+ObjectFile *LLVMSymbolizer::lookUpDebuglinkObject(const std::string &Path,
+                                                  const ObjectFile *Obj,
+                                                  const std::string &ArchName) {
+  std::string DebuglinkName;
+  uint32_t CRCHash;
+  std::string DebugBinaryPath;
+  if (!getGNUDebuglinkContents(Obj, DebuglinkName, CRCHash))
+    return nullptr;
+  if (!findDebugBinary(Path, DebuglinkName, CRCHash, DebugBinaryPath))
+    return nullptr;
+  ErrorOr<OwningBinary<Binary>> DebugBinaryOrErr =
+      createBinary(DebugBinaryPath);
+  if (!DebugBinaryOrErr)
+    return nullptr;
+  OwningBinary<Binary> &DB = DebugBinaryOrErr.get();
+  auto DbgObjOrErr = getObjectFileFromBinary(DB.getBinary(), ArchName);
+  if (!DbgObjOrErr)
+    return nullptr;
+  addOwningBinary(std::move(DB));
+  return DbgObjOrErr.get();
+}
+
+ErrorOr<LLVMSymbolizer::ObjectPair>
 LLVMSymbolizer::getOrCreateObjects(const std::string &Path,
                                    const std::string &ArchName) {
   const auto &I = ObjectPairForPathArch.find(std::make_pair(Path, ArchName));
   if (I != ObjectPairForPathArch.end())
     return I->second;
-  ObjectFile *Obj = nullptr;
-  ObjectFile *DbgObj = nullptr;
+
   ErrorOr<OwningBinary<Binary>> BinaryOrErr = createBinary(Path);
-  if (!error(BinaryOrErr.getError())) {
-    OwningBinary<Binary> &B = BinaryOrErr.get();
-    Obj = getObjectFileFromBinary(B.getBinary(), ArchName);
-    if (!Obj) {
-      ObjectPair Res = std::make_pair(nullptr, nullptr);
-      ObjectPairForPathArch[std::make_pair(Path, ArchName)] = Res;
-      return Res;
-    }
-    addOwningBinary(std::move(B));
-    if (auto MachObj = dyn_cast<const MachOObjectFile>(Obj))
-      DbgObj = lookUpDsymFile(Path, MachObj, ArchName);
-    // Try to locate the debug binary using .gnu_debuglink section.
-    if (!DbgObj) {
-      std::string DebuglinkName;
-      uint32_t CRCHash;
-      std::string DebugBinaryPath;
-      if (getGNUDebuglinkContents(Obj, DebuglinkName, CRCHash) &&
-          findDebugBinary(Path, DebuglinkName, CRCHash, DebugBinaryPath)) {
-        BinaryOrErr = createBinary(DebugBinaryPath);
-        if (!error(BinaryOrErr.getError())) {
-          OwningBinary<Binary> B = std::move(BinaryOrErr.get());
-          DbgObj = getObjectFileFromBinary(B.getBinary(), ArchName);
-          addOwningBinary(std::move(B));
-        }
-      }
-    }
+  if (auto EC = BinaryOrErr.getError()) {
+    ObjectPairForPathArch.insert(
+        std::make_pair(std::make_pair(Path, ArchName), EC));
+    return EC;
   }
+  OwningBinary<Binary> &B = BinaryOrErr.get();
+
+  auto ObjOrErr = getObjectFileFromBinary(B.getBinary(), ArchName);
+  if (auto EC = ObjOrErr.getError()) {
+    ObjectPairForPathArch.insert(
+        std::make_pair(std::make_pair(Path, ArchName), EC));
+    return EC;
+  }
+  addOwningBinary(std::move(B));
+
+  ObjectFile *Obj = ObjOrErr.get();
+  assert(Obj != nullptr);
+  ObjectFile *DbgObj = nullptr;
+
+  if (auto MachObj = dyn_cast<const MachOObjectFile>(Obj))
+    DbgObj = lookUpDsymFile(Path, MachObj, ArchName);
+  if (!DbgObj)
+    DbgObj = lookUpDebuglinkObject(Path, Obj, ArchName);
   if (!DbgObj)
     DbgObj = Obj;
   ObjectPair Res = std::make_pair(Obj, DbgObj);
-  ObjectPairForPathArch[std::make_pair(Path, ArchName)] = Res;
+  ObjectPairForPathArch.insert(
+      std::make_pair(std::make_pair(Path, ArchName), Res));
   return Res;
 }
 
-ObjectFile *
+ErrorOr<ObjectFile *>
 LLVMSymbolizer::getObjectFileFromBinary(Binary *Bin,
                                         const std::string &ArchName) {
-  if (!Bin)
-    return nullptr;
-  ObjectFile *Res = nullptr;
+  assert(Bin != nullptr);
   if (MachOUniversalBinary *UB = dyn_cast<MachOUniversalBinary>(Bin)) {
     const auto &I = ObjectFileForArch.find(
         std::make_pair(UB, ArchName));
@@ -499,22 +316,31 @@ LLVMSymbolizer::getObjectFileFromBinary(Binary *Bin,
       return I->second;
     ErrorOr<std::unique_ptr<ObjectFile>> ParsedObj =
         UB->getObjectForArch(ArchName);
-    if (ParsedObj) {
-      Res = ParsedObj.get().get();
-      ParsedBinariesAndObjects.push_back(std::move(ParsedObj.get()));
+    if (auto EC = ParsedObj.getError()) {
+      ObjectFileForArch.insert(
+          std::make_pair(std::make_pair(UB, ArchName), EC));
+      return EC;
     }
-    ObjectFileForArch[std::make_pair(UB, ArchName)] = Res;
-  } else if (Bin->isObject()) {
-    Res = cast<ObjectFile>(Bin);
+    ObjectFile *Res = ParsedObj.get().get();
+    ParsedBinariesAndObjects.push_back(std::move(ParsedObj.get()));
+    ObjectFileForArch.insert(std::make_pair(std::make_pair(UB, ArchName), Res));
+    return Res;
   }
-  return Res;
+  if (Bin->isObject()) {
+    return cast<ObjectFile>(Bin);
+  }
+  return object_error::arch_not_found;
 }
 
-ModuleInfo *
+ErrorOr<SymbolizableModule *>
 LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
   const auto &I = Modules.find(ModuleName);
-  if (I != Modules.end())
-    return I->second.get();
+  if (I != Modules.end()) {
+    auto &InfoOrErr = I->second;
+    if (auto EC = InfoOrErr.getError())
+      return EC;
+    return InfoOrErr->get();
+  }
   std::string BinaryName = ModuleName;
   std::string ArchName = Opts.DefaultArch;
   size_t ColonPos = ModuleName.find_last_of(':');
@@ -526,14 +352,14 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
       ArchName = ArchStr;
     }
   }
-  ObjectPair Objects = getOrCreateObjects(BinaryName, ArchName);
-
-  if (!Objects.first) {
+  auto ObjectsOrErr = getOrCreateObjects(BinaryName, ArchName);
+  if (auto EC = ObjectsOrErr.getError()) {
     // Failed to find valid object file.
-    Modules.insert(
-        std::make_pair(ModuleName, std::unique_ptr<ModuleInfo>(nullptr)));
-    return nullptr;
+    Modules.insert(std::make_pair(ModuleName, EC));
+    return EC;
   }
+  ObjectPair Objects = ObjectsOrErr.get();
+
   std::unique_ptr<DIContext> Context;
   if (auto CoffObject = dyn_cast<COFFObjectFile>(Objects.first)) {
     // If this is a COFF object, assume it contains PDB debug information.  If
@@ -548,31 +374,14 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
   if (!Context)
     Context.reset(new DWARFContextInMemory(*Objects.second));
   assert(Context);
-  auto Info = llvm::make_unique<ModuleInfo>(Objects.first, std::move(Context));
-  ModuleInfo *Res = Info.get();
-  Modules.insert(std::make_pair(ModuleName, std::move(Info)));
-  return Res;
-}
-
-std::string LLVMSymbolizer::printDILineInfo(DILineInfo LineInfo,
-                                            ModuleInfo *ModInfo) const {
-  // By default, DILineInfo contains "<invalid>" for function/filename it
-  // cannot fetch. We replace it to "??" to make our output closer to addr2line.
-  static const std::string kDILineInfoBadString = "<invalid>";
-  std::stringstream Result;
-  if (Opts.PrintFunctions != FunctionNameKind::None) {
-    std::string FunctionName = LineInfo.FunctionName;
-    if (FunctionName == kDILineInfoBadString)
-      FunctionName = kBadString;
-    else if (Opts.Demangle)
-      FunctionName = DemangleName(FunctionName, ModInfo);
-    Result << FunctionName << "\n";
-  }
-  std::string Filename = LineInfo.FileName;
-  if (Filename == kDILineInfoBadString)
-    Filename = kBadString;
-  Result << Filename << ":" << LineInfo.Line << ":" << LineInfo.Column << "\n";
-  return Result.str();
+  auto InfoOrErr =
+      SymbolizableObjectFile::create(Objects.first, std::move(Context));
+  auto InsertResult =
+      Modules.insert(std::make_pair(ModuleName, std::move(InfoOrErr)));
+  assert(InsertResult.second);
+  if (auto EC = InsertResult.first->second.getError())
+    return EC;
+  return InsertResult.first->second->get();
 }
 
 // Undo these various manglings for Win32 extern "C" functions:
@@ -611,7 +420,7 @@ extern "C" char *__cxa_demangle(const char *mangled_name, char *output_buffer,
 #endif
 
 std::string LLVMSymbolizer::DemangleName(const std::string &Name,
-                                         ModuleInfo *ModInfo) {
+                                         const SymbolizableModule *ModInfo) {
 #if !defined(_MSC_VER)
   // We can spoil names of symbols with C linkage, so use an heuristic
   // approach to check if the name should be demangled.
@@ -639,7 +448,7 @@ std::string LLVMSymbolizer::DemangleName(const std::string &Name,
     return (result == 0) ? Name : std::string(DemangledName);
   }
 #endif
-  if (ModInfo->isWin32Module())
+  if (ModInfo && ModInfo->isWin32Module())
     return std::string(demanglePE32ExternCFunc(Name));
   return Name;
 }

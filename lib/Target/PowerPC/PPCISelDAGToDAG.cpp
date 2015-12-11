@@ -564,7 +564,6 @@ static unsigned SelectInt64CountDirect(int64_t Imm) {
 
   // Handle first 32 bits.
   unsigned Lo = Imm & 0xFFFF;
-  unsigned Hi = (Imm >> 16) & 0xFFFF;
 
   // Simple value.
   if (isInt<16>(Imm)) {
@@ -586,9 +585,9 @@ static unsigned SelectInt64CountDirect(int64_t Imm) {
     ++Result;
 
   // Add in the last bits as required.
-  if ((Hi = (Remainder >> 16) & 0xFFFF))
+  if ((Remainder >> 16) & 0xFFFF)
     ++Result;
-  if ((Lo = Remainder & 0xFFFF))
+  if (Remainder & 0xFFFF)
     ++Result;
 
   return Result;
@@ -2781,7 +2780,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
     if (PPCSubTarget->hasVSX() && (N->getValueType(0) == MVT::v2f64 ||
                                   N->getValueType(0) == MVT::v2i64)) {
       ShuffleVectorSDNode *SVN = cast<ShuffleVectorSDNode>(N);
-      
+
       SDValue Op1 = N->getOperand(SVN->getMaskElt(0) < 2 ? 0 : 1),
               Op2 = N->getOperand(SVN->getMaskElt(1) < 2 ? 0 : 1);
       unsigned DM[2];
@@ -2798,7 +2797,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
         LoadSDNode *LD = cast<LoadSDNode>(Op1.getOperand(0));
         SDValue Base, Offset;
 
-        if (LD->isUnindexed() &&
+        if (LD->isUnindexed() && LD->hasOneUse() && Op1.hasOneUse() &&
             (LD->getMemoryVT() == MVT::f64 ||
              LD->getMemoryVT() == MVT::i64) &&
             SelectAddrIdxOnly(LD->getBasePtr(), Base, Offset)) {
@@ -2903,9 +2902,7 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
       break;
 
     // The first source operand is a TargetGlobalAddress or a TargetJumpTable.
-    // If it is an externally defined symbol, a symbol with common linkage,
-    // a non-local function address, or a jump table address, or if we are
-    // generating code for large code model, we generate:
+    // If it must be toc-referenced according to PPCSubTarget, we generate:
     //   LDtocL(<ga:@sym>, ADDIStocHA(%X2, <ga:@sym>))
     // Otherwise we generate:
     //   ADDItocL(ADDIStocHA(%X2, <ga:@sym>), <ga:@sym>)
@@ -2920,13 +2917,12 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
                                       MVT::i64, GA, SDValue(Tmp, 0)));
 
     if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(GA)) {
-      const GlobalValue *GValue = G->getGlobal();
-      if ((GValue->getType()->getElementType()->isFunctionTy() &&
-           !GValue->isStrongDefinitionForLinker()) ||
-          GValue->isDeclaration() || GValue->hasCommonLinkage() ||
-          GValue->hasAvailableExternallyLinkage())
+      const GlobalValue *GV = G->getGlobal();
+      unsigned char GVFlags = PPCSubTarget->classifyGlobalReference(GV);
+      if (GVFlags & PPCII::MO_NLP_FLAG) {
         return transferMemOperands(N, CurDAG->getMachineNode(PPC::LDtocL, dl,
                                         MVT::i64, GA, SDValue(Tmp, 0)));
+      }
     }
 
     return CurDAG->getMachineNode(PPC::ADDItocL, dl, MVT::i64,
@@ -3110,7 +3106,7 @@ SDValue PPCDAGToDAGISel::combineToCMPB(SDNode *N) {
         if (!CurDAG->MaskedValueIsZero(Op0,
               APInt::getHighBitsSet(Bits, Bits - (b+1)*8)))
           return false;
-        
+
         LHS = Op0.getOperand(0);
         RHS = Op0.getOperand(1);
         return true;
@@ -4184,14 +4180,22 @@ void PPCDAGToDAGISel::PeepholePPC64() {
       break;
     }
 
-    // If this is a load or store with a zero offset, we may be able to
-    // fold an add-immediate into the memory operation.
-    if (!isa<ConstantSDNode>(N->getOperand(FirstOp)) ||
-        N->getConstantOperandVal(FirstOp) != 0)
+    // If this is a load or store with a zero offset, or within the alignment,
+    // we may be able to fold an add-immediate into the memory operation.
+    // The check against alignment is below, as it can't occur until we check
+    // the arguments to N
+    if (!isa<ConstantSDNode>(N->getOperand(FirstOp)))
       continue;
 
     SDValue Base = N->getOperand(FirstOp + 1);
     if (!Base.isMachineOpcode())
+      continue;
+
+    // On targets with fusion, we don't want this to fire and remove a fusion
+    // opportunity, unless a) it results in another fusion opportunity or
+    // b) optimizing for size.
+    if (PPCSubTarget->hasFusion() &&
+        (!MF->getFunction()->optForSize() && !Base.hasOneUse()))
       continue;
 
     unsigned Flags = 0;
@@ -4237,6 +4241,17 @@ void PPCDAGToDAGISel::PeepholePPC64() {
       break;
     }
 
+    SDValue ImmOpnd = Base.getOperand(1);
+    int MaxDisplacement = 0;
+    if (GlobalAddressSDNode *GA = dyn_cast<GlobalAddressSDNode>(ImmOpnd)) {
+      const GlobalValue *GV = GA->getGlobal();
+      MaxDisplacement = GV->getAlignment() - 1;
+    }
+
+    int Offset = N->getConstantOperandVal(FirstOp);
+    if (Offset < 0 || Offset > MaxDisplacement)
+      continue;
+
     // We found an opportunity.  Reverse the operands from the add
     // immediate and substitute them into the load or store.  If
     // needed, update the target flags for the immediate operand to
@@ -4246,8 +4261,6 @@ void PPCDAGToDAGISel::PeepholePPC64() {
     DEBUG(dbgs() << "\nN: ");
     DEBUG(N->dump(CurDAG));
     DEBUG(dbgs() << "\n");
-
-    SDValue ImmOpnd = Base.getOperand(1);
 
     // If the relocation information isn't already present on the
     // immediate operand, add it now.
@@ -4259,17 +4272,17 @@ void PPCDAGToDAGISel::PeepholePPC64() {
         // is insufficient for the instruction encoding.
         if (GV->getAlignment() < 4 &&
             (StorageOpcode == PPC::LD || StorageOpcode == PPC::STD ||
-             StorageOpcode == PPC::LWA)) {
+             StorageOpcode == PPC::LWA || (Offset % 4) != 0)) {
           DEBUG(dbgs() << "Rejected this candidate for alignment.\n\n");
           continue;
         }
-        ImmOpnd = CurDAG->getTargetGlobalAddress(GV, dl, MVT::i64, 0, Flags);
+        ImmOpnd = CurDAG->getTargetGlobalAddress(GV, dl, MVT::i64, Offset, Flags);
       } else if (ConstantPoolSDNode *CP =
                  dyn_cast<ConstantPoolSDNode>(ImmOpnd)) {
         const Constant *C = CP->getConstVal();
         ImmOpnd = CurDAG->getTargetConstantPool(C, MVT::i64,
                                                 CP->getAlignment(),
-                                                0, Flags);
+                                                Offset, Flags);
       }
     }
 

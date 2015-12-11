@@ -132,7 +132,8 @@ endif()
 # Pass -Wl,-z,defs. This makes sure all symbols are defined. Otherwise a DSO
 # build might work on ELF but fail on MachO/COFF.
 if(NOT (${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR WIN32 OR CYGWIN OR
-        ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD") AND
+        ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD" OR
+        ${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD") AND
    NOT LLVM_USE_SANITIZER)
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,defs")
 endif()
@@ -181,14 +182,13 @@ if( LLVM_ENABLE_PIC )
     # On Windows all code is PIC. MinGW warns if -fPIC is used.
   else()
     add_flag_or_print_warning("-fPIC" FPIC)
-
-    if( WIN32 OR CYGWIN)
-      # MinGW warns if -fvisibility-inlines-hidden is used.
-    else()
-      check_cxx_compiler_flag("-fvisibility-inlines-hidden" SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG)
-      append_if(SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG "-fvisibility-inlines-hidden" CMAKE_CXX_FLAGS)
-    endif()
   endif()
+endif()
+
+if(NOT WIN32 AND NOT CYGWIN)
+  # MinGW warns if -fvisibility-inlines-hidden is used.
+  check_cxx_compiler_flag("-fvisibility-inlines-hidden" SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG)
+  append_if(SUPPORTS_FVISIBILITY_INLINES_HIDDEN_FLAG "-fvisibility-inlines-hidden" CMAKE_CXX_FLAGS)
 endif()
 
 if( CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT WIN32 )
@@ -317,6 +317,9 @@ if( MSVC )
     -wd4204 # Suppress 'nonstandard extension used : non-constant aggregate initializer'
     -wd4577 # Suppress 'noexcept used with no exception handling mode specified; termination on exception is not guaranteed'
     -wd4091 # Suppress 'typedef: ignored on left of '' when no variable is declared'
+        # C4592 is disabled because of false positives in Visual Studio 2015
+        # Update 1. Re-evaluate the usefulness of this diagnostic with Update 2.
+    -wd4592 # Suppress ''var': symbol will be dynamically initialized (implementation limitation)
 
 	# Ideally, we'd like this warning to be enabled, but MSVC 2013 doesn't
 	# support the 'aligned' attribute in the way that clang sources requires (for
@@ -433,7 +436,7 @@ elseif( LLVM_COMPILER_IS_GCC_COMPATIBLE )
   endif()
   if (LLVM_ENABLE_MODULES)
     set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
-    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fmodules -fcxx-modules")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fmodules")
     # Check that we can build code with modules enabled, and that repeatedly
     # including <cassert> still manages to respect NDEBUG properly.
     CHECK_CXX_SOURCE_COMPILES("#undef NDEBUG
@@ -583,6 +586,14 @@ option(LLVM_ENABLE_RTTI "Enable run time type information" OFF)
 if(LLVM_ENABLE_EH AND NOT LLVM_ENABLE_RTTI)
   message(FATAL_ERROR "Exception handling requires RTTI. You must set LLVM_ENABLE_RTTI to ON")
 endif()
+
+option(LLVM_BUILD_INSTRUMENTED "Build LLVM and tools with PGO instrumentation (experimental)" Off)
+mark_as_advanced(LLVM_BUILD_INSTRUMENTED)
+append_if(LLVM_BUILD_INSTRUMENTED "-fprofile-instr-generate"
+  CMAKE_CXX_FLAGS
+  CMAKE_C_FLAGS
+  CMAKE_EXE_LINKER_FLAGS
+  CMAKE_SHARED_LINKER_FLAGS)
 
 # Plugin support
 # FIXME: Make this configurable.
