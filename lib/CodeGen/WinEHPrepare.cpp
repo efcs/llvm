@@ -20,7 +20,9 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/EHPersonalities.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -70,12 +72,11 @@ private:
   void replaceUseWithLoad(Value *V, Use &U, AllocaInst *&SpillSlot,
                           DenseMap<BasicBlock *, Value *> &Loads, Function &F);
   bool prepareExplicitEH(Function &F);
-  void replaceTerminatePadWithCleanup(Function &F);
   void colorFunclets(Function &F);
 
   void demotePHIsOnFunclets(Function &F);
   void cloneCommonBlocks(Function &F);
-  void removeImplausibleTerminators(Function &F);
+  void removeImplausibleInstructions(Function &F);
   void cleanupPreparedFunclets(Function &F);
   void verifyPreparedFunclets(Function &F);
 
@@ -166,8 +167,7 @@ static void calculateStateNumbersForInvokes(const Function *Fn,
       continue;
 
     auto &BBColors = BlockColors[&BB];
-    assert(BBColors.size() == 1 &&
-           "multi-color BB not removed by preparation");
+    assert(BBColors.size() == 1 && "multi-color BB not removed by preparation");
     BasicBlock *FuncletEntryBB = BBColors.front();
 
     BasicBlock *FuncletUnwindDest;
@@ -250,8 +250,13 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
       FuncInfo.FuncletBaseStateMap[CatchPad] = CatchLow;
       for (const User *U : CatchPad->users()) {
         const auto *UserI = cast<Instruction>(U);
-        if (UserI->isEHPad())
-          calculateCXXStateNumbers(FuncInfo, UserI, CatchLow);
+        if (auto *InnerCatchSwitch = dyn_cast<CatchSwitchInst>(UserI))
+          if (InnerCatchSwitch->getUnwindDest() == CatchSwitch->getUnwindDest())
+            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow);
+        if (auto *InnerCleanupPad = dyn_cast<CleanupPadInst>(UserI))
+          if (getCleanupRetUnwindDest(InnerCleanupPad) ==
+              CatchSwitch->getUnwindDest())
+            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow);
       }
     }
     int CatchHigh = FuncInfo.getLastStateNumber();
@@ -348,9 +353,13 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
     // outside the __try.
     for (const User *U : CatchPad->users()) {
       const auto *UserI = cast<Instruction>(U);
-      if (UserI->isEHPad()) {
-        calculateSEHStateNumbers(FuncInfo, UserI, ParentState);
-      }
+      if (auto *InnerCatchSwitch = dyn_cast<CatchSwitchInst>(UserI))
+        if (InnerCatchSwitch->getUnwindDest() == CatchSwitch->getUnwindDest())
+          calculateSEHStateNumbers(FuncInfo, UserI, ParentState);
+      if (auto *InnerCleanupPad = dyn_cast<CleanupPadInst>(UserI))
+        if (getCleanupRetUnwindDest(InnerCleanupPad) ==
+            CatchSwitch->getUnwindDest())
+          calculateSEHStateNumbers(FuncInfo, UserI, ParentState);
     }
   } else {
     auto *CleanupPad = cast<CleanupPadInst>(FirstNonPHI);
@@ -521,45 +530,6 @@ void llvm::calculateClrEHStateNumbers(const Function *Fn,
   }
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);
-}
-
-void WinEHPrepare::replaceTerminatePadWithCleanup(Function &F) {
-  if (Personality != EHPersonality::MSVC_CXX)
-    return;
-  for (BasicBlock &BB : F) {
-    Instruction *First = BB.getFirstNonPHI();
-    auto *TPI = dyn_cast<TerminatePadInst>(First);
-    if (!TPI)
-      continue;
-
-    if (TPI->getNumArgOperands() != 1)
-      report_fatal_error(
-          "Expected a unary terminatepad for MSVC C++ personalities!");
-
-    auto *TerminateFn = dyn_cast<Function>(TPI->getArgOperand(0));
-    if (!TerminateFn)
-      report_fatal_error("Function operand expected in terminatepad for MSVC "
-                         "C++ personalities!");
-
-    // Insert the cleanuppad instruction.
-    auto *CPI =
-        CleanupPadInst::Create(TPI->getParentPad(), {},
-                               Twine("terminatepad.for.", BB.getName()), &BB);
-
-    // Insert the call to the terminate instruction.
-    auto *CallTerminate = CallInst::Create(TerminateFn, {}, &BB);
-    CallTerminate->setDoesNotThrow();
-    CallTerminate->setDoesNotReturn();
-    CallTerminate->setCallingConv(TerminateFn->getCallingConv());
-
-    // Insert a new terminator for the cleanuppad using the same successor as
-    // the terminatepad.
-    CleanupReturnInst::Create(CPI, TPI->getUnwindDest(), &BB);
-
-    // Let's remove the terminatepad now that we've inserted the new
-    // instructions.
-    TPI->eraseFromParent();
-  }
 }
 
 void WinEHPrepare::colorFunclets(Function &F) {
@@ -805,19 +775,56 @@ void WinEHPrepare::cloneCommonBlocks(Function &F) {
   }
 }
 
-void WinEHPrepare::removeImplausibleTerminators(Function &F) {
+void WinEHPrepare::removeImplausibleInstructions(Function &F) {
   // Remove implausible terminators and replace them with UnreachableInst.
   for (auto &Funclet : FuncletBlocks) {
     BasicBlock *FuncletPadBB = Funclet.first;
     std::vector<BasicBlock *> &BlocksInFunclet = Funclet.second;
-    Instruction *FuncletPadInst = FuncletPadBB->getFirstNonPHI();
-    auto *CatchPad = dyn_cast<CatchPadInst>(FuncletPadInst);
-    auto *CleanupPad = dyn_cast<CleanupPadInst>(FuncletPadInst);
+    Instruction *FirstNonPHI = FuncletPadBB->getFirstNonPHI();
+    auto *FuncletPad = dyn_cast<FuncletPadInst>(FirstNonPHI);
+    auto *CatchPad = dyn_cast_or_null<CatchPadInst>(FuncletPad);
+    auto *CleanupPad = dyn_cast_or_null<CleanupPadInst>(FuncletPad);
 
     for (BasicBlock *BB : BlocksInFunclet) {
+      for (Instruction &I : *BB) {
+        CallSite CS(&I);
+        if (!CS)
+          continue;
+
+        Value *FuncletBundleOperand = nullptr;
+        if (auto BU = CS.getOperandBundle(LLVMContext::OB_funclet))
+          FuncletBundleOperand = BU->Inputs.front();
+
+        if (FuncletBundleOperand == FuncletPad)
+          continue;
+
+        // Skip call sites which are nounwind intrinsics.
+        auto *CalledFn =
+            dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
+        if (CalledFn && CalledFn->isIntrinsic() && CS.doesNotThrow())
+          continue;
+
+        // This call site was not part of this funclet, remove it.
+        if (CS.isInvoke()) {
+          // Remove the unwind edge if it was an invoke.
+          removeUnwindEdge(BB);
+          // Get a pointer to the new call.
+          BasicBlock::iterator CallI =
+              std::prev(BB->getTerminator()->getIterator());
+          auto *CI = cast<CallInst>(&*CallI);
+          changeToUnreachable(CI, /*UseLLVMTrap=*/false);
+        } else {
+          changeToUnreachable(&I, /*UseLLVMTrap=*/false);
+        }
+
+        // There are no more instructions in the block (except for unreachable),
+        // we are done.
+        break;
+      }
+
       TerminatorInst *TI = BB->getTerminator();
       // CatchPadInst and CleanupPadInst can't transfer control to a ReturnInst.
-      bool IsUnreachableRet = isa<ReturnInst>(TI) && (CatchPad || CleanupPad);
+      bool IsUnreachableRet = isa<ReturnInst>(TI) && FuncletPad;
       // The token consumed by a CatchReturnInst must match the funclet token.
       bool IsUnreachableCatchret = false;
       if (auto *CRI = dyn_cast<CatchReturnInst>(TI))
@@ -828,19 +835,14 @@ void WinEHPrepare::removeImplausibleTerminators(Function &F) {
         IsUnreachableCleanupret = CRI->getCleanupPad() != CleanupPad;
       if (IsUnreachableRet || IsUnreachableCatchret ||
           IsUnreachableCleanupret) {
-        // Loop through all of our successors and make sure they know that one
-        // of their predecessors is going away.
-        for (BasicBlock *SuccBB : TI->successors())
-          SuccBB->removePredecessor(BB);
-
-        new UnreachableInst(BB->getContext(), TI);
-        TI->eraseFromParent();
+        changeToUnreachable(TI, /*UseLLVMTrap=*/false);
       } else if (isa<InvokeInst>(TI)) {
-        // Invokes within a cleanuppad for the MSVC++ personality never
-        // transfer control to their unwind edge: the personality will
-        // terminate the program.
-        if (Personality == EHPersonality::MSVC_CXX && CleanupPad)
+        if (Personality == EHPersonality::MSVC_CXX && CleanupPad) {
+          // Invokes within a cleanuppad for the MSVC++ personality never
+          // transfer control to their unwind edge: the personality will
+          // terminate the program.
           removeUnwindEdge(BB);
+        }
       }
     }
   }
@@ -885,8 +887,6 @@ bool WinEHPrepare::prepareExplicitEH(Function &F) {
   // not.
   removeUnreachableBlocks(F);
 
-  replaceTerminatePadWithCleanup(F);
-
   // Determine which blocks are reachable from which funclet entries.
   colorFunclets(F);
 
@@ -896,7 +896,7 @@ bool WinEHPrepare::prepareExplicitEH(Function &F) {
     demotePHIsOnFunclets(F);
 
   if (!DisableCleanups) {
-    removeImplausibleTerminators(F);
+    removeImplausibleInstructions(F);
 
     cleanupPreparedFunclets(F);
   }
@@ -1080,3 +1080,5 @@ void WinEHFuncInfo::addIPToStateRange(const InvokeInst *II,
          "should get invoke with precomputed state");
   LabelToStateMap[InvokeBegin] = std::make_pair(InvokeStateMap[II], InvokeEnd);
 }
+
+WinEHFuncInfo::WinEHFuncInfo() {}

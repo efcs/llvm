@@ -995,6 +995,10 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
     case lltok::kw_builtin: B.addAttribute(Attribute::Builtin); break;
     case lltok::kw_cold: B.addAttribute(Attribute::Cold); break;
     case lltok::kw_convergent: B.addAttribute(Attribute::Convergent); break;
+    case lltok::kw_inaccessiblememonly:
+      B.addAttribute(Attribute::InaccessibleMemOnly); break;
+    case lltok::kw_inaccessiblemem_or_argmemonly:
+      B.addAttribute(Attribute::InaccessibleMemOrArgMemOnly); break;
     case lltok::kw_inlinehint: B.addAttribute(Attribute::InlineHint); break;
     case lltok::kw_jumptable: B.addAttribute(Attribute::JumpTable); break;
     case lltok::kw_minsize: B.addAttribute(Attribute::MinSize); break;
@@ -1542,6 +1546,7 @@ bool LLParser::ParseOptionalDLLStorageClass(unsigned &Res) {
 ///   ::= 'preserve_mostcc'
 ///   ::= 'preserve_allcc'
 ///   ::= 'ghccc'
+///   ::= 'x86_intrcc'
 ///   ::= 'hhvmcc'
 ///   ::= 'hhvm_ccc'
 ///   ::= 'cxx_fast_tlscc'
@@ -1573,6 +1578,7 @@ bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
   case lltok::kw_preserve_mostcc:CC = CallingConv::PreserveMost; break;
   case lltok::kw_preserve_allcc: CC = CallingConv::PreserveAll; break;
   case lltok::kw_ghccc:          CC = CallingConv::GHC; break;
+  case lltok::kw_x86_intrcc:     CC = CallingConv::X86_INTR; break;
   case lltok::kw_hhvmcc:         CC = CallingConv::HHVM; break;
   case lltok::kw_hhvm_ccc:       CC = CallingConv::HHVM_C; break;
   case lltok::kw_cxx_fast_tlscc: CC = CallingConv::CXX_FAST_TLS; break;
@@ -4723,7 +4729,6 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
   case lltok::kw_catchret:    return ParseCatchRet(Inst, PFS);
   case lltok::kw_catchswitch: return ParseCatchSwitch(Inst, PFS);
   case lltok::kw_catchpad:    return ParseCatchPad(Inst, PFS);
-  case lltok::kw_terminatepad:return ParseTerminatePad(Inst, PFS);
   case lltok::kw_cleanuppad:  return ParseCleanupPad(Inst, PFS);
   // Binary Operators.
   case lltok::kw_add:
@@ -5285,43 +5290,6 @@ bool LLParser::ParseCatchPad(Instruction *&Inst, PerFunctionState &PFS) {
   return false;
 }
 
-/// ParseTerminatePad
-///   ::= 'terminatepad' within Parent ParamList 'to' TypeAndValue
-bool LLParser::ParseTerminatePad(Instruction *&Inst, PerFunctionState &PFS) {
-  Value *ParentPad = nullptr;
-
-  if (ParseToken(lltok::kw_within, "expected 'within' after terminatepad"))
-    return true;
-
-  if (Lex.getKind() != lltok::kw_none && Lex.getKind() != lltok::LocalVar &&
-      Lex.getKind() != lltok::LocalVarID)
-    return TokError("expected scope value for terminatepad");
-
-  if (ParseValue(Type::getTokenTy(Context), ParentPad, PFS))
-    return true;
-
-  SmallVector<Value *, 8> Args;
-  if (ParseExceptionArgs(Args, PFS))
-    return true;
-
-  if (ParseToken(lltok::kw_unwind, "expected 'unwind' in terminatepad"))
-    return true;
-
-  BasicBlock *UnwindBB = nullptr;
-  if (Lex.getKind() == lltok::kw_to) {
-    Lex.Lex();
-    if (ParseToken(lltok::kw_caller, "expected 'caller' in terminatepad"))
-      return true;
-  } else {
-    if (ParseTypeAndBasicBlock(UnwindBB, PFS)) {
-      return true;
-    }
-  }
-
-  Inst = TerminatePadInst::Create(ParentPad, UnwindBB, Args);
-  return false;
-}
-
 /// ParseCleanupPad
 ///   ::= 'cleanuppad' within Parent ParamList
 bool LLParser::ParseCleanupPad(Instruction *&Inst, PerFunctionState &PFS) {
@@ -5641,14 +5609,14 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
 }
 
 /// ParseCall
-///   ::= 'call' OptionalCallingConv OptionalAttrs Type Value
-///       ParameterList OptionalAttrs
-///   ::= 'tail' 'call' OptionalCallingConv OptionalAttrs Type Value
-///       ParameterList OptionalAttrs
-///   ::= 'musttail' 'call' OptionalCallingConv OptionalAttrs Type Value
-///       ParameterList OptionalAttrs
-///   ::= 'notail' 'call'  OptionalCallingConv OptionalAttrs Type Value
-///       ParameterList OptionalAttrs
+///   ::= 'call' OptionalFastMathFlags OptionalCallingConv
+///           OptionalAttrs Type Value ParameterList OptionalAttrs
+///   ::= 'tail' 'call' OptionalFastMathFlags OptionalCallingConv
+///           OptionalAttrs Type Value ParameterList OptionalAttrs
+///   ::= 'musttail' 'call' OptionalFastMathFlags OptionalCallingConv
+///           OptionalAttrs Type Value ParameterList OptionalAttrs
+///   ::= 'notail' 'call'  OptionalFastMathFlags OptionalCallingConv
+///           OptionalAttrs Type Value ParameterList OptionalAttrs
 bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
                          CallInst::TailCallKind TCK) {
   AttrBuilder RetAttrs, FnAttrs;
@@ -5662,10 +5630,14 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
   SmallVector<OperandBundleDef, 2> BundleList;
   LocTy CallLoc = Lex.getLoc();
 
-  if ((TCK != CallInst::TCK_None &&
-       ParseToken(lltok::kw_call,
-                  "expected 'tail call', 'musttail call', or 'notail call'")) ||
-      ParseOptionalCallingConv(CC) || ParseOptionalReturnAttrs(RetAttrs) ||
+  if (TCK != CallInst::TCK_None &&
+      ParseToken(lltok::kw_call,
+                 "expected 'tail call', 'musttail call', or 'notail call'"))
+    return true;
+
+  FastMathFlags FMF = EatFastMathFlagsIfPresent();
+
+  if (ParseOptionalCallingConv(CC) || ParseOptionalReturnAttrs(RetAttrs) ||
       ParseType(RetType, RetTypeLoc, true /*void allowed*/) ||
       ParseValID(CalleeID) ||
       ParseParameterList(ArgList, PFS, TCK == CallInst::TCK_MustTail,
@@ -5673,6 +5645,10 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
       ParseFnAttributeValuePairs(FnAttrs, FwdRefAttrGrps, false, BuiltinLoc) ||
       ParseOptionalOperandBundles(BundleList, PFS))
     return true;
+
+  if (FMF.any() && !RetType->isFPOrFPVectorTy())
+    return Error(CallLoc, "fast-math-flags specified for call without "
+                          "floating-point scalar or vector return type");
 
   // If RetType is a non-function pointer type, then this is the short syntax
   // for the call, which means that RetType is just the return type.  Infer the
@@ -5746,6 +5722,8 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
   CallInst *CI = CallInst::Create(Ty, Callee, Args, BundleList);
   CI->setTailCallKind(TCK);
   CI->setCallingConv(CC);
+  if (FMF.any())
+    CI->setFastMathFlags(FMF);
   CI->setAttributes(PAL);
   ForwardRefAttrGroups[CI] = FwdRefAttrGrps;
   Inst = CI;

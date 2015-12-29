@@ -178,6 +178,10 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_IN_ALLOCA;
   case Attribute::Cold:
     return bitc::ATTR_KIND_COLD;
+  case Attribute::InaccessibleMemOnly:
+    return bitc::ATTR_KIND_INACCESSIBLEMEM_ONLY;
+  case Attribute::InaccessibleMemOrArgMemOnly:
+    return bitc::ATTR_KIND_INACCESSIBLEMEM_OR_ARGMEMONLY;
   case Attribute::InlineHint:
     return bitc::ATTR_KIND_INLINE_HINT;
   case Attribute::InReg:
@@ -2025,21 +2029,6 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
       Vals.push_back(VE.getValueID(CatchSwitch.getUnwindDest()));
     break;
   }
-  case Instruction::TerminatePad: {
-    Code = bitc::FUNC_CODE_INST_TERMINATEPAD;
-    const auto &TPI = cast<TerminatePadInst>(I);
-
-    pushValue(TPI.getParentPad(), InstID, Vals, VE);
-
-    unsigned NumArgOperands = TPI.getNumArgOperands();
-    Vals.push_back(NumArgOperands);
-    for (unsigned Op = 0; Op != NumArgOperands; ++Op)
-      PushValueAndType(TPI.getArgOperand(Op), InstID, Vals, VE);
-
-    if (TPI.hasUnwindDest())
-      Vals.push_back(VE.getValueID(TPI.getUnwindDest()));
-    break;
-  }
   case Instruction::Unreachable:
     Code = bitc::FUNC_CODE_INST_UNREACHABLE;
     AbbrevToUse = FUNCTION_INST_UNREACHABLE_ABBREV;
@@ -2168,11 +2157,17 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
     Code = bitc::FUNC_CODE_INST_CALL;
 
     Vals.push_back(VE.getAttributeID(CI.getAttributes()));
+
+    unsigned Flags = GetOptimizationFlags(&I);
     Vals.push_back(CI.getCallingConv() << bitc::CALL_CCONV |
                    unsigned(CI.isTailCall()) << bitc::CALL_TAIL |
                    unsigned(CI.isMustTailCall()) << bitc::CALL_MUSTTAIL |
                    1 << bitc::CALL_EXPLICIT_TYPE |
-                   unsigned(CI.isNoTailCall()) << bitc::CALL_NOTAIL);
+                   unsigned(CI.isNoTailCall()) << bitc::CALL_NOTAIL |
+                   unsigned(Flags != 0) << bitc::CALL_FMF);
+    if (Flags != 0)
+      Vals.push_back(Flags);
+
     Vals.push_back(VE.getTypeID(FTy));
     PushValueAndType(CI.getCalledValue(), InstID, Vals, VE);  // Callee
 

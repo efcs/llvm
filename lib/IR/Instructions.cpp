@@ -87,6 +87,8 @@ const char *SelectInst::areInvalidOperands(Value *Op0, Value *Op1, Value *Op2) {
 //                               PHINode Class
 //===----------------------------------------------------------------------===//
 
+void PHINode::anchor() {}
+
 PHINode::PHINode(const PHINode &PN)
     : Instruction(PN.getType(), Instruction::PHI, nullptr, PN.getNumOperands()),
       ReservedSpace(PN.getNumOperands()) {
@@ -981,60 +983,6 @@ FuncletPadInst::FuncletPadInst(Instruction::FuncletPadOps Op, Value *ParentPad,
 }
 
 //===----------------------------------------------------------------------===//
-//                        TerminatePadInst Implementation
-//===----------------------------------------------------------------------===//
-void TerminatePadInst::init(Value *ParentPad, BasicBlock *BB,
-                            ArrayRef<Value *> Args) {
-  if (BB) {
-    setInstructionSubclassData(getSubclassDataFromInstruction() | 1);
-    setUnwindDest(BB);
-  }
-  std::copy(Args.begin(), Args.end(), arg_begin());
-  setParentPad(ParentPad);
-}
-
-TerminatePadInst::TerminatePadInst(const TerminatePadInst &TPI)
-    : TerminatorInst(TPI.getType(), Instruction::TerminatePad,
-                     OperandTraits<TerminatePadInst>::op_end(this) -
-                         TPI.getNumOperands(),
-                     TPI.getNumOperands()) {
-  setInstructionSubclassData(TPI.getSubclassDataFromInstruction());
-  std::copy(TPI.op_begin(), TPI.op_end(), op_begin());
-}
-
-TerminatePadInst::TerminatePadInst(Value *ParentPad, BasicBlock *BB,
-                                   ArrayRef<Value *> Args, unsigned Values,
-                                   Instruction *InsertBefore)
-    : TerminatorInst(Type::getVoidTy(ParentPad->getContext()),
-                     Instruction::TerminatePad,
-                     OperandTraits<TerminatePadInst>::op_end(this) - Values,
-                     Values, InsertBefore) {
-  init(ParentPad, BB, Args);
-}
-
-TerminatePadInst::TerminatePadInst(Value *ParentPad, BasicBlock *BB,
-                                   ArrayRef<Value *> Args, unsigned Values,
-                                   BasicBlock *InsertAtEnd)
-    : TerminatorInst(Type::getVoidTy(ParentPad->getContext()),
-                     Instruction::TerminatePad,
-                     OperandTraits<TerminatePadInst>::op_end(this) - Values,
-                     Values, InsertAtEnd) {
-  init(ParentPad, BB, Args);
-}
-
-BasicBlock *TerminatePadInst::getSuccessorV(unsigned Idx) const {
-  assert(Idx == 0);
-  return getUnwindDest();
-}
-unsigned TerminatePadInst::getNumSuccessorsV() const {
-  return getNumSuccessors();
-}
-void TerminatePadInst::setSuccessorV(unsigned Idx, BasicBlock *B) {
-  assert(Idx == 0);
-  return setUnwindDest(B);
-}
-
-//===----------------------------------------------------------------------===//
 //                      UnreachableInst Implementation
 //===----------------------------------------------------------------------===//
 
@@ -1556,6 +1504,8 @@ FenceInst::FenceInst(LLVMContext &C, AtomicOrdering Ordering,
 //===----------------------------------------------------------------------===//
 //                       GetElementPtrInst Implementation
 //===----------------------------------------------------------------------===//
+
+void GetElementPtrInst::anchor() {}
 
 void GetElementPtrInst::init(Value *Ptr, ArrayRef<Value *> IdxList,
                              const Twine &Name) {
@@ -3332,9 +3282,8 @@ AddrSpaceCastInst::AddrSpaceCastInst(
 
 void CmpInst::anchor() {}
 
-CmpInst::CmpInst(Type *ty, OtherOps op, unsigned short predicate,
-                 Value *LHS, Value *RHS, const Twine &Name,
-                 Instruction *InsertBefore)
+CmpInst::CmpInst(Type *ty, OtherOps op, Predicate predicate, Value *LHS,
+                 Value *RHS, const Twine &Name, Instruction *InsertBefore)
   : Instruction(ty, op,
                 OperandTraits<CmpInst>::op_begin(this),
                 OperandTraits<CmpInst>::operands(this),
@@ -3345,9 +3294,8 @@ CmpInst::CmpInst(Type *ty, OtherOps op, unsigned short predicate,
   setName(Name);
 }
 
-CmpInst::CmpInst(Type *ty, OtherOps op, unsigned short predicate,
-                 Value *LHS, Value *RHS, const Twine &Name,
-                 BasicBlock *InsertAtEnd)
+CmpInst::CmpInst(Type *ty, OtherOps op, Predicate predicate, Value *LHS,
+                 Value *RHS, const Twine &Name, BasicBlock *InsertAtEnd)
   : Instruction(ty, op,
                 OperandTraits<CmpInst>::op_begin(this),
                 OperandTraits<CmpInst>::operands(this),
@@ -3359,8 +3307,7 @@ CmpInst::CmpInst(Type *ty, OtherOps op, unsigned short predicate,
 }
 
 CmpInst *
-CmpInst::Create(OtherOps Op, unsigned short predicate,
-                Value *S1, Value *S2, 
+CmpInst::Create(OtherOps Op, Predicate predicate, Value *S1, Value *S2,
                 const Twine &Name, Instruction *InsertBefore) {
   if (Op == Instruction::ICmp) {
     if (InsertBefore)
@@ -3380,7 +3327,7 @@ CmpInst::Create(OtherOps Op, unsigned short predicate,
 }
 
 CmpInst *
-CmpInst::Create(OtherOps Op, unsigned short predicate, Value *S1, Value *S2, 
+CmpInst::Create(OtherOps Op, Predicate predicate, Value *S1, Value *S2,
                 const Twine &Name, BasicBlock *InsertAtEnd) {
   if (Op == Instruction::ICmp) {
     return new ICmpInst(*InsertAtEnd, CmpInst::Predicate(predicate),
@@ -3442,6 +3389,8 @@ CmpInst::Predicate CmpInst::getInversePredicate(Predicate pred) {
     case FCMP_FALSE: return FCMP_TRUE;
   }
 }
+
+void ICmpInst::anchor() {}
 
 ICmpInst::Predicate ICmpInst::getSignedPredicate(Predicate pred) {
   switch (pred) {
@@ -3579,7 +3528,7 @@ CmpInst::Predicate CmpInst::getSignedPredicate(Predicate pred) {
   }
 }
 
-bool CmpInst::isUnsigned(unsigned short predicate) {
+bool CmpInst::isUnsigned(Predicate predicate) {
   switch (predicate) {
     default: return false;
     case ICmpInst::ICMP_ULT: case ICmpInst::ICMP_ULE: case ICmpInst::ICMP_UGT: 
@@ -3587,7 +3536,7 @@ bool CmpInst::isUnsigned(unsigned short predicate) {
   }
 }
 
-bool CmpInst::isSigned(unsigned short predicate) {
+bool CmpInst::isSigned(Predicate predicate) {
   switch (predicate) {
     default: return false;
     case ICmpInst::ICMP_SLT: case ICmpInst::ICMP_SLE: case ICmpInst::ICMP_SGT: 
@@ -3595,7 +3544,7 @@ bool CmpInst::isSigned(unsigned short predicate) {
   }
 }
 
-bool CmpInst::isOrdered(unsigned short predicate) {
+bool CmpInst::isOrdered(Predicate predicate) {
   switch (predicate) {
     default: return false;
     case FCmpInst::FCMP_OEQ: case FCmpInst::FCMP_ONE: case FCmpInst::FCMP_OGT: 
@@ -3604,7 +3553,7 @@ bool CmpInst::isOrdered(unsigned short predicate) {
   }
 }
       
-bool CmpInst::isUnordered(unsigned short predicate) {
+bool CmpInst::isUnordered(Predicate predicate) {
   switch (predicate) {
     default: return false;
     case FCmpInst::FCMP_UEQ: case FCmpInst::FCMP_UNE: case FCmpInst::FCMP_UGT: 
@@ -3613,7 +3562,7 @@ bool CmpInst::isUnordered(unsigned short predicate) {
   }
 }
 
-bool CmpInst::isTrueWhenEqual(unsigned short predicate) {
+bool CmpInst::isTrueWhenEqual(Predicate predicate) {
   switch(predicate) {
     default: return false;
     case ICMP_EQ:   case ICMP_UGE: case ICMP_ULE: case ICMP_SGE: case ICMP_SLE:
@@ -3621,7 +3570,7 @@ bool CmpInst::isTrueWhenEqual(unsigned short predicate) {
   }
 }
 
-bool CmpInst::isFalseWhenEqual(unsigned short predicate) {
+bool CmpInst::isFalseWhenEqual(Predicate predicate) {
   switch(predicate) {
   case ICMP_NE:    case ICMP_UGT: case ICMP_ULT: case ICMP_SGT: case ICMP_SLT:
   case FCMP_FALSE: case FCMP_ONE: case FCMP_OGT: case FCMP_OLT: return true;
@@ -4023,10 +3972,6 @@ CatchSwitchInst *CatchSwitchInst::cloneImpl() const {
 
 FuncletPadInst *FuncletPadInst::cloneImpl() const {
   return new (getNumOperands()) FuncletPadInst(*this);
-}
-
-TerminatePadInst *TerminatePadInst::cloneImpl() const {
-  return new (getNumOperands()) TerminatePadInst(*this);
 }
 
 UnreachableInst *UnreachableInst::cloneImpl() const {

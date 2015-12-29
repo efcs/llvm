@@ -100,6 +100,7 @@ namespace lltok {
     kw_webkit_jscc, kw_anyregcc,
     kw_preserve_mostcc, kw_preserve_allcc,
     kw_ghccc,
+    kw_x86_intrcc,
     kw_hhvmcc, kw_hhvm_ccc,
     kw_cxx_fast_tlscc,
 
@@ -115,6 +116,8 @@ namespace lltok {
     kw_convergent,
     kw_dereferenceable,
     kw_dereferenceable_or_null,
+    kw_inaccessiblememonly,
+    kw_inaccessiblemem_or_argmemonly,
     kw_inlinehint,
     kw_inreg,
     kw_jumptable,
@@ -185,7 +188,7 @@ namespace lltok {
 
     kw_ret, kw_br, kw_switch, kw_indirectbr, kw_invoke, kw_resume,
     kw_unreachable, kw_cleanupret, kw_catchswitch, kw_catchret, kw_catchpad,
-    kw_terminatepad, kw_cleanuppad,
+    kw_cleanuppad,
 
     kw_alloca, kw_load, kw_store, kw_fence, kw_cmpxchg, kw_atomicrmw,
     kw_getelementptr,

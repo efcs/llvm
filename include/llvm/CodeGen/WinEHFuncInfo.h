@@ -108,8 +108,9 @@ struct WinEHFuncInfo {
 
   int EHRegNodeFrameIndex = INT_MAX;
   int EHRegNodeEndOffset = INT_MAX;
+  int SEHSetFrameOffset = INT_MAX;
 
-  WinEHFuncInfo() {}
+  WinEHFuncInfo();
 };
 
 /// Analyze the IR in ParentFn and it's handlers to build WinEHFuncInfo, which

@@ -3179,6 +3179,8 @@ static bool isAligned(const Value *Base, APInt Offset, unsigned Align,
 
   if (!BaseAlign) {
     Type *Ty = Base->getType()->getPointerElementType();
+    if (!Ty->isSized())
+      return false;
     BaseAlign = DL.getABITypeAlignment(Ty);
   }
 
@@ -3189,7 +3191,9 @@ static bool isAligned(const Value *Base, APInt Offset, unsigned Align,
 }
 
 static bool isAligned(const Value *Base, unsigned Align, const DataLayout &DL) {
-  APInt Offset(DL.getTypeStoreSizeInBits(Base->getType()), 0);
+  Type *Ty = Base->getType();
+  assert(Ty->isSized() && "must be sized");
+  APInt Offset(DL.getTypeStoreSizeInBits(Ty), 0);
   return isAligned(Base, Offset, Align, DL);
 }
 
@@ -3436,7 +3440,6 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
   case Instruction::CatchRet:
   case Instruction::CleanupPad:
   case Instruction::CleanupRet:
-  case Instruction::TerminatePad:
     return false; // Misc instructions which have effects
   }
 }

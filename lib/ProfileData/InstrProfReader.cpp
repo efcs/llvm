@@ -109,16 +109,88 @@ bool TextInstrProfReader::hasFormat(const MemoryBuffer &Buffer) {
                      [](char c) { return ::isprint(c) || ::isspace(c); });
 }
 
+std::error_code TextInstrProfReader::readHeader() {
+  Symtab.reset(new InstrProfSymtab());
+  return success();
+}
+
+std::error_code
+TextInstrProfReader::readValueProfileData(InstrProfRecord &Record) {
+
+#define CHECK_LINE_END(Line)                                                   \
+  if (Line.is_at_end())                                                        \
+    return error(instrprof_error::truncated);
+#define READ_NUM(Str, Dst)                                                     \
+  if ((Str).getAsInteger(10, (Dst)))                                           \
+    return error(instrprof_error::malformed);
+#define VP_READ_ADVANCE(Val)                                                   \
+  CHECK_LINE_END(Line);                                                        \
+  uint32_t Val;                                                                \
+  READ_NUM((*Line), (Val));                                                    \
+  Line++;
+
+  if (Line.is_at_end())
+    return success();
+
+  uint32_t NumValueKinds;
+  if (Line->getAsInteger(10, NumValueKinds)) {
+    // No value profile data
+    return success();
+  }
+  if (NumValueKinds == 0 || NumValueKinds > IPVK_Last + 1)
+    return error(instrprof_error::malformed);
+  Line++;
+
+  for (uint32_t VK = 0; VK < NumValueKinds; VK++) {
+    VP_READ_ADVANCE(ValueKind);
+    if (ValueKind > IPVK_Last)
+      return error(instrprof_error::malformed);
+    VP_READ_ADVANCE(NumValueSites);
+    if (!NumValueSites)
+      continue;
+
+    Record.reserveSites(VK, NumValueSites);
+    for (uint32_t S = 0; S < NumValueSites; S++) {
+      VP_READ_ADVANCE(NumValueData);
+
+      std::vector<InstrProfValueData> CurrentValues;
+      for (uint32_t V = 0; V < NumValueData; V++) {
+        CHECK_LINE_END(Line);
+        std::pair<StringRef, StringRef> VD = Line->split(':');
+        uint64_t TakenCount, Value;
+        if (VK == IPVK_IndirectCallTarget) {
+          Symtab->addFuncName(VD.first);
+          Value = IndexedInstrProf::ComputeHash(VD.first);
+        } else {
+          READ_NUM(VD.first, Value);
+        }
+        READ_NUM(VD.second, TakenCount);
+        CurrentValues.push_back({Value, TakenCount});
+        Line++;
+      }
+      Record.addValueData(VK, S, CurrentValues.data(), NumValueData, nullptr);
+    }
+  }
+  return success();
+
+#undef CHECK_LINE_END
+#undef READ_NUM
+#undef VP_READ_ADVANCE
+}
+
 std::error_code TextInstrProfReader::readNextRecord(InstrProfRecord &Record) {
   // Skip empty lines and comments.
   while (!Line.is_at_end() && (Line->empty() || Line->startswith("#")))
     ++Line;
   // If we hit EOF while looking for a name, we're done.
-  if (Line.is_at_end())
+  if (Line.is_at_end()) {
+    Symtab->finalizeSymtab();
     return error(instrprof_error::eof);
+  }
 
   // Read the function name.
   Record.Name = *Line++;
+  Symtab->addFuncName(Record.Name);
 
   // Read the function hash.
   if (Line.is_at_end())
@@ -147,6 +219,13 @@ std::error_code TextInstrProfReader::readNextRecord(InstrProfRecord &Record) {
     Record.Counts.push_back(Count);
   }
 
+  // Check if value profile data exists and read it if so.
+  if (std::error_code EC = readValueProfileData(Record))
+    return EC;
+
+  // This is needed to avoid two pass parsing because llvm-profdata
+  // does dumping while reading.
+  Symtab->finalizeSymtab();
   return success();
 }
 
@@ -200,8 +279,21 @@ RawInstrProfReader<IntPtrT>::readNextHeader(const char *CurrentPos) {
 }
 
 template <class IntPtrT>
-std::error_code RawInstrProfReader<IntPtrT>::readHeader(
-    const RawInstrProf::Header &Header) {
+void RawInstrProfReader<IntPtrT>::createSymtab(InstrProfSymtab &Symtab) {
+  for (const RawInstrProf::ProfileData<IntPtrT> *I = Data; I != DataEnd; ++I) {
+    StringRef FunctionName(getName(I->NamePtr), swap(I->NameSize));
+    Symtab.addFuncName(FunctionName);
+    const IntPtrT FPtr = swap(I->FunctionPointer);
+    if (!FPtr)
+      continue;
+    Symtab.mapAddress(FPtr, IndexedInstrProf::ComputeHash(FunctionName));
+  }
+  Symtab.finalizeSymtab();
+}
+
+template <class IntPtrT>
+std::error_code
+RawInstrProfReader<IntPtrT>::readHeader(const RawInstrProf::Header &Header) {
   if (swap(Header.Version) != RawInstrProf::Version)
     return error(instrprof_error::unsupported_version);
 
@@ -231,23 +323,12 @@ std::error_code RawInstrProfReader<IntPtrT>::readHeader(
   DataEnd = Data + DataSize;
   CountersStart = reinterpret_cast<const uint64_t *>(Start + CountersOffset);
   NamesStart = Start + NamesOffset;
-  ValueDataStart = reinterpret_cast<const uint8_t*>(Start + ValueDataOffset);
+  ValueDataStart = reinterpret_cast<const uint8_t *>(Start + ValueDataOffset);
   ProfileEnd = Start + ProfileSize;
 
-  FunctionPtrToNameMap.clear();
-  for (const RawInstrProf::ProfileData<IntPtrT> *I = Data; I != DataEnd; ++I) {
-    const IntPtrT FPtr = swap(I->FunctionPointer);
-    if (!FPtr)
-      continue;
-    StringRef FunctionName(getName(I->NamePtr), swap(I->NameSize));
-    const char* NameEntryPtr = StringTable.insertString(FunctionName);
-    FunctionPtrToNameMap.push_back(std::pair<const IntPtrT, const char*>
-                                   (FPtr, NameEntryPtr));
-  }
-  std::sort(FunctionPtrToNameMap.begin(), FunctionPtrToNameMap.end(), less_first());
-  FunctionPtrToNameMap.erase(std::unique(FunctionPtrToNameMap.begin(),
-                                         FunctionPtrToNameMap.end()),
-                                         FunctionPtrToNameMap.end());
+  std::unique_ptr<InstrProfSymtab> NewSymtab = make_unique<InstrProfSymtab>();
+  createSymtab(*NewSymtab.get());
+  Symtab = std::move(NewSymtab);
   return success();
 }
 
@@ -317,7 +398,7 @@ RawInstrProfReader<IntPtrT>::readValueProfilingData(InstrProfRecord &Record) {
   if (VDataPtrOrErr.getError())
     return VDataPtrOrErr.getError();
 
-  VDataPtrOrErr.get()->deserializeTo(Record, &FunctionPtrToNameMap);
+  VDataPtrOrErr.get()->deserializeTo(Record, &Symtab->getAddrHashMap());
   CurValueDataSize = VDataPtrOrErr.get()->getSize();
   return success();
 }
@@ -371,7 +452,7 @@ bool InstrProfLookupTrait::readValueProfilingData(
   if (VDataPtrOrErr.getError())
     return false;
 
-  VDataPtrOrErr.get()->deserializeTo(DataBuffer.back(), &HashKeys);
+  VDataPtrOrErr.get()->deserializeTo(DataBuffer.back(), nullptr);
   D += VDataPtrOrErr.get()->TotalSize;
 
   return true;
@@ -459,16 +540,6 @@ InstrProfReaderIndex<HashTableImpl>::InstrProfReaderIndex(
   HashTable.reset(HashTableImpl::Create(
       Buckets, Payload, Base,
       typename HashTableImpl::InfoType(HashType, Version)));
-  // Form the map of hash values to const char* keys in profiling data.
-  std::vector<std::pair<uint64_t, const char *>> HashKeys;
-  for (auto Key : HashTable->keys()) {
-    const char *KeyTableRef = StringTable.insertString(Key);
-    HashKeys.push_back(std::make_pair(ComputeHash(HashType, Key), KeyTableRef));
-  }
-  std::sort(HashKeys.begin(), HashKeys.end(), less_first());
-  HashKeys.erase(std::unique(HashKeys.begin(), HashKeys.end()), HashKeys.end());
-  // Set the hash key map for the InstrLookupTrait
-  HashTable->getInfoObj().setHashKeys(std::move(HashKeys));
   RecordIterator = HashTable->data_begin();
 }
 
@@ -522,6 +593,17 @@ std::error_code IndexedInstrProfReader::readHeader() {
       Start + HashOffset, Cur, Start, HashType, FormatVersion);
   Index.reset(IndexPtr);
   return success();
+}
+
+InstrProfSymtab &IndexedInstrProfReader::getSymtab() {
+  if (Symtab.get())
+    return *Symtab.get();
+
+  std::unique_ptr<InstrProfSymtab> NewSymtab = make_unique<InstrProfSymtab>();
+  Index->populateSymtab(*NewSymtab.get());
+
+  Symtab = std::move(NewSymtab);
+  return *Symtab.get();
 }
 
 ErrorOr<InstrProfRecord>
