@@ -143,15 +143,10 @@ void ARMTargetLowering::addTypeForNEON(MVT VT, MVT PromotedLdStVT,
   setOperationAction(ISD::UREM, VT, Expand);
   setOperationAction(ISD::FREM, VT, Expand);
 
-  if (VT.isInteger()) {
-    setOperationAction(ISD::SABSDIFF, VT, Legal);
-    setOperationAction(ISD::UABSDIFF, VT, Legal);
-  }
   if (!VT.isFloatingPoint() &&
       VT != MVT::v2i64 && VT != MVT::v1i64)
     for (unsigned Opcode : {ISD::SMIN, ISD::SMAX, ISD::UMIN, ISD::UMAX})
       setOperationAction(Opcode, VT, Legal);
-
 }
 
 void ARMTargetLowering::addDRTypeForNEON(MVT VT) {
@@ -7402,6 +7397,7 @@ void ARMTargetLowering::EmitSjLjDispatchBlock(MachineInstr *MI,
     }
 
     BB->addSuccessor(DispatchBB, BranchProbability::getZero());
+    BB->normalizeSuccProbs();
 
     // Find the invoke call and mark all of the callee-saved registers as
     // 'implicit defined' so that they're spilled. This prevents code from
@@ -9072,7 +9068,7 @@ static SDValue PerformXORCombine(SDNode *N,
 // their position in "to" (Rd).
 static SDValue ParseBFI(SDNode *N, APInt &ToMask, APInt &FromMask) {
   assert(N->getOpcode() == ARMISD::BFI);
-  
+
   SDValue From = N->getOperand(1);
   ToMask = ~cast<ConstantSDNode>(N->getOperand(2))->getAPIntValue();
   FromMask = APInt::getLowBitsSet(ToMask.getBitWidth(), ToMask.countPopulation());
@@ -9133,7 +9129,7 @@ static SDValue FindBFIToCombineWith(SDNode *N) {
     if (BitsProperlyConcatenate(NewToMask, ToMask) &&
         BitsProperlyConcatenate(NewFromMask, FromMask))
       return V;
-    
+
     // We've seen a write to some bits, so track it.
     CombinedToMask |= NewToMask;
     // Keep going...
@@ -9180,7 +9176,7 @@ static SDValue PerformBFICombine(SDNode *N,
     SDValue From2 = ParseBFI(CombineBFI.getNode(), ToMask2, FromMask2);
     assert(From1 == From2);
     (void)From2;
-  
+
     // First, unlink CombineBFI.
     DCI.DAG.ReplaceAllUsesWith(CombineBFI, CombineBFI.getOperand(0));
     // Then create a new BFI, combining the two together.
@@ -10147,15 +10143,6 @@ static SDValue PerformIntrinsicCombine(SDNode *N, SelectionDAG &DAG) {
   default:
     // Don't do anything for most intrinsics.
     break;
-
-  case Intrinsic::arm_neon_vabds:
-    if (!N->getValueType(0).isInteger())
-      return SDValue();
-    return DAG.getNode(ISD::SABSDIFF, SDLoc(N), N->getValueType(0),
-                       N->getOperand(1), N->getOperand(2));
-  case Intrinsic::arm_neon_vabdu:
-    return DAG.getNode(ISD::UABSDIFF, SDLoc(N), N->getValueType(0),
-                       N->getOperand(1), N->getOperand(2));
 
   // Vector shifts: check for immediate versions and lower them.
   // Note: This is done during DAG combining instead of DAG legalizing because

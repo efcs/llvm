@@ -20,7 +20,6 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
-#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -166,9 +165,6 @@ void WebAssemblyPassConfig::addPreRegAlloc() {
 
   // Prepare store instructions for register stackifying.
   addPass(createWebAssemblyStoreResults());
-
-  // Mark registers as representing wasm's expression stack.
-  addPass(createWebAssemblyRegStackify());
 }
 
 void WebAssemblyPassConfig::addPostRegAlloc() {
@@ -176,20 +172,29 @@ void WebAssemblyPassConfig::addPostRegAlloc() {
   // virtual registers. Consider removing their restrictions and re-enabling
   // them.
   //
-  // Fails with: Regalloc must assign all vregs.
+  // We use our own PrologEpilogInserter which is very slightly modified to
+  // tolerate virtual registers.
   disablePass(&PrologEpilogCodeInserterID);
   // Fails with: should be run after register allocation.
   disablePass(&MachineCopyPropagationID);
+
+  // Mark registers as representing wasm's expression stack.
+  addPass(createWebAssemblyRegStackify());
 
   // Run the register coloring pass to reduce the total number of registers.
   addPass(createWebAssemblyRegColoring());
 
   TargetPassConfig::addPostRegAlloc();
+
+  // Run WebAssembly's version of the PrologEpilogInserter. Target-independent
+  // PEI runs after PostRegAlloc and after ShrinkWrap. Putting it here will run
+  // PEI before ShrinkWrap but otherwise in the same position in the order.
+  addPass(createWebAssemblyPEI());
 }
 
 void WebAssemblyPassConfig::addPreEmitPass() {
   TargetPassConfig::addPreEmitPass();
-    
+
   // Put the CFG in structured form; insert BLOCK and LOOP markers.
   addPass(createWebAssemblyCFGStackify());
 

@@ -103,17 +103,9 @@ static OrderMap orderModule(const Module *M) {
     orderValue(&A, OM);
   }
   for (const Function &F : *M) {
-    if (F.hasPrefixData())
-      if (!isa<GlobalValue>(F.getPrefixData()))
-        orderValue(F.getPrefixData(), OM);
-
-    if (F.hasPrologueData())
-      if (!isa<GlobalValue>(F.getPrologueData()))
-        orderValue(F.getPrologueData(), OM);
-
-    if (F.hasPersonalityFn())
-      if (!isa<GlobalValue>(F.getPersonalityFn()))
-        orderValue(F.getPersonalityFn(), OM);
+    for (const Use &U : F.operands())
+      if (!isa<GlobalValue>(U.get()))
+        orderValue(U.get(), OM);
 
     orderValue(&F, OM);
 
@@ -263,8 +255,8 @@ static UseListOrderStack predictUseListOrder(const Module *M) {
   for (const GlobalAlias &A : M->aliases())
     predictValueUseListOrder(A.getAliasee(), nullptr, OM, Stack);
   for (const Function &F : *M)
-    if (F.hasPrefixData())
-      predictValueUseListOrder(F.getPrefixData(), nullptr, OM, Stack);
+    for (const Use &U : F.operands())
+      predictValueUseListOrder(U.get(), nullptr, OM, Stack);
 
   return Stack;
 }
@@ -321,6 +313,7 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
   case CallingConv::X86_64_Win64:  Out << "x86_64_win64cc"; break;
   case CallingConv::SPIR_FUNC:     Out << "spir_func"; break;
   case CallingConv::SPIR_KERNEL:   Out << "spir_kernel"; break;
+  case CallingConv::X86_INTR:      Out << "x86_intrcc"; break;
   case CallingConv::HHVM:          Out << "hhvmcc"; break;
   case CallingConv::HHVM_C:        Out << "hhvm_ccc"; break;
   }
@@ -2890,69 +2883,48 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
 
       writeOperand(LPI->getClause(i), true);
     }
-  } else if (const auto *CPI = dyn_cast<CatchPadInst>(&I)) {
+  } else if (const auto *CatchSwitch = dyn_cast<CatchSwitchInst>(&I)) {
+    Out << " within ";
+    writeOperand(CatchSwitch->getParentPad(), /*PrintType=*/false);
     Out << " [";
-    for (unsigned Op = 0, NumOps = CPI->getNumArgOperands(); Op < NumOps;
-         ++Op) {
+    unsigned Op = 0;
+    for (const BasicBlock *PadBB : CatchSwitch->handlers()) {
       if (Op > 0)
         Out << ", ";
-      writeOperand(CPI->getArgOperand(Op), /*PrintType=*/true);
-    }
-    Out << "]\n          to ";
-    writeOperand(CPI->getNormalDest(), /*PrintType=*/true);
-    Out << " unwind ";
-    writeOperand(CPI->getUnwindDest(), /*PrintType=*/true);
-  } else if (const auto *TPI = dyn_cast<TerminatePadInst>(&I)) {
-    Out << " [";
-    for (unsigned Op = 0, NumOps = TPI->getNumArgOperands(); Op < NumOps;
-         ++Op) {
-      if (Op > 0)
-        Out << ", ";
-      writeOperand(TPI->getArgOperand(Op), /*PrintType=*/true);
+      writeOperand(PadBB, /*PrintType=*/true);
+      ++Op;
     }
     Out << "] unwind ";
-    if (TPI->hasUnwindDest())
-      writeOperand(TPI->getUnwindDest(), /*PrintType=*/true);
+    if (const BasicBlock *UnwindDest = CatchSwitch->getUnwindDest())
+      writeOperand(UnwindDest, /*PrintType=*/true);
     else
       Out << "to caller";
-  } else if (const auto *CPI = dyn_cast<CleanupPadInst>(&I)) {
+  } else if (const auto *FPI = dyn_cast<FuncletPadInst>(&I)) {
+    Out << " within ";
+    writeOperand(FPI->getParentPad(), /*PrintType=*/false);
     Out << " [";
-    for (unsigned Op = 0, NumOps = CPI->getNumOperands(); Op < NumOps; ++Op) {
+    for (unsigned Op = 0, NumOps = FPI->getNumArgOperands(); Op < NumOps;
+         ++Op) {
       if (Op > 0)
         Out << ", ";
-      writeOperand(CPI->getOperand(Op), /*PrintType=*/true);
+      writeOperand(FPI->getArgOperand(Op), /*PrintType=*/true);
     }
-    Out << "]";
+    Out << ']';
   } else if (isa<ReturnInst>(I) && !Operand) {
     Out << " void";
   } else if (const auto *CRI = dyn_cast<CatchReturnInst>(&I)) {
-    Out << ' ';
-    writeOperand(CRI->getCatchPad(), /*PrintType=*/false);
+    Out << " from ";
+    writeOperand(CRI->getOperand(0), /*PrintType=*/false);
 
     Out << " to ";
-    writeOperand(CRI->getSuccessor(), /*PrintType=*/true);
+    writeOperand(CRI->getOperand(1), /*PrintType=*/true);
   } else if (const auto *CRI = dyn_cast<CleanupReturnInst>(&I)) {
-    Out << ' ';
-    writeOperand(CRI->getCleanupPad(), /*PrintType=*/false);
+    Out << " from ";
+    writeOperand(CRI->getOperand(0), /*PrintType=*/false);
 
     Out << " unwind ";
     if (CRI->hasUnwindDest())
-      writeOperand(CRI->getUnwindDest(), /*PrintType=*/true);
-    else
-      Out << "to caller";
-  } else if (const auto *CEPI = dyn_cast<CatchEndPadInst>(&I)) {
-    Out << " unwind ";
-    if (CEPI->hasUnwindDest())
-      writeOperand(CEPI->getUnwindDest(), /*PrintType=*/true);
-    else
-      Out << "to caller";
-  } else if (const auto *CEPI = dyn_cast<CleanupEndPadInst>(&I)) {
-    Out << ' ';
-    writeOperand(CEPI->getCleanupPad(), /*PrintType=*/false);
-
-    Out << " unwind ";
-    if (CEPI->hasUnwindDest())
-      writeOperand(CEPI->getUnwindDest(), /*PrintType=*/true);
+      writeOperand(CRI->getOperand(1), /*PrintType=*/true);
     else
       Out << "to caller";
   } else if (const CallInst *CI = dyn_cast<CallInst>(&I)) {

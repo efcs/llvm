@@ -1071,8 +1071,13 @@ bool llvm::ConvertDebugDeclareToDebugValue(DbgDeclareInst *DDI,
   if (LdStHasDebugValue(DIVar, LI))
     return true;
 
-  Builder.insertDbgValueIntrinsic(LI->getOperand(0), 0, DIVar, DIExpr,
-                                  DDI->getDebugLoc(), LI);
+  // We are now tracking the loaded value instead of the address. In the
+  // future if multi-location support is added to the IR, it might be
+  // preferable to keep tracking both the loaded value and the original
+  // address in case the alloca can not be elided.
+  Instruction *DbgValue = Builder.insertDbgValueIntrinsic(
+      LI, 0, DIVar, DIExpr, DDI->getDebugLoc(), (Instruction *)nullptr);
+  DbgValue->insertAfter(LI);
   return true;
 }
 
@@ -1114,9 +1119,13 @@ bool llvm::LowerDbgDeclare(Function &F) {
           // This is a call by-value or some other instruction that
           // takes a pointer to the variable. Insert a *value*
           // intrinsic that describes the alloca.
+          SmallVector<uint64_t, 1> NewDIExpr;
+          auto *DIExpr = DDI->getExpression();
+          NewDIExpr.push_back(dwarf::DW_OP_deref);
+          NewDIExpr.append(DIExpr->elements_begin(), DIExpr->elements_end());
           DIB.insertDbgValueIntrinsic(AI, 0, DDI->getVariable(),
-                                      DDI->getExpression(), DDI->getDebugLoc(),
-                                      CI);
+                                      DIB.createExpression(NewDIExpr),
+                                      DDI->getDebugLoc(), CI);
         }
       DDI->eraseFromParent();
     }
@@ -1180,9 +1189,7 @@ bool llvm::replaceDbgDeclareForAlloca(AllocaInst *AI, Value *NewAllocaAddress,
                            Deref, Offset);
 }
 
-/// changeToUnreachable - Insert an unreachable instruction before the specified
-/// instruction, making it and the rest of the code in the block dead.
-static void changeToUnreachable(Instruction *I, bool UseLLVMTrap) {
+void llvm::changeToUnreachable(Instruction *I, bool UseLLVMTrap) {
   BasicBlock *BB = I->getParent();
   // Loop over all of the successors, removing BB's entry from any PHI
   // nodes.
@@ -1338,19 +1345,15 @@ void llvm::removeUnwindEdge(BasicBlock *BB) {
   if (auto *CRI = dyn_cast<CleanupReturnInst>(TI)) {
     NewTI = CleanupReturnInst::Create(CRI->getCleanupPad(), nullptr, CRI);
     UnwindDest = CRI->getUnwindDest();
-  } else if (auto *CEP = dyn_cast<CleanupEndPadInst>(TI)) {
-    NewTI = CleanupEndPadInst::Create(CEP->getCleanupPad(), nullptr, CEP);
-    UnwindDest = CEP->getUnwindDest();
-  } else if (auto *CEP = dyn_cast<CatchEndPadInst>(TI)) {
-    NewTI = CatchEndPadInst::Create(CEP->getContext(), nullptr, CEP);
-    UnwindDest = CEP->getUnwindDest();
-  } else if (auto *TPI = dyn_cast<TerminatePadInst>(TI)) {
-    SmallVector<Value *, 3> TerminatePadArgs;
-    for (Value *Operand : TPI->arg_operands())
-      TerminatePadArgs.push_back(Operand);
-    NewTI = TerminatePadInst::Create(TPI->getContext(), nullptr,
-                                     TerminatePadArgs, TPI);
-    UnwindDest = TPI->getUnwindDest();
+  } else if (auto *CatchSwitch = dyn_cast<CatchSwitchInst>(TI)) {
+    auto *NewCatchSwitch = CatchSwitchInst::Create(
+        CatchSwitch->getParentPad(), nullptr, CatchSwitch->getNumHandlers(),
+        CatchSwitch->getName(), CatchSwitch);
+    for (BasicBlock *PadBB : CatchSwitch->handlers())
+      NewCatchSwitch->addHandler(PadBB);
+
+    NewTI = NewCatchSwitch;
+    UnwindDest = CatchSwitch->getUnwindDest();
   } else {
     llvm_unreachable("Could not find unwind successor");
   }
@@ -1358,6 +1361,7 @@ void llvm::removeUnwindEdge(BasicBlock *BB) {
   NewTI->takeName(TI);
   NewTI->setDebugLoc(TI->getDebugLoc());
   UnwindDest->removePredecessor(BB);
+  TI->replaceAllUsesWith(NewTI);
   TI->eraseFromParent();
 }
 
