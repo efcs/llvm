@@ -3,7 +3,7 @@
 @g1 = global double 0.000000e+00, align 8
 @g2 = global i32 0, align 4
 
-define void @_Z16fpuop_arithmeticjj(i32, i32) {
+define void @_Z16fpuop_arithmeticjj(i32, i32) !dbg !4 {
 entry:
   switch i32 undef, label %sw.bb.i1921 [
   ]
@@ -47,7 +47,7 @@ declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
 !1 = !DIFile(filename: "fpu_ieee.cpp", directory: "x87stackifier")
 !2 = !{}
 !3 = !{!4}
-!4 = distinct !DISubprogram(name: "fpuop_arithmetic", linkageName: "_Z16fpuop_arithmeticjj", line: 11, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, scopeLine: 13, file: !5, scope: !6, type: !7, function: void (i32, i32)* @_Z16fpuop_arithmeticjj, variables: !10)
+!4 = distinct !DISubprogram(name: "fpuop_arithmetic", linkageName: "_Z16fpuop_arithmeticjj", line: 11, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, scopeLine: 13, file: !5, scope: !6, type: !7, variables: !10)
 !5 = !DIFile(filename: "f1.cpp", directory: "x87stackifier")
 !6 = !DIFile(filename: "f1.cpp", directory: "x87stackifier")
 !7 = !DISubroutineType(types: !8)
@@ -60,7 +60,7 @@ declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
 !14 = !DIDerivedType(tag: DW_TAG_typedef, name: "fpu_extended", line: 3, file: !5, baseType: !15)
 !15 = !DIDerivedType(tag: DW_TAG_typedef, name: "fpu_register", line: 2, file: !5, baseType: !16)
 !16 = !DIDerivedType(tag: DW_TAG_typedef, name: "uae_f64", line: 1, file: !5, baseType: !17)
-!17 = !DIBasicType(tag: DW_TAG_base_type, name: "double", size: 64, align: 64, encoding: DW_ATE_float)
+!17 = !DIBasicType(tag: DW_TAG_base_type, name: "long double", size: 128, align: 128, encoding: DW_ATE_float)
 !18 = !DILocalVariable(name: "a", line: 15, scope: !4, file: !6, type: !19)
 !19 = !DIBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
 !20 = !DILocalVariable(name: "value", line: 16, scope: !4, file: !6, type: !14)

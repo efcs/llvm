@@ -24,6 +24,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCSectionCOFF.h"
@@ -32,6 +33,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/ProfileData/InstrProf.h"
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ELF.h"
@@ -118,6 +120,10 @@ getELFKindForNamedSection(StringRef Name, SectionKind K) {
   // section(".eh_frame") gcc will produce:
   //
   //   .section   .eh_frame,"a",@progbits
+  
+  if (Name == getInstrProfCoverageSectionName(false))
+    return SectionKind::getMetadata();
+
   if (Name.empty() || Name[0] != '.') return K;
 
   // Some lame default implementation based on some magic section names.
@@ -148,6 +154,9 @@ getELFKindForNamedSection(StringRef Name, SectionKind K) {
 
 
 static unsigned getELFSectionType(StringRef Name, SectionKind K) {
+
+  if (Name == getInstrProfCoverageSectionName(false))
+    return ELF::SHT_NOTE;
 
   if (Name == ".init_array")
     return ELF::SHT_INIT_ARRAY;
@@ -232,14 +241,8 @@ static StringRef getSectionPrefixForGlobal(SectionKind Kind) {
     return ".tdata";
   if (Kind.isThreadBSS())
     return ".tbss";
-  if (Kind.isDataNoRel())
+  if (Kind.isData())
     return ".data";
-  if (Kind.isDataRelLocal())
-    return ".data.rel.local";
-  if (Kind.isDataRel())
-    return ".data.rel";
-  if (Kind.isReadOnlyWithRelLocal())
-    return ".data.rel.ro.local";
   assert(Kind.isReadOnlyWithRel() && "Unknown section kind");
   return ".data.rel.ro";
 }
@@ -361,7 +364,6 @@ MCSection *TargetLoweringObjectFileELF::getSectionForConstant(
   if (Kind.isReadOnly())
     return ReadOnlySection;
 
-  if (Kind.isReadOnlyWithRelLocal()) return DataRelROLocalSection;
   assert(Kind.isReadOnlyWithRel() && "Unknown section kind");
   return DataRelROSection;
 }
@@ -506,7 +508,7 @@ emitModuleFlags(MCStreamer &Streamer,
 
   // Get the section.
   MCSectionMachO *S = getContext().getMachOSection(
-      Segment, Section, TAA, StubSize, SectionKind::getDataNoRel());
+      Segment, Section, TAA, StubSize, SectionKind::getData());
   Streamer.SwitchSection(S);
   Streamer.EmitLabel(getContext().
                      getOrCreateSymbol(StringRef("L_OBJC_IMAGE_INFO")));
@@ -639,7 +641,7 @@ MCSection *TargetLoweringObjectFileMachO::getSectionForConstant(
     const DataLayout &DL, SectionKind Kind, const Constant *C) const {
   // If this constant requires a relocation, we have to put it in the data
   // segment, not in the text segment.
-  if (Kind.isDataRel() || Kind.isReadOnlyWithRel())
+  if (Kind.isData() || Kind.isReadOnlyWithRel())
     return ConstDataSection;
 
   if (Kind.isMergeableConst4())
@@ -761,6 +763,29 @@ const MCExpr *TargetLoweringObjectFileMachO::getIndirectSymViaGOTPCRel(
   const MCExpr *RHS =
     MCBinaryExpr::createAdd(BSymExpr, MCConstantExpr::create(Offset, Ctx), Ctx);
   return MCBinaryExpr::createSub(LHS, RHS, Ctx);
+}
+
+static bool canUsePrivateLabel(const MCAsmInfo &AsmInfo,
+                               const MCSection &Section) {
+  if (!AsmInfo.isSectionAtomizableBySymbols(Section))
+    return true;
+
+  // If it is not dead stripped, it is safe to use private labels.
+  const MCSectionMachO &SMO = cast<MCSectionMachO>(Section);
+  if (SMO.hasAttribute(MachO::S_ATTR_NO_DEAD_STRIP))
+    return true;
+
+  return false;
+}
+
+void TargetLoweringObjectFileMachO::getNameWithPrefix(
+    SmallVectorImpl<char> &OutName, const GlobalValue *GV, Mangler &Mang,
+    const TargetMachine &TM) const {
+  SectionKind GVKind = TargetLoweringObjectFile::getKindForGlobal(GV, TM);
+  const MCSection *TheSection = SectionForGlobal(GV, GVKind, Mang, TM);
+  bool CannotUsePrivateLabel =
+      !canUsePrivateLabel(*TM.getMCAsmInfo(), *TheSection);
+  Mang.getNameWithPrefix(OutName, GV, CannotUsePrivateLabel);
 }
 
 //===----------------------------------------------------------------------===//
@@ -918,7 +943,7 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
                                          COMDATSymName, Selection);
     } else {
       SmallString<256> TmpData;
-      getNameWithPrefix(TmpData, GV, /*CannotUsePrivateLabel=*/true, Mang, TM);
+      Mang.getNameWithPrefix(TmpData, GV, /*CannotUsePrivateLabel=*/true);
       return getContext().getCOFFSection(Name, Characteristics, Kind, TmpData,
                                          Selection);
     }
@@ -943,8 +968,9 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
 }
 
 void TargetLoweringObjectFileCOFF::getNameWithPrefix(
-    SmallVectorImpl<char> &OutName, const GlobalValue *GV,
-    bool CannotUsePrivateLabel, Mangler &Mang, const TargetMachine &TM) const {
+    SmallVectorImpl<char> &OutName, const GlobalValue *GV, Mangler &Mang,
+    const TargetMachine &TM) const {
+  bool CannotUsePrivateLabel = false;
   if (GV->hasPrivateLinkage() &&
       ((isa<Function>(GV) && TM.getFunctionSections()) ||
        (isa<GlobalVariable>(GV) && TM.getDataSections())))

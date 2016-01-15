@@ -404,7 +404,7 @@ static unsigned ComputeLinkerOptionsLoadCommandSize(
   unsigned Size = sizeof(MachO::linker_option_command);
   for (const std::string &Option : Options)
     Size += Option.size() + 1;
-  return RoundUpToAlignment(Size, is64Bit ? 8 : 4);
+  return alignTo(Size, is64Bit ? 8 : 4);
 }
 
 void MachObjectWriter::writeLinkerOptionsLoadCommand(
@@ -520,7 +520,7 @@ void MachObjectWriter::computeSymbolTable(
 
     StringTable.add(Symbol.getName());
   }
-  StringTable.finalize(StringTableBuilder::MachO);
+  StringTable.finalize();
 
   // Build the symbol arrays but only for non-local symbols.
   //
@@ -606,7 +606,7 @@ void MachObjectWriter::computeSectionAddresses(const MCAssembler &Asm,
                                                const MCAsmLayout &Layout) {
   uint64_t StartAddress = 0;
   for (const MCSection *Sec : Layout.getSectionOrder()) {
-    StartAddress = RoundUpToAlignment(StartAddress, Sec->getAlignment());
+    StartAddress = alignTo(StartAddress, Sec->getAlignment());
     SectionAddress[Sec] = StartAddress;
     StartAddress += Layout.getSectionAddressSize(Sec);
 
@@ -736,7 +736,7 @@ void MachObjectWriter::writeObject(MCAssembler &Asm,
 
   // Add the loh load command size, if used.
   uint64_t LOHRawSize = Asm.getLOHContainer().getEmitSize(*this, Layout);
-  uint64_t LOHSize = RoundUpToAlignment(LOHRawSize, is64Bit() ? 8 : 4);
+  uint64_t LOHSize = alignTo(LOHRawSize, is64Bit() ? 8 : 4);
   if (LOHSize) {
     ++NumLoadCommands;
     LoadCommandsSize += sizeof(MachO::linkedit_data_command);
@@ -815,8 +815,22 @@ void MachObjectWriter::writeObject(MCAssembler &Asm,
     assert(VersionInfo.Major < 65536 && "unencodable major target version");
     uint32_t EncodedVersion = VersionInfo.Update | (VersionInfo.Minor << 8) |
       (VersionInfo.Major << 16);
-    write32(VersionInfo.Kind == MCVM_OSXVersionMin ? MachO::LC_VERSION_MIN_MACOSX :
-            MachO::LC_VERSION_MIN_IPHONEOS);
+    MachO::LoadCommandType LCType;
+    switch (VersionInfo.Kind) {
+    case MCVM_OSXVersionMin:
+      LCType = MachO::LC_VERSION_MIN_MACOSX;
+      break;
+    case MCVM_IOSVersionMin:
+      LCType = MachO::LC_VERSION_MIN_IPHONEOS;
+      break;
+    case MCVM_TvOSVersionMin:
+      LCType = MachO::LC_VERSION_MIN_TVOS;
+      break;
+    case MCVM_WatchOSVersionMin:
+      LCType = MachO::LC_VERSION_MIN_WATCHOS;
+      break;
+    }
+    write32(LCType);
     write32(sizeof(MachO::version_min_command));
     write32(EncodedVersion);
     write32(0);         // reserved.

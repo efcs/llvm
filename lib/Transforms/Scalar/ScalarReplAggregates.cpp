@@ -60,6 +60,7 @@ STATISTIC(NumAdjusted,  "Number of scalar allocas adjusted to allow promotion");
 STATISTIC(NumConverted, "Number of aggregates converted to scalar");
 
 namespace {
+#define SROA SROA_
   struct SROA : public FunctionPass {
     SROA(int T, bool hasDT, char &ID, int ST, int AT, int SLT)
       : FunctionPass(ID), HasDomTree(hasDT) {
@@ -1150,12 +1151,12 @@ static bool isSafeSelectToSpeculate(SelectInst *SI) {
     // Both operands to the select need to be dereferencable, either absolutely
     // (e.g. allocas) or at this point because we can see other accesses to it.
     if (!TDerefable &&
-        !isSafeToLoadUnconditionally(SI->getTrueValue(), LI,
-                                     LI->getAlignment()))
+        !isSafeToLoadUnconditionally(SI->getTrueValue(), LI->getAlignment(),
+                                     LI))
       return false;
     if (!FDerefable &&
-        !isSafeToLoadUnconditionally(SI->getFalseValue(), LI,
-                                     LI->getAlignment()))
+        !isSafeToLoadUnconditionally(SI->getFalseValue(), LI->getAlignment(),
+                                     LI))
       return false;
   }
 
@@ -1229,7 +1230,7 @@ static bool isSafePHIToSpeculate(PHINode *PN) {
     // If this pointer is always safe to load, or if we can prove that there is
     // already a load in the block, then we can move the load to the pred block.
     if (isDereferenceablePointer(InVal, DL) ||
-        isSafeToLoadUnconditionally(InVal, Pred->getTerminator(), MaxAlign))
+        isSafeToLoadUnconditionally(InVal, MaxAlign, Pred->getTerminator()))
       continue;
 
     return false;

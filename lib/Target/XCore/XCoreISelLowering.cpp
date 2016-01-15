@@ -151,8 +151,6 @@ XCoreTargetLowering::XCoreTargetLowering(const TargetMachine &TM,
 
   // Exception handling
   setOperationAction(ISD::EH_RETURN, MVT::Other, Custom);
-  setExceptionPointerRegister(XCore::R0);
-  setExceptionSelectorRegister(XCore::R1);
   setOperationAction(ISD::FRAME_TO_ARGS_OFFSET, MVT::i32, Custom);
 
   // Atomic operations
@@ -383,7 +381,7 @@ lowerLoadWordFromAlignedBasePlusOffset(SDLoc DL, SDValue Chain, SDValue Base,
                        false, false, 0);
   }
   // Lower to pair of consecutive word aligned loads plus some bit shifting.
-  int32_t HighOffset = RoundUpToAlignment(Offset, 4);
+  int32_t HighOffset = alignTo(Offset, 4);
   int32_t LowOffset = HighOffset - 4;
   SDValue LowAddr, HighAddr;
   if (GlobalAddressSDNode *GASD =

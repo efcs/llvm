@@ -43,16 +43,16 @@ entry:
 ; CHECK-LABEL: test_with_debug
 ; CHECK: movl [[A]], [[B]]
 ; CHECK-NEXT: movl [[A]], [[C]]
-define void @test_with_debug() {
+define void @test_with_debug() !dbg !13 {
 entry:
   %c = alloca %class.C, align 1
   %0 = load i8, i8* @argc, align 1
   tail call void @llvm.dbg.value(metadata i8 %0, i64 0, metadata !19, metadata !29), !dbg !DILocation(scope: !13)
   %conv = sext i8 %0 to i32
-  tail call void @llvm.dbg.value(metadata %class.C* %c, i64 0, metadata !18, metadata !29), !dbg !DILocation(scope: !13)
+  tail call void @llvm.dbg.value(metadata %class.C* %c, i64 0, metadata !18, metadata !DIExpression(DW_OP_deref)), !dbg !DILocation(scope: !13)
   %call = call i32 (%class.C*, i8, i8, i8, ...) @test_function(%class.C* %c, i8 signext 0, i8 signext %0, i8 signext 0, i32 %conv)
   %1 = load i8, i8* @argc, align 1
-  call void @llvm.dbg.value(metadata %class.C* %c, i64 0, metadata !18, metadata !29), !dbg !DILocation(scope: !13)
+  call void @llvm.dbg.value(metadata %class.C* %c, i64 0, metadata !18, metadata !DIExpression(DW_OP_deref)), !dbg !DILocation(scope: !13)
   %call2 = call i32 (%class.C*, i8, i8, i8, ...) @test_function(%class.C* %c, i8 signext 0, i8 signext %1, i8 signext 0, i32 %conv)
   ret void
 }
@@ -75,7 +75,7 @@ declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
 !10 = !DIDerivedType(baseType: !"_ZTS1C", tag: DW_TAG_pointer_type, size: 64, align: 64, flags: DIFlagArtificial)
 !11 = !DIBasicType(tag: DW_TAG_base_type, name: "char", size: 8, align: 8, encoding: DW_ATE_signed_char)
 !12 = !{!13}
-!13 = distinct !DISubprogram(name: "test_with_debug", linkageName: "test_with_debug", line: 6, isLocal: false, isDefinition: true, flags: DIFlagPrototyped, isOptimized: true, scopeLine: 6, file: !1, scope: !14, type: !15, function: void ()* @test_with_debug, variables: !17)
+!13 = distinct !DISubprogram(name: "test_with_debug", linkageName: "test_with_debug", line: 6, isLocal: false, isDefinition: true, flags: DIFlagPrototyped, isOptimized: true, scopeLine: 6, file: !1, scope: !14, type: !15, variables: !17)
 !14 = !DIFile(filename: "test.cpp", directory: "")
 !15 = !DISubroutineType(types: !16)
 !16 = !{null}
