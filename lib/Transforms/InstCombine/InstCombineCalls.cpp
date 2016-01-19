@@ -1833,10 +1833,6 @@ static bool isSafeToEliminateVarargsCast(const CallSite CS,
   return true;
 }
 
-// Try to fold some different type of calls here.
-// Currently we're only working with the checking functions, memcpy_chk,
-// mempcpy_chk, memmove_chk, memset_chk, strcpy_chk, stpcpy_chk, strncpy_chk,
-// strcat_chk and strncat_chk.
 Instruction *InstCombiner::tryOptimizeCall(CallInst *CI) {
   if (!CI->getCalledFunction()) return nullptr;
 
@@ -2351,8 +2347,7 @@ InstCombiner::transformCallThroughTrampoline(CallSite CS,
          "transformCallThroughTrampoline called with incorrect CallSite.");
 
   Function *NestF =cast<Function>(Tramp->getArgOperand(1)->stripPointerCasts());
-  PointerType *NestFPTy = cast<PointerType>(NestF->getType());
-  FunctionType *NestFTy = cast<FunctionType>(NestFPTy->getElementType());
+  FunctionType *NestFTy = cast<FunctionType>(NestF->getValueType());
 
   const AttributeSet &NestAttrs = NestF->getAttributes();
   if (!NestAttrs.isEmpty()) {

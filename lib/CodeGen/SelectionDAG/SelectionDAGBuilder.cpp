@@ -1206,7 +1206,7 @@ void SelectionDAGBuilder::visitCatchRet(const CatchReturnInst &I) {
   // This will be used by the FuncletLayout pass to determine how to order the
   // BB's.
   // A 'catchret' returns to the outer scope's color.
-  Value *ParentPad = I.getParentPad();
+  Value *ParentPad = I.getCatchSwitchParentPad();
   const BasicBlock *SuccessorColor;
   if (isa<ConstantTokenNone>(ParentPad))
     SuccessorColor = &FuncInfo.Fn->getEntryBlock();
@@ -3018,7 +3018,14 @@ void SelectionDAGBuilder::visitGetElementPtr(const User &I) {
 
       Ty = StTy->getElementType(Field);
     } else {
-      Ty = cast<SequentialType>(Ty)->getElementType();
+      if (Ty->isPointerTy()) {
+        // The only pointer type is for the very first index,
+        // therefore the next type is the source element type.
+        Ty = cast<GEPOperator>(&I)->getSourceElementType();
+      } else {
+        Ty = cast<SequentialType>(Ty)->getElementType();
+      }
+
       MVT PtrTy =
           DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout(), AS);
       unsigned PtrSize = PtrTy.getSizeInBits();
@@ -5383,9 +5390,8 @@ SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
 void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
                                       bool isTailCall,
                                       const BasicBlock *EHPadBB) {
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FTy->getReturnType();
+  FunctionType *FTy = CS.getFunctionType();
+  Type *RetTy = CS.getType();
 
   TargetLowering::ArgListTy Args;
   TargetLowering::ArgListEntry Entry;

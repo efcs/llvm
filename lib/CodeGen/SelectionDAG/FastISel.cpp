@@ -513,7 +513,13 @@ bool FastISel::selectGetElementPtr(const User *I) {
       }
       Ty = StTy->getElementType(Field);
     } else {
-      Ty = cast<SequentialType>(Ty)->getElementType();
+      if (Ty->isPointerTy()) {
+        // The only pointer type is for the very first index,
+        // therefore the next type is the source element type.
+        Ty = cast<GEPOperator>(I)->getSourceElementType();
+      } else {
+        Ty = cast<SequentialType>(Ty)->getElementType();
+      }
 
       // If this is a constant subscript, handle it quickly.
       if (const auto *CI = dyn_cast<ConstantInt>(Idx)) {
@@ -880,9 +886,8 @@ bool FastISel::lowerCallTo(const CallInst *CI, MCSymbol *Symbol,
                            unsigned NumArgs) {
   ImmutableCallSite CS(CI);
 
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FTy->getReturnType();
+  FunctionType *FTy = CS.getFunctionType();
+  Type *RetTy = CS.getType();
 
   ArgListTy Args;
   Args.reserve(NumArgs);
@@ -1010,9 +1015,8 @@ bool FastISel::lowerCallTo(CallLoweringInfo &CLI) {
 bool FastISel::lowerCall(const CallInst *CI) {
   ImmutableCallSite CS(CI);
 
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FuncTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FuncTy->getReturnType();
+  FunctionType *FuncTy = CS.getFunctionType();
+  Type *RetTy = CS.getType();
 
   ArgListTy Args;
   ArgListEntry Entry;
