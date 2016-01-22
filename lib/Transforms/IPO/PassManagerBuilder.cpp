@@ -34,6 +34,7 @@
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Vectorize.h"
+#include "llvm/Transforms/Instrumentation.h"
 
 using namespace llvm;
 
@@ -105,6 +106,16 @@ static cl::opt<bool> EnableLoopLoadElim(
     "enable-loop-load-elim", cl::init(false), cl::Hidden,
     cl::desc("Enable the new, experimental LoopLoadElimination Pass"));
 
+static cl::opt<std::string> RunPGOInstrGen(
+    "profile-generate", cl::init(""), cl::Hidden,
+    cl::desc("Enable generation phase of PGO instrumentation and specify the "
+             "path of profile data file"));
+
+static cl::opt<std::string> RunPGOInstrUse(
+    "profile-use", cl::init(""), cl::Hidden, cl::value_desc("filename"),
+    cl::desc("Enable use phase of PGO instrumentation and specify the path "
+             "of profile data file"));
+
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
     SizeLevel = 0;
@@ -123,6 +134,8 @@ PassManagerBuilder::PassManagerBuilder() {
     VerifyOutput = false;
     MergeFunctions = false;
     PrepareForLTO = false;
+    PGOInstrGen = RunPGOInstrGen;
+    PGOInstrUse = RunPGOInstrUse;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -186,6 +199,19 @@ void PassManagerBuilder::populateFunctionPassManager(
   FPM.add(createLowerExpectIntrinsicPass());
 }
 
+// Do PGO instrumentation generation or use pass as the option specified.
+void PassManagerBuilder::addPGOInstrPasses(legacy::PassManagerBase &MPM) {
+  if (!PGOInstrGen.empty()) {
+    MPM.add(createPGOInstrumentationGenPass());
+    // Add the profile lowering pass.
+    InstrProfOptions Options;
+    Options.InstrProfileOutput = PGOInstrGen;
+    MPM.add(createInstrProfilingPass(Options));
+  }
+  if (!PGOInstrUse.empty())
+    MPM.add(createPGOInstrumentationUsePass(PGOInstrUse));
+}
+
 void PassManagerBuilder::populateModulePassManager(
     legacy::PassManagerBase &MPM) {
   // Allow forcing function attributes as a debugging and tuning aid.
@@ -194,6 +220,7 @@ void PassManagerBuilder::populateModulePassManager(
   // If all optimizations are disabled, just run the always-inline pass and,
   // if enabled, the function merging pass.
   if (OptLevel == 0) {
+    addPGOInstrPasses(MPM);
     if (Inliner) {
       MPM.add(Inliner);
       Inliner = nullptr;
@@ -237,6 +264,8 @@ void PassManagerBuilder::populateModulePassManager(
     MPM.add(createCFGSimplificationPass());   // Clean up after IPCP & DAE
   }
 
+  addPGOInstrPasses(MPM);
+
   if (EnableNonLTOGlobalsModRef)
     // We add a module alias analysis pass here. In part due to bugs in the
     // analysis infrastructure this "works" in that the analysis stays alive
@@ -251,7 +280,7 @@ void PassManagerBuilder::populateModulePassManager(
     Inliner = nullptr;
   }
   if (!DisableUnitAtATime)
-    MPM.add(createFunctionAttrsPass());       // Set readonly/readnone attrs
+    MPM.add(createPostOrderFunctionAttrsPass());
   if (OptLevel > 2)
     MPM.add(createArgumentPromotionPass());   // Scalarize uninlined fn args
 
@@ -345,6 +374,9 @@ void PassManagerBuilder::populateModulePassManager(
   // pass manager that we are specifically trying to avoid. To prevent this
   // we must insert a no-op module pass to reset the pass manager.
   MPM.add(createBarrierNoopPass());
+
+  if (!DisableUnitAtATime)
+    MPM.add(createReversePostOrderFunctionAttrsPass());
 
   if (!DisableUnitAtATime && OptLevel > 1 && !PrepareForLTO) {
     // Remove avail extern fns and globals definitions if we aren't
@@ -502,7 +534,8 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   PM.add(createIPSCCPPass());
 
   // Now that we internalized some globals, see if we can hack on them!
-  PM.add(createFunctionAttrsPass()); // Add norecurse if possible.
+  PM.add(createPostOrderFunctionAttrsPass());
+  PM.add(createReversePostOrderFunctionAttrsPass());
   PM.add(createGlobalOptimizerPass());
   // Promote any localized global vars.
   PM.add(createPromoteMemoryToRegisterPass());
@@ -551,7 +584,7 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
     PM.add(createScalarReplAggregatesPass());
 
   // Run a few AA driven optimizations here and now, to cleanup the code.
-  PM.add(createFunctionAttrsPass()); // Add nocapture.
+  PM.add(createPostOrderFunctionAttrsPass()); // Add nocapture.
   PM.add(createGlobalsAAWrapperPass()); // IP alias analysis.
 
   PM.add(createLICMPass());                 // Hoist loop invariants.
@@ -569,7 +602,12 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   if (EnableLoopInterchange)
     PM.add(createLoopInterchangePass());
 
+  if (!DisableUnrollLoops)
+    PM.add(createSimpleLoopUnrollPass());   // Unroll small loops
   PM.add(createLoopVectorizePass(true, LoopVectorize));
+  // The vectorizer may have significantly shortened a loop body; unroll again.
+  if (!DisableUnrollLoops)
+    PM.add(createLoopUnrollPass());
 
   // Now that we've optimized loops (in particular loop induction variables),
   // we may have exposed more scalar opportunities. Run parts of the scalar

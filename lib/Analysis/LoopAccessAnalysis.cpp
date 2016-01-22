@@ -845,6 +845,7 @@ int llvm::isStridedPtr(PredicatedScalarEvolution &PSE, Value *Ptr,
   if (Lp != AR->getLoop()) {
     DEBUG(dbgs() << "LAA: Bad stride - Not striding over innermost loop " <<
           *Ptr << " SCEV: " << *PtrScev << "\n");
+    return 0;
   }
 
   // The address calculation must not wrap. Otherwise, a dependence could be
@@ -1304,10 +1305,11 @@ void MemoryDepChecker::Dependence::print(
 
 bool LoopAccessInfo::canAnalyzeLoop() {
   // We need to have a loop header.
-  DEBUG(dbgs() << "LAA: Found a loop: " <<
-        TheLoop->getHeader()->getName() << '\n');
+  DEBUG(dbgs() << "LAA: Found a loop in "
+               << TheLoop->getHeader()->getParent()->getName() << ": "
+               << TheLoop->getHeader()->getName() << '\n');
 
-    // We can only analyze innermost loops.
+  // We can only analyze innermost loops.
   if (!TheLoop->empty()) {
     DEBUG(dbgs() << "LAA: loop is not the innermost loop\n");
     emitAnalysis(LoopAccessReport() << "loop is not the innermost loop");
