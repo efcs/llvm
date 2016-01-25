@@ -53,12 +53,12 @@ public:
     ISAVersion7_0_0,
     ISAVersion7_0_1,
     ISAVersion8_0_0,
-    ISAVersion8_0_1
+    ISAVersion8_0_1,
+    ISAVersion8_0_3
   };
 
 private:
   std::string DevName;
-  bool Is64bit;
   bool DumpCode;
   bool R600ALUInst;
   bool HasVertexCache;
@@ -68,6 +68,7 @@ private:
   bool FP64Denormals;
   bool FP32Denormals;
   bool FastFMAF32;
+  bool HalfRate64Ops;
   bool CaymanISA;
   bool FlatAddressSpace;
   bool FlatForGlobal;
@@ -76,6 +77,7 @@ private:
   bool EnableIfCvt;
   bool EnableLoadStoreOpt;
   bool EnableUnsafeDSOffsetFolding;
+  bool EnableXNACK;
   unsigned WavefrontSize;
   bool CFALUBug;
   int LocalMemorySize;
@@ -89,6 +91,7 @@ private:
   int LDSBankCount;
   unsigned IsaVersion;
   bool EnableHugeScratchBuffer;
+  bool EnableSIScheduler;
 
   std::unique_ptr<AMDGPUFrameLowering> FrameLowering;
   std::unique_ptr<AMDGPUTargetLowering> TLInfo;
@@ -120,10 +123,6 @@ public:
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef FS);
 
-  bool is64bit() const {
-    return Is64bit;
-  }
-
   bool hasVertexCache() const {
     return HasVertexCache;
   }
@@ -154,6 +153,10 @@ public:
 
   bool hasFastFMAF32() const {
     return FastFMAF32;
+  }
+
+  bool hasHalfRate64Ops() const {
+    return HalfRate64Ops;
   }
 
   bool hasFlatAddressSpace() const {
@@ -279,6 +282,10 @@ public:
     return EnableHugeScratchBuffer;
   }
 
+  bool enableSIScheduler() const {
+    return EnableSIScheduler;
+  }
+
   bool dumpCode() const {
     return DumpCode;
   }
@@ -289,6 +296,10 @@ public:
     return TargetTriple.getOS() == Triple::AMDHSA;
   }
   bool isVGPRSpillingEnabled(const SIMachineFunctionInfo *MFI) const;
+
+  bool isXNACKEnabled() const {
+    return EnableXNACK;
+  }
 
   unsigned getMaxWavesPerCU() const {
     if (getGeneration() >= AMDGPUSubtarget::SOUTHERN_ISLANDS)

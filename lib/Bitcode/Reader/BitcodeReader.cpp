@@ -2537,7 +2537,7 @@ std::error_code BitcodeReader::parseConstants() {
       return error("Malformed block");
     case BitstreamEntry::EndBlock:
       if (NextCstNo != ValueList.size())
-        return error("Invalid ronstant reference");
+        return error("Invalid constant reference");
 
       // Once all the constants have been read, go through and resolve forward
       // references.
@@ -2654,8 +2654,6 @@ std::error_code BitcodeReader::parseConstants() {
         return error("Invalid record");
 
       Type *EltTy = cast<SequentialType>(CurTy)->getElementType();
-      unsigned Size = Record.size();
-
       if (EltTy->isIntegerTy(8)) {
         SmallVector<uint8_t, 16> Elts(Record.begin(), Record.end());
         if (isa<VectorType>(CurTy))
@@ -2680,21 +2678,24 @@ std::error_code BitcodeReader::parseConstants() {
           V = ConstantDataVector::get(Context, Elts);
         else
           V = ConstantDataArray::get(Context, Elts);
+      } else if (EltTy->isHalfTy()) {
+        SmallVector<uint16_t, 16> Elts(Record.begin(), Record.end());
+        if (isa<VectorType>(CurTy))
+          V = ConstantDataVector::getFP(Context, Elts);
+        else
+          V = ConstantDataArray::getFP(Context, Elts);
       } else if (EltTy->isFloatTy()) {
-        SmallVector<float, 16> Elts(Size);
-        std::transform(Record.begin(), Record.end(), Elts.begin(), BitsToFloat);
+        SmallVector<uint32_t, 16> Elts(Record.begin(), Record.end());
         if (isa<VectorType>(CurTy))
-          V = ConstantDataVector::get(Context, Elts);
+          V = ConstantDataVector::getFP(Context, Elts);
         else
-          V = ConstantDataArray::get(Context, Elts);
+          V = ConstantDataArray::getFP(Context, Elts);
       } else if (EltTy->isDoubleTy()) {
-        SmallVector<double, 16> Elts(Size);
-        std::transform(Record.begin(), Record.end(), Elts.begin(),
-                       BitsToDouble);
+        SmallVector<uint64_t, 16> Elts(Record.begin(), Record.end());
         if (isa<VectorType>(CurTy))
-          V = ConstantDataVector::get(Context, Elts);
+          V = ConstantDataVector::getFP(Context, Elts);
         else
-          V = ConstantDataArray::get(Context, Elts);
+          V = ConstantDataArray::getFP(Context, Elts);
       } else {
         return error("Invalid type for value");
       }
@@ -3071,16 +3072,27 @@ void BitcodeReader::saveMetadataList(
   for (unsigned ID = 0; ID < MetadataList.size(); ++ID) {
     Metadata *MD = MetadataList[ID];
     auto *N = dyn_cast_or_null<MDNode>(MD);
+    assert((!N || (N->isResolved() || N->isTemporary())) &&
+           "Found non-resolved non-temp MDNode while saving metadata");
     // Save all values if !OnlyTempMD, otherwise just the temporary metadata.
+    // Note that in the !OnlyTempMD case we need to save all Metadata, not
+    // just MDNode, as we may have references to other types of module-level
+    // metadata (e.g. ValueAsMetadata) from instructions.
     if (!OnlyTempMD || (N && N->isTemporary())) {
       // Will call this after materializing each function, in order to
       // handle remapping of the function's instructions/metadata.
+      auto IterBool = MetadataToIDs.insert(std::make_pair(MD, ID));
       // See if we already have an entry in that case.
-      if (OnlyTempMD && MetadataToIDs.count(MD)) {
-        assert(MetadataToIDs[MD] == ID && "Inconsistent metadata value id");
+      if (OnlyTempMD && !IterBool.second) {
+        assert(IterBool.first->second == ID &&
+               "Inconsistent metadata value id");
         continue;
       }
-      MetadataToIDs[MD] = ID;
+      if (N && N->isTemporary())
+        // Ensure that we assert if someone tries to RAUW this temporary
+        // metadata while it is the key of a map. The flag will be set back
+        // to true when the saved metadata list is destroyed.
+        N->setCanReplace(false);
     }
   }
 }

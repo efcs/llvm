@@ -55,6 +55,14 @@ int main() { return (float)x; }"
   endif()
 endif()
 
+if (CMAKE_LINKER MATCHES "lld-link.exe")
+  # Pass /MANIFEST:NO so that CMake doesn't run mt.exe on our binaries.  Adding
+  # manifests with mt.exe breaks LLD's symbol tables and takes as much time as
+  # the link. See PR24476.
+  append("/MANIFEST:NO"
+    CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+endif()
+
 if( LLVM_ENABLE_ASSERTIONS )
   # MSVC doesn't like _DEBUG on release builds. See PR 4379.
   if( NOT MSVC )
@@ -363,6 +371,36 @@ if( MSVC )
 
   append("/Zc:inline" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
 
+  if (NOT LLVM_ENABLE_TIMESTAMPS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # clang-cl and cl by default produce non-deterministic binaries because
+    # link.exe /incremental requires a timestamp in the .obj file.  clang-cl
+    # has the flag /Brepro to force deterministic binaries, so pass that when
+    # LLVM_ENABLE_TIMESTAMPS is turned off.
+    # This checks CMAKE_CXX_COMPILER_ID in addition to check_cxx_compiler_flag()
+    # because cl.exe does not emit an error on flags it doesn't understand,
+    # letting check_cxx_compiler_flag() claim it understands all flags.
+    check_cxx_compiler_flag("/Brepro" SUPPORTS_BREPRO)
+    append_if(SUPPORTS_BREPRO "/Brepro" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+
+    if (SUPPORTS_BREPRO)
+      # Check if /INCREMENTAL is passed to the linker and complain that it
+      # won't work with /Brepro.
+      string(TOUPPER "${CMAKE_EXE_LINKER_FLAGS}" upper_exe_flags)
+      string(TOUPPER "${CMAKE_MODULE_LINKER_FLAGS}" upper_module_flags)
+      string(TOUPPER "${CMAKE_SHARED_LINKER_FLAGS}" upper_shared_flags)
+
+      string(FIND "${upper_exe_flags}" "/INCREMENTAL" exe_index)
+      string(FIND "${upper_module_flags}" "/INCREMENTAL" module_index)
+      string(FIND "${upper_shared_flags}" "/INCREMENTAL" shared_index)
+      
+      if (${exe_index} GREATER -1 OR
+          ${module_index} GREATER -1 OR
+          ${shared_index} GREATER -1)
+        message(FATAL_ERROR "LLVM_ENABLE_TIMESTAMPS not compatible with /INCREMENTAL linking")
+      endif()
+    endif()
+  endif()
+
   # Disable sized deallocation if the flag is supported. MSVC fails to compile
   # the operator new overload in User otherwise.
   check_c_compiler_flag("/WX /Zc:sizedDealloc-" SUPPORTS_SIZED_DEALLOC)
@@ -484,10 +522,6 @@ macro(append_common_sanitizer_flags)
     if (CMAKE_LINKER MATCHES "lld-link.exe")
       # Use DWARF debug info with LLD.
       append("-gdwarf" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-      # Pass /MANIFEST:NO so that CMake doesn't run mt.exe on our binaries.
-      # Adding manifests with mt.exe breaks LLD's symbol tables. See PR24476.
-      append("/MANIFEST:NO"
-        CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
     else()
       # Enable codeview otherwise.
       append("/Z7" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)

@@ -1446,7 +1446,7 @@ void LiveIntervals::removeVRegDefAt(LiveInterval &LI, SlotIndex Pos) {
 void LiveIntervals::splitSeparateComponents(LiveInterval &LI,
     SmallVectorImpl<LiveInterval*> &SplitLIs) {
   ConnectedVNInfoEqClasses ConEQ(*this);
-  unsigned NumComp = ConEQ.Classify(&LI);
+  unsigned NumComp = ConEQ.Classify(LI);
   if (NumComp <= 1)
     return;
   DEBUG(dbgs() << "  Split " << NumComp << " components: " << LI << '\n');
@@ -1458,4 +1458,20 @@ void LiveIntervals::splitSeparateComponents(LiveInterval &LI,
     SplitLIs.push_back(&NewLI);
   }
   ConEQ.Distribute(LI, SplitLIs.data(), *MRI);
+}
+
+void LiveIntervals::renameDisconnectedComponents() {
+  ConnectedSubRegClasses SubRegClasses(*this, *MRI);
+
+  // Iterate over all vregs. Note that we query getNumVirtRegs() the newly
+  // created vregs end up with higher numbers but do not need to be visited as
+  // there can't be any further splitting.
+  for (size_t I = 0, E = MRI->getNumVirtRegs(); I < E; ++I) {
+    unsigned Reg = TargetRegisterInfo::index2VirtReg(I);
+    LiveInterval *LI = VirtRegIntervals[Reg];
+    if (LI == nullptr || !LI->hasSubRanges())
+      continue;
+
+    SubRegClasses.renameComponents(*LI);
+  }
 }

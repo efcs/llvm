@@ -913,6 +913,10 @@ def FAULTING_LOAD_OP : Instruction {
   let usesCustomInserter = 1;
   let mayLoad = 1;
 }
+
+// Generic opcodes used in GlobalISel.
+include "llvm/Target/GenericOpcodes.td"
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -936,6 +940,10 @@ class AsmParser {
   // ShouldEmitMatchRegisterName - Set to false if the target needs a hand
   // written register name matcher
   bit ShouldEmitMatchRegisterName = 1;
+
+  // HasMnemonicFirst - Set to false if target instructions don't always
+  // start with a mnemonic as the first token.
+  bit HasMnemonicFirst = 1;
 }
 def DefaultAsmParser : AsmParser;
 

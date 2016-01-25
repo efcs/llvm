@@ -316,6 +316,9 @@ namespace llvm {
       // Vector shift elements by immediate
       VSHLI, VSRLI, VSRAI,
 
+      // Bit rotate by immediate
+      VROTLI, VROTRI,
+
       // Vector packed double/float comparison.
       CMPP,
 
@@ -399,6 +402,7 @@ namespace llvm {
       VPTERNLOG,
       // Fix Up Special Packed Float32/64 values
       VFIXUPIMM,
+      VFIXUPIMMS,
       // Range Restriction Calculation For Packed Pairs of Float32/64 values
       VRANGE,
       // Reduce - Perform Reduction Transformation on scalar\packed FP
@@ -607,7 +611,7 @@ namespace llvm {
     /// Determines whether the callee is required to pop its
     /// own arguments. Callee pop is necessary to support tail calls.
     bool isCalleePop(CallingConv::ID CallingConv,
-                     bool is64Bit, bool IsVarArg, bool TailCallOpt);
+                     bool is64Bit, bool IsVarArg, bool GuaranteeTCO);
 
   }
 
@@ -676,6 +680,14 @@ namespace llvm {
     ///
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
+    /// Places new result values for the node in Results (their number
+    /// and types must exactly match those of the original return values of
+    /// the node), or leaves Results empty, which indicates that the node is not
+    /// to be custom lowered after all.
+    virtual void LowerOperationWrapper(SDNode *N,
+                                       SmallVectorImpl<SDValue> &Results,
+                                       SelectionDAG &DAG) const override;
+
     /// Replace the results of node with an illegal result
     /// type with new values built out of custom code.
     ///
@@ -696,6 +708,10 @@ namespace llvm {
     /// i16 is legal, but undesirable since i16 instruction encodings are longer
     /// and some i16 instructions are slow.
     bool IsDesirableToPromoteOp(SDValue Op, EVT &PVT) const override;
+
+    /// Return true if the MachineFunction contains a COPY which would imply
+    /// HasOpaqueSPAdjustment.
+    bool hasCopyImplyingStackAdjustment(MachineFunction *MF) const override;
 
     MachineBasicBlock *
       EmitInstrWithCustomInserter(MachineInstr *MI,
@@ -832,6 +848,13 @@ namespace llvm {
     /// operations of type VT1 to VT2. e.g. on x86, it's profitable to narrow
     /// from i32 to i8 but not from i32 to i16.
     bool isNarrowingProfitable(EVT VT1, EVT VT2) const override;
+
+    /// Given an intrinsic, checks if on the target the intrinsic will need to map
+    /// to a MemIntrinsicNode (touches memory). If this is the case, it returns
+    /// true and stores the intrinsic information into the IntrinsicInfo that was
+    /// passed to the function.
+    bool getTgtMemIntrinsic(IntrinsicInfo &Info, const CallInst &I,
+                            unsigned Intrinsic) const override;
 
     /// Returns true if the target can instruction select the
     /// specified FP immediate natively. If false, the legalizer will
@@ -1052,6 +1075,15 @@ namespace llvm {
                         const SmallVectorImpl<ISD::OutputArg> &Outs,
                         const SmallVectorImpl<SDValue> &OutVals,
                         SDLoc dl, SelectionDAG &DAG) const override;
+
+    bool supportSplitCSR(MachineFunction *MF) const override {
+      return MF->getFunction()->getCallingConv() == CallingConv::CXX_FAST_TLS &&
+          MF->getFunction()->hasFnAttribute(Attribute::NoUnwind);
+    }
+    void initializeSplitCSR(MachineBasicBlock *Entry) const override;
+    void insertCopiesSplitCSR(
+      MachineBasicBlock *Entry,
+      const SmallVectorImpl<MachineBasicBlock *> &Exits) const override;
 
     bool isUsedByReturnOnly(SDNode *N, SDValue &Chain) const override;
 

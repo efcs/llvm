@@ -89,11 +89,20 @@ public:
   bool shouldConvertConstantLoadToIntImm(const APInt &Imm,
                                         Type *Ty) const override;
 
+  bool isTypeDesirableForOp(unsigned Op, EVT VT) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool isVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,
                                SDLoc DL, SelectionDAG &DAG,
                                SmallVectorImpl<SDValue> &InVals) const override;
+
+  SDValue LowerReturn(SDValue Chain,
+                      CallingConv::ID CallConv,
+                      bool isVarArg,
+                      const SmallVectorImpl<ISD::OutputArg> &Outs,
+                      const SmallVectorImpl<SDValue> &OutVals,
+                      SDLoc DL, SelectionDAG &DAG) const override;
 
   MachineBasicBlock * EmitInstrWithCustomInserter(MachineInstr * MI,
                                       MachineBasicBlock * BB) const override;
