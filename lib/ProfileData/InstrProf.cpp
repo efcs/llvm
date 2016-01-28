@@ -65,7 +65,7 @@ class InstrProfErrorCategoryType : public std::error_category {
     llvm_unreachable("A value of instrprof_error has no message.");
   }
 };
-}
+} // end anonymous namespace
 
 static ManagedStatic<InstrProfErrorCategoryType> ErrorCategory;
 
@@ -165,6 +165,13 @@ GlobalVariable *createPGOFuncNameVar(Function &F, StringRef FuncName) {
   return createPGOFuncNameVar(*F.getParent(), F.getLinkage(), FuncName);
 }
 
+void InstrProfSymtab::create(const Module &M) {
+  for (const Function &F : M)
+    addFuncName(getPGOFuncName(F));
+
+  finalizeSymtab();
+}
+
 int collectPGOFuncNameStrings(const std::vector<std::string> &NameStrs,
                               bool doCompression, std::string &Result) {
   uint8_t Header[16], *P = Header;
@@ -209,12 +216,13 @@ StringRef getPGOFuncNameInitializer(GlobalVariable *NameVar) {
 }
 
 int collectPGOFuncNameStrings(const std::vector<GlobalVariable *> &NameVars,
-                              std::string &Result) {
+                              std::string &Result, bool doCompression) {
   std::vector<std::string> NameStrs;
   for (auto *NameVar : NameVars) {
     NameStrs.push_back(getPGOFuncNameInitializer(NameVar));
   }
-  return collectPGOFuncNameStrings(NameStrs, zlib::isAvailable(), Result);
+  return collectPGOFuncNameStrings(
+      NameStrs, zlib::isAvailable() && doCompression, Result);
 }
 
 int readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
@@ -436,12 +444,12 @@ ValueProfData *allocValueProfDataInstrProf(size_t TotalSizeInBytes) {
 }
 
 static ValueProfRecordClosure InstrProfRecordClosure = {
-    0,
+    nullptr,
     getNumValueKindsInstrProf,
     getNumValueSitesInstrProf,
     getNumValueDataInstrProf,
     getNumValueDataForSiteInstrProf,
-    0,
+    nullptr,
     getValueForSiteInstrProf,
     allocValueProfDataInstrProf};
 
@@ -631,7 +639,6 @@ void ProfileSummary::computeDetailedSummary() {
     ProfileSummaryEntry PSE = {Cutoff, Count, BlocksSeen};
     DetailedSummary.push_back(PSE);
   }
-  return;
 }
 
-}
+} // end namespace llvm

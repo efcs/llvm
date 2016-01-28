@@ -285,6 +285,20 @@ bool WebAssemblyTargetLowering::isLegalAddressingMode(const DataLayout &DL,
   return true;
 }
 
+bool WebAssemblyTargetLowering::allowsMisalignedMemoryAccesses(
+    EVT /*VT*/, unsigned /*AddrSpace*/, unsigned /*Align*/,
+    bool *Fast) const {
+  // WebAssembly supports unaligned accesses, though it should be declared
+  // with the p2align attribute on loads and stores which do so, and there
+  // may be a performance impact. We tell LLVM they're "fast" because
+  // for the kinds of things that LLVM uses this for (merging adjacent stores
+  // of constants, etc.), WebAssembly implementations will either want the
+  // unaligned access or they'll split anyway.
+  if (Fast)
+    *Fast = true;
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 // WebAssembly Lowering private implementation.
 //===----------------------------------------------------------------------===//
@@ -337,16 +351,15 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
     fail(DL, DAG, "WebAssembly doesn't support tail call yet");
   CLI.IsTailCall = false;
 
-  SmallVectorImpl<SDValue> &OutVals = CLI.OutVals;
-
   SmallVectorImpl<ISD::InputArg> &Ins = CLI.Ins;
   if (Ins.size() > 1)
     fail(DL, DAG, "WebAssembly doesn't support more than 1 returned value yet");
 
   SmallVectorImpl<ISD::OutputArg> &Outs = CLI.Outs;
-  for (const ISD::OutputArg &Out : Outs) {
-    if (Out.Flags.isByVal())
-      fail(DL, DAG, "WebAssembly hasn't implemented byval arguments");
+  SmallVectorImpl<SDValue> &OutVals = CLI.OutVals;
+  for (unsigned i = 0; i < Outs.size(); ++i) {
+    const ISD::OutputArg &Out = Outs[i];
+    SDValue &OutVal = OutVals[i];
     if (Out.Flags.isNest())
       fail(DL, DAG, "WebAssembly hasn't implemented nest arguments");
     if (Out.Flags.isInAlloca())
@@ -355,6 +368,21 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs arguments");
     if (Out.Flags.isInConsecutiveRegsLast())
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs last arguments");
+    if (Out.Flags.isByVal()) {
+      auto *MFI = MF.getFrameInfo();
+      assert(Out.Flags.getByValSize() && "Zero-size byval?");
+      int FI = MFI->CreateStackObject(Out.Flags.getByValSize(),
+                                      Out.Flags.getByValAlign(),
+                                      /*isSS=*/false);
+      SDValue SizeNode =
+          DAG.getConstant(Out.Flags.getByValSize(), DL, MVT::i32);
+      SDValue FINode = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
+      Chain = DAG.getMemcpy(
+          Chain, DL, FINode, OutVal, SizeNode, Out.Flags.getByValAlign(),
+          /*isVolatile*/ false, /*AlwaysInline=*/true,
+          /*isTailCall*/ false, MachinePointerInfo(), MachinePointerInfo());
+      OutVal = FINode;
+    }
   }
 
   bool IsVarArg = CLI.IsVarArg;
@@ -509,8 +537,6 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
   MF.getRegInfo().addLiveIn(WebAssembly::ARGUMENTS);
 
   for (const ISD::InputArg &In : Ins) {
-    if (In.Flags.isByVal())
-      fail(DL, DAG, "WebAssembly hasn't implemented byval arguments");
     if (In.Flags.isInAlloca())
       fail(DL, DAG, "WebAssembly hasn't implemented inalloca arguments");
     if (In.Flags.isNest())

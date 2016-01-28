@@ -120,7 +120,7 @@ def SIload_input : SDNode<"AMDGPUISD::LOAD_INPUT",
 >;
 
 class SDSample<string opcode> : SDNode <opcode,
-  SDTypeProfile<1, 4, [SDTCisVT<0, v4f32>, SDTCisVT<2, v32i8>,
+  SDTypeProfile<1, 4, [SDTCisVT<0, v4f32>, SDTCisVT<2, v8i32>,
                        SDTCisVT<3, v4i32>, SDTCisVT<4, i32>]>
 >;
 
@@ -1788,7 +1788,8 @@ multiclass VOPC_m <vopc op, dag ins, string op_asm, list<dag> pattern,
                    list<SchedReadWrite> sched,
                    string revOpName = "", string asm = opName#"_e32 "#op_asm,
                    string alias_asm = opName#" "#op_asm> {
-  def "" : VOPC_Pseudo <ins, pattern, opName> {
+  def "" : VOPC_Pseudo <ins, pattern, opName>,
+           VOP2_REV<revOpName#"_e32", !eq(revOpName, opName)> {
     let Defs = !if(DefExec, [VCC, EXEC], [VCC]);
     let SchedRW = sched;
   }
@@ -1819,7 +1820,8 @@ multiclass VOPC_m <vopc op, dag ins, string op_asm, list<dag> pattern,
 multiclass VOPC_Helper <vopc op, string opName, list<dag> pat32,
                         list<dag> pat64, bit DefExec, string revOp,
                         VOPProfile p, list<SchedReadWrite> sched> {
-  defm _e32 : VOPC_m <op, p.Ins32, p.Asm32, pat32, opName, DefExec, p, sched>;
+  defm _e32 : VOPC_m <op, p.Ins32, p.Asm32, pat32, opName, DefExec, p, sched,
+                      revOp>;
 
   defm _e64 : VOP3_C_m <op, (outs VOPDstS64:$dst), p.Ins64, opName#p.Asm64, pat64,
                         opName, p.HasModifiers, DefExec, revOp, sched>;

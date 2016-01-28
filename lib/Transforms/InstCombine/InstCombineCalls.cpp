@@ -29,8 +29,8 @@ using namespace PatternMatch;
 
 STATISTIC(NumSimplified, "Number of library calls simplified");
 
-/// getPromotedType - Return the specified type promoted as it would be to pass
-/// though a va_arg area.
+/// Return the specified type promoted as it would be to pass though a va_arg
+/// area.
 static Type *getPromotedType(Type *Ty) {
   if (IntegerType* ITy = dyn_cast<IntegerType>(Ty)) {
     if (ITy->getBitWidth() < 32)
@@ -39,8 +39,8 @@ static Type *getPromotedType(Type *Ty) {
   return Ty;
 }
 
-/// reduceToSingleValueType - Given an aggregate type which ultimately holds a
-/// single scalar element, like {{{type}}} or [1 x type], return type.
+/// Given an aggregate type which ultimately holds a single scalar element,
+/// like {{{type}}} or [1 x type], return type.
 static Type *reduceToSingleValueType(Type *T) {
   while (!T->isSingleValueType()) {
     if (StructType *STy = dyn_cast<StructType>(T)) {
@@ -327,58 +327,59 @@ static Value *SimplifyX86extend(const IntrinsicInst &II,
 
 static Value *SimplifyX86insertps(const IntrinsicInst &II,
                                   InstCombiner::BuilderTy &Builder) {
-  if (auto *CInt = dyn_cast<ConstantInt>(II.getArgOperand(2))) {
-    VectorType *VecTy = cast<VectorType>(II.getType());
-    assert(VecTy->getNumElements() == 4 && "insertps with wrong vector type");
+  auto *CInt = dyn_cast<ConstantInt>(II.getArgOperand(2));
+  if (!CInt)
+    return nullptr;
 
-    // The immediate permute control byte looks like this:
-    //    [3:0] - zero mask for each 32-bit lane
-    //    [5:4] - select one 32-bit destination lane
-    //    [7:6] - select one 32-bit source lane
+  VectorType *VecTy = cast<VectorType>(II.getType());
+  assert(VecTy->getNumElements() == 4 && "insertps with wrong vector type");
 
-    uint8_t Imm = CInt->getZExtValue();
-    uint8_t ZMask = Imm & 0xf;
-    uint8_t DestLane = (Imm >> 4) & 0x3;
-    uint8_t SourceLane = (Imm >> 6) & 0x3;
+  // The immediate permute control byte looks like this:
+  //    [3:0] - zero mask for each 32-bit lane
+  //    [5:4] - select one 32-bit destination lane
+  //    [7:6] - select one 32-bit source lane
 
-    ConstantAggregateZero *ZeroVector = ConstantAggregateZero::get(VecTy);
+  uint8_t Imm = CInt->getZExtValue();
+  uint8_t ZMask = Imm & 0xf;
+  uint8_t DestLane = (Imm >> 4) & 0x3;
+  uint8_t SourceLane = (Imm >> 6) & 0x3;
 
-    // If all zero mask bits are set, this was just a weird way to
-    // generate a zero vector.
-    if (ZMask == 0xf)
-      return ZeroVector;
+  ConstantAggregateZero *ZeroVector = ConstantAggregateZero::get(VecTy);
 
-    // Initialize by passing all of the first source bits through.
-    int ShuffleMask[4] = { 0, 1, 2, 3 };
+  // If all zero mask bits are set, this was just a weird way to
+  // generate a zero vector.
+  if (ZMask == 0xf)
+    return ZeroVector;
 
-    // We may replace the second operand with the zero vector.
-    Value *V1 = II.getArgOperand(1);
+  // Initialize by passing all of the first source bits through.
+  int ShuffleMask[4] = { 0, 1, 2, 3 };
 
-    if (ZMask) {
-      // If the zero mask is being used with a single input or the zero mask
-      // overrides the destination lane, this is a shuffle with the zero vector.
-      if ((II.getArgOperand(0) == II.getArgOperand(1)) ||
-          (ZMask & (1 << DestLane))) {
-        V1 = ZeroVector;
-        // We may still move 32-bits of the first source vector from one lane
-        // to another.
-        ShuffleMask[DestLane] = SourceLane;
-        // The zero mask may override the previous insert operation.
-        for (unsigned i = 0; i < 4; ++i)
-          if ((ZMask >> i) & 0x1)
-            ShuffleMask[i] = i + 4;
-      } else {
-        // TODO: Model this case as 2 shuffles or a 'logical and' plus shuffle?
-        return nullptr;
-      }
+  // We may replace the second operand with the zero vector.
+  Value *V1 = II.getArgOperand(1);
+
+  if (ZMask) {
+    // If the zero mask is being used with a single input or the zero mask
+    // overrides the destination lane, this is a shuffle with the zero vector.
+    if ((II.getArgOperand(0) == II.getArgOperand(1)) ||
+        (ZMask & (1 << DestLane))) {
+      V1 = ZeroVector;
+      // We may still move 32-bits of the first source vector from one lane
+      // to another.
+      ShuffleMask[DestLane] = SourceLane;
+      // The zero mask may override the previous insert operation.
+      for (unsigned i = 0; i < 4; ++i)
+        if ((ZMask >> i) & 0x1)
+          ShuffleMask[i] = i + 4;
     } else {
-      // Replace the selected destination lane with the selected source lane.
-      ShuffleMask[DestLane] = SourceLane + 4;
+      // TODO: Model this case as 2 shuffles or a 'logical and' plus shuffle?
+      return nullptr;
     }
-
-    return Builder.CreateShuffleVector(II.getArgOperand(0), V1, ShuffleMask);
+  } else {
+    // Replace the selected destination lane with the selected source lane.
+    ShuffleMask[DestLane] = SourceLane + 4;
   }
-  return nullptr;
+
+  return Builder.CreateShuffleVector(II.getArgOperand(0), V1, ShuffleMask);
 }
 
 /// Attempt to simplify SSE4A EXTRQ/EXTRQI instructions using constant folding
@@ -576,64 +577,65 @@ static Value *SimplifyX86insertq(IntrinsicInst &II, Value *Op0, Value *Op1,
 /// then ignore that half of the mask and clear that half of the vector.
 static Value *SimplifyX86vperm2(const IntrinsicInst &II,
                                 InstCombiner::BuilderTy &Builder) {
-  if (auto *CInt = dyn_cast<ConstantInt>(II.getArgOperand(2))) {
-    VectorType *VecTy = cast<VectorType>(II.getType());
-    ConstantAggregateZero *ZeroVector = ConstantAggregateZero::get(VecTy);
+  auto *CInt = dyn_cast<ConstantInt>(II.getArgOperand(2));
+  if (!CInt)
+    return nullptr;
 
-    // The immediate permute control byte looks like this:
-    //    [1:0] - select 128 bits from sources for low half of destination
-    //    [2]   - ignore
-    //    [3]   - zero low half of destination
-    //    [5:4] - select 128 bits from sources for high half of destination
-    //    [6]   - ignore
-    //    [7]   - zero high half of destination
+  VectorType *VecTy = cast<VectorType>(II.getType());
+  ConstantAggregateZero *ZeroVector = ConstantAggregateZero::get(VecTy);
 
-    uint8_t Imm = CInt->getZExtValue();
+  // The immediate permute control byte looks like this:
+  //    [1:0] - select 128 bits from sources for low half of destination
+  //    [2]   - ignore
+  //    [3]   - zero low half of destination
+  //    [5:4] - select 128 bits from sources for high half of destination
+  //    [6]   - ignore
+  //    [7]   - zero high half of destination
 
-    bool LowHalfZero = Imm & 0x08;
-    bool HighHalfZero = Imm & 0x80;
+  uint8_t Imm = CInt->getZExtValue();
 
-    // If both zero mask bits are set, this was just a weird way to
-    // generate a zero vector.
-    if (LowHalfZero && HighHalfZero)
-      return ZeroVector;
+  bool LowHalfZero = Imm & 0x08;
+  bool HighHalfZero = Imm & 0x80;
 
-    // If 0 or 1 zero mask bits are set, this is a simple shuffle.
-    unsigned NumElts = VecTy->getNumElements();
-    unsigned HalfSize = NumElts / 2;
-    SmallVector<int, 8> ShuffleMask(NumElts);
+  // If both zero mask bits are set, this was just a weird way to
+  // generate a zero vector.
+  if (LowHalfZero && HighHalfZero)
+    return ZeroVector;
 
-    // The high bit of the selection field chooses the 1st or 2nd operand.
-    bool LowInputSelect = Imm & 0x02;
-    bool HighInputSelect = Imm & 0x20;
+  // If 0 or 1 zero mask bits are set, this is a simple shuffle.
+  unsigned NumElts = VecTy->getNumElements();
+  unsigned HalfSize = NumElts / 2;
+  SmallVector<int, 8> ShuffleMask(NumElts);
 
-    // The low bit of the selection field chooses the low or high half
-    // of the selected operand.
-    bool LowHalfSelect = Imm & 0x01;
-    bool HighHalfSelect = Imm & 0x10;
+  // The high bit of the selection field chooses the 1st or 2nd operand.
+  bool LowInputSelect = Imm & 0x02;
+  bool HighInputSelect = Imm & 0x20;
 
-    // Determine which operand(s) are actually in use for this instruction.
-    Value *V0 = LowInputSelect ? II.getArgOperand(1) : II.getArgOperand(0);
-    Value *V1 = HighInputSelect ? II.getArgOperand(1) : II.getArgOperand(0);
+  // The low bit of the selection field chooses the low or high half
+  // of the selected operand.
+  bool LowHalfSelect = Imm & 0x01;
+  bool HighHalfSelect = Imm & 0x10;
 
-    // If needed, replace operands based on zero mask.
-    V0 = LowHalfZero ? ZeroVector : V0;
-    V1 = HighHalfZero ? ZeroVector : V1;
+  // Determine which operand(s) are actually in use for this instruction.
+  Value *V0 = LowInputSelect ? II.getArgOperand(1) : II.getArgOperand(0);
+  Value *V1 = HighInputSelect ? II.getArgOperand(1) : II.getArgOperand(0);
 
-    // Permute low half of result.
-    unsigned StartIndex = LowHalfSelect ? HalfSize : 0;
-    for (unsigned i = 0; i < HalfSize; ++i)
-      ShuffleMask[i] = StartIndex + i;
+  // If needed, replace operands based on zero mask.
+  V0 = LowHalfZero ? ZeroVector : V0;
+  V1 = HighHalfZero ? ZeroVector : V1;
 
-    // Permute high half of result.
-    StartIndex = HighHalfSelect ? HalfSize : 0;
-    StartIndex += NumElts;
-    for (unsigned i = 0; i < HalfSize; ++i)
-      ShuffleMask[i + HalfSize] = StartIndex + i;
+  // Permute low half of result.
+  unsigned StartIndex = LowHalfSelect ? HalfSize : 0;
+  for (unsigned i = 0; i < HalfSize; ++i)
+    ShuffleMask[i] = StartIndex + i;
 
-    return Builder.CreateShuffleVector(V0, V1, ShuffleMask);
-  }
-  return nullptr;
+  // Permute high half of result.
+  StartIndex = HighHalfSelect ? HalfSize : 0;
+  StartIndex += NumElts;
+  for (unsigned i = 0; i < HalfSize; ++i)
+    ShuffleMask[i + HalfSize] = StartIndex + i;
+
+  return Builder.CreateShuffleVector(V0, V1, ShuffleMask);
 }
 
 /// Decode XOP integer vector comparison intrinsics.
@@ -673,10 +675,9 @@ static Value *SimplifyX86vpcom(const IntrinsicInst &II,
   return nullptr;
 }
 
-/// visitCallInst - CallInst simplification.  This mostly only handles folding
-/// of intrinsic instructions.  For normal calls, it allows visitCallSite to do
-/// the heavy lifting.
-///
+/// CallInst simplification. This mostly only handles folding of intrinsic
+/// instructions. For normal calls, it allows visitCallSite to do the heavy
+/// lifting.
 Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   auto Args = CI.arg_operands();
   if (Value *V = SimplifyCall(CI.getCalledValue(), Args.begin(), Args.end(), DL,
@@ -754,8 +755,8 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     if (Changed) return II;
   }
 
-  auto SimplifyDemandedVectorEltsLow = [this](Value *Op, unsigned Width, unsigned DemandedWidth)
-  {
+  auto SimplifyDemandedVectorEltsLow = [this](Value *Op, unsigned Width,
+                                              unsigned DemandedWidth) {
     APInt UndefElts(Width, 0);
     APInt DemandedElts = APInt::getLowBitsSet(Width, DemandedWidth);
     return SimplifyDemandedVectorElts(Op, DemandedElts, UndefElts);
@@ -1615,7 +1616,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
-  case Intrinsic::AMDGPU_rcp: {
+  case Intrinsic::amdgcn_rcp: {
     if (const ConstantFP *C = dyn_cast<ConstantFP>(II->getArgOperand(0))) {
       const APFloat &ArgVal = C->getValueAPF();
       APFloat Val(ArgVal.getSemantics(), 1.0);
@@ -1800,8 +1801,8 @@ Instruction *InstCombiner::visitInvokeInst(InvokeInst &II) {
   return visitCallSite(&II);
 }
 
-/// isSafeToEliminateVarargsCast - If this cast does not affect the value
-/// passed through the varargs area, we can eliminate the use of the cast.
+/// If this cast does not affect the value passed through the varargs area, we
+/// can eliminate the use of the cast.
 static bool isSafeToEliminateVarargsCast(const CallSite CS,
                                          const DataLayout &DL,
                                          const CastInst *const CI,
@@ -1925,8 +1926,7 @@ static IntrinsicInst *FindInitTrampoline(Value *Callee) {
   return nullptr;
 }
 
-// visitCallSite - Improvements for call and invoke instructions.
-//
+/// Improvements for call and invoke instructions.
 Instruction *InstCombiner::visitCallSite(CallSite CS) {
 
   if (isAllocLikeFn(CS.getInstruction(), TLI))
@@ -2050,9 +2050,8 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
   return Changed ? CS.getInstruction() : nullptr;
 }
 
-// transformConstExprCastCall - If the callee is a constexpr cast of a function,
-// attempt to move the cast to the arguments of the call/invoke.
-//
+/// If the callee is a constexpr cast of a function, attempt to move the cast to
+/// the arguments of the call/invoke.
 bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   Function *Callee =
     dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
@@ -2326,10 +2325,8 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   return true;
 }
 
-// transformCallThroughTrampoline - Turn a call to a function created by
-// init_trampoline / adjust_trampoline intrinsic pair into a direct call to the
-// underlying function.
-//
+/// Turn a call to a function created by init_trampoline / adjust_trampoline
+/// intrinsic pair into a direct call to the underlying function.
 Instruction *
 InstCombiner::transformCallThroughTrampoline(CallSite CS,
                                              IntrinsicInst *Tramp) {

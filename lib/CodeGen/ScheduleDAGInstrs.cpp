@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -518,8 +519,7 @@ void ScheduleDAGInstrs::addVRegUseDeps(SUnit *SU, unsigned OperIdx) {
 /// (like a call or something with unmodeled side effects).
 static inline bool isGlobalMemoryObject(AliasAnalysis *AA, MachineInstr *MI) {
   return MI->isCall() || MI->hasUnmodeledSideEffects() ||
-         (MI->hasOrderedMemoryRef() &&
-          (!MI->mayLoad() || !MI->isInvariantLoad(AA)));
+         (MI->hasOrderedMemoryRef() && !MI->isInvariantLoad(AA));
 }
 
 // This MI might have either incomplete info, or known to be unsafe
@@ -808,6 +808,19 @@ void ScheduleDAGInstrs::collectVRegUses(SUnit *SU) {
     if (!TargetRegisterInfo::isVirtualRegister(Reg))
       continue;
 
+    // Ignore re-defs.
+    if (TrackLaneMasks) {
+      bool FoundDef = false;
+      for (const MachineOperand &MO2 : MI->operands()) {
+        if (MO2.isReg() && MO2.isDef() && MO2.getReg() == Reg && !MO2.isDead()) {
+          FoundDef = true;
+          break;
+        }
+      }
+      if (FoundDef)
+        continue;
+    }
+
     // Record this local VReg use.
     VReg2SUnitMultiMap::iterator UI = VRegUses.find(Reg);
     for (; UI != VRegUses.end(); ++UI) {
@@ -825,6 +838,7 @@ void ScheduleDAGInstrs::collectVRegUses(SUnit *SU) {
 void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
                                         RegPressureTracker *RPTracker,
                                         PressureDiffs *PDiffs,
+                                        LiveIntervals *LIS,
                                         bool TrackLaneMasks) {
   const TargetSubtargetInfo &ST = MF.getSubtarget();
   bool UseAA = EnableAASchedMI.getNumOccurrences() > 0 ? EnableAASchedMI
@@ -899,7 +913,11 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
       collectVRegUses(SU);
 
       RegisterOperands RegOpers;
-      RegOpers.collect(*MI, *TRI, MRI);
+      RegOpers.collect(*MI, *TRI, MRI, TrackLaneMasks, false);
+      if (TrackLaneMasks) {
+        SlotIndex SlotIdx = LIS->getInstructionIndex(MI);
+        RegOpers.adjustLaneLiveness(*LIS, MRI, SlotIdx);
+      }
       if (PDiffs != nullptr)
         PDiffs->addInstruction(SU->NodeNum, RegOpers, MRI);
 

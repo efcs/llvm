@@ -7,11 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/IR/Function.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/ProfileData/InstrProfWriter.h"
 #include "llvm/Support/Compression.h"
 #include "gtest/gtest.h"
-
 #include <cstdarg>
 
 using namespace llvm;
@@ -487,22 +489,24 @@ ValueProfNode Site1Values[5] = {{{uint64_t("callee1"), 400}, &Site1Values[1]},
                                 {{uint64_t("callee2"), 1000}, &Site1Values[2]},
                                 {{uint64_t("callee3"), 500}, &Site1Values[3]},
                                 {{uint64_t("callee4"), 300}, &Site1Values[4]},
-                                {{uint64_t("callee5"), 100}, 0}};
+                                {{uint64_t("callee5"), 100}, nullptr}};
 
 ValueProfNode Site2Values[4] = {{{uint64_t("callee5"), 800}, &Site2Values[1]},
                                 {{uint64_t("callee3"), 1000}, &Site2Values[2]},
                                 {{uint64_t("callee2"), 2500}, &Site2Values[3]},
-                                {{uint64_t("callee1"), 1300}, 0}};
+                                {{uint64_t("callee1"), 1300}, nullptr}};
 
 ValueProfNode Site3Values[3] = {{{uint64_t("callee6"), 800}, &Site3Values[1]},
                                 {{uint64_t("callee3"), 1000}, &Site3Values[2]},
-                                {{uint64_t("callee4"), 5500}, 0}};
+                                {{uint64_t("callee4"), 5500}, nullptr}};
 
 ValueProfNode Site4Values[2] = {{{uint64_t("callee2"), 1800}, &Site4Values[1]},
-                                {{uint64_t("callee3"), 2000}, 0}};
+                                {{uint64_t("callee3"), 2000}, nullptr}};
 
 static ValueProfNode *ValueProfNodes[5] = {&Site1Values[0], &Site2Values[0],
-                                           &Site3Values[0], &Site4Values[0], 0};
+                                           &Site3Values[0], &Site4Values[0],
+                                           nullptr};
+
 static uint16_t NumValueSites[IPVK_Last + 1] = {5};
 TEST_F(InstrProfTest, runtime_value_prof_data_read_write) {
   ValueProfRuntimeRecord RTRecord;
@@ -513,7 +517,7 @@ TEST_F(InstrProfTest, runtime_value_prof_data_read_write) {
 
   InstrProfRecord Record("caller", 0x1234, {1ULL << 31, 2});
 
-  VPData->deserializeTo(Record, 0);
+  VPData->deserializeTo(Record, nullptr);
 
   // Now read data from Record and sanity check the data
   ASSERT_EQ(5U, Record.getNumValueSites(IPVK_IndirectCallTarget));
@@ -656,6 +660,41 @@ TEST_F(InstrProfTest, instr_prof_symtab_test) {
   ASSERT_EQ(StringRef("bar2"), R);
   R = Symtab.getFuncName(IndexedInstrProf::ComputeHash("bar3"));
   ASSERT_EQ(StringRef("bar3"), R);
+}
+
+TEST_F(InstrProfTest, instr_prof_symtab_module_test) {
+  LLVMContext Ctx;
+  std::unique_ptr<Module> M = llvm::make_unique<Module>("MyModule.cpp", Ctx);
+  FunctionType *FTy = FunctionType::get(Type::getVoidTy(Ctx),
+                                        /*isVarArg=*/false);
+  Function::Create(FTy, Function::ExternalLinkage, "Gfoo", M.get());
+  Function::Create(FTy, Function::ExternalLinkage, "Gblah", M.get());
+  Function::Create(FTy, Function::ExternalLinkage, "Gbar", M.get());
+  Function::Create(FTy, Function::InternalLinkage, "Ifoo", M.get());
+  Function::Create(FTy, Function::InternalLinkage, "Iblah", M.get());
+  Function::Create(FTy, Function::InternalLinkage, "Ibar", M.get());
+  Function::Create(FTy, Function::PrivateLinkage, "Pfoo", M.get());
+  Function::Create(FTy, Function::PrivateLinkage, "Pblah", M.get());
+  Function::Create(FTy, Function::PrivateLinkage, "Pbar", M.get());
+  Function::Create(FTy, Function::WeakODRLinkage, "Wfoo", M.get());
+  Function::Create(FTy, Function::WeakODRLinkage, "Wblah", M.get());
+  Function::Create(FTy, Function::WeakODRLinkage, "Wbar", M.get());
+
+  InstrProfSymtab ProfSymtab;
+  ProfSymtab.create(*(M.get()));
+
+  StringRef Funcs[] = {"Gfoo", "Gblah", "Gbar", "Ifoo", "Iblah", "Ibar",
+                       "Pfoo", "Pblah", "Pbar", "Wfoo", "Wblah", "Wbar"};
+
+  for (unsigned I = 0; I < sizeof(Funcs) / sizeof(*Funcs); I++) {
+    Function *F = M->getFunction(Funcs[I]);
+    ASSERT_TRUE(F != nullptr);
+    std::string PGOName = getPGOFuncName(*F);
+    uint64_t Key = IndexedInstrProf::ComputeHash(PGOName);
+    ASSERT_EQ(StringRef(PGOName),
+              ProfSymtab.getFuncName(Key));
+    ASSERT_EQ(StringRef(Funcs[I]), ProfSymtab.getOrigFuncName(Key));
+  }
 }
 
 TEST_F(InstrProfTest, instr_prof_symtab_compression_test) {
