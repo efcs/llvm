@@ -27,6 +27,7 @@
 #include "SIMachineFunctionInfo.h"
 #include "SIRegisterInfo.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -41,9 +42,6 @@ SITargetLowering::SITargetLowering(TargetMachine &TM,
     : AMDGPUTargetLowering(TM, STI) {
   addRegisterClass(MVT::i1, &AMDGPU::VReg_1RegClass);
   addRegisterClass(MVT::i64, &AMDGPU::SReg_64RegClass);
-
-  addRegisterClass(MVT::v32i8, &AMDGPU::SReg_256RegClass);
-  addRegisterClass(MVT::v64i8, &AMDGPU::SReg_512RegClass);
 
   addRegisterClass(MVT::i32, &AMDGPU::SReg_32RegClass);
   addRegisterClass(MVT::f32, &AMDGPU::VGPR_32RegClass);
@@ -989,6 +987,52 @@ SDValue SITargetLowering::LowerReturn(SDValue Chain,
   return DAG.getNode(AMDGPUISD::RET_FLAG, DL, MVT::Other, RetOps);
 }
 
+unsigned SITargetLowering::getRegisterByName(const char* RegName, EVT VT,
+                                             SelectionDAG &DAG) const {
+  unsigned Reg = StringSwitch<unsigned>(RegName)
+    .Case("m0", AMDGPU::M0)
+    .Case("exec", AMDGPU::EXEC)
+    .Case("exec_lo", AMDGPU::EXEC_LO)
+    .Case("exec_hi", AMDGPU::EXEC_HI)
+    .Case("flat_scratch", AMDGPU::FLAT_SCR)
+    .Case("flat_scratch_lo", AMDGPU::FLAT_SCR_LO)
+    .Case("flat_scratch_hi", AMDGPU::FLAT_SCR_HI)
+    .Default(AMDGPU::NoRegister);
+
+  if (Reg == AMDGPU::NoRegister) {
+    report_fatal_error(Twine("invalid register name \""
+                             + StringRef(RegName)  + "\"."));
+
+  }
+
+  if (Subtarget->getGeneration() == AMDGPUSubtarget::SOUTHERN_ISLANDS &&
+      Subtarget->getRegisterInfo()->regsOverlap(Reg, AMDGPU::FLAT_SCR)) {
+    report_fatal_error(Twine("invalid register \""
+                             + StringRef(RegName)  + "\" for subtarget."));
+  }
+
+  switch (Reg) {
+  case AMDGPU::M0:
+  case AMDGPU::EXEC_LO:
+  case AMDGPU::EXEC_HI:
+  case AMDGPU::FLAT_SCR_LO:
+  case AMDGPU::FLAT_SCR_HI:
+    if (VT.getSizeInBits() == 32)
+      return Reg;
+    break;
+  case AMDGPU::EXEC:
+  case AMDGPU::FLAT_SCR:
+    if (VT.getSizeInBits() == 64)
+      return Reg;
+    break;
+  default:
+    llvm_unreachable("missing register type checking");
+  }
+
+  report_fatal_error(Twine("invalid type for register \""
+                           + StringRef(RegName) + "\"."));
+}
+
 MachineBasicBlock * SITargetLowering::EmitInstrWithCustomInserter(
     MachineInstr * MI, MachineBasicBlock * BB) const {
 
@@ -1287,9 +1331,10 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   case Intrinsic::amdgcn_rcp:
     return DAG.getNode(AMDGPUISD::RCP, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq:
+  case AMDGPUIntrinsic::AMDGPU_rsq: // Legacy name
     return DAG.getNode(AMDGPUISD::RSQ, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq_clamped:
-  case Intrinsic::AMDGPU_rsq_clamped: { // Legacy name
+  case AMDGPUIntrinsic::AMDGPU_rsq_clamped: { // Legacy name
     if (Subtarget->getGeneration() < AMDGPUSubtarget::VOLCANIC_ISLANDS)
       return DAG.getNode(AMDGPUISD::RSQ_CLAMPED, DL, VT, Op.getOperand(1));
 
@@ -1366,14 +1411,6 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getMemIntrinsicNode(AMDGPUISD::LOAD_CONSTANT, DL,
                                    Op->getVTList(), Ops, VT, MMO);
   }
-  case AMDGPUIntrinsic::SI_sample:
-    return LowerSampleIntrinsic(AMDGPUISD::SAMPLE, Op, DAG);
-  case AMDGPUIntrinsic::SI_sampleb:
-    return LowerSampleIntrinsic(AMDGPUISD::SAMPLEB, Op, DAG);
-  case AMDGPUIntrinsic::SI_sampled:
-    return LowerSampleIntrinsic(AMDGPUISD::SAMPLED, Op, DAG);
-  case AMDGPUIntrinsic::SI_samplel:
-    return LowerSampleIntrinsic(AMDGPUISD::SAMPLEL, Op, DAG);
   case AMDGPUIntrinsic::SI_vs_load_input:
     return DAG.getNode(AMDGPUISD::LOAD_INPUT, DL, VT,
                        Op.getOperand(1),
@@ -1553,15 +1590,6 @@ SDValue SITargetLowering::LowerLOAD(SDValue Op, SelectionDAG &DAG) const {
   }
 
   return AMDGPUTargetLowering::LowerLOAD(Op, DAG);
-}
-
-SDValue SITargetLowering::LowerSampleIntrinsic(unsigned Opcode,
-                                               const SDValue &Op,
-                                               SelectionDAG &DAG) const {
-  return DAG.getNode(Opcode, SDLoc(Op), Op.getValueType(), Op.getOperand(1),
-                     Op.getOperand(2),
-                     Op.getOperand(3),
-                     Op.getOperand(4));
 }
 
 SDValue SITargetLowering::LowerSELECT(SDValue Op, SelectionDAG &DAG) const {
@@ -2103,8 +2131,70 @@ static unsigned minMaxOpcToMin3Max3Opc(unsigned Opc) {
   }
 }
 
-SDValue SITargetLowering::performMin3Max3Combine(SDNode *N,
-                                                 DAGCombinerInfo &DCI) const {
+static SDValue performIntMed3ImmCombine(SelectionDAG &DAG,
+                                        SDLoc SL,
+                                        SDValue Op0,
+                                        SDValue Op1,
+                                        bool Signed) {
+  ConstantSDNode *K1 = dyn_cast<ConstantSDNode>(Op1);
+  if (!K1)
+    return SDValue();
+
+  ConstantSDNode *K0 = dyn_cast<ConstantSDNode>(Op0.getOperand(1));
+  if (!K0)
+    return SDValue();
+
+
+  if (Signed) {
+    if (K0->getAPIntValue().sge(K1->getAPIntValue()))
+      return SDValue();
+  } else {
+    if (K0->getAPIntValue().uge(K1->getAPIntValue()))
+      return SDValue();
+  }
+
+  EVT VT = K0->getValueType(0);
+  return DAG.getNode(Signed ? AMDGPUISD::SMED3 : AMDGPUISD::UMED3, SL, VT,
+                     Op0.getOperand(0), SDValue(K0, 0), SDValue(K1, 0));
+}
+
+static bool isKnownNeverSNan(SelectionDAG &DAG, SDValue Op) {
+  if (!DAG.getTargetLoweringInfo().hasFloatingPointExceptions())
+    return true;
+
+  return DAG.isKnownNeverNaN(Op);
+}
+
+static SDValue performFPMed3ImmCombine(SelectionDAG &DAG,
+                                       SDLoc SL,
+                                       SDValue Op0,
+                                       SDValue Op1) {
+  ConstantFPSDNode *K1 = dyn_cast<ConstantFPSDNode>(Op1);
+  if (!K1)
+    return SDValue();
+
+  ConstantFPSDNode *K0 = dyn_cast<ConstantFPSDNode>(Op0.getOperand(1));
+  if (!K0)
+    return SDValue();
+
+  // Ordered >= (although NaN inputs should have folded away by now).
+  APFloat::cmpResult Cmp = K0->getValueAPF().compare(K1->getValueAPF());
+  if (Cmp == APFloat::cmpGreaterThan)
+    return SDValue();
+
+  // This isn't safe with signaling NaNs because in IEEE mode, min/max on a
+  // signaling NaN gives a quiet NaN. The quiet NaN input to the min would then
+  // give the other result, which is different from med3 with a NaN input.
+  SDValue Var = Op0.getOperand(0);
+  if (!isKnownNeverSNan(DAG, Var))
+    return SDValue();
+
+  return DAG.getNode(AMDGPUISD::FMED3, SL, K0->getValueType(0),
+                     Var, SDValue(K0, 0), SDValue(K1, 0));
+}
+
+SDValue SITargetLowering::performMinMaxCombine(SDNode *N,
+                                               DAGCombinerInfo &DCI) const {
   SelectionDAG &DAG = DCI.DAG;
 
   unsigned Opc = N->getOpcode();
@@ -2114,26 +2204,51 @@ SDValue SITargetLowering::performMin3Max3Combine(SDNode *N,
   // Only do this if the inner op has one use since this will just increases
   // register pressure for no benefit.
 
-  // max(max(a, b), c)
-  if (Op0.getOpcode() == Opc && Op0.hasOneUse()) {
-    SDLoc DL(N);
-    return DAG.getNode(minMaxOpcToMin3Max3Opc(Opc),
-                       DL,
-                       N->getValueType(0),
-                       Op0.getOperand(0),
-                       Op0.getOperand(1),
-                       Op1);
+  if (Opc != AMDGPUISD::FMIN_LEGACY && Opc != AMDGPUISD::FMAX_LEGACY) {
+    // max(max(a, b), c) -> max3(a, b, c)
+    // min(min(a, b), c) -> min3(a, b, c)
+    if (Op0.getOpcode() == Opc && Op0.hasOneUse()) {
+      SDLoc DL(N);
+      return DAG.getNode(minMaxOpcToMin3Max3Opc(Opc),
+                         DL,
+                         N->getValueType(0),
+                         Op0.getOperand(0),
+                         Op0.getOperand(1),
+                         Op1);
+    }
+
+    // Try commuted.
+    // max(a, max(b, c)) -> max3(a, b, c)
+    // min(a, min(b, c)) -> min3(a, b, c)
+    if (Op1.getOpcode() == Opc && Op1.hasOneUse()) {
+      SDLoc DL(N);
+      return DAG.getNode(minMaxOpcToMin3Max3Opc(Opc),
+                         DL,
+                         N->getValueType(0),
+                         Op0,
+                         Op1.getOperand(0),
+                         Op1.getOperand(1));
+    }
   }
 
-  // max(a, max(b, c))
-  if (Op1.getOpcode() == Opc && Op1.hasOneUse()) {
-    SDLoc DL(N);
-    return DAG.getNode(minMaxOpcToMin3Max3Opc(Opc),
-                       DL,
-                       N->getValueType(0),
-                       Op0,
-                       Op1.getOperand(0),
-                       Op1.getOperand(1));
+  // min(max(x, K0), K1), K0 < K1 -> med3(x, K0, K1)
+  if (Opc == ISD::SMIN && Op0.getOpcode() == ISD::SMAX && Op0.hasOneUse()) {
+    if (SDValue Med3 = performIntMed3ImmCombine(DAG, SDLoc(N), Op0, Op1, true))
+      return Med3;
+  }
+
+  if (Opc == ISD::UMIN && Op0.getOpcode() == ISD::UMAX && Op0.hasOneUse()) {
+    if (SDValue Med3 = performIntMed3ImmCombine(DAG, SDLoc(N), Op0, Op1, false))
+      return Med3;
+  }
+
+  // fminnum(fmaxnum(x, K0), K1), K0 < K1 && !is_snan(x) -> fmed3(x, K0, K1)
+  if (((Opc == ISD::FMINNUM && Op0.getOpcode() == ISD::FMAXNUM) ||
+       (Opc == AMDGPUISD::FMIN_LEGACY &&
+        Op0.getOpcode() == AMDGPUISD::FMAX_LEGACY)) &&
+      N->getValueType(0) == MVT::f32 && Op0.hasOneUse()) {
+    if (SDValue Res = performFPMed3ImmCombine(DAG, SDLoc(N), Op0, Op1))
+      return Res;
   }
 
   return SDValue();
@@ -2180,16 +2295,18 @@ SDValue SITargetLowering::PerformDAGCombine(SDNode *N,
     return AMDGPUTargetLowering::PerformDAGCombine(N, DCI);
   case ISD::SETCC:
     return performSetCCCombine(N, DCI);
-  case ISD::FMAXNUM: // TODO: What about fmax_legacy?
+  case ISD::FMAXNUM:
   case ISD::FMINNUM:
   case ISD::SMAX:
   case ISD::SMIN:
   case ISD::UMAX:
-  case ISD::UMIN: {
+  case ISD::UMIN:
+  case AMDGPUISD::FMIN_LEGACY:
+  case AMDGPUISD::FMAX_LEGACY: {
     if (DCI.getDAGCombineLevel() >= AfterLegalizeDAG &&
         N->getValueType(0) != MVT::f64 &&
         getTargetMachine().getOptLevel() > CodeGenOpt::None)
-      return performMin3Max3Combine(N, DCI);
+      return performMinMaxCombine(N, DCI);
     break;
   }
 

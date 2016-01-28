@@ -24,12 +24,12 @@
 #include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
+#include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/MC/MCTargetAsmParser.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
@@ -2180,22 +2180,36 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     unsigned ComparisonCode = StringSwitch<unsigned>(
       PatchedName.slice(CCIdx, PatchedName.size() - 2))
       .Case("eq",       0x00)
+      .Case("eq_oq",    0x00)
       .Case("lt",       0x01)
+      .Case("lt_os",    0x01)
       .Case("le",       0x02)
+      .Case("le_os",    0x02)
       .Case("unord",    0x03)
+      .Case("unord_q",  0x03)
       .Case("neq",      0x04)
+      .Case("neq_uq",   0x04)
       .Case("nlt",      0x05)
+      .Case("nlt_us",   0x05)
       .Case("nle",      0x06)
+      .Case("nle_us",   0x06)
       .Case("ord",      0x07)
+      .Case("ord_q",    0x07)
       /* AVX only from here */
       .Case("eq_uq",    0x08)
       .Case("nge",      0x09)
+      .Case("nge_us",   0x09)
       .Case("ngt",      0x0A)
+      .Case("ngt_us",   0x0A)
       .Case("false",    0x0B)
+      .Case("false_oq", 0x0B)
       .Case("neq_oq",   0x0C)
       .Case("ge",       0x0D)
+      .Case("ge_os",    0x0D)
       .Case("gt",       0x0E)
+      .Case("gt_os",    0x0E)
       .Case("true",     0x0F)
+      .Case("true_uq",  0x0F)
       .Case("eq_os",    0x10)
       .Case("lt_oq",    0x11)
       .Case("le_oq",    0x12)

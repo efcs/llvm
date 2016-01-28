@@ -501,9 +501,15 @@ class IRLinker {
   /// in an imported function.
   void findNeededSubprograms();
 
+  /// Recursive helper for findNeededSubprograms to locate any DISubprogram
+  /// reached from the given Node, marking any found as needed.
+  void findReachedSubprograms(const MDNode *Node,
+                              SmallPtrSet<const MDNode *, 16> &Visited);
+
   /// The value mapper leaves nulls in the list of subprograms for any
-  /// in the UnneededSubprograms map. Strip those out after metadata linking.
-  void stripNullSubprograms();
+  /// in the UnneededSubprograms map. Strip those out of the mapped
+  /// compile unit.
+  void stripNullSubprograms(DICompileUnit *CU);
 
 public:
   IRLinker(Module &DstM, IRMover::IdentifiedStructTypeSet &Set, Module &SrcM,
@@ -1194,6 +1200,21 @@ bool IRLinker::linkGlobalValueBody(GlobalValue &Dst, GlobalValue &Src) {
   return false;
 }
 
+void IRLinker::findReachedSubprograms(
+    const MDNode *Node, SmallPtrSet<const MDNode *, 16> &Visited) {
+  if (!Visited.insert(Node).second)
+    return;
+  DISubprogram *SP = getDISubprogram(Node);
+  if (SP)
+    UnneededSubprograms.erase(SP);
+  for (auto &Op : Node->operands()) {
+    const MDNode *OpN = dyn_cast_or_null<MDNode>(Op.get());
+    if (!OpN)
+      continue;
+    findReachedSubprograms(OpN, Visited);
+  }
+}
+
 void IRLinker::findNeededSubprograms() {
   // Track unneeded nodes to make it simpler to handle the case
   // where we are checking if an already-mapped SP is needed.
@@ -1205,14 +1226,16 @@ void IRLinker::findNeededSubprograms() {
     assert(CU && "Expected valid compile unit");
     // Ensure that we don't remove subprograms referenced by DIImportedEntity.
     // It is not legal to have a DIImportedEntity with a null entity or scope.
+    // Using getDISubprogram handles the case where the subprogram is reached
+    // via an intervening DILexicalBlock.
     // FIXME: The DISubprogram for functions not linked in but kept due to
     // being referenced by a DIImportedEntity should also get their
     // IsDefinition flag is unset.
     SmallPtrSet<DISubprogram *, 8> ImportedEntitySPs;
     for (auto *IE : CU->getImportedEntities()) {
-      if (auto *SP = dyn_cast<DISubprogram>(IE->getEntity()))
+      if (auto *SP = getDISubprogram(dyn_cast<MDNode>(IE->getEntity())))
         ImportedEntitySPs.insert(SP);
-      if (auto *SP = dyn_cast<DISubprogram>(IE->getScope()))
+      if (auto *SP = getDISubprogram(dyn_cast<MDNode>(IE->getScope())))
         ImportedEntitySPs.insert(SP);
     }
     for (auto *Op : CU->getSubprograms()) {
@@ -1229,42 +1252,39 @@ void IRLinker::findNeededSubprograms() {
   if (!IsMetadataLinkingPostpass)
     return;
   // In the case of metadata linking as a postpass (e.g. for function
-  // importing), see which DISubprogram MD from the source has an associated
-  // temporary metadata node, which means the SP was needed by an imported
-  // function.
+  // importing), see which MD from the source has an associated
+  // temporary metadata node, which means that any DISubprogram
+  // reached from that MD was needed by an imported function.
+  SmallPtrSet<const MDNode *, 16> Visited;
   for (auto MDI : MetadataToIDs) {
     const MDNode *Node = dyn_cast<MDNode>(MDI.first);
     if (!Node)
       continue;
-    DISubprogram *SP = getDISubprogram(Node);
-    if (!SP || !ValIDToTempMDMap->count(MDI.second))
+    if (!ValIDToTempMDMap->count(MDI.second))
       continue;
-    UnneededSubprograms.erase(SP);
+    // Find any SP needed recursively from this needed Node.
+    findReachedSubprograms(Node, Visited);
   }
 }
 
-// Squash null subprograms from compile unit subprogram lists.
-void IRLinker::stripNullSubprograms() {
-  NamedMDNode *CompileUnits = DstM.getNamedMetadata("llvm.dbg.cu");
-  if (!CompileUnits)
+// Squash null subprograms from the given compile unit's subprogram list.
+void IRLinker::stripNullSubprograms(DICompileUnit *CU) {
+  // There won't be any nulls if we didn't have any subprograms marked
+  // as unneeded.
+  if (UnneededSubprograms.empty())
     return;
-  for (unsigned I = 0, E = CompileUnits->getNumOperands(); I != E; ++I) {
-    auto *CU = cast<DICompileUnit>(CompileUnits->getOperand(I));
-    assert(CU && "Expected valid compile unit");
-
-    SmallVector<Metadata *, 16> NewSPs;
-    NewSPs.reserve(CU->getSubprograms().size());
-    bool FoundNull = false;
-    for (DISubprogram *SP : CU->getSubprograms()) {
-      if (!SP) {
-        FoundNull = true;
-        continue;
-      }
-      NewSPs.push_back(SP);
+  SmallVector<Metadata *, 16> NewSPs;
+  NewSPs.reserve(CU->getSubprograms().size());
+  bool FoundNull = false;
+  for (DISubprogram *SP : CU->getSubprograms()) {
+    if (!SP) {
+      FoundNull = true;
+      continue;
     }
-    if (FoundNull)
-      CU->replaceSubprograms(MDTuple::get(CU->getContext(), NewSPs));
+    NewSPs.push_back(SP);
   }
+  if (FoundNull)
+    CU->replaceSubprograms(MDTuple::get(CU->getContext(), NewSPs));
 }
 
 /// Insert all of the named MDNodes in Src into the Dest module.
@@ -1277,12 +1297,18 @@ void IRLinker::linkNamedMDNodes() {
       continue;
     NamedMDNode *DestNMD = DstM.getOrInsertNamedMetadata(NMD.getName());
     // Add Src elements into Dest node.
-    for (const MDNode *op : NMD.operands())
-      DestNMD->addOperand(MapMetadata(
+    for (const MDNode *op : NMD.operands()) {
+      MDNode *DestMD = MapMetadata(
           op, ValueMap, ValueMapperFlags | RF_NullMapMissingGlobalValues,
-          &TypeMap, &GValMaterializer));
+          &TypeMap, &GValMaterializer);
+      // For each newly mapped compile unit remove any null subprograms,
+      // which occur when findNeededSubprograms identified any as unneeded
+      // in the dest module.
+      if (auto *CU = dyn_cast<DICompileUnit>(DestMD))
+        stripNullSubprograms(CU);
+      DestNMD->addOperand(DestMD);
+    }
   }
-  stripNullSubprograms();
 }
 
 /// Merge the linker flags in Src into the Dest module.
