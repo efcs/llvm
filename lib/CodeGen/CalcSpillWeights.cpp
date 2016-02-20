@@ -192,11 +192,15 @@ VirtRegAuxInfo::calculateSpillWeightAndHint(LiveInterval &li) {
     // FIXME: we probably shouldn't use floats at all.
     volatile float hweight = Hint[hint] += weight;
     if (TargetRegisterInfo::isPhysicalRegister(hint)) {
-      if (hweight > bestPhys && mri.isAllocatable(hint))
-        bestPhys = hweight, hintPhys = hint;
+      if (hweight > bestPhys && mri.isAllocatable(hint)) {
+        bestPhys = hweight;
+        hintPhys = hint;
+      }
     } else {
-      if (hweight > bestVirt)
-        bestVirt = hweight, hintVirt = hint;
+      if (hweight > bestVirt) {
+        bestVirt = hweight;
+        hintVirt = hint;
+      }
     }
   }
 
@@ -213,8 +217,11 @@ VirtRegAuxInfo::calculateSpillWeightAndHint(LiveInterval &li) {
   if (!Spillable)
     return;
 
-  // Mark li as unspillable if all live ranges are tiny.
-  if (li.isZeroLength(LIS.getSlotIndexes())) {
+  // Mark li as unspillable if all live ranges are tiny and the interval
+  // is not live at any reg mask.  If the interval is live at a reg mask
+  // spilling may be required.
+  if (li.isZeroLength(LIS.getSlotIndexes()) &&
+      !li.isLiveAtIndexes(LIS.getRegMaskSlots())) {
     li.markNotSpillable();
     return;
   }

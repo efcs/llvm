@@ -144,6 +144,16 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::XOR, MVT::i32, Custom);
   setOperationAction(ISD::XOR, MVT::i64, Custom);
 
+  // Custom lowering hooks are needed for OR
+  // to fold it into CCMP.
+  setOperationAction(ISD::OR, MVT::i32, Custom);
+  setOperationAction(ISD::OR, MVT::i64, Custom);
+
+  // Custom lowering hooks are needed for AND
+  // to fold it into CCMP.
+  setOperationAction(ISD::AND, MVT::i32, Custom);
+  setOperationAction(ISD::AND, MVT::i64, Custom);
+
   // Virtually no operation on f128 is legal, but LLVM can't expand them when
   // there's a valid register class, so we need custom operations in most cases.
   setOperationAction(ISD::FABS, MVT::f128, Expand);
@@ -624,7 +634,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   }
 
   // Prefer likely predicted branches to selects on out-of-order cores.
-  if (Subtarget->isCortexA57())
+  if (Subtarget->isCortexA57() || Subtarget->isKryo())
     PredictableSelectIsExpensive = true;
 }
 
@@ -1597,6 +1607,27 @@ static SDValue getAArch64Cmp(SDValue LHS, SDValue RHS, ISD::CondCode CC,
   return Cmp;
 }
 
+// Attempt to form conditional compare sequences for and/or trees
+// with setcc leafs.
+static SDValue tryLowerToAArch64Cmp(SDValue Op, SelectionDAG &DAG) {
+  SDValue LHS = Op.getOperand(0);
+  SDValue RHS = Op.getOperand(1);
+  if ((LHS.getOpcode() != ISD::SETCC) || (RHS.getOpcode() != ISD::SETCC))
+    return Op;
+
+  bool CanNegate;
+  if (!isConjunctionDisjunctionTree(Op, CanNegate))
+    return SDValue();
+
+  EVT VT = Op.getValueType();
+  SDLoc DL(Op);
+  SDValue TVal = DAG.getConstant(1, DL, VT);
+  SDValue FVal = DAG.getConstant(0, DL, VT);
+  SDValue CCVal;
+  SDValue Cmp = getAArch64Cmp(Op, FVal, ISD::SETEQ, CCVal, DAG, DL);
+  return DAG.getNode(AArch64ISD::CSEL, DL, VT, FVal, TVal, CCVal, Cmp);
+}
+
 static std::pair<SDValue, SDValue>
 getAArch64XALUOOp(AArch64CC::CondCode &CC, SDValue Op, SelectionDAG &DAG) {
   assert((Op.getValueType() == MVT::i32 || Op.getValueType() == MVT::i64) &&
@@ -1716,6 +1747,18 @@ SDValue AArch64TargetLowering::LowerF128Call(SDValue Op, SelectionDAG &DAG,
                                              RTLIB::Libcall Call) const {
   SmallVector<SDValue, 2> Ops(Op->op_begin(), Op->op_end());
   return makeLibCall(DAG, Call, MVT::f128, Ops, false, SDLoc(Op)).first;
+}
+
+SDValue AArch64TargetLowering::LowerAND(SDValue Op, SelectionDAG &DAG) const {
+  if (Op.getValueType().isVector())
+    return LowerVectorAND(Op, DAG);
+  return tryLowerToAArch64Cmp(Op, DAG);
+}
+
+SDValue AArch64TargetLowering::LowerOR(SDValue Op, SelectionDAG &DAG) const {
+  if (Op.getValueType().isVector())
+    return LowerVectorOR(Op, DAG);
+  return tryLowerToAArch64Cmp(Op, DAG);
 }
 
 static SDValue LowerXOR(SDValue Op, SelectionDAG &DAG) {
@@ -2372,9 +2415,9 @@ SDValue AArch64TargetLowering::LowerOperation(SDValue Op,
   case ISD::FCOPYSIGN:
     return LowerFCOPYSIGN(Op, DAG);
   case ISD::AND:
-    return LowerVectorAND(Op, DAG);
+    return LowerAND(Op, DAG);
   case ISD::OR:
-    return LowerVectorOR(Op, DAG);
+    return LowerOR(Op, DAG);
   case ISD::XOR:
     return LowerXOR(Op, DAG);
   case ISD::PREFETCH:
@@ -5636,8 +5679,7 @@ SDValue AArch64TargetLowering::LowerVECTOR_SHUFFLE(SDValue Op,
     return DAG.getNode(Opc, dl, V1.getValueType(), V1, V1);
   }
 
-  SDValue Concat = tryFormConcatFromShuffle(Op, DAG);
-  if (Concat.getNode())
+  if (SDValue Concat = tryFormConcatFromShuffle(Op, DAG))
     return Concat;
 
   bool DstIsLeft;
@@ -5909,8 +5951,7 @@ SDValue AArch64TargetLowering::LowerVectorOR(SDValue Op,
                                              SelectionDAG &DAG) const {
   // Attempt to form a vector S[LR]I from (or (and X, C1), (lsl Y, C2))
   if (EnableAArch64SlrGeneration) {
-    SDValue Res = tryLowerToSLI(Op.getNode(), DAG);
-    if (Res.getNode())
+    if (SDValue Res = tryLowerToSLI(Op.getNode(), DAG))
       return Res;
   }
 
@@ -7865,12 +7906,10 @@ static SDValue performORCombine(SDNode *N, TargetLowering::DAGCombinerInfo &DCI,
   if (!DAG.getTargetLoweringInfo().isTypeLegal(VT))
     return SDValue();
 
-  SDValue Res = tryCombineToEXTR(N, DCI);
-  if (Res.getNode())
+  if (SDValue Res = tryCombineToEXTR(N, DCI))
     return Res;
 
-  Res = tryCombineToBSL(N, DCI);
-  if (Res.getNode())
+  if (SDValue Res = tryCombineToBSL(N, DCI))
     return Res;
 
   return SDValue();
@@ -8830,8 +8869,7 @@ static SDValue performSTORECombine(SDNode *N,
                                    TargetLowering::DAGCombinerInfo &DCI,
                                    SelectionDAG &DAG,
                                    const AArch64Subtarget *Subtarget) {
-  SDValue Split = split16BStores(N, DCI, DAG, Subtarget);
-  if (Split.getNode())
+  if (SDValue Split = split16BStores(N, DCI, DAG, Subtarget))
     return Split;
 
   if (Subtarget->supportsAddressTopByteIgnored() &&
@@ -9497,8 +9535,7 @@ SDValue performCONDCombine(SDNode *N,
 static SDValue performBRCONDCombine(SDNode *N,
                                     TargetLowering::DAGCombinerInfo &DCI,
                                     SelectionDAG &DAG) {
-  SDValue NV = performCONDCombine(N, DCI, DAG, 2, 3);
-  if (NV.getNode())
+  if (SDValue NV = performCONDCombine(N, DCI, DAG, 2, 3))
     N = NV.getNode();
   SDValue Chain = N->getOperand(0);
   SDValue Dest = N->getOperand(1);

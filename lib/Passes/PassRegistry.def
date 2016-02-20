@@ -47,12 +47,14 @@ CGSCC_ANALYSIS("no-op-cgscc", NoOpCGSCCAnalysis())
 #define CGSCC_PASS(NAME, CREATE_PASS)
 #endif
 CGSCC_PASS("invalidate<all>", InvalidateAllAnalysesPass())
+CGSCC_PASS("function-attrs", PostOrderFunctionAttrsPass())
 CGSCC_PASS("no-op-cgscc", NoOpCGSCCPass())
 #undef CGSCC_PASS
 
 #ifndef FUNCTION_ANALYSIS
 #define FUNCTION_ANALYSIS(NAME, CREATE_PASS)
 #endif
+FUNCTION_ANALYSIS("aa", AAManager())
 FUNCTION_ANALYSIS("assumptions", AssumptionAnalysis())
 FUNCTION_ANALYSIS("domtree", DominatorTreeAnalysis())
 FUNCTION_ANALYSIS("loops", LoopAnalysis())
@@ -61,6 +63,13 @@ FUNCTION_ANALYSIS("scalar-evolution", ScalarEvolutionAnalysis())
 FUNCTION_ANALYSIS("targetlibinfo", TargetLibraryAnalysis())
 FUNCTION_ANALYSIS("targetir",
                   TM ? TM->getTargetIRAnalysis() : TargetIRAnalysis())
+
+#ifndef FUNCTION_ALIAS_ANALYSIS
+#define FUNCTION_ALIAS_ANALYSIS(NAME, CREATE_PASS)                             \
+  FUNCTION_ANALYSIS(NAME, CREATE_PASS)
+#endif
+FUNCTION_ALIAS_ANALYSIS("basic-aa", BasicAA())
+#undef FUNCTION_ALIAS_ANALYSIS
 #undef FUNCTION_ANALYSIS
 
 #ifndef FUNCTION_PASS

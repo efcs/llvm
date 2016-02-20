@@ -677,25 +677,33 @@ SDValue RegsForValue::getCopyFromRegs(SelectionDAG &DAG,
       // now, just use the tightest assertzext/assertsext possible.
       bool isSExt = true;
       EVT FromVT(MVT::Other);
-      if (NumSignBits == RegSize)
-        isSExt = true, FromVT = MVT::i1;   // ASSERT SEXT 1
-      else if (NumZeroBits >= RegSize-1)
-        isSExt = false, FromVT = MVT::i1;  // ASSERT ZEXT 1
-      else if (NumSignBits > RegSize-8)
-        isSExt = true, FromVT = MVT::i8;   // ASSERT SEXT 8
-      else if (NumZeroBits >= RegSize-8)
-        isSExt = false, FromVT = MVT::i8;  // ASSERT ZEXT 8
-      else if (NumSignBits > RegSize-16)
-        isSExt = true, FromVT = MVT::i16;  // ASSERT SEXT 16
-      else if (NumZeroBits >= RegSize-16)
-        isSExt = false, FromVT = MVT::i16; // ASSERT ZEXT 16
-      else if (NumSignBits > RegSize-32)
-        isSExt = true, FromVT = MVT::i32;  // ASSERT SEXT 32
-      else if (NumZeroBits >= RegSize-32)
-        isSExt = false, FromVT = MVT::i32; // ASSERT ZEXT 32
-      else
+      if (NumSignBits == RegSize) {
+        isSExt = true;   // ASSERT SEXT 1
+        FromVT = MVT::i1;
+      } else if (NumZeroBits >= RegSize - 1) {
+        isSExt = false;  // ASSERT ZEXT 1
+        FromVT = MVT::i1;
+      } else if (NumSignBits > RegSize - 8) {
+        isSExt = true;   // ASSERT SEXT 8
+        FromVT = MVT::i8;
+      } else if (NumZeroBits >= RegSize - 8) {
+        isSExt = false;  // ASSERT ZEXT 8
+        FromVT = MVT::i8;
+      } else if (NumSignBits > RegSize - 16) {
+        isSExt = true;   // ASSERT SEXT 16
+        FromVT = MVT::i16;
+      } else if (NumZeroBits >= RegSize - 16) {
+        isSExt = false;  // ASSERT ZEXT 16
+        FromVT = MVT::i16;
+      } else if (NumSignBits > RegSize - 32) {
+        isSExt = true;   // ASSERT SEXT 32
+        FromVT = MVT::i32;
+      } else if (NumZeroBits >= RegSize - 32) {
+        isSExt = false;  // ASSERT ZEXT 32
+        FromVT = MVT::i32;
+      } else {
         continue;
-
+      }
       // Add an assertion node.
       assert(FromVT != MVT::Other);
       Parts[i] = DAG.getNode(isSExt ? ISD::AssertSext : ISD::AssertZext, dl,
@@ -993,10 +1001,8 @@ SDValue SelectionDAGBuilder::getValue(const Value *V) {
 
   // If there's a virtual register allocated and initialized for this
   // value, use it.
-  SDValue copyFromReg = getCopyFromRegs(V, V->getType());
-  if (copyFromReg.getNode()) {
+  if (SDValue copyFromReg = getCopyFromRegs(V, V->getType()))
     return copyFromReg;
-  }
 
   // Otherwise create a new SDValue and remember it.
   SDValue Val = getValueImpl(V);
@@ -1381,7 +1387,7 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
         EVT VT = ValueVTs[j];
 
         if (ExtendKind != ISD::ANY_EXTEND && VT.isInteger())
-          VT = TLI.getTypeForExtArgOrReturn(Context, VT, ExtendKind);
+          VT = TLI.getTypeForExtReturn(Context, VT, ExtendKind);
 
         unsigned NumParts = TLI.getNumRegisters(Context, VT);
         MVT PartVT = TLI.getRegisterType(Context, VT);
@@ -3721,7 +3727,8 @@ void SelectionDAGBuilder::visitTargetIntrinsic(const CallInst &I,
     if (VectorType *PTy = dyn_cast<VectorType>(I.getType())) {
       EVT VT = TLI.getValueType(DAG.getDataLayout(), PTy);
       Result = DAG.getNode(ISD::BITCAST, getCurSDLoc(), VT, Result);
-    }
+    } else
+      Result = lowerRangeToAssertZExt(DAG, I, Result);
 
     setValue(&I, Result);
   }
@@ -5419,8 +5426,11 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     .setTailCall(isTailCall);
   std::pair<SDValue, SDValue> Result = lowerInvokable(CLI, EHPadBB);
 
-  if (Result.first.getNode())
-    setValue(CS.getInstruction(), Result.first);
+  if (Result.first.getNode()) {
+    const Instruction *Inst = CS.getInstruction();
+    Result.first = lowerRangeToAssertZExt(DAG, *Inst, Result.first);
+    setValue(Inst, Result.first);
+  }
 }
 
 /// IsOnlyUsedInZeroEqualityComparison - Return true if it only matters that the
@@ -6716,6 +6726,39 @@ void SelectionDAGBuilder::visitVACopy(const CallInst &I) {
                           DAG.getSrcValue(I.getArgOperand(1))));
 }
 
+SDValue SelectionDAGBuilder::lowerRangeToAssertZExt(SelectionDAG &DAG,
+                                                    const Instruction &I,
+                                                    SDValue Op) {
+  const MDNode *Range = I.getMetadata(LLVMContext::MD_range);
+  if (!Range)
+    return Op;
+
+  Constant *Lo = cast<ConstantAsMetadata>(Range->getOperand(0))->getValue();
+  if (!Lo->isNullValue())
+    return Op;
+
+  Constant *Hi = cast<ConstantAsMetadata>(Range->getOperand(1))->getValue();
+  unsigned Bits = cast<ConstantInt>(Hi)->getValue().logBase2();
+
+  EVT SmallVT = EVT::getIntegerVT(*DAG.getContext(), Bits);
+
+  SDLoc SL = getCurSDLoc();
+
+  SDValue ZExt = DAG.getNode(ISD::AssertZext, SL, Op.getValueType(),
+                             Op, DAG.getValueType(SmallVT));
+  unsigned NumVals = Op.getNode()->getNumValues();
+  if (NumVals == 1)
+    return ZExt;
+
+  SmallVector<SDValue, 4> Ops;
+
+  Ops.push_back(ZExt);
+  for (unsigned I = 1; I != NumVals; ++I)
+    Ops.push_back(Op.getValue(I));
+
+  return DAG.getMergeValues(Ops, SL);
+}
+
 /// \brief Lower an argument list according to the target calling convention.
 ///
 /// \return A tuple of <return-value, token-chain>
@@ -7296,8 +7339,7 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
 void TargetLowering::LowerOperationWrapper(SDNode *N,
                                            SmallVectorImpl<SDValue> &Results,
                                            SelectionDAG &DAG) const {
-  SDValue Res = LowerOperation(SDValue(N, 0), DAG);
-  if (Res.getNode())
+  if (SDValue Res = LowerOperation(SDValue(N, 0), DAG))
     Results.push_back(Res);
 }
 

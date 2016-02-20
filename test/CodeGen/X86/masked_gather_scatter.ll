@@ -4,7 +4,7 @@
 ; RUN: llc -mtriple=x86_64-unknown-linux-gnu  -mattr=+avx512vl -mattr=+avx512dq < %s | FileCheck %s --check-prefix=SKX
 ; RUN: llc -mtriple=i386-unknown-linux-gnu  -mattr=+avx512vl -mattr=+avx512dq < %s | FileCheck %s --check-prefix=SKX_32
 ; RUN: opt -mtriple=x86_64-apple-darwin -codegenprepare -mcpu=corei7-avx -S < %s | FileCheck %s -check-prefix=SCALAR
-
+; RUN: llc -O0 -mtriple=x86_64-unknown-linux-gnu -mcpu=skx < %s -o /dev/null
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
@@ -637,8 +637,7 @@ define <16 x float> @test14(float* %base, i32 %ind, <16 x float*> %vec) {
 ; SKX-NEXT:    vpinsrq $1, %rdi, %xmm0, %xmm1
 ; SKX-NEXT:    vinserti64x2 $0, %xmm1, %zmm0, %zmm0
 ; SKX-NEXT:    vpbroadcastq %xmm0, %zmm0
-; SKX-NEXT:    vmovd %esi, %xmm1
-; SKX-NEXT:    vpbroadcastd %xmm1, %ymm1
+; SKX-NEXT:    vpbroadcastd %esi, %ymm1
 ; SKX-NEXT:    vpmovsxdq %ymm1, %zmm1
 ; SKX-NEXT:    vpsllq $2, %zmm1, %zmm1
 ; SKX-NEXT:    vpaddq %zmm1, %zmm0, %zmm0

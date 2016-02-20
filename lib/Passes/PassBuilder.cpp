@@ -16,7 +16,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -30,6 +32,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/IPO/ForceFunctionAttrs.h"
+#include "llvm/Transforms/IPO/FunctionAttrs.h"
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
 #include "llvm/Transforms/IPO/StripDeadPrototypes.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -103,19 +106,19 @@ char NoOpFunctionAnalysis::PassID;
 
 void PassBuilder::registerModuleAnalyses(ModuleAnalysisManager &MAM) {
 #define MODULE_ANALYSIS(NAME, CREATE_PASS) \
-  MAM.registerPass(CREATE_PASS);
+  MAM.registerPass([&] { return CREATE_PASS; });
 #include "PassRegistry.def"
 }
 
 void PassBuilder::registerCGSCCAnalyses(CGSCCAnalysisManager &CGAM) {
 #define CGSCC_ANALYSIS(NAME, CREATE_PASS) \
-  CGAM.registerPass(CREATE_PASS);
+  CGAM.registerPass([&] { return CREATE_PASS; });
 #include "PassRegistry.def"
 }
 
 void PassBuilder::registerFunctionAnalyses(FunctionAnalysisManager &FAM) {
 #define FUNCTION_ANALYSIS(NAME, CREATE_PASS) \
-  FAM.registerPass(CREATE_PASS);
+  FAM.registerPass([&] { return CREATE_PASS; });
 #include "PassRegistry.def"
 }
 
@@ -205,6 +208,17 @@ bool PassBuilder::parseFunctionPassName(FunctionPassManager &FPM,
   }                                                                            \
   if (Name == "invalidate<" NAME ">") {                                        \
     FPM.addPass(InvalidateAnalysisPass<decltype(CREATE_PASS)>());              \
+    return true;                                                               \
+  }
+#include "PassRegistry.def"
+
+  return false;
+}
+
+bool PassBuilder::parseAAPassName(AAManager &AA, StringRef Name) {
+#define FUNCTION_ALIAS_ANALYSIS(NAME, CREATE_PASS)                             \
+  if (Name == NAME) {                                                          \
+    AA.registerFunctionAnalysis<decltype(CREATE_PASS)>();                      \
     return true;                                                               \
   }
 #include "PassRegistry.def"
@@ -415,4 +429,15 @@ bool PassBuilder::parsePassPipeline(ModulePassManager &MPM,
   }
 
   return false;
+}
+
+bool PassBuilder::parseAAPipeline(AAManager &AA, StringRef PipelineText) {
+  while (!PipelineText.empty()) {
+    StringRef Name;
+    std::tie(Name, PipelineText) = PipelineText.split(',');
+    if (!parseAAPassName(AA, Name))
+      return false;
+  }
+
+  return true;
 }

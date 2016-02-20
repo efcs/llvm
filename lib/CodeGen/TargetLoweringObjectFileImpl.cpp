@@ -155,9 +155,6 @@ getELFKindForNamedSection(StringRef Name, SectionKind K) {
 
 static unsigned getELFSectionType(StringRef Name, SectionKind K) {
 
-  if (Name == getInstrProfCoverageSectionName(false))
-    return ELF::SHT_NOTE;
-
   if (Name == ".init_array")
     return ELF::SHT_INIT_ARRAY;
 
@@ -467,6 +464,7 @@ emitModuleFlags(MCStreamer &Streamer,
     } else if (Key == "Objective-C Garbage Collection" ||
                Key == "Objective-C GC Only" ||
                Key == "Objective-C Is Simulated" ||
+               Key == "Objective-C Class Properties" ||
                Key == "Objective-C Image Swift Version") {
       ImageInfoFlags |= mdconst::extract<ConstantInt>(Val)->getZExtValue();
     } else if (Key == "Objective-C Image Info Section") {

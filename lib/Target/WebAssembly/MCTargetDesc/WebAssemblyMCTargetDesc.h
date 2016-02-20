@@ -44,8 +44,10 @@ namespace WebAssembly {
 enum OperandType {
   /// Basic block label in a branch construct.
   OPERAND_BASIC_BLOCK = MCOI::OPERAND_FIRST_TARGET,
-  /// Floating-point immediate.
-  OPERAND_FPIMM,
+  /// 32-bit floating-point immediates.
+  OPERAND_FP32IMM,
+  /// 64-bit floating-point immediates.
+  OPERAND_FP64IMM,
   /// p2align immediate for load and store address alignment.
   OPERAND_P2ALIGN
 };
@@ -125,6 +127,8 @@ inline unsigned GetDefaultP2Align(unsigned Opcode) {
   }
 }
 
+/// The operand number of the load or store address in load/store instructions.
+static const unsigned MemOpAddressOperandNo = 2;
 /// The operand number of the stored value in a store instruction.
 static const unsigned StoreValueOperandNo = 4;
 

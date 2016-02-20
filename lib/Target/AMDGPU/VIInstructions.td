@@ -11,6 +11,8 @@
 
 let SIAssemblerPredicate = DisableInst, SubtargetPredicate = isVI in {
 
+let DisableSIDecoder = 1 in {
+
 //===----------------------------------------------------------------------===//
 // VOP1 Instructions
 //===----------------------------------------------------------------------===//
@@ -73,6 +75,8 @@ defm V_MIN_I16 : VOP2Inst <vop2<0,0x32>, "v_min_i16", VOP_I16_I16_I16>;
 } // End isCommutable = 1
 defm V_LDEXP_F16 : VOP2Inst <vop2<0,0x33>, "v_ldexp_f16", VOP_F16_F16_I16>;
 
+} // let DisableSIDecoder = 1
+
 // Aliases to simplify matching of floating-point instructions that
 // are VOP2 on SI and VOP3 on VI.
 
@@ -107,6 +111,17 @@ let Predicates = [isVI] in {
 def : Pat <
   (SIload_constant v4i32:$sbase, IMM20bit:$offset),
   (S_BUFFER_LOAD_DWORD_IMM $sbase, (as_i32imm $offset))
+>;
+
+//===----------------------------------------------------------------------===//
+// DPP Paterns
+//===----------------------------------------------------------------------===//
+
+def : Pat <
+  (int_amdgcn_mov_dpp i32:$src, imm:$dpp_ctrl, imm:$bound_ctrl,
+                      imm:$bank_mask, imm:$row_mask),
+  (V_MOV_B32_dpp $src, (as_i32imm $dpp_ctrl), (as_i1imm $bound_ctrl),
+                       (as_i32imm $bank_mask), (as_i32imm $row_mask))
 >;
 
 } // End Predicates = [isVI]

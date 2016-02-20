@@ -649,6 +649,8 @@ let Predicates = [UseAVX] in {
   def : Pat<(v4f64 (X86vzmovl (insert_subvector undef,
                    (v2f64 (scalar_to_vector (loadf64 addr:$src))), (iPTR 0)))),
             (SUBREG_TO_REG (i32 0), (VMOVSDrm addr:$src), sub_xmm)>;
+  def : Pat<(v4f64 (X86vzload addr:$src)),
+            (SUBREG_TO_REG (i32 0), (VMOVSDrm addr:$src), sub_xmm)>;
   }
 
   // Extract and store.
@@ -3760,6 +3762,8 @@ def PAUSE : I<0x90, RawFrm, (outs), (ins),
 
 let SchedRW = [WriteFence] in {
 // Load, store, and memory fence
+// TODO: As with mfence, we may want to ease the availablity of sfence/lfence
+// to include any 64-bit target.
 def SFENCE : I<0xAE, MRM_F8, (outs), (ins),
                "sfence", [(int_x86_sse_sfence)], IIC_SSE_SFENCE>,
                PS, Requires<[HasSSE1]>;
@@ -3768,7 +3772,7 @@ def LFENCE : I<0xAE, MRM_E8, (outs), (ins),
                TB, Requires<[HasSSE2]>;
 def MFENCE : I<0xAE, MRM_F0, (outs), (ins),
                "mfence", [(int_x86_sse2_mfence)], IIC_SSE_MFENCE>,
-               TB, Requires<[HasSSE2]>;
+               TB, Requires<[HasMFence]>;
 } // SchedRW
 
 def : Pat<(X86SFence), (SFENCE)>;
@@ -5058,19 +5062,14 @@ let Predicates = [UseAVX], AddedComplexity = 20 in {
   def : Pat<(v4i64 (X86vzmovl (insert_subvector undef,
               (v2i64 (scalar_to_vector (loadi64 addr:$src))), (iPTR 0)))),
             (SUBREG_TO_REG (i64 0), (VMOVZQI2PQIrm addr:$src), sub_xmm)>;
+  def : Pat<(v4i64 (X86vzload addr:$src)),
+            (SUBREG_TO_REG (i64 0), (VMOVZQI2PQIrm addr:$src), sub_xmm)>;
 }
 
 let Predicates = [UseSSE2], AddedComplexity = 20 in {
   def : Pat<(v2i64 (X86vzmovl (bc_v2i64 (loadv4f32 addr:$src)))),
             (MOVZQI2PQIrm addr:$src)>;
   def : Pat<(v2i64 (X86vzload addr:$src)), (MOVZQI2PQIrm addr:$src)>;
-}
-
-let Predicates = [HasAVX] in {
-def : Pat<(v4i64 (alignedX86vzload addr:$src)),
-          (SUBREG_TO_REG (i32 0), (VMOVAPSrm addr:$src), sub_xmm)>;
-def : Pat<(v4i64 (X86vzload addr:$src)),
-          (SUBREG_TO_REG (i32 0), (VMOVUPSrm addr:$src), sub_xmm)>;
 }
 
 //===---------------------------------------------------------------------===//
@@ -5659,15 +5658,15 @@ let isCommutable = 0 in {
   defm VPHSUBD    : SS3I_binop_rm<0x06, "vphsubd", X86hsub, v4i32, VR128,
                                   loadv2i64, i128mem,
                                   SSE_PHADDSUBD, 0>, VEX_4V;
-  defm VPSIGNB    : SS3I_binop_rm<0x08, "vpsignb", X86psign, v16i8, VR128,
-                                  loadv2i64, i128mem,
-                                  SSE_PSIGN, 0>, VEX_4V;
-  defm VPSIGNW    : SS3I_binop_rm<0x09, "vpsignw", X86psign, v8i16, VR128,
-                                  loadv2i64, i128mem,
-                                  SSE_PSIGN, 0>, VEX_4V;
-  defm VPSIGND    : SS3I_binop_rm<0x0A, "vpsignd", X86psign, v4i32, VR128,
-                                  loadv2i64, i128mem,
-                                  SSE_PSIGN, 0>, VEX_4V;
+  defm VPSIGNB    : SS3I_binop_rm_int<0x08, "vpsignb",
+                                      int_x86_ssse3_psign_b_128,
+                                      SSE_PSIGN, loadv2i64, 0>, VEX_4V;
+  defm VPSIGNW    : SS3I_binop_rm_int<0x09, "vpsignw",
+                                      int_x86_ssse3_psign_w_128,
+                                      SSE_PSIGN, loadv2i64, 0>, VEX_4V;
+  defm VPSIGND    : SS3I_binop_rm_int<0x0A, "vpsignd",
+                                      int_x86_ssse3_psign_d_128,
+                                      SSE_PSIGN, loadv2i64, 0>, VEX_4V;
   defm VPSHUFB    : SS3I_binop_rm<0x00, "vpshufb", X86pshufb, v16i8, VR128,
                                   loadv2i64, i128mem,
                                   SSE_PSHUFB, 0>, VEX_4V;
@@ -5700,15 +5699,12 @@ let isCommutable = 0 in {
   defm VPHSUBDY   : SS3I_binop_rm<0x06, "vphsubd", X86hsub, v8i32, VR256,
                                   loadv4i64, i256mem,
                                   SSE_PHADDSUBW, 0>, VEX_4V, VEX_L;
-  defm VPSIGNBY   : SS3I_binop_rm<0x08, "vpsignb", X86psign, v32i8, VR256,
-                                  loadv4i64, i256mem,
-                                  SSE_PHADDSUBW, 0>, VEX_4V, VEX_L;
-  defm VPSIGNWY   : SS3I_binop_rm<0x09, "vpsignw", X86psign, v16i16, VR256,
-                                  loadv4i64, i256mem,
-                                  SSE_PHADDSUBW, 0>, VEX_4V, VEX_L;
-  defm VPSIGNDY   : SS3I_binop_rm<0x0A, "vpsignd", X86psign, v8i32, VR256,
-                                  loadv4i64, i256mem,
-                                  SSE_PHADDSUBW, 0>, VEX_4V, VEX_L;
+  defm VPSIGNBY   : SS3I_binop_rm_int_y<0x08, "vpsignb", int_x86_avx2_psign_b,
+                                        WriteVecALU>, VEX_4V, VEX_L;
+  defm VPSIGNWY   : SS3I_binop_rm_int_y<0x09, "vpsignw", int_x86_avx2_psign_w,
+                                        WriteVecALU>, VEX_4V, VEX_L;
+  defm VPSIGNDY   : SS3I_binop_rm_int_y<0x0A, "vpsignd", int_x86_avx2_psign_d,
+                                        WriteVecALU>, VEX_4V, VEX_L;
   defm VPSHUFBY   : SS3I_binop_rm<0x00, "vpshufb", X86pshufb, v32i8, VR256,
                                   loadv4i64, i256mem,
                                   SSE_PSHUFB, 0>, VEX_4V, VEX_L;
@@ -5738,12 +5734,12 @@ let isCommutable = 0 in {
                                  memopv2i64, i128mem, SSE_PHADDSUBW>;
   defm PHSUBD    : SS3I_binop_rm<0x06, "phsubd", X86hsub, v4i32, VR128,
                                  memopv2i64, i128mem, SSE_PHADDSUBD>;
-  defm PSIGNB    : SS3I_binop_rm<0x08, "psignb", X86psign, v16i8, VR128,
-                                 memopv2i64, i128mem, SSE_PSIGN>;
-  defm PSIGNW    : SS3I_binop_rm<0x09, "psignw", X86psign, v8i16, VR128,
-                                 memopv2i64, i128mem, SSE_PSIGN>;
-  defm PSIGND    : SS3I_binop_rm<0x0A, "psignd", X86psign, v4i32, VR128,
-                                 memopv2i64, i128mem, SSE_PSIGN>;
+  defm PSIGNB    : SS3I_binop_rm_int<0x08, "psignb", int_x86_ssse3_psign_b_128,
+                                     SSE_PSIGN, memopv2i64>;
+  defm PSIGNW    : SS3I_binop_rm_int<0x09, "psignw", int_x86_ssse3_psign_w_128,
+                                     SSE_PSIGN, memopv2i64>;
+  defm PSIGND    : SS3I_binop_rm_int<0x0A, "psignd", int_x86_ssse3_psign_d_128,
+                                     SSE_PSIGN, memopv2i64>;
   defm PSHUFB    : SS3I_binop_rm<0x00, "pshufb", X86pshufb, v16i8, VR128,
                                  memopv2i64, i128mem, SSE_PSHUFB>;
   defm PHADDSW   : SS3I_binop_rm_int<0x03, "phaddsw",
@@ -8296,9 +8292,14 @@ let Predicates = [HasF16C] in {
 
 // Patterns for  matching conversions from float to half-float and vice versa.
 let Predicates = [HasF16C] in {
+  // Use MXCSR.RC for rounding instead of explicitly specifying the default
+  // rounding mode (Nearest-Even, encoded as 0). Both are equivalent in the
+  // configurations we support (the default). However, falling back to MXCSR is
+  // more consistent with other instructions, which are always controlled by it.
+  // It's encoded as 0b100.
   def : Pat<(fp_to_f16 FR32:$src),
             (i16 (EXTRACT_SUBREG (VMOVPDI2DIrr (VCVTPS2PHrr
-              (COPY_TO_REGCLASS FR32:$src, VR128), 0)), sub_16bit))>;
+              (COPY_TO_REGCLASS FR32:$src, VR128), 4)), sub_16bit))>;
 
   def : Pat<(f16_to_fp GR16:$src),
             (f32 (COPY_TO_REGCLASS (VCVTPH2PSrr
@@ -8306,7 +8307,7 @@ let Predicates = [HasF16C] in {
 
   def : Pat<(f16_to_fp (i16 (fp_to_f16 FR32:$src))),
             (f32 (COPY_TO_REGCLASS (VCVTPH2PSrr
-              (VCVTPS2PHrr (COPY_TO_REGCLASS FR32:$src, VR128), 0)), FR32)) >;
+              (VCVTPS2PHrr (COPY_TO_REGCLASS FR32:$src, VR128), 4)), FR32)) >;
 }
 
 //===----------------------------------------------------------------------===//
@@ -8408,48 +8409,51 @@ let Predicates = [HasAVX2] in {
             (VBROADCASTSDYrr (v2f64 (EXTRACT_SUBREG (v4f64 VR256:$src),
                                                     sub_xmm)))>;
 
-  // Provide fallback in case the load node that is used in the patterns above
-  // is used by additional users, which prevents the pattern selection.
+// Provide fallback in case the load node that is used in the patterns above
+// is used by additional users, which prevents the pattern selection.
   let AddedComplexity = 20 in {
-    def : Pat<(v4f32 (X86VBroadcast FR32:$src)),
-              (VBROADCASTSSrr (COPY_TO_REGCLASS FR32:$src, VR128))>;
-    def : Pat<(v8f32 (X86VBroadcast FR32:$src)),
-              (VBROADCASTSSYrr (COPY_TO_REGCLASS FR32:$src, VR128))>;
-    def : Pat<(v4f64 (X86VBroadcast FR64:$src)),
-              (VBROADCASTSDYrr (COPY_TO_REGCLASS FR64:$src, VR128))>;
-
-    def : Pat<(v4i32 (X86VBroadcast GR32:$src)),
-              (VBROADCASTSSrr (COPY_TO_REGCLASS GR32:$src, VR128))>;
-    def : Pat<(v8i32 (X86VBroadcast GR32:$src)),
-              (VBROADCASTSSYrr (COPY_TO_REGCLASS GR32:$src, VR128))>;
-    def : Pat<(v4i64 (X86VBroadcast GR64:$src)),
-              (VBROADCASTSDYrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
-
-    def : Pat<(v16i8 (X86VBroadcast GR8:$src)),
-          (VPBROADCASTBrr (COPY_TO_REGCLASS
-                           (i32 (SUBREG_TO_REG (i32 0), GR8:$src, sub_8bit)),
-                           VR128))>;
-    def : Pat<(v32i8 (X86VBroadcast GR8:$src)),
-          (VPBROADCASTBYrr (COPY_TO_REGCLASS
-                            (i32 (SUBREG_TO_REG (i32 0), GR8:$src, sub_8bit)),
-                            VR128))>;
-
-    def : Pat<(v8i16 (X86VBroadcast GR16:$src)),
-          (VPBROADCASTWrr (COPY_TO_REGCLASS
-                           (i32 (SUBREG_TO_REG (i32 0), GR16:$src, sub_16bit)),
-                           VR128))>;
-    def : Pat<(v16i16 (X86VBroadcast GR16:$src)),
-          (VPBROADCASTWYrr (COPY_TO_REGCLASS
-                            (i32 (SUBREG_TO_REG (i32 0), GR16:$src, sub_16bit)),
-                            VR128))>;
-
-    // The patterns for VPBROADCASTD are not needed because they would match
-    // the exact same thing as VBROADCASTSS patterns.
-
-    def : Pat<(v2i64 (X86VBroadcast GR64:$src)),
-          (VPBROADCASTQrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
-    // The v4i64 pattern is not needed because VBROADCASTSDYrr already match.
+  def : Pat<(v4f32 (X86VBroadcast FR32:$src)),
+            (VBROADCASTSSrr (COPY_TO_REGCLASS FR32:$src, VR128))>;
+  def : Pat<(v8f32 (X86VBroadcast FR32:$src)),
+            (VBROADCASTSSYrr (COPY_TO_REGCLASS FR32:$src, VR128))>;
+  def : Pat<(v4f64 (X86VBroadcast FR64:$src)),
+            (VBROADCASTSDYrr (COPY_TO_REGCLASS FR64:$src, VR128))>;
   }
+}
+
+let Predicates = [HasAVX2, NoVLX_Or_NoBWI], AddedComplexity = 20 in {
+  def : Pat<(v16i8 (X86VBroadcast GR8:$src)),
+        (VPBROADCASTBrr (COPY_TO_REGCLASS
+                         (i32 (SUBREG_TO_REG (i32 0), GR8:$src, sub_8bit)),
+                         VR128))>;
+  def : Pat<(v32i8 (X86VBroadcast GR8:$src)),
+        (VPBROADCASTBYrr (COPY_TO_REGCLASS
+                          (i32 (SUBREG_TO_REG (i32 0), GR8:$src, sub_8bit)),
+                          VR128))>;
+
+  def : Pat<(v8i16 (X86VBroadcast GR16:$src)),
+        (VPBROADCASTWrr (COPY_TO_REGCLASS
+                         (i32 (SUBREG_TO_REG (i32 0), GR16:$src, sub_16bit)),
+                         VR128))>;
+  def : Pat<(v16i16 (X86VBroadcast GR16:$src)),
+        (VPBROADCASTWYrr (COPY_TO_REGCLASS
+                          (i32 (SUBREG_TO_REG (i32 0), GR16:$src, sub_16bit)),
+                          VR128))>;  
+}
+let Predicates = [HasAVX2, NoVLX], AddedComplexity = 20 in {
+  def : Pat<(v4i32 (X86VBroadcast GR32:$src)),
+            (VBROADCASTSSrr (COPY_TO_REGCLASS GR32:$src, VR128))>;
+  def : Pat<(v8i32 (X86VBroadcast GR32:$src)),
+            (VBROADCASTSSYrr (COPY_TO_REGCLASS GR32:$src, VR128))>;
+  def : Pat<(v4i64 (X86VBroadcast GR64:$src)),
+            (VBROADCASTSDYrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
+
+  // The patterns for VPBROADCASTD are not needed because they would match
+  // the exact same thing as VBROADCASTSS patterns.
+
+  def : Pat<(v2i64 (X86VBroadcast GR64:$src)),
+        (VPBROADCASTQrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
+  // The v4i64 pattern is not needed because VBROADCASTSDYrr already match.
 }
 
 // AVX1 broadcast patterns
@@ -8462,10 +8466,9 @@ def : Pat<(v4i32 (X86VBroadcast (loadi32 addr:$src))),
           (VBROADCASTSSrm addr:$src)>;
 }
 
-let Predicates = [HasAVX] in {
   // Provide fallback in case the load node that is used in the patterns above
   // is used by additional users, which prevents the pattern selection.
-  let AddedComplexity = 20 in {
+let Predicates = [HasAVX], AddedComplexity = 20 in {
   // 128bit broadcasts:
   def : Pat<(v4f32 (X86VBroadcast FR32:$src)),
             (VPSHUFDri (COPY_TO_REGCLASS FR32:$src, VR128), 0)>;
@@ -8478,6 +8481,11 @@ let Predicates = [HasAVX] in {
               (VPSHUFDri (COPY_TO_REGCLASS FR64:$src, VR128), 0x44), sub_xmm),
               (VPSHUFDri (COPY_TO_REGCLASS FR64:$src, VR128), 0x44), 1)>;
 
+  def : Pat<(v2f64 (X86VBroadcast f64:$src)),
+            (VMOVDDUPrr (COPY_TO_REGCLASS FR64:$src, VR128))>;  
+}
+
+let Predicates = [HasAVX, NoVLX], AddedComplexity = 20 in {
   def : Pat<(v4i32 (X86VBroadcast GR32:$src)),
             (VPSHUFDri (COPY_TO_REGCLASS GR32:$src, VR128), 0)>;
   def : Pat<(v8i32 (X86VBroadcast GR32:$src)),
@@ -8488,12 +8496,9 @@ let Predicates = [HasAVX] in {
             (VINSERTF128rr (INSERT_SUBREG (v4i64 (IMPLICIT_DEF)),
               (VPSHUFDri (COPY_TO_REGCLASS GR64:$src, VR128), 0x44), sub_xmm),
               (VPSHUFDri (COPY_TO_REGCLASS GR64:$src, VR128), 0x44), 1)>;
-  }
-
-  def : Pat<(v2f64 (X86VBroadcast f64:$src)),
-            (VMOVDDUPrr (COPY_TO_REGCLASS FR64:$src, VR128))>;
+  
   def : Pat<(v2i64 (X86VBroadcast i64:$src)),
-            (VMOVDDUPrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
+              (VMOVDDUPrr (COPY_TO_REGCLASS GR64:$src, VR128))>;
 }
 
 //===----------------------------------------------------------------------===//

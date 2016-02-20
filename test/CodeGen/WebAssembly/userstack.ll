@@ -78,9 +78,10 @@ define void @allocarray() {
 
 declare void @ext_func(i64* %ptr)
 ; CHECK-LABEL: non_mem_use
-define void @non_mem_use() {
- ; CHECK: i32.const [[L2:.+]]=, 16
+define void @non_mem_use(i8** %addr) {
+ ; CHECK: i32.const [[L2:.+]]=, 48
  ; CHECK-NEXT: i32.sub [[SP:.+]]=, {{.+}}, [[L2]]
+ %buf = alloca [27 x i8], align 16
  %r = alloca i64
  %r2 = alloca i64
  ; %r is at SP+8
@@ -91,6 +92,13 @@ define void @non_mem_use() {
  ; %r2 is at SP+0, no add needed
  ; CHECK-NEXT: call ext_func@FUNCTION, [[SP]]
  call void @ext_func(i64* %r2)
+ ; Use as a value, but in a store
+ ; %buf is at SP+16
+ ; CHECK: i32.const [[OFF:.+]]=, 16
+ ; CHECK-NEXT: i32.add [[VAL:.+]]=, [[SP]], [[OFF]]
+ ; CHECK-NEXT: i32.store {{.*}}=, 0($0), [[VAL]]
+ %gep = getelementptr inbounds [27 x i8], [27 x i8]* %buf, i32 0, i32 0
+ store i8* %gep, i8** %addr
  ret void
 }
 
@@ -119,9 +127,89 @@ define void @allocarray_inbounds() {
 
 ; CHECK-LABEL: dynamic_alloca:
 define void @dynamic_alloca(i32 %alloc) {
- ; TODO: Support frame pointers
- ;%r = alloca i32, i32 %alloc
- ;store i32 0, i32* %r
+ ; CHECK: i32.const [[L0:.+]]=, __stack_pointer
+ ; CHECK-NEXT: i32.load [[SP:.+]]=, 0([[L0]])
+ ; CHECK-NEXT: copy_local [[FP:.+]]=, [[SP]]
+ ; Target independent codegen bumps the stack pointer
+ ; FIXME: we need to write the value back to memory
+ %r = alloca i32, i32 %alloc
+ ; Target-independent codegen also calculates the store addr
+ store i32 0, i32* %r
+ ; CHECK: i32.const [[L3:.+]]=, __stack_pointer
+ ; CHECK-NEXT: i32.store [[SP]]=, 0([[L3]]), [[FP]]
  ret void
 }
-; TODO: test aligned alloc
+
+
+; CHECK-LABEL: dynamic_static_alloca:
+define void @dynamic_static_alloca(i32 %alloc) {
+ ; CHECK: i32.const [[L0:.+]]=, __stack_pointer
+ ; CHECK-NEXT: i32.load [[L0]]=, 0([[L0]])
+ ; CHECK-NEXT: i32.const [[L2:.+]]=, 16
+ ; CHECK-NEXT: i32.sub [[SP:.+]]=, [[L0]], [[L2]]
+ ; CHECK-NEXT: copy_local [[FP:.+]]=, [[SP]]
+ ; CHECK-NEXT: i32.const [[L3:.+]]=, __stack_pointer
+ ; CHECK-NEXT: i32.store {{.*}}=, 0([[L3]]), [[SP]]
+ %r1 = alloca i32
+ %r = alloca i32, i32 %alloc
+ store i32 0, i32* %r
+ ; CHECK: i32.const [[L3:.+]]=, 16
+ ; CHECK: i32.add [[SP]]=, [[FP]], [[L3]]
+ ; CHECK: i32.const [[L4:.+]]=, __stack_pointer
+ ; CHECK-NEXT: i32.store [[SP]]=, 0([[L4]]), [[SP]]
+ ret void
+}
+
+; The use of the alloca in a phi causes a CopyToReg DAG node to be generated,
+; which has to have special handling because CopyToReg can't have a FI operand
+; CHECK-LABEL: copytoreg_fi:
+define void @copytoreg_fi(i1 %cond, i32* %b) {
+entry:
+ ; CHECK: i32.const [[L2:.+]]=, 16
+ ; CHECK-NEXT: i32.sub [[SP:.+]]=, {{.+}}, [[L2]]
+ %addr = alloca i32
+ ; CHECK: i32.const [[OFF:.+]]=, 12
+ ; CHECK-NEXT: i32.add [[ADDR:.+]]=, [[SP]], [[OFF]]
+ ; CHECK-NEXT: copy_local [[COPY:.+]]=, [[ADDR]]
+ br label %body
+body:
+ %a = phi i32* [%addr, %entry], [%b, %body]
+ store i32 1, i32* %a
+ ; CHECK: i32.store {{.*}}, 0([[COPY]]),
+ br i1 %cond, label %body, label %exit
+exit:
+ ret void
+}
+
+declare void @use_i8_star(i8*)
+declare i8* @llvm.frameaddress(i32)
+
+; Test __builtin_frame_address(0).
+; TODO: When the prolog/epilog sequences are optimized, refine these checks to
+; be more specific.
+
+; CHECK-LABEL: frameaddress_0:
+; CHECK: __stack_pointer
+; CHECK: load
+; CHECK: call use_i8_star
+; CHECK: __stack_pointer
+; CHECK: store
+define void @frameaddress_0() {
+  %t = call i8* @llvm.frameaddress(i32 0)
+  call void @use_i8_star(i8* %t)
+  ret void
+}
+
+; Test __builtin_frame_address(1).
+
+; CHECK-LABEL: frameaddress_1:
+; CHECK-NEXT: i32.const $push0=, 0{{$}}
+; CHECK-NEXT: call use_i8_star@FUNCTION, $pop0{{$}}
+; CHECK-NEXT: return{{$}}
+define void @frameaddress_1() {
+  %t = call i8* @llvm.frameaddress(i32 1)
+  call void @use_i8_star(i8* %t)
+  ret void
+}
+
+; TODO: test over-aligned alloca

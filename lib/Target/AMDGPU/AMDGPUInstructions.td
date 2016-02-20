@@ -23,6 +23,14 @@ class AMDGPUInst <dag outs, dag ins, string asm, list<dag> pattern> : Instructio
   let Pattern = pattern;
   let Itinerary = NullALU;
 
+  // SoftFail is a field the disassembler can use to provide a way for
+  // instructions to not match without killing the whole decode process. It is
+  // mainly used for ARM, but Tablegen expects this field to exist or it fails
+  // to build the decode table.
+  field bits<64> SoftFail = 0;
+
+  let DecoderNamespace = Namespace;
+  
   let TSFlags{63} = isRegisterLoad;
   let TSFlags{62} = isRegisterStore;
 }
@@ -596,30 +604,6 @@ class UMad24Pat<Instruction Inst> : Pat <
   (add (AMDGPUmul_u24 i32:$src0, i32:$src1), i32:$src2),
   (Inst $src0, $src1, $src2)
 >;
-
-multiclass Expand24IBitOps<Instruction MulInst, Instruction AddInst> {
-  def _expand_imad24 : Pat <
-    (AMDGPUmad_i24 i32:$src0, i32:$src1, i32:$src2),
-    (AddInst (MulInst $src0, $src1), $src2)
-  >;
-
-  def _expand_imul24 : Pat <
-    (AMDGPUmul_i24 i32:$src0, i32:$src1),
-    (MulInst $src0, $src1)
-  >;
-}
-
-multiclass Expand24UBitOps<Instruction MulInst, Instruction AddInst> {
-  def _expand_umad24 : Pat <
-    (AMDGPUmad_u24 i32:$src0, i32:$src1, i32:$src2),
-    (AddInst (MulInst $src0, $src1), $src2)
-  >;
-
-  def _expand_umul24 : Pat <
-    (AMDGPUmul_u24 i32:$src0, i32:$src1),
-    (MulInst $src0, $src1)
-  >;
-}
 
 class RcpPat<Instruction RcpInst, ValueType vt> : Pat <
   (fdiv FP_ONE, vt:$src),
