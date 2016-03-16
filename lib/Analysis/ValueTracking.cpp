@@ -18,6 +18,7 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/ConstantRange.h"
@@ -44,33 +45,10 @@ using namespace llvm::PatternMatch;
 
 const unsigned MaxDepth = 6;
 
-/// Enable an experimental feature to leverage information about dominating
-/// conditions to compute known bits.  The individual options below control how
-/// hard we search.  The defaults are chosen to be fairly aggressive.  If you
-/// run into compile time problems when testing, scale them back and report
-/// your findings.
-static cl::opt<bool> EnableDomConditions("value-tracking-dom-conditions",
-                                         cl::Hidden, cl::init(false));
-
-// This is expensive, so we only do it for the top level query value.
-// (TODO: evaluate cost vs profit, consider higher thresholds)
-static cl::opt<unsigned> DomConditionsMaxDepth("dom-conditions-max-depth",
-                                               cl::Hidden, cl::init(1));
-
-/// How many dominating blocks should be scanned looking for dominating
-/// conditions?
-static cl::opt<unsigned> DomConditionsMaxDomBlocks("dom-conditions-dom-blocks",
-                                                   cl::Hidden,
-                                                   cl::init(20));
-
 // Controls the number of uses of the value searched for possible
 // dominating comparisons.
 static cl::opt<unsigned> DomConditionsMaxUses("dom-conditions-max-uses",
                                               cl::Hidden, cl::init(20));
-
-// If true, don't consider only compares whose only use is a branch.
-static cl::opt<bool> DomConditionsSingleCmpUse("dom-conditions-single-cmp-use",
-                                               cl::Hidden, cl::init(false));
 
 /// Returns the bitwidth of the given scalar or pointer type (if unknown returns
 /// 0). For vector types, returns the element type's bitwidth.
@@ -202,6 +180,18 @@ bool llvm::isKnownNonNegative(Value *V, const DataLayout &DL, unsigned Depth,
   bool NonNegative, Negative;
   ComputeSignBit(V, NonNegative, Negative, DL, Depth, AC, CxtI, DT);
   return NonNegative;
+}
+
+bool llvm::isKnownPositive(Value *V, const DataLayout &DL, unsigned Depth,
+                           AssumptionCache *AC, const Instruction *CxtI,
+                           const DominatorTree *DT) {
+  if (auto *CI = dyn_cast<ConstantInt>(V))
+    return CI->getValue().isStrictlyPositive();
+  
+  // TODO: We'd doing two recursive queries here.  We should factor this such
+  // that only a single query is needed.
+  return isKnownNonNegative(V, DL, Depth, AC, CxtI, DT) &&
+    isKnownNonZero(V, DL, Depth, AC, CxtI, DT);
 }
 
 static bool isKnownNonEqual(Value *V1, Value *V2, const Query &Q);
@@ -543,187 +533,6 @@ inline match_combine_or<BinaryOp_match<LHS, RHS, Instruction::Xor>,
                         BinaryOp_match<RHS, LHS, Instruction::Xor>>
 m_c_Xor(const LHS &L, const RHS &R) {
   return m_CombineOr(m_Xor(L, R), m_Xor(R, L));
-}
-
-/// Compute known bits in 'V' under the assumption that the condition 'Cmp' is
-/// true (at the context instruction.)  This is mostly a utility function for
-/// the prototype dominating conditions reasoning below.
-static void computeKnownBitsFromTrueCondition(Value *V, ICmpInst *Cmp,
-                                              APInt &KnownZero,
-                                              APInt &KnownOne,
-                                              unsigned Depth, const Query &Q) {
-  Value *LHS = Cmp->getOperand(0);
-  Value *RHS = Cmp->getOperand(1);
-  // TODO: We could potentially be more aggressive here.  This would be worth
-  // evaluating.  If we can, explore commoning this code with the assume
-  // handling logic.
-  if (LHS != V && RHS != V)
-    return;
-
-  const unsigned BitWidth = KnownZero.getBitWidth();
-
-  switch (Cmp->getPredicate()) {
-  default:
-    // We know nothing from this condition
-    break;
-  // TODO: implement unsigned bound from below (known one bits)
-  // TODO: common condition check implementations with assumes
-  // TODO: implement other patterns from assume (e.g. V & B == A)
-  case ICmpInst::ICMP_SGT:
-    if (LHS == V) {
-      APInt KnownZeroTemp(BitWidth, 0), KnownOneTemp(BitWidth, 0);
-      computeKnownBits(RHS, KnownZeroTemp, KnownOneTemp, Depth + 1, Q);
-      if (KnownOneTemp.isAllOnesValue() || KnownZeroTemp.isNegative()) {
-        // We know that the sign bit is zero.
-        KnownZero |= APInt::getSignBit(BitWidth);
-      }
-    }
-    break;
-  case ICmpInst::ICMP_EQ:
-    {
-      APInt KnownZeroTemp(BitWidth, 0), KnownOneTemp(BitWidth, 0);
-      if (LHS == V)
-        computeKnownBits(RHS, KnownZeroTemp, KnownOneTemp, Depth + 1, Q);
-      else if (RHS == V)
-        computeKnownBits(LHS, KnownZeroTemp, KnownOneTemp, Depth + 1, Q);
-      else
-        llvm_unreachable("missing use?");
-      KnownZero |= KnownZeroTemp;
-      KnownOne |= KnownOneTemp;
-    }
-    break;
-  case ICmpInst::ICMP_ULE:
-    if (LHS == V) {
-      APInt KnownZeroTemp(BitWidth, 0), KnownOneTemp(BitWidth, 0);
-      computeKnownBits(RHS, KnownZeroTemp, KnownOneTemp, Depth + 1, Q);
-      // The known zero bits carry over
-      unsigned SignBits = KnownZeroTemp.countLeadingOnes();
-      KnownZero |= APInt::getHighBitsSet(BitWidth, SignBits);
-    }
-    break;
-  case ICmpInst::ICMP_ULT:
-    if (LHS == V) {
-      APInt KnownZeroTemp(BitWidth, 0), KnownOneTemp(BitWidth, 0);
-      computeKnownBits(RHS, KnownZeroTemp, KnownOneTemp, Depth + 1, Q);
-      // Whatever high bits in rhs are zero are known to be zero (if rhs is a
-      // power of 2, then one more).
-      unsigned SignBits = KnownZeroTemp.countLeadingOnes();
-      if (isKnownToBeAPowerOfTwo(RHS, false, Depth + 1, Query(Q, Cmp)))
-        SignBits++;
-      KnownZero |= APInt::getHighBitsSet(BitWidth, SignBits);
-    }
-    break;
-  };
-}
-
-/// Compute known bits in 'V' from conditions which are known to be true along
-/// all paths leading to the context instruction.  In particular, look for
-/// cases where one branch of an interesting condition dominates the context
-/// instruction.  This does not do general dataflow.
-/// NOTE: This code is EXPERIMENTAL and currently off by default.
-static void computeKnownBitsFromDominatingCondition(Value *V, APInt &KnownZero,
-                                                    APInt &KnownOne,
-                                                    unsigned Depth,
-                                                    const Query &Q) {
-  // Need both the dominator tree and the query location to do anything useful
-  if (!Q.DT || !Q.CxtI)
-    return;
-  Instruction *Cxt = const_cast<Instruction *>(Q.CxtI);
-  // The context instruction might be in a statically unreachable block.  If
-  // so, asking dominator queries may yield suprising results.  (e.g. the block
-  // may not have a dom tree node)
-  if (!Q.DT->isReachableFromEntry(Cxt->getParent()))
-    return;
-
-  // Avoid useless work
-  if (auto VI = dyn_cast<Instruction>(V))
-    if (VI->getParent() == Cxt->getParent())
-      return;
-
-  // Note: We currently implement two options.  It's not clear which of these
-  // will survive long term, we need data for that.
-  // Option 1 - Try walking the dominator tree looking for conditions which
-  // might apply.  This works well for local conditions (loop guards, etc..),
-  // but not as well for things far from the context instruction (presuming a
-  // low max blocks explored).  If we can set an high enough limit, this would
-  // be all we need.
-  // Option 2 - We restrict out search to those conditions which are uses of
-  // the value we're interested in.  This is independent of dom structure,
-  // but is slightly less powerful without looking through lots of use chains.
-  // It does handle conditions far from the context instruction (e.g. early
-  // function exits on entry) really well though.
-
-  // Option 1 - Search the dom tree
-  unsigned NumBlocksExplored = 0;
-  BasicBlock *Current = Cxt->getParent();
-  while (true) {
-    // Stop searching if we've gone too far up the chain
-    if (NumBlocksExplored >= DomConditionsMaxDomBlocks)
-      break;
-    NumBlocksExplored++;
-
-    if (!Q.DT->getNode(Current)->getIDom())
-      break;
-    Current = Q.DT->getNode(Current)->getIDom()->getBlock();
-    if (!Current)
-      // found function entry
-      break;
-
-    BranchInst *BI = dyn_cast<BranchInst>(Current->getTerminator());
-    if (!BI || BI->isUnconditional())
-      continue;
-    ICmpInst *Cmp = dyn_cast<ICmpInst>(BI->getCondition());
-    if (!Cmp)
-      continue;
-
-    // We're looking for conditions that are guaranteed to hold at the context
-    // instruction.  Finding a condition where one path dominates the context
-    // isn't enough because both the true and false cases could merge before
-    // the context instruction we're actually interested in.  Instead, we need
-    // to ensure that the taken *edge* dominates the context instruction.  We
-    // know that the edge must be reachable since we started from a reachable
-    // block.
-    BasicBlock *BB0 = BI->getSuccessor(0);
-    BasicBlockEdge Edge(BI->getParent(), BB0);
-    if (!Edge.isSingleEdge() || !Q.DT->dominates(Edge, Q.CxtI->getParent()))
-      continue;
-
-    computeKnownBitsFromTrueCondition(V, Cmp, KnownZero, KnownOne, Depth, Q);
-  }
-
-  // Option 2 - Search the other uses of V
-  unsigned NumUsesExplored = 0;
-  for (auto U : V->users()) {
-    // Avoid massive lists
-    if (NumUsesExplored >= DomConditionsMaxUses)
-      break;
-    NumUsesExplored++;
-    // Consider only compare instructions uniquely controlling a branch
-    ICmpInst *Cmp = dyn_cast<ICmpInst>(U);
-    if (!Cmp)
-      continue;
-
-    if (DomConditionsSingleCmpUse && !Cmp->hasOneUse())
-      continue;
-
-    for (auto *CmpU : Cmp->users()) {
-      BranchInst *BI = dyn_cast<BranchInst>(CmpU);
-      if (!BI || BI->isUnconditional())
-        continue;
-      // We're looking for conditions that are guaranteed to hold at the
-      // context instruction.  Finding a condition where one path dominates
-      // the context isn't enough because both the true and false cases could
-      // merge before the context instruction we're actually interested in.
-      // Instead, we need to ensure that the taken *edge* dominates the context
-      // instruction. 
-      BasicBlock *BB0 = BI->getSuccessor(0);
-      BasicBlockEdge Edge(BI->getParent(), BB0);
-      if (!Edge.isSingleEdge() || !Q.DT->dominates(Edge, Q.CxtI->getParent()))
-        continue;
-
-      computeKnownBitsFromTrueCondition(V, Cmp, KnownZero, KnownOne, Depth, Q);
-    }
-  }
 }
 
 static void computeKnownBitsFromAssume(Value *V, APInt &KnownZero,
@@ -1569,46 +1378,6 @@ static void computeKnownBitsFromOperator(Operator *I, APInt &KnownZero,
   }
 }
 
-static unsigned getAlignment(const Value *V, const DataLayout &DL) {
-  unsigned Align = 0;
-  if (auto *GO = dyn_cast<GlobalObject>(V)) {
-    Align = GO->getAlignment();
-    if (Align == 0) {
-      if (auto *GVar = dyn_cast<GlobalVariable>(GO)) {
-        Type *ObjectType = GVar->getValueType();
-        if (ObjectType->isSized()) {
-          // If the object is defined in the current Module, we'll be giving
-          // it the preferred alignment. Otherwise, we have to assume that it
-          // may only have the minimum ABI alignment.
-          if (GVar->isStrongDefinitionForLinker())
-            Align = DL.getPreferredAlignment(GVar);
-          else
-            Align = DL.getABITypeAlignment(ObjectType);
-        }
-      }
-    }
-  } else if (const Argument *A = dyn_cast<Argument>(V)) {
-    Align = A->getType()->isPointerTy() ? A->getParamAlignment() : 0;
-
-    if (!Align && A->hasStructRetAttr()) {
-      // An sret parameter has at least the ABI alignment of the return type.
-      Type *EltTy = cast<PointerType>(A->getType())->getElementType();
-      if (EltTy->isSized())
-        Align = DL.getABITypeAlignment(EltTy);
-    }
-  } else if (const AllocaInst *AI = dyn_cast<AllocaInst>(V))
-    Align = AI->getAlignment();
-  else if (auto CS = ImmutableCallSite(V))
-    Align = CS.getAttributes().getParamAlignment(AttributeSet::ReturnIndex);
-  else if (const LoadInst *LI = dyn_cast<LoadInst>(V))
-    if (MDNode *MD = LI->getMetadata(LLVMContext::MD_align)) {
-      ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
-      Align = CI->getLimitedValue();
-    }
-
-  return Align;
-}
-
 /// Determine which bits of V are known to be either zero or one and return
 /// them in the KnownZero/KnownOne bit sets.
 ///
@@ -1691,22 +1460,16 @@ void computeKnownBits(Value *V, APInt &KnownZero, APInt &KnownOne,
 
   // Aligned pointers have trailing zeros - refine KnownZero set
   if (V->getType()->isPointerTy()) {
-    unsigned Align = getAlignment(V, Q.DL);
+    unsigned Align = V->getPointerAlignment(Q.DL);
     if (Align)
       KnownZero |= APInt::getLowBitsSet(BitWidth, countTrailingZeros(Align));
   }
 
-  // computeKnownBitsFromAssume and computeKnownBitsFromDominatingCondition
-  // strictly refines KnownZero and KnownOne. Therefore, we run them after
-  // computeKnownBitsFromOperator.
+  // computeKnownBitsFromAssume strictly refines KnownZero and
+  // KnownOne. Therefore, we run them after computeKnownBitsFromOperator.
 
   // Check whether a nearby assume intrinsic can determine some known bits.
   computeKnownBitsFromAssume(V, KnownZero, KnownOne, Depth, Q);
-
-  // Check whether there's a dominating condition which implies something about
-  // this value at the given context.
-  if (EnableDomConditions && Depth <= DomConditionsMaxDepth)
-    computeKnownBitsFromDominatingCondition(V, KnownZero, KnownOne, Depth, Q);
 
   assert((KnownZero & KnownOne) == 0 && "Bits known to be one AND zero?");
 }
@@ -3146,208 +2909,6 @@ bool llvm::onlyUsedByLifetimeMarkers(const Value *V) {
   return true;
 }
 
-static bool isDereferenceableFromAttribute(const Value *BV, APInt Offset,
-                                           Type *Ty, const DataLayout &DL,
-                                           const Instruction *CtxI,
-                                           const DominatorTree *DT,
-                                           const TargetLibraryInfo *TLI) {
-  assert(Offset.isNonNegative() && "offset can't be negative");
-  assert(Ty->isSized() && "must be sized");
-  
-  APInt DerefBytes(Offset.getBitWidth(), 0);
-  bool CheckForNonNull = false;
-  if (const Argument *A = dyn_cast<Argument>(BV)) {
-    DerefBytes = A->getDereferenceableBytes();
-    if (!DerefBytes.getBoolValue()) {
-      DerefBytes = A->getDereferenceableOrNullBytes();
-      CheckForNonNull = true;
-    }
-  } else if (auto CS = ImmutableCallSite(BV)) {
-    DerefBytes = CS.getDereferenceableBytes(0);
-    if (!DerefBytes.getBoolValue()) {
-      DerefBytes = CS.getDereferenceableOrNullBytes(0);
-      CheckForNonNull = true;
-    }
-  } else if (const LoadInst *LI = dyn_cast<LoadInst>(BV)) {
-    if (MDNode *MD = LI->getMetadata(LLVMContext::MD_dereferenceable)) {
-      ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
-      DerefBytes = CI->getLimitedValue();
-    }
-    if (!DerefBytes.getBoolValue()) {
-      if (MDNode *MD = 
-              LI->getMetadata(LLVMContext::MD_dereferenceable_or_null)) {
-        ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
-        DerefBytes = CI->getLimitedValue();
-      }
-      CheckForNonNull = true;
-    }
-  }
-  
-  if (DerefBytes.getBoolValue())
-    if (DerefBytes.uge(Offset + DL.getTypeStoreSize(Ty)))
-      if (!CheckForNonNull || isKnownNonNullAt(BV, CtxI, DT, TLI))
-        return true;
-
-  return false;
-}
-
-static bool isDereferenceableFromAttribute(const Value *V, const DataLayout &DL,
-                                           const Instruction *CtxI,
-                                           const DominatorTree *DT,
-                                           const TargetLibraryInfo *TLI) {
-  Type *VTy = V->getType();
-  Type *Ty = VTy->getPointerElementType();
-  if (!Ty->isSized())
-    return false;
-  
-  APInt Offset(DL.getTypeStoreSizeInBits(VTy), 0);
-  return isDereferenceableFromAttribute(V, Offset, Ty, DL, CtxI, DT, TLI);
-}
-
-static bool isAligned(const Value *Base, APInt Offset, unsigned Align,
-                      const DataLayout &DL) {
-  APInt BaseAlign(Offset.getBitWidth(), getAlignment(Base, DL));
-
-  if (!BaseAlign) {
-    Type *Ty = Base->getType()->getPointerElementType();
-    if (!Ty->isSized())
-      return false;
-    BaseAlign = DL.getABITypeAlignment(Ty);
-  }
-
-  APInt Alignment(Offset.getBitWidth(), Align);
-
-  assert(Alignment.isPowerOf2() && "must be a power of 2!");
-  return BaseAlign.uge(Alignment) && !(Offset & (Alignment-1));
-}
-
-static bool isAligned(const Value *Base, unsigned Align, const DataLayout &DL) {
-  Type *Ty = Base->getType();
-  assert(Ty->isSized() && "must be sized");
-  APInt Offset(DL.getTypeStoreSizeInBits(Ty), 0);
-  return isAligned(Base, Offset, Align, DL);
-}
-
-/// Test if V is always a pointer to allocated and suitably aligned memory for
-/// a simple load or store.
-static bool isDereferenceableAndAlignedPointer(
-    const Value *V, unsigned Align, const DataLayout &DL,
-    const Instruction *CtxI, const DominatorTree *DT,
-    const TargetLibraryInfo *TLI, SmallPtrSetImpl<const Value *> &Visited) {
-  // Note that it is not safe to speculate into a malloc'd region because
-  // malloc may return null.
-
-  // These are obviously ok if aligned.
-  if (isa<AllocaInst>(V))
-    return isAligned(V, Align, DL);
-
-  // It's not always safe to follow a bitcast, for example:
-  //   bitcast i8* (alloca i8) to i32*
-  // would result in a 4-byte load from a 1-byte alloca. However,
-  // if we're casting from a pointer from a type of larger size
-  // to a type of smaller size (or the same size), and the alignment
-  // is at least as large as for the resulting pointer type, then
-  // we can look through the bitcast.
-  if (const BitCastOperator *BC = dyn_cast<BitCastOperator>(V)) {
-    Type *STy = BC->getSrcTy()->getPointerElementType(),
-         *DTy = BC->getDestTy()->getPointerElementType();
-    if (STy->isSized() && DTy->isSized() &&
-        (DL.getTypeStoreSize(STy) >= DL.getTypeStoreSize(DTy)) &&
-        (DL.getABITypeAlignment(STy) >= DL.getABITypeAlignment(DTy)))
-      return isDereferenceableAndAlignedPointer(BC->getOperand(0), Align, DL,
-                                                CtxI, DT, TLI, Visited);
-  }
-
-  // Global variables which can't collapse to null are ok.
-  if (const GlobalVariable *GV = dyn_cast<GlobalVariable>(V))
-    if (!GV->hasExternalWeakLinkage())
-      return isAligned(V, Align, DL);
-
-  // byval arguments are okay.
-  if (const Argument *A = dyn_cast<Argument>(V))
-    if (A->hasByValAttr())
-      return isAligned(V, Align, DL);
-
-  if (isDereferenceableFromAttribute(V, DL, CtxI, DT, TLI))
-    return isAligned(V, Align, DL);
-
-  // For GEPs, determine if the indexing lands within the allocated object.
-  if (const GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
-    Type *Ty = GEP->getResultElementType();
-    const Value *Base = GEP->getPointerOperand();
-
-    // Conservatively require that the base pointer be fully dereferenceable
-    // and aligned.
-    if (!Visited.insert(Base).second)
-      return false;
-    if (!isDereferenceableAndAlignedPointer(Base, Align, DL, CtxI, DT, TLI,
-                                            Visited))
-      return false;
-
-    APInt Offset(DL.getPointerTypeSizeInBits(GEP->getType()), 0);
-    if (!GEP->accumulateConstantOffset(DL, Offset))
-      return false;
-
-    // Check if the load is within the bounds of the underlying object
-    // and offset is aligned.
-    uint64_t LoadSize = DL.getTypeStoreSize(Ty);
-    Type *BaseType = GEP->getSourceElementType();
-    assert(isPowerOf2_32(Align) && "must be a power of 2!");
-    return (Offset + LoadSize).ule(DL.getTypeAllocSize(BaseType)) && 
-           !(Offset & APInt(Offset.getBitWidth(), Align-1));
-  }
-
-  // For gc.relocate, look through relocations
-  if (const GCRelocateInst *RelocateInst = dyn_cast<GCRelocateInst>(V))
-    return isDereferenceableAndAlignedPointer(
-        RelocateInst->getDerivedPtr(), Align, DL, CtxI, DT, TLI, Visited);
-
-  if (const AddrSpaceCastInst *ASC = dyn_cast<AddrSpaceCastInst>(V))
-    return isDereferenceableAndAlignedPointer(ASC->getOperand(0), Align, DL,
-                                              CtxI, DT, TLI, Visited);
-
-  // If we don't know, assume the worst.
-  return false;
-}
-
-bool llvm::isDereferenceableAndAlignedPointer(const Value *V, unsigned Align,
-                                              const DataLayout &DL,
-                                              const Instruction *CtxI,
-                                              const DominatorTree *DT,
-                                              const TargetLibraryInfo *TLI) {
-  // When dereferenceability information is provided by a dereferenceable
-  // attribute, we know exactly how many bytes are dereferenceable. If we can
-  // determine the exact offset to the attributed variable, we can use that
-  // information here.
-  Type *VTy = V->getType();
-  Type *Ty = VTy->getPointerElementType();
-
-  // Require ABI alignment for loads without alignment specification
-  if (Align == 0)
-    Align = DL.getABITypeAlignment(Ty);
-
-  if (Ty->isSized()) {
-    APInt Offset(DL.getTypeStoreSizeInBits(VTy), 0);
-    const Value *BV = V->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
-
-    if (Offset.isNonNegative())
-      if (isDereferenceableFromAttribute(BV, Offset, Ty, DL, CtxI, DT, TLI) &&
-          isAligned(BV, Offset, Align, DL))
-        return true;
-  }
-
-  SmallPtrSet<const Value *, 32> Visited;
-  return ::isDereferenceableAndAlignedPointer(V, Align, DL, CtxI, DT, TLI,
-                                              Visited);
-}
-
-bool llvm::isDereferenceablePointer(const Value *V, const DataLayout &DL,
-                                    const Instruction *CtxI,
-                                    const DominatorTree *DT,
-                                    const TargetLibraryInfo *TLI) {
-  return isDereferenceableAndAlignedPointer(V, 1, DL, CtxI, DT, TLI);
-}
-
 bool llvm::isSafeToSpeculativelyExecute(const Value *V,
                                         const Instruction *CtxI,
                                         const DominatorTree *DT,
@@ -3518,9 +3079,6 @@ static bool isKnownNonNullFromDominatingCondition(const Value *V,
     // Consider only compare instructions uniquely controlling a branch
     const ICmpInst *Cmp = dyn_cast<ICmpInst>(U);
     if (!Cmp)
-      continue;
-
-    if (DomConditionsSingleCmpUse && !Cmp->hasOneUse())
       continue;
 
     for (auto *CmpU : Cmp->users()) {

@@ -85,11 +85,13 @@ static cl::opt<int>
 ScheduleRegionSizeBudget("slp-schedule-budget", cl::init(100000), cl::Hidden,
     cl::desc("Limit the size of the SLP scheduling region per block"));
 
+static cl::opt<int> MinVectorRegSizeOption(
+    "slp-min-reg-size", cl::init(128), cl::Hidden,
+    cl::desc("Attempt to vectorize for this register size in bits"));
+
 namespace {
 
 // FIXME: Set this via cl::opt to allow overriding.
-static const unsigned MinVecRegSize = 128;
-
 static const unsigned RecursionMaxDepth = 12;
 
 // Limit the number of alias checks. The limit is chosen so that
@@ -1603,8 +1605,8 @@ int BoUpSLP::getEntryCost(TreeEntry *E) {
               CInt != cast<ConstantInt>(I->getOperand(1)))
             Op2VK = TargetTransformInfo::OK_NonUniformConstantValue;
         }
-        // FIXME: Currently cost of model modification for division by
-        // power of 2 is handled only for X86. Add support for other targets.
+        // FIXME: Currently cost of model modification for division by power of
+        // 2 is handled for X86 and AArch64. Add support for other targets.
         if (Op2VK == TargetTransformInfo::OK_UniformConstantValue && CInt &&
             CInt->getValue().isPowerOf2())
           Op2VP = TargetTransformInfo::OP_PowerOf2;
@@ -3418,6 +3420,8 @@ struct SLPVectorizer : public FunctionPass {
     else
       MaxVecRegSize = TTI->getRegisterBitWidth(true);
 
+    MinVecRegSize = MinVectorRegSizeOption;
+
     // Don't vectorize when the attribute NoImplicitFloat is used.
     if (F.hasFnAttribute(Attribute::NoImplicitFloat))
       return false;
@@ -3531,6 +3535,7 @@ private:
   unsigned NumGEPs;
 
   unsigned MaxVecRegSize; // This is set by TTI or overridden by cl::opt.
+  unsigned MinVecRegSize; // Set by cl::opt (default: 128).
 };
 
 /// \brief Check that the Values in the slice in VL array are still existent in
@@ -3791,8 +3796,8 @@ bool SLPVectorizer::tryToVectorizeList(ArrayRef<Value *> VL, BoUpSLP &R,
         Instruction *InsertAfter = cast<Instruction>(BuildVectorSlice.back());
         unsigned VecIdx = 0;
         for (auto &V : BuildVectorSlice) {
-          IRBuilder<true, NoFolder> Builder(
-              InsertAfter->getParent(), ++BasicBlock::iterator(InsertAfter));
+          IRBuilder<NoFolder> Builder(InsertAfter->getParent(),
+                                      ++BasicBlock::iterator(InsertAfter));
           InsertElementInst *IE = cast<InsertElementInst>(V);
           Instruction *Extract = cast<Instruction>(Builder.CreateExtractElement(
               VectorizedRoot, Builder.getInt32(VecIdx++)));
@@ -3924,9 +3929,14 @@ public:
   /// The width of one full horizontal reduction operation.
   unsigned ReduxWidth;
 
-  HorizontalReduction()
-    : ReductionRoot(nullptr), ReductionPHI(nullptr), ReductionOpcode(0),
-    ReducedValueOpcode(0), IsPairwiseReduction(false), ReduxWidth(0) {}
+  /// Minimal width of available vector registers. It's used to determine
+  /// ReduxWidth.
+  unsigned MinVecRegSize;
+
+  HorizontalReduction(unsigned MinVecRegSize)
+      : ReductionRoot(nullptr), ReductionPHI(nullptr), ReductionOpcode(0),
+        ReducedValueOpcode(0), IsPairwiseReduction(false), ReduxWidth(0),
+        MinVecRegSize(MinVecRegSize) {}
 
   /// \brief Try to find a reduction tree.
   bool matchAssociativeReduction(PHINode *Phi, BinaryOperator *B) {
@@ -4254,11 +4264,12 @@ static Value *getReductionValue(const DominatorTree *DT, PHINode *P,
 /// \returns true if a horizontal reduction was matched and reduced.
 /// \returns false if a horizontal reduction was not matched.
 static bool canMatchHorizontalReduction(PHINode *P, BinaryOperator *BI,
-                                        BoUpSLP &R, TargetTransformInfo *TTI) {
+                                        BoUpSLP &R, TargetTransformInfo *TTI,
+                                        unsigned MinRegSize) {
   if (!ShouldVectorizeHor)
     return false;
 
-  HorizontalReduction HorRdx;
+  HorizontalReduction HorRdx(MinRegSize);
   if (!HorRdx.matchAssociativeReduction(P, BI))
     return false;
 
@@ -4346,7 +4357,7 @@ bool SLPVectorizer::vectorizeChainsInBlock(BasicBlock *BB, BoUpSLP &R) {
         continue;
 
       // Try to match and vectorize a horizontal reduction.
-      if (canMatchHorizontalReduction(P, BI, R, TTI)) {
+      if (canMatchHorizontalReduction(P, BI, R, TTI, MinVecRegSize)) {
         Changed = true;
         it = BB->begin();
         e = BB->end();
@@ -4373,7 +4384,8 @@ bool SLPVectorizer::vectorizeChainsInBlock(BasicBlock *BB, BoUpSLP &R) {
       if (StoreInst *SI = dyn_cast<StoreInst>(it))
         if (BinaryOperator *BinOp =
                 dyn_cast<BinaryOperator>(SI->getValueOperand())) {
-          if (canMatchHorizontalReduction(nullptr, BinOp, R, TTI) ||
+          if (canMatchHorizontalReduction(nullptr, BinOp, R, TTI,
+                                          MinVecRegSize) ||
               tryToVectorize(BinOp, R)) {
             Changed = true;
             it = BB->begin();
@@ -4563,6 +4575,7 @@ INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
+INITIALIZE_PASS_DEPENDENCY(DemandedBits)
 INITIALIZE_PASS_END(SLPVectorizer, SV_NAME, lv_name, false, false)
 
 namespace llvm {

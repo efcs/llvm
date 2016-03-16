@@ -27,6 +27,7 @@ set(Tests
   RepeatedMemcmp
   SimpleCmpTest
   SimpleDictionaryTest
+  SimpleFnAdapterTest
   SimpleHashTest
   SimpleTest
   StrcmpTest
@@ -45,6 +46,11 @@ set(UninstrumentedTests
 
 set(TraceBBTests
   SimpleTest
+  )
+
+set(TracePCTests
+  FourIndependentBranchesTest
+  FullCoverageSetTest
   )
 
 set(TestBinaries)
@@ -85,6 +91,7 @@ include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
 
 add_executable(LLVMFuzzer-Unittest
   FuzzerUnittest.cpp
+  FuzzerFnAdapterUnittest.cpp
   $<TARGET_OBJECTS:LLVMFuzzerNoMainObjects>
   )
 
@@ -111,6 +118,12 @@ add_subdirectory(trace-bb)
 
 foreach(Test ${TraceBBTests})
   set(TestBinaries ${TestBinaries} LLVMFuzzer-${Test}-TraceBB)
+endforeach()
+
+add_subdirectory(trace-pc)
+
+foreach(Test ${TracePCTests})
+  set(TestBinaries ${TestBinaries} LLVMFuzzer-${Test}-TracePC)
 endforeach()
 
 set_target_properties(${TestBinaries}

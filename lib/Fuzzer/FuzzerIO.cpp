@@ -61,14 +61,16 @@ Unit FileToVector(const std::string &Path, size_t MaxSize) {
     Printf("No such directory: %s; exiting\n", Path.c_str());
     exit(1);
   }
-  if (MaxSize) {
-    Unit Res(MaxSize);
-    T.read(reinterpret_cast<char*>(Res.data()), MaxSize);
-    Res.resize(T.gcount());
-    return Res;
-  }
-  return Unit((std::istreambuf_iterator<char>(T)),
-              std::istreambuf_iterator<char>());
+
+  T.seekg(0, T.end);
+  size_t FileLen = T.tellg();
+  if (MaxSize)
+    FileLen = std::min(FileLen, MaxSize);
+
+  T.seekg(0, T.beg);
+  Unit Res(FileLen);
+  T.read(reinterpret_cast<char *>(Res.data()), FileLen);
+  return Res;
 }
 
 std::string FileToString(const std::string &Path) {
@@ -93,12 +95,14 @@ void ReadDirToVectorOfUnits(const char *Path, std::vector<Unit> *V,
                             long *Epoch, size_t MaxSize) {
   long E = Epoch ? *Epoch : 0;
   auto Files = ListFilesInDir(Path, Epoch);
+  size_t NumLoaded = 0;
   for (size_t i = 0; i < Files.size(); i++) {
     auto &X = Files[i];
     auto FilePath = DirPlusFile(Path, X);
     if (Epoch && GetEpoch(FilePath) < E) continue;
-    if ((i & (i - 1)) == 0 && i >= 1024)
-      Printf("Loaded %zd/%zd files from %s\n", i, Files.size(), Path);
+    NumLoaded++;
+    if ((NumLoaded & (NumLoaded - 1)) == 0 && NumLoaded >= 1024)
+      Printf("Loaded %zd/%zd files from %s\n", NumLoaded, Files.size(), Path);
     V->push_back(FileToVector(FilePath, MaxSize));
   }
 }

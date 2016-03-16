@@ -908,9 +908,15 @@ bool X86AsmParser::ParseRegister(unsigned &RegNo,
     if (RegNo == X86::RIZ ||
         X86MCRegisterClasses[X86::GR64RegClassID].contains(RegNo) ||
         X86II::isX86_64NonExtLowByteReg(RegNo) ||
-        X86II::isX86_64ExtendedReg(RegNo))
+        X86II::isX86_64ExtendedReg(RegNo) ||
+        X86II::is32ExtendedReg(RegNo))
       return Error(StartLoc, "register %"
                    + Tok.getString() + " is only available in 64-bit mode",
+                   SMRange(StartLoc, EndLoc));
+  } else if (!getSTI().getFeatureBits()[X86::FeatureAVX512]) {
+    if (X86II::is32ExtendedReg(RegNo))
+      return Error(StartLoc, "register %"
+                   + Tok.getString() + " is only available with AVX512",
                    SMRange(StartLoc, EndLoc));
   }
 
@@ -1006,9 +1012,7 @@ std::unique_ptr<X86Operand> X86AsmParser::DefaultMemDIOperand(SMLoc Loc) {
 
 bool X86AsmParser::IsSIReg(unsigned Reg) {
   switch (Reg) {
-  default:
-    llvm_unreachable("Only (R|E)SI and (R|E)DI are expected!");
-    return false;
+  default: llvm_unreachable("Only (R|E)SI and (R|E)DI are expected!");
   case X86::RSI:
   case X86::ESI:
   case X86::SI:
@@ -1023,9 +1027,7 @@ bool X86AsmParser::IsSIReg(unsigned Reg) {
 unsigned X86AsmParser::GetSIDIForRegClass(unsigned RegClassID, unsigned Reg,
                                           bool IsSIReg) {
   switch (RegClassID) {
-  default:
-    llvm_unreachable("Unexpected register class");
-    return Reg;
+  default: llvm_unreachable("Unexpected register class");
   case X86::GR64RegClassID:
     return IsSIReg ? X86::RSI : X86::RDI;
   case X86::GR32RegClassID:
@@ -2302,6 +2304,7 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     Name == "repne" || Name == "repnz" ||
     Name == "rex64" || Name == "data16";
 
+  bool CurlyAsEndOfStatement = false;
   // This does the actual operand parsing.  Don't parse any more if we have a
   // prefix juxtaposed with an operation like "lock incl 4(%rax)", because we
   // just want to parse the "lock" as the first instruction and the "incl" as
@@ -2329,7 +2332,12 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
         break;
      }
 
-    if (getLexer().isNot(AsmToken::EndOfStatement))
+    // In MS inline asm curly braces mark the begining/end of a block, therefore
+    // they should be interepreted as end of statement
+    CurlyAsEndOfStatement =
+        isParsingIntelSyntax() && isParsingInlineAsm() &&
+        (getLexer().is(AsmToken::LCurly) || getLexer().is(AsmToken::RCurly));
+    if (getLexer().isNot(AsmToken::EndOfStatement) && !CurlyAsEndOfStatement)
       return ErrorAndEatStatement(getLexer().getLoc(),
                                   "unexpected token in argument list");
    }
@@ -2338,6 +2346,10 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   if (getLexer().is(AsmToken::EndOfStatement) ||
       (isPrefix && getLexer().is(AsmToken::Slash)))
     Parser.Lex();
+  else if (CurlyAsEndOfStatement)
+    // Add an actual EndOfStatement before the curly brace
+    Info.AsmRewrites->emplace_back(AOK_EndOfStatement,
+                                   getLexer().getTok().getLoc(), 0);
 
   // This is for gas compatibility and cannot be done in td.
   // Adding "p" for some floating point with no argument.

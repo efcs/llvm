@@ -32,8 +32,9 @@ class CFLAAResult : public AAResultBase<CFLAAResult> {
   struct FunctionInfo;
 
 public:
-  explicit CFLAAResult(const TargetLibraryInfo &TLI);
+  explicit CFLAAResult();
   CFLAAResult(CFLAAResult &&Arg);
+  ~CFLAAResult();
 
   /// Handle invalidation events from the new pass manager.
   ///
@@ -108,20 +109,14 @@ private:
 ///
 /// FIXME: We really should refactor CFL to use the analysis more heavily, and
 /// in particular to leverage invalidation to trigger re-computation of sets.
-class CFLAA {
+class CFLAA : public AnalysisInfoMixin<CFLAA> {
+  friend AnalysisInfoMixin<CFLAA>;
+  static char PassID;
+
 public:
   typedef CFLAAResult Result;
 
-  /// \brief Opaque, unique identifier for this analysis pass.
-  static void *ID() { return (void *)&PassID; }
-
-  CFLAAResult run(Function &F, AnalysisManager<Function> *AM);
-
-  /// \brief Provide access to a name for this pass for debugging purposes.
-  static StringRef name() { return "CFLAA"; }
-
-private:
-  static char PassID;
+  CFLAAResult run(Function &F, AnalysisManager<Function> &AM);
 };
 
 /// Legacy wrapper pass to provide the CFLAAResult object.
