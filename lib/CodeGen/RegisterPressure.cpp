@@ -271,7 +271,7 @@ SlotIndex RegPressureTracker::getCurrSlot() const {
     ++IdxPos;
   if (IdxPos == MBB->end())
     return LIS->getMBBEndIdx(MBB);
-  return LIS->getInstructionIndex(IdxPos).getRegSlot();
+  return LIS->getInstructionIndex(*IdxPos).getRegSlot();
 }
 
 /// Set the boundary for the top of the region and summarize live ins.
@@ -326,8 +326,8 @@ void RegPressureTracker::initLiveThru(const RegPressureTracker &RPTracker) {
   }
 }
 
-static unsigned getRegLanes(ArrayRef<RegisterMaskPair> RegUnits,
-                            unsigned RegUnit) {
+static LaneBitmask getRegLanes(ArrayRef<RegisterMaskPair> RegUnits,
+                               unsigned RegUnit) {
   auto I = std::find_if(RegUnits.begin(), RegUnits.end(),
                         [RegUnit](const RegisterMaskPair Other) {
                         return Other.RegUnit == RegUnit;
@@ -438,7 +438,7 @@ class RegisterOperandsCollector {
       TrackLaneMasks(TrackLaneMasks), IgnoreDead(IgnoreDead) {}
 
   void collectInstr(const MachineInstr &MI) const {
-    for (ConstMIBundleOperands OperI(&MI); OperI.isValid(); ++OperI)
+    for (ConstMIBundleOperands OperI(MI); OperI.isValid(); ++OperI)
       collectOperand(*OperI);
 
     // Remove redundant physreg dead defs.
@@ -503,7 +503,7 @@ void RegisterOperands::collect(const MachineInstr &MI,
 
 void RegisterOperands::detectDeadDefs(const MachineInstr &MI,
                                       const LiveIntervals &LIS) {
-  SlotIndex SlotIdx = LIS.getInstructionIndex(&MI);
+  SlotIndex SlotIdx = LIS.getInstructionIndex(MI);
   for (auto RI = Defs.begin(); RI != Defs.end(); /*empty*/) {
     unsigned Reg = RI->RegUnit;
     const LiveRange *LR = getLiveRange(LIS, Reg);
@@ -528,11 +528,6 @@ void RegisterOperands::adjustLaneLiveness(const LiveIntervals &LIS,
   for (auto I = Defs.begin(); I != Defs.end(); ) {
     LaneBitmask LiveAfter = getLiveLanesAt(LIS, MRI, true, I->RegUnit,
                                            Pos.getDeadSlot());
-#if 0
-    unsigned DeadDef = I->LaneMask & ~LiveAfter;
-    if (DeadDef != 0)
-      addRegLanes(DeadDefs, RegisterMaskPair(I->RegUnit, DeadDef));
-#endif
     // If the the def is all that is live after the instruction, then in case
     // of a subregister def we need a read-undef flag.
     unsigned RegUnit = I->RegUnit;
@@ -540,7 +535,7 @@ void RegisterOperands::adjustLaneLiveness(const LiveIntervals &LIS,
         AddFlagsMI != nullptr && (LiveAfter & ~I->LaneMask) == 0)
       AddFlagsMI->setRegisterDefReadUndef(RegUnit);
 
-    unsigned LaneMask = I->LaneMask & LiveAfter;
+    LaneBitmask LaneMask = I->LaneMask & LiveAfter;
     if (LaneMask == 0) {
       I = Defs.erase(I);
       // Make sure the operand is properly marked as Dead.
@@ -554,7 +549,7 @@ void RegisterOperands::adjustLaneLiveness(const LiveIntervals &LIS,
   for (auto I = Uses.begin(); I != Uses.end(); ) {
     LaneBitmask LiveBefore = getLiveLanesAt(LIS, MRI, true, I->RegUnit,
                                             Pos.getBaseIndex());
-    unsigned LaneMask = I->LaneMask & LiveBefore;
+    LaneBitmask LaneMask = I->LaneMask & LiveBefore;
     if (LaneMask == 0) {
       I = Uses.erase(I);
     } else {
@@ -636,8 +631,8 @@ void PressureDiff::addPressureChange(unsigned RegUnit, bool IsDec,
 /// Force liveness of registers.
 void RegPressureTracker::addLiveRegs(ArrayRef<RegisterMaskPair> Regs) {
   for (const RegisterMaskPair &P : Regs) {
-    unsigned PrevMask = LiveRegs.insert(P);
-    unsigned NewMask = PrevMask | P.LaneMask;
+    LaneBitmask PrevMask = LiveRegs.insert(P);
+    LaneBitmask NewMask = PrevMask | P.LaneMask;
     increaseRegPressure(P.RegUnit, PrevMask, NewMask);
   }
 }
@@ -729,7 +724,7 @@ void RegPressureTracker::recede(const RegisterOperands &RegOpers,
 
   SlotIndex SlotIdx;
   if (RequireIntervals)
-    SlotIdx = LIS->getInstructionIndex(CurrPos).getRegSlot();
+    SlotIdx = LIS->getInstructionIndex(*CurrPos).getRegSlot();
 
   // Generate liveness for uses.
   for (const RegisterMaskPair &Use : RegOpers.Uses) {
@@ -794,7 +789,7 @@ void RegPressureTracker::recedeSkipDebugValues() {
 
   SlotIndex SlotIdx;
   if (RequireIntervals)
-    SlotIdx = LIS->getInstructionIndex(CurrPos).getRegSlot();
+    SlotIdx = LIS->getInstructionIndex(*CurrPos).getRegSlot();
 
   // Open the top of the region using slot indexes.
   if (RequireIntervals && isTopClosed())
@@ -808,7 +803,7 @@ void RegPressureTracker::recede(SmallVectorImpl<RegisterMaskPair> *LiveUses) {
   RegisterOperands RegOpers;
   RegOpers.collect(MI, *TRI, *MRI, TrackLaneMasks, false);
   if (TrackLaneMasks) {
-    SlotIndex SlotIdx = LIS->getInstructionIndex(CurrPos).getRegSlot();
+    SlotIndex SlotIdx = LIS->getInstructionIndex(*CurrPos).getRegSlot();
     RegOpers.adjustLaneLiveness(*LIS, *MRI, SlotIdx);
   } else if (RequireIntervals) {
     RegOpers.detectDeadDefs(MI, *LIS);
@@ -969,7 +964,7 @@ void RegPressureTracker::bumpUpwardPressure(const MachineInstr *MI) {
 
   SlotIndex SlotIdx;
   if (RequireIntervals)
-    SlotIdx = LIS->getInstructionIndex(MI).getRegSlot();
+    SlotIdx = LIS->getInstructionIndex(*MI).getRegSlot();
 
   // Account for register pressure similar to RegPressureTracker::recede().
   RegisterOperands RegOpers;
@@ -1154,7 +1149,7 @@ static LaneBitmask findUseBetween(unsigned Reg, LaneBitmask LastUseMask,
     if (MO.isUndef())
       continue;
     const MachineInstr *MI = MO.getParent();
-    SlotIndex InstSlot = LIS->getInstructionIndex(MI).getRegSlot();
+    SlotIndex InstSlot = LIS->getInstructionIndex(*MI).getRegSlot();
     if (InstSlot >= PriorUseIdx && InstSlot < NextUseIdx) {
       unsigned SubRegIdx = MO.getSubReg();
       LaneBitmask UseMask = TRI.getSubRegIndexLaneMask(SubRegIdx);
@@ -1214,7 +1209,7 @@ void RegPressureTracker::bumpDownwardPressure(const MachineInstr *MI) {
 
   SlotIndex SlotIdx;
   if (RequireIntervals)
-    SlotIdx = LIS->getInstructionIndex(MI).getRegSlot();
+    SlotIdx = LIS->getInstructionIndex(*MI).getRegSlot();
 
   // Account for register pressure similar to RegPressureTracker::recede().
   RegisterOperands RegOpers;

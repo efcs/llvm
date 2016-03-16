@@ -427,6 +427,15 @@ static BasicBlock *HandleCallsInBlockInlinedThroughInvoke(
     if (!CI || CI->doesNotThrow() || isa<InlineAsm>(CI->getCalledValue()))
       continue;
 
+    // We do not need to (and in fact, cannot) convert possibly throwing calls
+    // to @llvm.experimental_deoptimize into invokes.  The caller's "segment" of
+    // the deoptimization continuation attached to the newly inlined
+    // @llvm.experimental_deoptimize call should contain the exception handling
+    // logic, if any.
+    if (auto *F = CI->getCalledFunction())
+      if (F->getIntrinsicID() == Intrinsic::experimental_deoptimize)
+        continue;
+
     if (auto FuncletBundle = CI->getOperandBundle(LLVMContext::OB_funclet)) {
       // This call is nested inside a funclet.  If that funclet has an unwind
       // destination within the inlinee, then unwinding out of this call would
@@ -1420,6 +1429,19 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
     }
   }
 
+  // Determine if we are dealing with a call in an EHPad which does not unwind
+  // to caller.
+  bool EHPadForCallUnwindsLocally = false;
+  if (CallSiteEHPad && CS.isCall()) {
+    UnwindDestMemoTy FuncletUnwindMap;
+    Value *CallSiteUnwindDestToken =
+        getUnwindDestToken(CallSiteEHPad, FuncletUnwindMap);
+
+    EHPadForCallUnwindsLocally =
+        CallSiteUnwindDestToken &&
+        !isa<ConstantTokenNone>(CallSiteUnwindDestToken);
+  }
+
   // Get an iterator to the last basic block in the function, which will have
   // the new function inlined after it.
   Function::iterator LastBlock = --Caller->end();
@@ -1600,7 +1622,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
       replaceDbgDeclareForAlloca(AI, AI, DIB, /*Deref=*/false);
   }
 
-  bool InlinedMustTailCalls = false;
+  bool InlinedMustTailCalls = false, InlinedDeoptimizeCalls = false;
   if (InlinedFunctionInfo.ContainsCalls) {
     CallInst::TailCallKind CallSiteTailKind = CallInst::TCK_None;
     if (CallInst *CI = dyn_cast<CallInst>(TheCall))
@@ -1612,6 +1634,10 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
         CallInst *CI = dyn_cast<CallInst>(&I);
         if (!CI)
           continue;
+
+        if (Function *F = CI->getCalledFunction())
+          InlinedDeoptimizeCalls |=
+              F->getIntrinsicID() == Intrinsic::experimental_deoptimize;
 
         // We need to reduce the strength of any inlined tail calls.  For
         // musttail, we have to avoid introducing potential unbounded stack
@@ -1763,6 +1789,14 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
         OpBundles.clear();
       }
 
+      // It is problematic if the inlinee has a cleanupret which unwinds to
+      // caller and we inline it into a call site which doesn't unwind but into
+      // an EH pad that does.  Such an edge must be dynamically unreachable.
+      // As such, we replace the cleanupret with unreachable.
+      if (auto *CleanupRet = dyn_cast<CleanupReturnInst>(BB->getTerminator()))
+        if (CleanupRet->unwindsToCaller() && EHPadForCallUnwindsLocally)
+          changeToUnreachable(CleanupRet, /*UseLLVMTrap=*/false);
+
       Instruction *I = BB->getFirstNonPHI();
       if (!I->isEHPad())
         continue;
@@ -1775,6 +1809,56 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
         if (isa<ConstantTokenNone>(FPI->getParentPad()))
           FPI->setParentPad(CallSiteEHPad);
       }
+    }
+  }
+
+  if (InlinedDeoptimizeCalls) {
+    // We need to at least remove the deoptimizing returns from the Return set,
+    // so that the control flow from those returns does not get merged into the
+    // caller (but terminate it instead).  If the caller's return type does not
+    // match the callee's return type, we also need to change the return type of
+    // the intrinsic.
+    if (Caller->getReturnType() == TheCall->getType()) {
+      auto NewEnd = remove_if(Returns, [](ReturnInst *RI) {
+        return RI->getParent()->getTerminatingDeoptimizeCall() != nullptr;
+      });
+      Returns.erase(NewEnd, Returns.end());
+    } else {
+      SmallVector<ReturnInst *, 8> NormalReturns;
+      Function *NewDeoptIntrinsic = Intrinsic::getDeclaration(
+          Caller->getParent(), Intrinsic::experimental_deoptimize,
+          {Caller->getReturnType()});
+
+      for (ReturnInst *RI : Returns) {
+        CallInst *DeoptCall = RI->getParent()->getTerminatingDeoptimizeCall();
+        if (!DeoptCall) {
+          NormalReturns.push_back(RI);
+          continue;
+        }
+
+        auto *CurBB = RI->getParent();
+        RI->eraseFromParent();
+
+        SmallVector<Value *, 4> CallArgs(DeoptCall->arg_begin(),
+                                         DeoptCall->arg_end());
+
+        SmallVector<OperandBundleDef, 1> OpBundles;
+        DeoptCall->getOperandBundlesAsDefs(OpBundles);
+        DeoptCall->eraseFromParent();
+        assert(!OpBundles.empty() &&
+               "Expected at least the deopt operand bundle");
+
+        IRBuilder<> Builder(CurBB);
+        Value *NewDeoptCall =
+            Builder.CreateCall(NewDeoptIntrinsic, CallArgs, OpBundles);
+        if (NewDeoptCall->getType()->isVoidTy())
+          Builder.CreateRetVoid();
+        else
+          Builder.CreateRet(NewDeoptCall);
+      }
+
+      // Leave behind the normal returns so we can merge control flow.
+      std::swap(Returns, NormalReturns);
     }
   }
 

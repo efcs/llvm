@@ -83,8 +83,15 @@ void PrintASCII(const Unit &U, const char *PrintAfter = "");
 void PrintASCII(const Word &W, const char *PrintAfter = "");
 std::string Hash(const Unit &U);
 void SetTimer(int Seconds);
+void SetSigSegvHandler();
+void SetSigBusHandler();
+void SetSigAbrtHandler();
+void SetSigIllHandler();
+void SetSigFpeHandler();
+void SetSigIntHandler();
 std::string Base64(const Unit &U);
 int ExecuteCommand(const std::string &Command);
+size_t GetPeakRSSMb();
 
 // Private copy of SHA1 implementation.
 static const int kSHA1NumBytes = 20;
@@ -98,6 +105,13 @@ bool IsASCII(const Unit &U);
 
 int NumberOfCpuCores();
 int GetPid();
+
+// Clears the current PC Map.
+void PcMapResetCurrent();
+// Merges the current PC Map into the combined one, and clears the former.
+void PcMapMergeCurrentToCombined();
+// Returns the size of the combined PC Map.
+size_t PcMapCombinedSize();
 
 class Random {
  public:
@@ -260,14 +274,13 @@ class Fuzzer {
 public:
   struct FuzzingOptions {
     int Verbosity = 1;
-    int MaxLen = 0;
+    size_t MaxLen = 0;
     int UnitTimeoutSec = 300;
-    bool AbortOnTimeout = false;
     int TimeoutExitCode = 77;
+    int ErrorExitCode = 77;
     int MaxTotalTimeSec = 0;
     bool DoCrossOver = true;
     int MutateDepth = 5;
-    bool ExitOnFirst = false;
     bool UseCounters = false;
     bool UseIndirCalls = true;
     bool UseTraces = false;
@@ -288,6 +301,7 @@ public:
     bool PrintNEW = true; // Print a status line when new units are found;
     bool OutputCSV = false;
     bool PrintNewCovPcs = false;
+    bool PrintFinalStats = false;
   };
   Fuzzer(UserCallback CB, MutationDispatcher &MD, FuzzingOptions Options);
   void AddToCorpus(const Unit &U) {
@@ -302,11 +316,12 @@ public:
   void InitializeTraceState();
   void AssignTaintLabels(uint8_t *Data, size_t Size);
   size_t CorpusSize() const { return Corpus.size(); }
+  size_t MaxUnitSizeInCorpus() const;
   void ReadDir(const std::string &Path, long *Epoch, size_t MaxSize) {
     Printf("Loading corpus: %s\n", Path.c_str());
     ReadDirToVectorOfUnits(Path.c_str(), &Corpus, Epoch, MaxSize);
   }
-  void RereadOutputCorpus();
+  void RereadOutputCorpus(size_t MaxSize);
   // Save the current corpus to OutputCorpus.
   void SaveCorpus();
 
@@ -314,19 +329,29 @@ public:
     return duration_cast<seconds>(system_clock::now() - ProcessStartTime)
         .count();
   }
+  size_t execPerSec() {
+    size_t Seconds = secondsSinceProcessStartUp();
+    return Seconds ? TotalNumberOfRuns / Seconds : 0;
+  }
 
   size_t getTotalNumberOfRuns() { return TotalNumberOfRuns; }
 
   static void StaticAlarmCallback();
+  static void StaticCrashSignalCallback();
+  static void StaticInterruptCallback();
 
   void ExecuteCallback(const uint8_t *Data, size_t Size);
 
   // Merge Corpora[1:] into Corpora[0].
   void Merge(const std::vector<std::string> &Corpora);
   MutationDispatcher &GetMD() { return MD; }
+  void PrintFinalStats();
+  void SetMaxLen(size_t MaxLen);
 
 private:
   void AlarmCallback();
+  void CrashCallback();
+  void InterruptCallback();
   void MutateAndTestOne();
   void ReportNewCoverage(const Unit &U);
   bool RunOne(const uint8_t *Data, size_t Size);
@@ -358,6 +383,7 @@ private:
 
   void SetDeathCallback();
   static void StaticDeathCallback();
+  void DumpCurrentUnit(const char *Prefix);
   void DeathCallback();
 
   uint8_t *CurrentUnitData;
@@ -365,6 +391,7 @@ private:
 
   size_t TotalNumberOfRuns = 0;
   size_t TotalNumberOfExecutedTraceBasedMutations = 0;
+  size_t NumberOfNewUnitsAdded = 0;
 
   std::vector<Unit> Corpus;
   std::unordered_set<std::string> UnitHashesAddedToCorpus;
@@ -390,6 +417,7 @@ private:
   long TimeOfLongestUnitInSeconds = 0;
   long EpochOfLastReadOfOutputCorpus = 0;
   size_t LastRecordedBlockCoverage = 0;
+  size_t LastRecordedPcMapSize = 0;
   size_t LastRecordedCallerCalleeCoverage = 0;
   size_t LastCoveragePcBufferLen = 0;
 };

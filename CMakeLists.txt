@@ -392,14 +392,6 @@ if(LLVM_LINK_LLVM_DYLIB OR LLVM_BUILD_LLVM_C_DYLIB)
   set(LLVM_BUILD_LLVM_DYLIB_default ON)
 endif()
 option(LLVM_BUILD_LLVM_DYLIB "Build libllvm dynamic library" ${LLVM_BUILD_LLVM_DYLIB_default})
-set(LLVM_DISABLE_LLVM_DYLIB_ATEXIT_DEFAULT ON)
-if (LLVM_LINK_LLVM_DYLIB)
-  set(LLVM_DISABLE_LLVM_DYLIB_ATEXIT_DEFAULT OFF)
-endif()
-option(LLVM_DISABLE_LLVM_DYLIB_ATEXIT "Disable llvm-shlib's atexit destructors." ${LLVM_DISABLE_LLVM_DYLIB_ATEXIT_DEFAULT})
-if(LLVM_DISABLE_LLVM_DYLIB_ATEXIT)
-  set(DISABLE_LLVM_DYLIB_ATEXIT 1)
-endif()
 
 option(LLVM_OPTIMIZED_TABLEGEN "Force TableGen to be built with optimization" OFF)
 if(CMAKE_CROSSCOMPILING OR (LLVM_OPTIMIZED_TABLEGEN AND LLVM_ENABLE_ASSERTIONS))
@@ -410,6 +402,10 @@ endif()
 # BEFORE this include, otherwise options will not be correctly set on
 # first cmake run
 include(config-ix)
+
+string(REPLACE "Native" ${LLVM_NATIVE_ARCH}
+  LLVM_TARGETS_TO_BUILD "${LLVM_TARGETS_TO_BUILD}")
+list(REMOVE_DUPLICATES LLVM_TARGETS_TO_BUILD)
 
 # By default, we target the host, but this can be overridden at CMake
 # invocation time.
@@ -723,6 +719,7 @@ if( LLVM_INCLUDE_TESTS )
     DEPENDS ${LLVM_LIT_DEPENDS}
     ARGS ${LLVM_LIT_EXTRA_ARGS}
     )
+  add_custom_target(test-depends DEPENDS ${LLVM_LIT_DEPENDS})
 endif()
 
 if (LLVM_INCLUDE_DOCS)
@@ -765,4 +762,28 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
                               -DCMAKE_INSTALL_COMPONENT=llvm-headers
                               -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
   endif()
+endif()
+
+# This must be at the end of the LLVM root CMakeLists file because it must run
+# after all targets are created.
+if(LLVM_DISTRIBUTION_COMPONENTS)
+  if(CMAKE_CONFIGURATION_TYPES)
+    message(FATAL_ERROR "LLVM_DISTRIBUTION_COMPONENTS cannot be specified with multi-configuration generators (i.e. Xcode or Visual Studio)")
+  endif()
+
+  add_custom_target(distribution)
+  add_custom_target(install-distribution)
+  foreach(target ${LLVM_DISTRIBUTION_COMPONENTS})
+    if(TARGET ${target})
+      add_dependencies(distribution ${target})
+    else()
+      message(FATAL_ERROR "Specified distribution component '${target}' doesn't have a target")
+    endif()
+
+    if(TARGET install-${target})
+      add_dependencies(install-distribution install-${target})
+    else()
+      message(FATAL_ERROR "Specified distribution component '${target}' doesn't have an install target")
+    endif()
+  endforeach()
 endif()

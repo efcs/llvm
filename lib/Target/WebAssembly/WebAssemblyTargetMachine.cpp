@@ -184,7 +184,6 @@ void WebAssemblyPassConfig::addPostRegAlloc() {
   disablePass(&PrologEpilogCodeInserterID);
   // Fails with: should be run after register allocation.
   disablePass(&MachineCopyPropagationID);
-  disablePass(&TailDuplicateID);
 
   if (getOptLevel() != CodeGenOpt::None) {
     // Mark registers as representing wasm's expression stack.
@@ -204,6 +203,9 @@ void WebAssemblyPassConfig::addPostRegAlloc() {
 
 void WebAssemblyPassConfig::addPreEmitPass() {
   TargetPassConfig::addPreEmitPass();
+
+  // Eliminate multiple-entry loops.
+  addPass(createWebAssemblyFixIrreducibleControlFlow());
 
   // Put the CFG in structured form; insert BLOCK and LOOP markers.
   addPass(createWebAssemblyCFGStackify());

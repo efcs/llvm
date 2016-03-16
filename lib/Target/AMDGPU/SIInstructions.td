@@ -88,7 +88,15 @@ defm S_BUFFER_LOAD_DWORDX16 : SMRD_Helper <
   smrd<0x0c>, "s_buffer_load_dwordx16", SReg_128, SReg_512
 >;
 
-//def S_MEMTIME : SMRD_ <0x0000001e, "s_memtime", []>;
+let mayStore = ? in {
+// FIXME: mayStore = ? is a workaround for tablegen bug for different
+// inferred mayStore flags for the instruction pattern vs. standalone
+// Pat. Each considers the other contradictory.
+
+defm S_MEMTIME : SMRD_Special <smrd<0x1e, 0x24>, "s_memtime",
+  (outs SReg_64:$sdst), ?, " $sdst", [(set i64:$sdst, (int_amdgcn_s_memtime))]
+>;
+}
 
 defm S_DCACHE_INV : SMRD_Inval <smrd<0x1f, 0x20>, "s_dcache_inv",
   int_amdgcn_s_dcache_inv>;
@@ -111,11 +119,11 @@ let isMoveImm = 1 in {
 
 let Defs = [SCC] in {
   defm S_NOT_B32 : SOP1_32 <sop1<0x07, 0x04>, "s_not_b32",
-    [(set i32:$dst, (not i32:$src0))]
+    [(set i32:$sdst, (not i32:$src0))]
   >;
 
   defm S_NOT_B64 : SOP1_64 <sop1<0x08, 0x05>, "s_not_b64",
-    [(set i64:$dst, (not i64:$src0))]
+    [(set i64:$sdst, (not i64:$src0))]
   >;
   defm S_WQM_B32 : SOP1_32 <sop1<0x09, 0x06>, "s_wqm_b32", []>;
   defm S_WQM_B64 : SOP1_64 <sop1<0x0a, 0x07>, "s_wqm_b64", []>;
@@ -123,7 +131,7 @@ let Defs = [SCC] in {
 
 
 defm S_BREV_B32 : SOP1_32 <sop1<0x0b, 0x08>, "s_brev_b32",
-  [(set i32:$dst, (bitreverse i32:$src0))]
+  [(set i32:$sdst, (bitreverse i32:$src0))]
 >;
 defm S_BREV_B64 : SOP1_64 <sop1<0x0c, 0x09>, "s_brev_b64", []>;
 
@@ -131,7 +139,7 @@ let Defs = [SCC] in {
   defm S_BCNT0_I32_B32 : SOP1_32 <sop1<0x0d, 0x0a>, "s_bcnt0_i32_b32", []>;
   defm S_BCNT0_I32_B64 : SOP1_32_64 <sop1<0x0e, 0x0b>, "s_bcnt0_i32_b64", []>;
   defm S_BCNT1_I32_B32 : SOP1_32 <sop1<0x0f, 0x0c>, "s_bcnt1_i32_b32",
-    [(set i32:$dst, (ctpop i32:$src0))]
+    [(set i32:$sdst, (ctpop i32:$src0))]
   >;
   defm S_BCNT1_I32_B64 : SOP1_32_64 <sop1<0x10, 0x0d>, "s_bcnt1_i32_b64", []>;
 } // End Defs = [SCC]
@@ -139,34 +147,34 @@ let Defs = [SCC] in {
 defm S_FF0_I32_B32 : SOP1_32 <sop1<0x11, 0x0e>, "s_ff0_i32_b32", []>;
 defm S_FF0_I32_B64 : SOP1_32_64 <sop1<0x12, 0x0f>, "s_ff0_i32_b64", []>;
 defm S_FF1_I32_B32 : SOP1_32 <sop1<0x13, 0x10>, "s_ff1_i32_b32",
-  [(set i32:$dst, (cttz_zero_undef i32:$src0))]
+  [(set i32:$sdst, (cttz_zero_undef i32:$src0))]
 >;
 defm S_FF1_I32_B64 : SOP1_32_64 <sop1<0x14, 0x11>, "s_ff1_i32_b64", []>;
 
 defm S_FLBIT_I32_B32 : SOP1_32 <sop1<0x15, 0x12>, "s_flbit_i32_b32",
-  [(set i32:$dst, (AMDGPUffbh_u32 i32:$src0))]
+  [(set i32:$sdst, (AMDGPUffbh_u32 i32:$src0))]
 >;
 
 defm S_FLBIT_I32_B64 : SOP1_32_64 <sop1<0x16, 0x13>, "s_flbit_i32_b64", []>;
 defm S_FLBIT_I32 : SOP1_32 <sop1<0x17, 0x14>, "s_flbit_i32",
-  [(set i32:$dst, (int_AMDGPU_flbit_i32 i32:$src0))]
+  [(set i32:$sdst, (int_AMDGPU_flbit_i32 i32:$src0))]
 >;
 defm S_FLBIT_I32_I64 : SOP1_32_64 <sop1<0x18, 0x15>, "s_flbit_i32_i64", []>;
 defm S_SEXT_I32_I8 : SOP1_32 <sop1<0x19, 0x16>, "s_sext_i32_i8",
-  [(set i32:$dst, (sext_inreg i32:$src0, i8))]
+  [(set i32:$sdst, (sext_inreg i32:$src0, i8))]
 >;
 defm S_SEXT_I32_I16 : SOP1_32 <sop1<0x1a, 0x17>, "s_sext_i32_i16",
-  [(set i32:$dst, (sext_inreg i32:$src0, i16))]
+  [(set i32:$sdst, (sext_inreg i32:$src0, i16))]
 >;
 
 defm S_BITSET0_B32 : SOP1_32 <sop1<0x1b, 0x18>, "s_bitset0_b32", []>;
-defm S_BITSET0_B64 : SOP1_64 <sop1<0x1c, 0x19>, "s_bitset0_b64", []>;
+defm S_BITSET0_B64 : SOP1_64_32 <sop1<0x1c, 0x19>, "s_bitset0_b64", []>;
 defm S_BITSET1_B32 : SOP1_32 <sop1<0x1d, 0x1a>, "s_bitset1_b32", []>;
-defm S_BITSET1_B64 : SOP1_64 <sop1<0x1e, 0x1b>, "s_bitset1_b64", []>;
+defm S_BITSET1_B64 : SOP1_64_32 <sop1<0x1e, 0x1b>, "s_bitset1_b64", []>;
 defm S_GETPC_B64 : SOP1_64_0 <sop1<0x1f, 0x1c>, "s_getpc_b64", []>;
-defm S_SETPC_B64 : SOP1_64 <sop1<0x20, 0x1d>, "s_setpc_b64", []>;
+defm S_SETPC_B64 : SOP1_1 <sop1<0x20, 0x1d>, "s_setpc_b64", []>;
 defm S_SWAPPC_B64 : SOP1_64 <sop1<0x21, 0x1e>, "s_swappc_b64", []>;
-defm S_RFE_B64 : SOP1_64 <sop1<0x22, 0x1f>, "s_rfe_b64", []>;
+defm S_RFE_B64 : SOP1_1 <sop1<0x22, 0x1f>, "s_rfe_b64", []>;
 
 let hasSideEffects = 1, Uses = [EXEC], Defs = [EXEC, SCC] in {
 
@@ -206,36 +214,36 @@ let Defs = [SCC] in { // Carry out goes to SCC
 let isCommutable = 1 in {
 defm S_ADD_U32 : SOP2_32 <sop2<0x00>, "s_add_u32", []>;
 defm S_ADD_I32 : SOP2_32 <sop2<0x02>, "s_add_i32",
-  [(set i32:$dst, (add SSrc_32:$src0, SSrc_32:$src1))]
+  [(set i32:$sdst, (add SSrc_32:$src0, SSrc_32:$src1))]
 >;
 } // End isCommutable = 1
 
 defm S_SUB_U32 : SOP2_32 <sop2<0x01>, "s_sub_u32", []>;
 defm S_SUB_I32 : SOP2_32 <sop2<0x03>, "s_sub_i32",
-  [(set i32:$dst, (sub SSrc_32:$src0, SSrc_32:$src1))]
+  [(set i32:$sdst, (sub SSrc_32:$src0, SSrc_32:$src1))]
 >;
 
 let Uses = [SCC] in { // Carry in comes from SCC
 let isCommutable = 1 in {
 defm S_ADDC_U32 : SOP2_32 <sop2<0x04>, "s_addc_u32",
-  [(set i32:$dst, (adde (i32 SSrc_32:$src0), (i32 SSrc_32:$src1)))]>;
+  [(set i32:$sdst, (adde (i32 SSrc_32:$src0), (i32 SSrc_32:$src1)))]>;
 } // End isCommutable = 1
 
 defm S_SUBB_U32 : SOP2_32 <sop2<0x05>, "s_subb_u32",
-  [(set i32:$dst, (sube (i32 SSrc_32:$src0), (i32 SSrc_32:$src1)))]>;
+  [(set i32:$sdst, (sube (i32 SSrc_32:$src0), (i32 SSrc_32:$src1)))]>;
 } // End Uses = [SCC]
 
 defm S_MIN_I32 : SOP2_32 <sop2<0x06>, "s_min_i32",
-  [(set i32:$dst, (smin i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (smin i32:$src0, i32:$src1))]
 >;
 defm S_MIN_U32 : SOP2_32 <sop2<0x07>, "s_min_u32",
-  [(set i32:$dst, (umin i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (umin i32:$src0, i32:$src1))]
 >;
 defm S_MAX_I32 : SOP2_32 <sop2<0x08>, "s_max_i32",
-  [(set i32:$dst, (smax i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (smax i32:$src0, i32:$src1))]
 >;
 defm S_MAX_U32 : SOP2_32 <sop2<0x09>, "s_max_u32",
-  [(set i32:$dst, (umax i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (umax i32:$src0, i32:$src1))]
 >;
 } // End Defs = [SCC]
 
@@ -247,27 +255,27 @@ let Uses = [SCC] in {
 
 let Defs = [SCC] in {
 defm S_AND_B32 : SOP2_32 <sop2<0x0e, 0x0c>, "s_and_b32",
-  [(set i32:$dst, (and i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (and i32:$src0, i32:$src1))]
 >;
 
 defm S_AND_B64 : SOP2_64 <sop2<0x0f, 0x0d>, "s_and_b64",
-  [(set i64:$dst, (and i64:$src0, i64:$src1))]
+  [(set i64:$sdst, (and i64:$src0, i64:$src1))]
 >;
 
 defm S_OR_B32 : SOP2_32 <sop2<0x10, 0x0e>, "s_or_b32",
-  [(set i32:$dst, (or i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (or i32:$src0, i32:$src1))]
 >;
 
 defm S_OR_B64 : SOP2_64 <sop2<0x11, 0x0f>, "s_or_b64",
-  [(set i64:$dst, (or i64:$src0, i64:$src1))]
+  [(set i64:$sdst, (or i64:$src0, i64:$src1))]
 >;
 
 defm S_XOR_B32 : SOP2_32 <sop2<0x12, 0x10>, "s_xor_b32",
-  [(set i32:$dst, (xor i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (xor i32:$src0, i32:$src1))]
 >;
 
 defm S_XOR_B64 : SOP2_64 <sop2<0x13, 0x11>, "s_xor_b64",
-  [(set i64:$dst, (xor i64:$src0, i64:$src1))]
+  [(set i64:$sdst, (xor i64:$src0, i64:$src1))]
 >;
 defm S_ANDN2_B32 : SOP2_32 <sop2<0x14, 0x12>, "s_andn2_b32", []>;
 defm S_ANDN2_B64 : SOP2_64 <sop2<0x15, 0x13>, "s_andn2_b64", []>;
@@ -286,30 +294,30 @@ let AddedComplexity = 1 in {
 let Defs = [SCC] in {
 
 defm S_LSHL_B32 : SOP2_32 <sop2<0x1e, 0x1c>, "s_lshl_b32",
-  [(set i32:$dst, (shl i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (shl i32:$src0, i32:$src1))]
 >;
 defm S_LSHL_B64 : SOP2_64_32 <sop2<0x1f, 0x1d>, "s_lshl_b64",
-  [(set i64:$dst, (shl i64:$src0, i32:$src1))]
+  [(set i64:$sdst, (shl i64:$src0, i32:$src1))]
 >;
 defm S_LSHR_B32 : SOP2_32 <sop2<0x20, 0x1e>, "s_lshr_b32",
-  [(set i32:$dst, (srl i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (srl i32:$src0, i32:$src1))]
 >;
 defm S_LSHR_B64 : SOP2_64_32 <sop2<0x21, 0x1f>, "s_lshr_b64",
-  [(set i64:$dst, (srl i64:$src0, i32:$src1))]
+  [(set i64:$sdst, (srl i64:$src0, i32:$src1))]
 >;
 defm S_ASHR_I32 : SOP2_32 <sop2<0x22, 0x20>, "s_ashr_i32",
-  [(set i32:$dst, (sra i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (sra i32:$src0, i32:$src1))]
 >;
 defm S_ASHR_I64 : SOP2_64_32 <sop2<0x23, 0x21>, "s_ashr_i64",
-  [(set i64:$dst, (sra i64:$src0, i32:$src1))]
+  [(set i64:$sdst, (sra i64:$src0, i32:$src1))]
 >;
 } // End Defs = [SCC]
 
 defm S_BFM_B32 : SOP2_32 <sop2<0x24, 0x22>, "s_bfm_b32",
-  [(set i32:$dst, (AMDGPUbfm i32:$src0, i32:$src1))]>;
-defm S_BFM_B64 : SOP2_64 <sop2<0x25, 0x23>, "s_bfm_b64", []>;
+  [(set i32:$sdst, (AMDGPUbfm i32:$src0, i32:$src1))]>;
+defm S_BFM_B64 : SOP2_64_32_32 <sop2<0x25, 0x23>, "s_bfm_b64", []>;
 defm S_MUL_I32 : SOP2_32 <sop2<0x26, 0x24>, "s_mul_i32",
-  [(set i32:$dst, (mul i32:$src0, i32:$src1))]
+  [(set i32:$sdst, (mul i32:$src0, i32:$src1))]
 >;
 
 } // End AddedComplexity = 1
@@ -317,7 +325,7 @@ defm S_MUL_I32 : SOP2_32 <sop2<0x26, 0x24>, "s_mul_i32",
 let Defs = [SCC] in {
 defm S_BFE_U32 : SOP2_32 <sop2<0x27, 0x25>, "s_bfe_u32", []>;
 defm S_BFE_I32 : SOP2_32 <sop2<0x28, 0x26>, "s_bfe_i32", []>;
-defm S_BFE_U64 : SOP2_64 <sop2<0x29, 0x27>, "s_bfe_u64", []>;
+defm S_BFE_U64 : SOP2_64_32 <sop2<0x29, 0x27>, "s_bfe_u64", []>;
 defm S_BFE_I64 : SOP2_64_32 <sop2<0x2a, 0x28>, "s_bfe_i64", []>;
 } // End Defs = [SCC]
 
@@ -336,23 +344,23 @@ defm S_ABSDIFF_I32 : SOP2_32 <sop2<0x2c, 0x2a>, "s_absdiff_i32", []>;
 // SOPC Instructions
 //===----------------------------------------------------------------------===//
 
-def S_CMP_EQ_I32 : SOPC_32 <0x00000000, "s_cmp_eq_i32", COND_EQ>;
-def S_CMP_LG_I32 : SOPC_32 <0x00000001, "s_cmp_lg_i32", COND_NE>;
-def S_CMP_GT_I32 : SOPC_32 <0x00000002, "s_cmp_gt_i32", COND_SGT>;
-def S_CMP_GE_I32 : SOPC_32 <0x00000003, "s_cmp_ge_i32", COND_SGE>;
-def S_CMP_LT_I32 : SOPC_32 <0x00000004, "s_cmp_lt_i32", COND_SLT>;
-def S_CMP_LE_I32 : SOPC_32 <0x00000005, "s_cmp_le_i32", COND_SLE>;
-def S_CMP_EQ_U32 : SOPC_32 <0x00000006, "s_cmp_eq_u32", COND_EQ>;
-def S_CMP_LG_U32 : SOPC_32 <0x00000007, "s_cmp_lg_u32", COND_NE >;
-def S_CMP_GT_U32 : SOPC_32 <0x00000008, "s_cmp_gt_u32", COND_UGT>;
-def S_CMP_GE_U32 : SOPC_32 <0x00000009, "s_cmp_ge_u32", COND_UGE>;
-def S_CMP_LT_U32 : SOPC_32 <0x0000000a, "s_cmp_lt_u32", COND_ULT>;
-def S_CMP_LE_U32 : SOPC_32 <0x0000000b, "s_cmp_le_u32", COND_ULE>;
-////def S_BITCMP0_B32 : SOPC_BITCMP0 <0x0000000c, "s_bitcmp0_b32", []>;
-////def S_BITCMP1_B32 : SOPC_BITCMP1 <0x0000000d, "s_bitcmp1_b32", []>;
-////def S_BITCMP0_B64 : SOPC_BITCMP0 <0x0000000e, "s_bitcmp0_b64", []>;
-////def S_BITCMP1_B64 : SOPC_BITCMP1 <0x0000000f, "s_bitcmp1_b64", []>;
-//def S_SETVSKIP : SOPC_ <0x00000010, "s_setvskip", []>;
+def S_CMP_EQ_I32 : SOPC_CMP_32 <0x00000000, "s_cmp_eq_i32", COND_EQ>;
+def S_CMP_LG_I32 : SOPC_CMP_32 <0x00000001, "s_cmp_lg_i32", COND_NE>;
+def S_CMP_GT_I32 : SOPC_CMP_32 <0x00000002, "s_cmp_gt_i32", COND_SGT>;
+def S_CMP_GE_I32 : SOPC_CMP_32 <0x00000003, "s_cmp_ge_i32", COND_SGE>;
+def S_CMP_LT_I32 : SOPC_CMP_32 <0x00000004, "s_cmp_lt_i32", COND_SLT>;
+def S_CMP_LE_I32 : SOPC_CMP_32 <0x00000005, "s_cmp_le_i32", COND_SLE>;
+def S_CMP_EQ_U32 : SOPC_CMP_32 <0x00000006, "s_cmp_eq_u32", COND_EQ>;
+def S_CMP_LG_U32 : SOPC_CMP_32 <0x00000007, "s_cmp_lg_u32", COND_NE >;
+def S_CMP_GT_U32 : SOPC_CMP_32 <0x00000008, "s_cmp_gt_u32", COND_UGT>;
+def S_CMP_GE_U32 : SOPC_CMP_32 <0x00000009, "s_cmp_ge_u32", COND_UGE>;
+def S_CMP_LT_U32 : SOPC_CMP_32 <0x0000000a, "s_cmp_lt_u32", COND_ULT>;
+def S_CMP_LE_U32 : SOPC_CMP_32 <0x0000000b, "s_cmp_le_u32", COND_ULE>;
+def S_BITCMP0_B32 : SOPC_32 <0x0000000c, "s_bitcmp0_b32">;
+def S_BITCMP1_B32 : SOPC_32 <0x0000000d, "s_bitcmp1_b32">;
+def S_BITCMP0_B64 : SOPC_64_32 <0x0000000e, "s_bitcmp0_b64">;
+def S_BITCMP1_B64 : SOPC_64_32 <0x0000000f, "s_bitcmp1_b64">;
+def S_SETVSKIP : SOPC_32 <0x00000010, "s_setvskip">;
 
 //===----------------------------------------------------------------------===//
 // SOPK Instructions
@@ -408,7 +416,11 @@ defm S_CBRANCH_I_FORK : SOPK_m <
   sopk<0x11, 0x10>, "s_cbranch_i_fork", (outs),
   (ins SReg_64:$sdst, u16imm:$simm16), " $sdst, $simm16"
 >;
+
+let mayLoad = 1 in {
 defm S_GETREG_B32 : SOPK_32 <sopk<0x12, 0x11>, "s_getreg_b32", []>;
+}
+
 defm S_SETREG_B32 : SOPK_m <
   sopk<0x13, 0x12>, "s_setreg_b32", (outs),
   (ins SReg_32:$sdst, u16imm:$simm16), " $sdst, $simm16"
@@ -493,10 +505,22 @@ def S_BARRIER : SOPP <0x0000000a, (ins), "s_barrier",
 
 def S_WAITCNT : SOPP <0x0000000c, (ins WAIT_FLAG:$simm16), "s_waitcnt $simm16">;
 def S_SETHALT : SOPP <0x0000000d, (ins i16imm:$simm16), "s_sethalt $simm16">;
-def S_SLEEP : SOPP <0x0000000e, (ins i16imm:$simm16), "s_sleep $simm16">;
-def S_SETPRIO : SOPP <0x0000000f, (ins i16imm:$sim16), "s_setprio $sim16">;
+
+// On SI the documentation says sleep for approximately 64 * low 2
+// bits, consistent with the reported maximum of 448. On VI the
+// maximum reported is 960 cycles, so 960 / 64 = 15 max, so is the
+// maximum really 15 on VI?
+def S_SLEEP : SOPP <0x0000000e, (ins i32imm:$simm16),
+  "s_sleep $simm16", [(int_amdgcn_s_sleep SIMM16bit:$simm16)]> {
+  let hasSideEffects = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+}
+
+def S_SETPRIO : SOPP <0x0000000f, (ins i16imm:$simm16), "s_setprio $simm16">;
 
 let Uses = [EXEC, M0] in {
+  // FIXME: Should this be mayLoad+mayStore?
   def S_SENDMSG : SOPP <0x00000010, (ins SendMsgImm:$simm16), "s_sendmsg $simm16",
       [(AMDGPUsendmsg (i32 imm:$simm16))]
   >;
@@ -925,18 +949,23 @@ defm BUFFER_LOAD_FORMAT_XYZ : MUBUF_Load_Helper <
 defm BUFFER_LOAD_FORMAT_XYZW : MUBUF_Load_Helper <
   mubuf<0x03>, "buffer_load_format_xyzw", VReg_128
 >;
-defm BUFFER_STORE_FORMAT_X : MUBUF_Store_Helper <
-  mubuf<0x04>, "buffer_store_format_x", VGPR_32
->;
-defm BUFFER_STORE_FORMAT_XY : MUBUF_Store_Helper <
-  mubuf<0x05>, "buffer_store_format_xy", VReg_64
->;
-defm BUFFER_STORE_FORMAT_XYZ : MUBUF_Store_Helper <
-  mubuf<0x06>, "buffer_store_format_xyz", VReg_96
->;
-defm BUFFER_STORE_FORMAT_XYZW : MUBUF_Store_Helper <
-  mubuf<0x07>, "buffer_store_format_xyzw", VReg_128
->;
+// Without mayLoad and hasSideEffects, TableGen complains about the pattern
+// matching llvm.amdgcn.buffer.store.format. Eventually, we'll need a way
+// to express the effects of the intrinsic more precisely.
+let mayLoad = 1, hasSideEffects = 1 in {
+  defm BUFFER_STORE_FORMAT_X : MUBUF_Store_Helper <
+    mubuf<0x04>, "buffer_store_format_x", VGPR_32
+  >;
+  defm BUFFER_STORE_FORMAT_XY : MUBUF_Store_Helper <
+    mubuf<0x05>, "buffer_store_format_xy", VReg_64
+  >;
+  defm BUFFER_STORE_FORMAT_XYZ : MUBUF_Store_Helper <
+    mubuf<0x06>, "buffer_store_format_xyz", VReg_96
+  >;
+  defm BUFFER_STORE_FORMAT_XYZW : MUBUF_Store_Helper <
+    mubuf<0x07>, "buffer_store_format_xyzw", VReg_128
+  >;
+}
 defm BUFFER_LOAD_UBYTE : MUBUF_Load_Helper <
   mubuf<0x08, 0x10>, "buffer_load_ubyte", VGPR_32, i32, az_extloadi8_global
 >;
@@ -1068,23 +1097,23 @@ defm IMAGE_STORE_MIP : MIMG_Store <0x00000009, "image_store_mip">;
 //def IMAGE_STORE_PCK : MIMG_NoPattern_ <"image_store_pck", 0x0000000a>;
 //def IMAGE_STORE_MIP_PCK : MIMG_NoPattern_ <"image_store_mip_pck", 0x0000000b>;
 defm IMAGE_GET_RESINFO : MIMG_NoSampler <0x0000000e, "image_get_resinfo">;
-//def IMAGE_ATOMIC_SWAP : MIMG_NoPattern_ <"image_atomic_swap", 0x0000000f>;
-//def IMAGE_ATOMIC_CMPSWAP : MIMG_NoPattern_ <"image_atomic_cmpswap", 0x00000010>;
-//def IMAGE_ATOMIC_ADD : MIMG_NoPattern_ <"image_atomic_add", 0x00000011>;
-//def IMAGE_ATOMIC_SUB : MIMG_NoPattern_ <"image_atomic_sub", 0x00000012>;
-//def IMAGE_ATOMIC_RSUB : MIMG_NoPattern_ <"image_atomic_rsub", 0x00000013>;
-//def IMAGE_ATOMIC_SMIN : MIMG_NoPattern_ <"image_atomic_smin", 0x00000014>;
-//def IMAGE_ATOMIC_UMIN : MIMG_NoPattern_ <"image_atomic_umin", 0x00000015>;
-//def IMAGE_ATOMIC_SMAX : MIMG_NoPattern_ <"image_atomic_smax", 0x00000016>;
-//def IMAGE_ATOMIC_UMAX : MIMG_NoPattern_ <"image_atomic_umax", 0x00000017>;
-//def IMAGE_ATOMIC_AND : MIMG_NoPattern_ <"image_atomic_and", 0x00000018>;
-//def IMAGE_ATOMIC_OR : MIMG_NoPattern_ <"image_atomic_or", 0x00000019>;
-//def IMAGE_ATOMIC_XOR : MIMG_NoPattern_ <"image_atomic_xor", 0x0000001a>;
-//def IMAGE_ATOMIC_INC : MIMG_NoPattern_ <"image_atomic_inc", 0x0000001b>;
-//def IMAGE_ATOMIC_DEC : MIMG_NoPattern_ <"image_atomic_dec", 0x0000001c>;
-//def IMAGE_ATOMIC_FCMPSWAP : MIMG_NoPattern_ <"image_atomic_fcmpswap", 0x0000001d>;
-//def IMAGE_ATOMIC_FMIN : MIMG_NoPattern_ <"image_atomic_fmin", 0x0000001e>;
-//def IMAGE_ATOMIC_FMAX : MIMG_NoPattern_ <"image_atomic_fmax", 0x0000001f>;
+defm IMAGE_ATOMIC_SWAP : MIMG_Atomic <mimg<0x0f, 0x10>, "image_atomic_swap">;
+defm IMAGE_ATOMIC_CMPSWAP : MIMG_Atomic <mimg<0x10, 0x11>, "image_atomic_cmpswap", VReg_64>;
+defm IMAGE_ATOMIC_ADD : MIMG_Atomic <mimg<0x11, 0x12>, "image_atomic_add">;
+defm IMAGE_ATOMIC_SUB : MIMG_Atomic <mimg<0x12, 0x13>, "image_atomic_sub">;
+//def IMAGE_ATOMIC_RSUB : MIMG_NoPattern_ <"image_atomic_rsub", 0x00000013>; -- not on VI
+defm IMAGE_ATOMIC_SMIN : MIMG_Atomic <mimg<0x14>, "image_atomic_smin">;
+defm IMAGE_ATOMIC_UMIN : MIMG_Atomic <mimg<0x15>, "image_atomic_umin">;
+defm IMAGE_ATOMIC_SMAX : MIMG_Atomic <mimg<0x16>, "image_atomic_smax">;
+defm IMAGE_ATOMIC_UMAX : MIMG_Atomic <mimg<0x17>, "image_atomic_umax">;
+defm IMAGE_ATOMIC_AND : MIMG_Atomic <mimg<0x18>, "image_atomic_and">;
+defm IMAGE_ATOMIC_OR : MIMG_Atomic <mimg<0x19>, "image_atomic_or">;
+defm IMAGE_ATOMIC_XOR : MIMG_Atomic <mimg<0x1a>, "image_atomic_xor">;
+defm IMAGE_ATOMIC_INC : MIMG_Atomic <mimg<0x1b>, "image_atomic_inc">;
+defm IMAGE_ATOMIC_DEC : MIMG_Atomic <mimg<0x1c>, "image_atomic_dec">;
+//def IMAGE_ATOMIC_FCMPSWAP : MIMG_NoPattern_ <"image_atomic_fcmpswap", 0x0000001d>; -- not on VI
+//def IMAGE_ATOMIC_FMIN : MIMG_NoPattern_ <"image_atomic_fmin", 0x0000001e>; -- not on VI
+//def IMAGE_ATOMIC_FMAX : MIMG_NoPattern_ <"image_atomic_fmax", 0x0000001f>; -- not on VI
 defm IMAGE_SAMPLE           : MIMG_Sampler_WQM <0x00000020, "image_sample">;
 defm IMAGE_SAMPLE_CL        : MIMG_Sampler_WQM <0x00000021, "image_sample_cl">;
 defm IMAGE_SAMPLE_D         : MIMG_Sampler <0x00000022, "image_sample_d">;
@@ -1433,7 +1462,7 @@ multiclass V_CNDMASK <vop2 op, string name> {
 
   defm _e64  : VOP3_m <
       op, VOP_CNDMASK.Outs, VOP_CNDMASK.Ins64,
-      name#!cast<string>(VOP_CNDMASK.Asm64), [], name, 3>;
+      name#!cast<string>(VOP_CNDMASK.Asm64), [], name, 3, 0>;
 }
 
 defm V_CNDMASK_B32 : V_CNDMASK<vop2<0x0>, "v_cndmask_b32">;
@@ -1509,10 +1538,10 @@ defm V_MAC_F32 : VOP2Inst <vop2<0x1f, 0x16>, "v_mac_f32", VOP_MAC>;
 }
 } // End isCommutable = 1
 
-defm V_MADMK_F32 : VOP2MADK <vop2<0x20, 0x17>, "v_madmk_f32">;
+defm V_MADMK_F32 : VOP2MADK <vop2<0x20, 0x17>, "v_madmk_f32", VOP_MADMK>;
 
 let isCommutable = 1 in {
-defm V_MADAK_F32 : VOP2MADK <vop2<0x21, 0x18>, "v_madak_f32">;
+defm V_MADAK_F32 : VOP2MADK <vop2<0x21, 0x18>, "v_madak_f32", VOP_MADAK>;
 } // End isCommutable = 1
 
 let isCommutable = 1 in {
@@ -1867,6 +1896,11 @@ let hasSideEffects = 1, SALU = 1 in {
 def SGPR_USE : InstSI <(outs),(ins), "", []>;
 }
 
+let usesCustomInserter = 1, SALU = 1 in {
+def GET_GROUPSTATICSIZE : InstSI <(outs SReg_32:$sdst), (ins), "",
+  [(set SReg_32:$sdst, (int_amdgcn_groupstaticsize))]>;
+} // End let usesCustomInserter = 1, SALU = 1
+
 // SI pseudo instructions. These are used by the CFG structurizer pass
 // and should be lowered to ISA instructions prior to codegen.
 
@@ -2009,7 +2043,7 @@ multiclass SI_SPILL_VGPR <RegisterClass vgpr_class> {
     def _SAVE : InstSI <
       (outs),
       (ins vgpr_class:$src, i32imm:$frame_idx, SReg_128:$scratch_rsrc,
-           SReg_32:$scratch_offset),
+           SReg_32:$scratch_offset, i32imm:$offset),
       "", []> {
       let mayStore = 1;
       let mayLoad = 0;
@@ -2017,7 +2051,8 @@ multiclass SI_SPILL_VGPR <RegisterClass vgpr_class> {
 
     def _RESTORE : InstSI <
       (outs vgpr_class:$dst),
-      (ins i32imm:$frame_idx, SReg_128:$scratch_rsrc, SReg_32:$scratch_offset),
+      (ins i32imm:$frame_idx, SReg_128:$scratch_rsrc, SReg_32:$scratch_offset,
+           i32imm:$offset),
       "", []> {
       let mayStore = 0;
       let mayLoad = 1;
@@ -2066,6 +2101,82 @@ def : Pat <
                  f32:$src0, f32:$src1, f32:$src2, f32:$src3),
   (EXP imm:$en, imm:$tgt, imm:$compr, imm:$done, imm:$vm,
        $src0, $src1, $src2, $src3)
+>;
+
+//===----------------------------------------------------------------------===//
+// buffer_load/store_format patterns
+//===----------------------------------------------------------------------===//
+def : Pat<
+  (int_amdgcn_buffer_load_format v4i32:$rsrc, i32:$soffset, imm:$offset, 0, 0,
+                                 imm:$glc, imm:$slc),
+  (BUFFER_LOAD_FORMAT_XYZW_OFFSET $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_load_format v4i32:$rsrc, i32:$soffset, imm:$offset, i32:$vindex, 0,
+                                 imm:$glc, imm:$slc),
+  (BUFFER_LOAD_FORMAT_XYZW_IDXEN $vindex, $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_load_format v4i32:$rsrc, i32:$soffset, imm:$offset, 0, i32:$voffset,
+                                 imm:$glc, imm:$slc),
+  (BUFFER_LOAD_FORMAT_XYZW_OFFEN $voffset, $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_load_format v4i32:$rsrc, i32:$soffset, imm:$offset, i32:$vindex, i32:$voffset,
+                                 imm:$glc, imm:$slc),
+  (BUFFER_LOAD_FORMAT_XYZW_BOTHEN
+    (REG_SEQUENCE VReg_64, $vindex, sub0, $voffset, sub1),
+    $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_store_format v4f32:$vdata, v4i32:$rsrc,
+                                  i32:$soffset, imm:$offset, 0, 0,
+                                  imm:$glc, imm:$slc),
+  (BUFFER_STORE_FORMAT_XYZW_OFFSET $vdata, $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_store_format v4f32:$vdata, v4i32:$rsrc,
+                                 i32:$soffset, imm:$offset, i32:$vindex, 0,
+                                 imm:$glc, imm:$slc),
+  (BUFFER_STORE_FORMAT_XYZW_IDXEN $vdata, $vindex, $rsrc, $soffset,
+    (as_i16imm $offset), (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_store_format v4f32:$vdata, v4i32:$rsrc,
+                                  i32:$soffset, imm:$offset, 0, i32:$voffset,
+                                  imm:$glc, imm:$slc),
+  (BUFFER_STORE_FORMAT_XYZW_OFFEN $vdata, $voffset, $rsrc, $soffset,
+    (as_i16imm $offset), (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+def : Pat<
+  (int_amdgcn_buffer_store_format v4f32:$vdata, v4i32:$rsrc, i32:$soffset,
+                                  imm:$offset, i32:$vindex, i32:$voffset,
+                                  imm:$glc, imm:$slc),
+  (BUFFER_STORE_FORMAT_XYZW_BOTHEN
+    $vdata,
+    (REG_SEQUENCE VReg_64, $vindex, sub0, $voffset, sub1),
+    $rsrc, $soffset, (as_i16imm $offset),
+    (as_i1imm $glc), (as_i1imm $slc), 0)
+>;
+
+//===----------------------------------------------------------------------===//
+// S_GETREG_B32 Intrinsic Pattern.
+//===----------------------------------------------------------------------===//
+def : Pat <
+  (int_amdgcn_s_getreg imm:$simm16),
+  (S_GETREG_B32 (as_i16imm $simm16))
 >;
 
 //===----------------------------------------------------------------------===//
@@ -2215,9 +2326,9 @@ def : Pat <
 class SampleRawPattern<SDPatternOperator name, MIMG opcode, ValueType vt> : Pat <
   (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, i32:$dmask, i32:$unorm,
         i32:$r128, i32:$da, i32:$glc, i32:$slc, i32:$tfe, i32:$lwe),
-  (opcode (as_i32imm $dmask), (as_i1imm $unorm), (as_i1imm $glc), (as_i1imm $da),
-          (as_i1imm $r128), (as_i1imm $tfe), (as_i1imm $lwe), (as_i1imm $slc),
-          $addr, $rsrc, $sampler)
+  (opcode $addr, $rsrc, $sampler,
+          (as_i32imm $dmask), (as_i1imm $unorm), (as_i1imm $glc), (as_i1imm $slc),
+          (as_i1imm $r128), (as_i1imm $tfe), (as_i1imm $lwe), (as_i1imm $da))
 >;
 
 multiclass SampleRawPatterns<SDPatternOperator name, string opcode> {
@@ -2232,9 +2343,9 @@ multiclass SampleRawPatterns<SDPatternOperator name, string opcode> {
 class ImagePattern<SDPatternOperator name, MIMG opcode, ValueType vt> : Pat <
   (name vt:$addr, v8i32:$rsrc, imm:$dmask, imm:$unorm,
         imm:$r128, imm:$da, imm:$glc, imm:$slc, imm:$tfe, imm:$lwe),
-  (opcode (as_i32imm $dmask), (as_i1imm $unorm), (as_i1imm $glc), (as_i1imm $da),
-          (as_i1imm $r128), (as_i1imm $tfe), (as_i1imm $lwe), (as_i1imm $slc),
-          $addr, $rsrc)
+  (opcode $addr, $rsrc,
+          (as_i32imm $dmask), (as_i1imm $unorm), (as_i1imm $glc), (as_i1imm $slc),
+          (as_i1imm $r128), (as_i1imm $tfe), (as_i1imm $lwe), (as_i1imm $da))
 >;
 
 multiclass ImagePatterns<SDPatternOperator name, string opcode> {
@@ -2246,8 +2357,9 @@ multiclass ImagePatterns<SDPatternOperator name, string opcode> {
 class ImageLoadPattern<SDPatternOperator name, MIMG opcode, ValueType vt> : Pat <
   (name vt:$addr, v8i32:$rsrc, imm:$dmask, imm:$r128, imm:$da, imm:$glc,
         imm:$slc),
-  (opcode (as_i32imm $dmask), 1, (as_i1imm $glc), (as_i1imm $da),
-          (as_i1imm $r128), 0, 0, (as_i1imm $slc), $addr, $rsrc)
+  (opcode $addr, $rsrc,
+          (as_i32imm $dmask), 1, (as_i1imm $glc), (as_i1imm $slc),
+          (as_i1imm $r128), 0, 0, (as_i1imm $da))
 >;
 
 multiclass ImageLoadPatterns<SDPatternOperator name, string opcode> {
@@ -2259,8 +2371,9 @@ multiclass ImageLoadPatterns<SDPatternOperator name, string opcode> {
 class ImageStorePattern<SDPatternOperator name, MIMG opcode, ValueType vt> : Pat <
   (name v4f32:$data, vt:$addr, v8i32:$rsrc, i32:$dmask, imm:$r128, imm:$da,
         imm:$glc, imm:$slc),
-  (opcode $data, (as_i32imm $dmask), 1, (as_i1imm $glc), (as_i1imm $da),
-          (as_i1imm $r128), 0, 0, (as_i1imm $slc), $addr, $rsrc)
+  (opcode $data, $addr, $rsrc,
+          (as_i32imm $dmask), 1, (as_i1imm $glc), (as_i1imm $slc),
+          (as_i1imm $r128), 0, 0, (as_i1imm $da))
 >;
 
 multiclass ImageStorePatterns<SDPatternOperator name, string opcode> {
@@ -2268,6 +2381,26 @@ multiclass ImageStorePatterns<SDPatternOperator name, string opcode> {
   def : ImageStorePattern<name, !cast<MIMG>(opcode # _V4_V2), v2i32>;
   def : ImageStorePattern<name, !cast<MIMG>(opcode # _V4_V4), v4i32>;
 }
+
+class ImageAtomicPattern<SDPatternOperator name, MIMG opcode, ValueType vt> : Pat <
+  (name i32:$vdata, vt:$addr, v8i32:$rsrc, imm:$r128, imm:$da, imm:$slc),
+  (opcode $vdata, $addr, $rsrc, 1, 1, 1, (as_i1imm $slc), (as_i1imm $r128), 0, 0, (as_i1imm $da))
+>;
+
+multiclass ImageAtomicPatterns<SDPatternOperator name, string opcode> {
+  def : ImageAtomicPattern<name, !cast<MIMG>(opcode # _V1), i32>;
+  def : ImageAtomicPattern<name, !cast<MIMG>(opcode # _V2), v2i32>;
+  def : ImageAtomicPattern<name, !cast<MIMG>(opcode # _V4), v4i32>;
+}
+
+class ImageAtomicCmpSwapPattern<MIMG opcode, ValueType vt> : Pat <
+  (int_amdgcn_image_atomic_cmpswap i32:$vsrc, i32:$vcmp, vt:$addr, v8i32:$rsrc,
+                                   imm:$r128, imm:$da, imm:$slc),
+  (EXTRACT_SUBREG
+    (opcode (REG_SEQUENCE VReg_64, $vsrc, sub0, $vcmp, sub1),
+            $addr, $rsrc, 3, 1, 1, (as_i1imm $slc), (as_i1imm $r128), 0, 0, (as_i1imm $da)),
+    sub0)
+>;
 
 // Basic sample
 defm : SampleRawPatterns<int_SI_image_sample,           "IMAGE_SAMPLE">;
@@ -2369,38 +2502,53 @@ defm : ImageLoadPatterns<int_amdgcn_image_load, "IMAGE_LOAD">;
 defm : ImageLoadPatterns<int_amdgcn_image_load_mip, "IMAGE_LOAD_MIP">;
 defm : ImageStorePatterns<int_amdgcn_image_store, "IMAGE_STORE">;
 defm : ImageStorePatterns<int_amdgcn_image_store_mip, "IMAGE_STORE_MIP">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_swap, "IMAGE_ATOMIC_SWAP">;
+def : ImageAtomicCmpSwapPattern<IMAGE_ATOMIC_CMPSWAP_V1, i32>;
+def : ImageAtomicCmpSwapPattern<IMAGE_ATOMIC_CMPSWAP_V2, v2i32>;
+def : ImageAtomicCmpSwapPattern<IMAGE_ATOMIC_CMPSWAP_V4, v4i32>;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_add, "IMAGE_ATOMIC_ADD">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_sub, "IMAGE_ATOMIC_SUB">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_smin, "IMAGE_ATOMIC_SMIN">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_umin, "IMAGE_ATOMIC_UMIN">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_smax, "IMAGE_ATOMIC_SMAX">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_umax, "IMAGE_ATOMIC_UMAX">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_and, "IMAGE_ATOMIC_AND">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_or, "IMAGE_ATOMIC_OR">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_xor, "IMAGE_ATOMIC_XOR">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_inc, "IMAGE_ATOMIC_INC">;
+defm : ImageAtomicPatterns<int_amdgcn_image_atomic_dec, "IMAGE_ATOMIC_DEC">;
 
 /* SIsample for simple 1D texture lookup */
 def : Pat <
   (SIsample i32:$addr, v8i32:$rsrc, v4i32:$sampler, imm),
-  (IMAGE_SAMPLE_V4_V1 0xf, 0, 0, 0, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+  (IMAGE_SAMPLE_V4_V1 $addr, $rsrc, $sampler, 0xf, 0, 0, 0, 0, 0, 0, 0)
 >;
 
 class SamplePattern<SDNode name, MIMG opcode, ValueType vt> : Pat <
     (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, imm),
-    (opcode 0xf, 0, 0, 0, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+    (opcode $addr, $rsrc, $sampler, 0xf, 0, 0, 0, 0, 0, 0, 0)
 >;
 
 class SampleRectPattern<SDNode name, MIMG opcode, ValueType vt> : Pat <
     (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, TEX_RECT),
-    (opcode 0xf, 1, 0, 0, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+    (opcode $addr, $rsrc, $sampler, 0xf, 1, 0, 0, 0, 0, 0, 0)
 >;
 
 class SampleArrayPattern<SDNode name, MIMG opcode, ValueType vt> : Pat <
     (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, TEX_ARRAY),
-    (opcode 0xf, 0, 0, 1, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+    (opcode $addr, $rsrc, $sampler, 0xf, 0, 0, 0, 0, 0, 0, 1)
 >;
 
 class SampleShadowPattern<SDNode name, MIMG opcode,
                           ValueType vt> : Pat <
     (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, TEX_SHADOW),
-    (opcode 0xf, 0, 0, 0, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+    (opcode $addr, $rsrc, $sampler, 0xf, 0, 0, 0, 0, 0, 0, 0)
 >;
 
 class SampleShadowArrayPattern<SDNode name, MIMG opcode,
                                ValueType vt> : Pat <
     (name vt:$addr, v8i32:$rsrc, v4i32:$sampler, TEX_SHADOW_ARRAY),
-    (opcode 0xf, 0, 0, 1, 0, 0, 0, 0, $addr, $rsrc, $sampler)
+    (opcode $addr, $rsrc, $sampler, 0xf, 0, 0, 0, 0, 0, 0, 1)
 >;
 
 /* SIsample* for texture lookups consuming more address parameters */
@@ -3149,6 +3297,13 @@ defm : BFMPatterns <i32, S_BFM_B32, S_MOV_B32>;
 
 def : BFEPattern <V_BFE_U32, S_MOV_B32>;
 
+let Predicates = [isSICI] in {
+def : Pat <
+  (i64 (readcyclecounter)),
+  (S_MEMTIME)
+>;
+}
+
 //===----------------------------------------------------------------------===//
 // Fract Patterns
 //===----------------------------------------------------------------------===//
@@ -3202,6 +3357,9 @@ def : Pat <
 //============================================================================//
 
 def : SHA256MaPattern <V_BFI_B32, V_XOR_B32_e64>;
+
+def : IntMed3Pat<V_MED3_I32, smax, smax_oneuse, smin_oneuse>;
+def : IntMed3Pat<V_MED3_U32, umax, umax_oneuse, umin_oneuse>;
 
 //============================================================================//
 // Assembler aliases

@@ -71,10 +71,18 @@ def SDTX86rdrand : SDTypeProfile<2, 0, [SDTCisInt<0>, SDTCisVT<1, i32>]>;
 def SDTX86cas : SDTypeProfile<0, 3, [SDTCisPtrTy<0>, SDTCisInt<1>,
                                      SDTCisVT<2, i8>]>;
 def SDTX86caspair : SDTypeProfile<0, 1, [SDTCisPtrTy<0>]>;
+def SDTX86caspairSaveEbx8 : SDTypeProfile<1, 3,
+                                          [SDTCisVT<0, i32>, SDTCisPtrTy<1>,
+                                          SDTCisVT<2, i32>, SDTCisVT<3, i32>]>;
+def SDTX86caspairSaveRbx16 : SDTypeProfile<1, 3,
+                                           [SDTCisVT<0, i64>, SDTCisPtrTy<1>,
+                                           SDTCisVT<2, i64>, SDTCisVT<3, i64>]>;
 
-def SDTX86atomicBinary : SDTypeProfile<2, 3, [SDTCisInt<0>, SDTCisInt<1>,
-                                SDTCisPtrTy<2>, SDTCisInt<3>,SDTCisInt<4>]>;
-def SDTX86Ret     : SDTypeProfile<0, -1, [SDTCisVT<0, i16>]>;
+def SDTLockBinaryArithWithFlags : SDTypeProfile<1, 2, [SDTCisVT<0, i32>,
+                                                       SDTCisPtrTy<1>,
+                                                       SDTCisInt<2>]>;
+
+def SDTX86Ret     : SDTypeProfile<0, -1, [SDTCisVT<0, i32>]>;
 
 def SDT_X86CallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>]>;
 def SDT_X86CallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i32>,
@@ -153,6 +161,14 @@ def X86cas8 : SDNode<"X86ISD::LCMPXCHG8_DAG", SDTX86caspair,
 def X86cas16 : SDNode<"X86ISD::LCMPXCHG16_DAG", SDTX86caspair,
                         [SDNPHasChain, SDNPInGlue, SDNPOutGlue, SDNPMayStore,
                          SDNPMayLoad, SDNPMemOperand]>;
+def X86cas8save_ebx : SDNode<"X86ISD::LCMPXCHG8_SAVE_EBX_DAG",
+                                SDTX86caspairSaveEbx8,
+                                [SDNPHasChain, SDNPInGlue, SDNPOutGlue,
+                                SDNPMayStore, SDNPMayLoad, SDNPMemOperand]>;
+def X86cas16save_rbx : SDNode<"X86ISD::LCMPXCHG16_SAVE_RBX_DAG",
+                                SDTX86caspairSaveRbx16,
+                                [SDNPHasChain, SDNPInGlue, SDNPOutGlue,
+                                SDNPMayStore, SDNPMayLoad, SDNPMemOperand]>;
 
 def X86retflag : SDNode<"X86ISD::RET_FLAG", SDTX86Ret,
                         [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
@@ -237,6 +253,22 @@ def X86xor_flag  : SDNode<"X86ISD::XOR",  SDTBinaryArithWithFlags,
 def X86and_flag  : SDNode<"X86ISD::AND",  SDTBinaryArithWithFlags,
                           [SDNPCommutative]>;
 
+def X86lock_add  : SDNode<"X86ISD::LADD",  SDTLockBinaryArithWithFlags,
+                          [SDNPHasChain, SDNPMayStore, SDNPMayLoad,
+                           SDNPMemOperand]>;
+def X86lock_sub  : SDNode<"X86ISD::LSUB",  SDTLockBinaryArithWithFlags,
+                          [SDNPHasChain, SDNPMayStore, SDNPMayLoad,
+                           SDNPMemOperand]>;
+def X86lock_or  : SDNode<"X86ISD::LOR",  SDTLockBinaryArithWithFlags,
+                         [SDNPHasChain, SDNPMayStore, SDNPMayLoad,
+                          SDNPMemOperand]>;
+def X86lock_xor  : SDNode<"X86ISD::LXOR",  SDTLockBinaryArithWithFlags,
+                          [SDNPHasChain, SDNPMayStore, SDNPMayLoad,
+                           SDNPMemOperand]>;
+def X86lock_and  : SDNode<"X86ISD::LAND",  SDTLockBinaryArithWithFlags,
+                          [SDNPHasChain, SDNPMayStore, SDNPMayLoad,
+                           SDNPMemOperand]>;
+
 def X86bextr  : SDNode<"X86ISD::BEXTR",  SDTIntBinOp>;
 
 def X86mul_imm : SDNode<"X86ISD::MUL_IMM", SDTIntBinOp>;
@@ -273,16 +305,19 @@ let RenderMethod = "addMemOperands", SuperClasses = [X86MemAsmOperand] in {
   def X86Mem256AsmOperand : AsmOperandClass { let Name = "Mem256"; }
   def X86Mem512AsmOperand : AsmOperandClass { let Name = "Mem512"; }
   // Gather mem operands
-  def X86MemVX32Operand : AsmOperandClass { let Name = "MemVX32"; }
-  def X86MemVY32Operand : AsmOperandClass { let Name = "MemVY32"; }
-  def X86MemVZ32Operand : AsmOperandClass { let Name = "MemVZ32"; }
-  def X86MemVX64Operand : AsmOperandClass { let Name = "MemVX64"; }
-  def X86MemVY64Operand : AsmOperandClass { let Name = "MemVY64"; }
-  def X86MemVZ64Operand : AsmOperandClass { let Name = "MemVZ64"; }
-  def X86MemVX32XOperand : AsmOperandClass { let Name = "MemVX32X"; }
-  def X86MemVY32XOperand : AsmOperandClass { let Name = "MemVY32X"; }
-  def X86MemVX64XOperand : AsmOperandClass { let Name = "MemVX64X"; }
-  def X86MemVY64XOperand : AsmOperandClass { let Name = "MemVY64X"; }
+  def X86Mem64_RC128Operand  : AsmOperandClass { let Name = "Mem64_RC128"; }
+  def X86Mem128_RC128Operand : AsmOperandClass { let Name = "Mem128_RC128"; }
+  def X86Mem256_RC128Operand : AsmOperandClass { let Name = "Mem256_RC128"; }
+  def X86Mem128_RC256Operand : AsmOperandClass { let Name = "Mem128_RC256"; }
+  def X86Mem256_RC256Operand : AsmOperandClass { let Name = "Mem256_RC256"; }
+
+  def X86Mem64_RC128XOperand  : AsmOperandClass { let Name = "Mem64_RC128X"; }
+  def X86Mem128_RC128XOperand : AsmOperandClass { let Name = "Mem128_RC128X"; }
+  def X86Mem256_RC128XOperand : AsmOperandClass { let Name = "Mem256_RC128X"; }
+  def X86Mem128_RC256XOperand : AsmOperandClass { let Name = "Mem128_RC256X"; }
+  def X86Mem256_RC256XOperand : AsmOperandClass { let Name = "Mem256_RC256X"; }
+  def X86Mem512_RC256XOperand : AsmOperandClass { let Name = "Mem512_RC256X"; }
+  def X86Mem512_RC512Operand  : AsmOperandClass { let Name = "Mem512_RC512"; }
 }
 
 def X86AbsMemAsmOperand : AsmOperandClass {
@@ -329,17 +364,19 @@ def f512mem : X86MemOperand<"printf512mem", X86Mem512AsmOperand>;
 def v512mem : X86VMemOperand<VR512, "printf512mem", X86Mem512AsmOperand>;
 
 // Gather mem operands
-def vx32mem  : X86VMemOperand<VR128,  "printi32mem", X86MemVX32Operand>;
-def vy32mem  : X86VMemOperand<VR256,  "printi32mem", X86MemVY32Operand>;
-def vx64mem  : X86VMemOperand<VR128,  "printi64mem", X86MemVX64Operand>;
-def vy64mem  : X86VMemOperand<VR256,  "printi64mem", X86MemVY64Operand>;
+def vx64mem  : X86VMemOperand<VR128,  "printi64mem",  X86Mem64_RC128Operand>;
+def vx128mem : X86VMemOperand<VR128,  "printi128mem", X86Mem128_RC128Operand>;
+def vx256mem : X86VMemOperand<VR128,  "printi256mem", X86Mem256_RC128Operand>;
+def vy128mem : X86VMemOperand<VR256,  "printi128mem", X86Mem128_RC256Operand>;
+def vy256mem : X86VMemOperand<VR256,  "printi256mem", X86Mem256_RC256Operand>;
 
-def vx32xmem : X86VMemOperand<VR128X, "printi32mem", X86MemVX32XOperand>;
-def vx64xmem : X86VMemOperand<VR128X, "printi32mem", X86MemVX64XOperand>;
-def vy32xmem : X86VMemOperand<VR256X, "printi32mem", X86MemVY32XOperand>;
-def vy64xmem : X86VMemOperand<VR256X, "printi64mem", X86MemVY64XOperand>;
-def vz32mem  : X86VMemOperand<VR512,  "printi32mem", X86MemVZ32Operand>;
-def vz64mem  : X86VMemOperand<VR512,  "printi64mem", X86MemVZ64Operand>;
+def vx64xmem  : X86VMemOperand<VR128X, "printi64mem",  X86Mem64_RC128XOperand>;
+def vx128xmem : X86VMemOperand<VR128X, "printi128mem", X86Mem128_RC128XOperand>;
+def vx256xmem : X86VMemOperand<VR128X, "printi256mem", X86Mem256_RC128XOperand>;
+def vy128xmem : X86VMemOperand<VR256,  "printi128mem", X86Mem128_RC256XOperand>;
+def vy256xmem : X86VMemOperand<VR256X, "printi256mem", X86Mem256_RC256XOperand>;
+def vy512mem  : X86VMemOperand<VR256X, "printi512mem", X86Mem512_RC256XOperand>;
+def vz512mem  : X86VMemOperand<VR512,  "printi512mem", X86Mem512_RC512Operand>;
 
 // A version of i8mem for use on x86-64 and x32 that uses a NOREX GPR instead
 // of a plain GPR, so that it doesn't potentially require a REX prefix.
@@ -728,6 +765,8 @@ def vectoraddr : ComplexPattern<iPTR, 5, "selectVectorAddr", [],[SDNPWantParent]
 
 //===----------------------------------------------------------------------===//
 // X86 Instruction Predicate Definitions.
+def TruePredicate : Predicate<"true">;
+
 def HasCMov      : Predicate<"Subtarget->hasCMov()">;
 def NoCMov       : Predicate<"!Subtarget->hasCMov()">;
 
@@ -1097,12 +1136,12 @@ def PUSH32rmm: I<0xFF, MRM6m, (outs), (ins i32mem:$src), "push{l}\t$src",[],
 
 let mayLoad = 1, mayStore = 1, usesCustomInserter = 1,
     SchedRW = [WriteRMW], Defs = [ESP] in {
-  let Uses = [ESP, EFLAGS] in
+  let Uses = [ESP] in
   def RDFLAGS32 : PseudoI<(outs GR32:$dst), (ins),
                    [(set GR32:$dst, (int_x86_flags_read_u32))]>,
                 Requires<[Not64BitMode]>;
 
-  let Uses = [RSP, EFLAGS] in
+  let Uses = [RSP] in
   def RDFLAGS64 : PseudoI<(outs GR64:$dst), (ins),
                    [(set GR64:$dst, (int_x86_flags_read_u64))]>,
                 Requires<[In64BitMode]>;
@@ -1407,30 +1446,30 @@ def MOV32ao16 : Ii16<0xA1, RawFrmMemOffs, (outs), (ins offset16_32:$src),
 }
 let mayStore = 1 in {
 let Uses = [AL] in
-def MOV8o32a : Ii32<0xA2, RawFrmMemOffs, (outs offset32_8:$dst), (ins),
+def MOV8o32a : Ii32<0xA2, RawFrmMemOffs, (outs), (ins offset32_8:$dst),
                     "mov{b}\t{%al, $dst|$dst, al}", [], IIC_MOV_MEM>, AdSize32;
 let Uses = [AX] in
-def MOV16o32a : Ii32<0xA3, RawFrmMemOffs, (outs offset32_16:$dst), (ins),
+def MOV16o32a : Ii32<0xA3, RawFrmMemOffs, (outs), (ins offset32_16:$dst),
                      "mov{w}\t{%ax, $dst|$dst, ax}", [], IIC_MOV_MEM>,
                      OpSize16, AdSize32;
 let Uses = [EAX] in
-def MOV32o32a : Ii32<0xA3, RawFrmMemOffs, (outs offset32_32:$dst), (ins),
+def MOV32o32a : Ii32<0xA3, RawFrmMemOffs, (outs), (ins offset32_32:$dst),
                      "mov{l}\t{%eax, $dst|$dst, eax}", [], IIC_MOV_MEM>,
                      OpSize32, AdSize32;
 let Uses = [RAX] in
-def MOV64o32a : RIi32<0xA3, RawFrmMemOffs, (outs offset32_64:$dst), (ins),
+def MOV64o32a : RIi32<0xA3, RawFrmMemOffs, (outs), (ins offset32_64:$dst),
                       "mov{q}\t{%rax, $dst|$dst, rax}", [], IIC_MOV_MEM>,
                       AdSize32;
 
 let Uses = [AL] in
-def MOV8o16a : Ii16<0xA2, RawFrmMemOffs, (outs offset16_8:$dst), (ins),
+def MOV8o16a : Ii16<0xA2, RawFrmMemOffs, (outs), (ins offset16_8:$dst),
                     "mov{b}\t{%al, $dst|$dst, al}", [], IIC_MOV_MEM>, AdSize16;
 let Uses = [AX] in
-def MOV16o16a : Ii16<0xA3, RawFrmMemOffs, (outs offset16_16:$dst), (ins),
+def MOV16o16a : Ii16<0xA3, RawFrmMemOffs, (outs), (ins offset16_16:$dst),
                      "mov{w}\t{%ax, $dst|$dst, ax}", [], IIC_MOV_MEM>,
                      OpSize16, AdSize16;
 let Uses = [EAX] in
-def MOV32o16a : Ii16<0xA3, RawFrmMemOffs, (outs offset16_32:$dst), (ins),
+def MOV32o16a : Ii16<0xA3, RawFrmMemOffs, (outs), (ins offset16_32:$dst),
                      "mov{l}\t{%eax, $dst|$dst, eax}", [], IIC_MOV_MEM>,
                      OpSize32, AdSize16;
 }
@@ -1956,11 +1995,11 @@ def OUTSL : I<0x6F, RawFrmSrc, (outs), (ins srcidx32:$src),
 
 // These uses the DF flag in the EFLAGS register to inc or dec EDI and ESI
 let Defs = [EDI], Uses = [DX,EDI,EFLAGS] in {
-def INSB : I<0x6C, RawFrmDst, (outs dstidx8:$dst), (ins),
+def INSB : I<0x6C, RawFrmDst, (outs), (ins dstidx8:$dst),
              "insb\t{%dx, $dst|$dst, dx}", [], IIC_INS>;
-def INSW : I<0x6D, RawFrmDst, (outs dstidx16:$dst), (ins),
+def INSW : I<0x6D, RawFrmDst, (outs), (ins dstidx16:$dst),
              "insw\t{%dx, $dst|$dst, dx}", [], IIC_INS>,  OpSize16;
-def INSL : I<0x6D, RawFrmDst, (outs dstidx32:$dst), (ins),
+def INSL : I<0x6D, RawFrmDst, (outs), (ins dstidx32:$dst),
              "ins{l|d}\t{%dx, $dst|$dst, dx}", [], IIC_INS>, OpSize32;
 }
 }

@@ -175,10 +175,9 @@ static bool SafeToMergeTerminators(TerminatorInst *SI1, TerminatorInst *SI2) {
   BasicBlock *SI2BB = SI2->getParent();
   SmallPtrSet<BasicBlock*, 16> SI1Succs(succ_begin(SI1BB), succ_end(SI1BB));
 
-  for (succ_iterator I = succ_begin(SI2BB), E = succ_end(SI2BB); I != E; ++I)
-    if (SI1Succs.count(*I))
-      for (BasicBlock::iterator BBI = (*I)->begin();
-           isa<PHINode>(BBI); ++BBI) {
+  for (BasicBlock *Succ : successors(SI2BB))
+    if (SI1Succs.count(Succ))
+      for (BasicBlock::iterator BBI = Succ->begin(); isa<PHINode>(BBI); ++BBI) {
         PHINode *PN = cast<PHINode>(BBI);
         if (PN->getIncomingValueForBlock(SI1BB) !=
             PN->getIncomingValueForBlock(SI2BB))
@@ -214,10 +213,9 @@ static bool isProfitableToFoldUnconditional(BranchInst *SI1,
   BasicBlock *SI1BB = SI1->getParent();
   BasicBlock *SI2BB = SI2->getParent();
   SmallPtrSet<BasicBlock*, 16> SI1Succs(succ_begin(SI1BB), succ_end(SI1BB));
-  for (succ_iterator I = succ_begin(SI2BB), E = succ_end(SI2BB); I != E; ++I)
-    if (SI1Succs.count(*I))
-      for (BasicBlock::iterator BBI = (*I)->begin();
-           isa<PHINode>(BBI); ++BBI) {
+  for (BasicBlock *Succ : successors(SI2BB))
+    if (SI1Succs.count(Succ))
+      for (BasicBlock::iterator BBI = Succ->begin(); isa<PHINode>(BBI); ++BBI) {
         PHINode *PN = cast<PHINode>(BBI);
         if (PN->getIncomingValueForBlock(SI1BB) != Cond ||
             !isa<ConstantInt>(PN->getIncomingValueForBlock(SI2BB)))
@@ -236,8 +234,7 @@ static void AddPredecessorToBlock(BasicBlock *Succ, BasicBlock *NewPred,
   if (!isa<PHINode>(Succ->begin())) return; // Quick exit if nothing to do
 
   PHINode *PN;
-  for (BasicBlock::iterator I = Succ->begin();
-       (PN = dyn_cast<PHINode>(I)); ++I)
+  for (BasicBlock::iterator I = Succ->begin(); (PN = dyn_cast<PHINode>(I)); ++I)
     PN->addIncoming(PN->getIncomingValueForBlock(ExistPred), NewPred);
 }
 
@@ -407,7 +404,7 @@ private:
   /// Try to set the current value used for the comparison, it succeeds only if
   /// it wasn't set before or if the new value is the same as the old one
   bool setValueOnce(Value *NewVal) {
-    if(CompValue && CompValue != NewVal) return false;
+    if (CompValue && CompValue != NewVal) return false;
     CompValue = NewVal;
     return (CompValue != nullptr);
   }
@@ -779,9 +776,9 @@ SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
 
   // Remove PHI node entries for dead edges.
   BasicBlock *CheckEdge = TheRealDest;
-  for (succ_iterator SI = succ_begin(TIBB), e = succ_end(TIBB); SI != e; ++SI)
-    if (*SI != CheckEdge)
-      (*SI)->removePredecessor(TIBB);
+  for (BasicBlock *Succ : successors(TIBB))
+    if (Succ != CheckEdge)
+      Succ->removePredecessor(TIBB);
     else
       CheckEdge = nullptr;
 
@@ -811,11 +808,9 @@ static int ConstantIntSortPredicate(ConstantInt *const *P1,
                                     ConstantInt *const *P2) {
   const ConstantInt *LHS = *P1;
   const ConstantInt *RHS = *P2;
-  if (LHS->getValue().ult(RHS->getValue()))
-    return 1;
-  if (LHS->getValue() == RHS->getValue())
+  if (LHS == RHS)
     return 0;
-  return -1;
+  return LHS->getValue().ult(RHS->getValue()) ? 1 : -1;
 }
 
 static inline bool HasBranchWeights(const Instruction* I) {
@@ -1075,9 +1070,9 @@ bool SimplifyCFGOpt::FoldValueComparisonIntoPredecessors(TerminatorInst *TI,
 // can't hoist the invoke, as there is nowhere to put the select in this case.
 static bool isSafeToHoistInvoke(BasicBlock *BB1, BasicBlock *BB2,
                                 Instruction *I1, Instruction *I2) {
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1170,9 +1165,9 @@ HoistTerminator:
   if (isa<InvokeInst>(I1) && !isSafeToHoistInvoke(BB1, BB2, I1, I2))
     return Changed;
 
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1201,15 +1196,15 @@ HoistTerminator:
     NT->takeName(I1);
   }
 
-  IRBuilder<true, NoFolder> Builder(NT);
+  IRBuilder<NoFolder> Builder(NT);
   // Hoisting one of the terminators from our successor is a great thing.
   // Unfortunately, the successors of the if/else blocks may have PHI nodes in
   // them.  If they do, all PHI entries for BB1/BB2 must agree for all PHI
   // nodes, so we insert select instruction to compute the final result.
   std::map<std::pair<Value*,Value*>, SelectInst*> InsertedSelects;
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1221,7 +1216,7 @@ HoistTerminator:
       if (!SI)
         SI = cast<SelectInst>
           (Builder.CreateSelect(BI->getCondition(), BB1V, BB2V,
-                                BB1V->getName()+"."+BB2V->getName()));
+                                BB1V->getName() + "." + BB2V->getName()));
 
       // Make the PHI node use the select for all incoming values for BB1/BB2
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i)
@@ -1231,8 +1226,8 @@ HoistTerminator:
   }
 
   // Update any PHI nodes in our new successors.
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI)
-    AddPredecessorToBlock(*SI, BIParent, BB1);
+  for (BasicBlock *Succ : successors(BB1))
+    AddPredecessorToBlock(Succ, BIParent, BB1);
 
   EraseTerminatorInstAndDCECond(BI);
   return true;
@@ -1384,7 +1379,7 @@ static bool SinkThenElseCodeToEnd(BranchInst *BI1) {
 
     // We need to update RE1 and RE2 if we are going to sink the first
     // instruction in the basic block down.
-    bool UpdateRE1 = (I1 == BB1->begin()), UpdateRE2 = (I2 == BB2->begin());
+    bool UpdateRE1 = (I1 == &BB1->front()), UpdateRE2 = (I2 == &BB2->front());
     // Sink the instruction.
     BBEnd->getInstList().splice(FirstNonPhiInBBEnd->getIterator(),
                                 BB1->getInstList(), I1);
@@ -1642,7 +1637,7 @@ static bool SpeculativelyExecuteBB(BranchInst *BI, BasicBlock *ThenBB,
 
   // Insert a select of the value of the speculated store.
   if (SpeculatedStoreValue) {
-    IRBuilder<true, NoFolder> Builder(BI);
+    IRBuilder<NoFolder> Builder(BI);
     Value *TrueV = SpeculatedStore->getValueOperand();
     Value *FalseV = SpeculatedStoreValue;
     if (Invert)
@@ -1662,7 +1657,7 @@ static bool SpeculativelyExecuteBB(BranchInst *BI, BasicBlock *ThenBB,
                            ThenBB->begin(), std::prev(ThenBB->end()));
 
   // Insert selects and rewrite the PHI operands.
-  IRBuilder<true, NoFolder> Builder(BI);
+  IRBuilder<NoFolder> Builder(BI);
   for (BasicBlock::iterator I = EndBB->begin();
        PHINode *PN = dyn_cast<PHINode>(I); ++I) {
     unsigned OrigI = PN->getBasicBlockIndex(BB);
@@ -1883,10 +1878,10 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
        isa<BinaryOperator>(IfCond)))
     return false;
 
-  // If we all PHI nodes are promotable, check to make sure that all
-  // instructions in the predecessor blocks can be promoted as well.  If
-  // not, we won't be able to get rid of the control flow, so it's not
-  // worth promoting to select instructions.
+  // If all PHI nodes are promotable, check to make sure that all instructions
+  // in the predecessor blocks can be promoted as well. If not, we won't be able
+  // to get rid of the control flow, so it's not worth promoting to select
+  // instructions.
   BasicBlock *DomBlock = nullptr;
   BasicBlock *IfBlock1 = PN->getIncomingBlock(0);
   BasicBlock *IfBlock2 = PN->getIncomingBlock(1);
@@ -1897,8 +1892,8 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     for (BasicBlock::iterator I = IfBlock1->begin();!isa<TerminatorInst>(I);++I)
       if (!AggressiveInsts.count(&*I) && !isa<DbgInfoIntrinsic>(I)) {
         // This is not an aggressive instruction that we can promote.
-        // Because of this, we won't be able to get rid of the control
-        // flow, so the xform is not worth it.
+        // Because of this, we won't be able to get rid of the control flow, so
+        // the xform is not worth it.
         return false;
       }
   }
@@ -1910,8 +1905,8 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     for (BasicBlock::iterator I = IfBlock2->begin();!isa<TerminatorInst>(I);++I)
       if (!AggressiveInsts.count(&*I) && !isa<DbgInfoIntrinsic>(I)) {
         // This is not an aggressive instruction that we can promote.
-        // Because of this, we won't be able to get rid of the control
-        // flow, so the xform is not worth it.
+        // Because of this, we won't be able to get rid of the control flow, so
+        // the xform is not worth it.
         return false;
       }
   }
@@ -1922,7 +1917,7 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
   // If we can still promote the PHI nodes after this gauntlet of tests,
   // do all of the PHI's now.
   Instruction *InsertPt = DomBlock->getTerminator();
-  IRBuilder<true, NoFolder> Builder(InsertPt);
+  IRBuilder<NoFolder> Builder(InsertPt);
 
   // Move all 'aggressive' instructions, which are defined in the
   // conditional parts of the if's up to the dominating block.
@@ -1940,10 +1935,10 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     Value *TrueVal  = PN->getIncomingValue(PN->getIncomingBlock(0) == IfFalse);
     Value *FalseVal = PN->getIncomingValue(PN->getIncomingBlock(0) == IfTrue);
 
-    SelectInst *NV =
-      cast<SelectInst>(Builder.CreateSelect(IfCond, TrueVal, FalseVal, ""));
-    PN->replaceAllUsesWith(NV);
-    NV->takeName(PN);
+    MDNode *MDN = InsertPt->getMetadata(LLVMContext::MD_prof);
+    Value *Select = Builder.CreateSelect(IfCond, TrueVal, FalseVal, "", MDN);
+    PN->replaceAllUsesWith(Select);
+    Select->takeName(PN);
     PN->eraseFromParent();
   }
 
@@ -2119,7 +2114,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
 
   if (!Cond || (!isa<CmpInst>(Cond) && !isa<BinaryOperator>(Cond)) ||
       Cond->getParent() != BB || !Cond->hasOneUse())
-  return false;
+    return false;
 
   // Make sure the instruction after the condition is the cond branch.
   BasicBlock::iterator CondIt = ++Cond->getIterator();
@@ -2136,7 +2131,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
   // as "bonus instructions", and only allow this transformation when the
   // number of the bonus instructions does not exceed a certain threshold.
   unsigned NumBonusInsts = 0;
-  for (auto I = BB->begin(); Cond != I; ++I) {
+  for (auto I = BB->begin(); Cond != &*I; ++I) {
     // Ignore dbg intrinsics.
     if (isa<DbgInfoIntrinsic>(I))
       continue;
@@ -2234,7 +2229,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
     // We already make sure Cond is the last instruction before BI. Therefore,
     // all instructions before Cond other than DbgInfoIntrinsic are bonus
     // instructions.
-    for (auto BonusInst = BB->begin(); Cond != BonusInst; ++BonusInst) {
+    for (auto BonusInst = BB->begin(); Cond != &*BonusInst; ++BonusInst) {
       if (isa<DbgInfoIntrinsic>(BonusInst))
         continue;
       Instruction *NewBonusInst = BonusInst->clone();
@@ -2833,7 +2828,7 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI,
 
   // Make sure we get to CommonDest on True&True directions.
   Value *PBICond = PBI->getCondition();
-  IRBuilder<true, NoFolder> Builder(PBI);
+  IRBuilder<NoFolder> Builder(PBI);
   if (PBIOp)
     PBICond = Builder.CreateNot(PBICond, PBICond->getName()+".not");
 
@@ -2891,7 +2886,7 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI,
     if (BIV != PBIV) {
       // Insert a select in PBI to pick the right value.
       Value *NV = cast<SelectInst>
-        (Builder.CreateSelect(PBICond, PBIV, BIV, PBIV->getName()+".mux"));
+        (Builder.CreateSelect(PBICond, PBIV, BIV, PBIV->getName() + ".mux"));
       PN->setIncomingValue(PBBIdx, NV);
     }
   }
@@ -3523,6 +3518,12 @@ static bool mergeCleanupPad(CleanupReturnInst *RI) {
 }
 
 bool SimplifyCFGOpt::SimplifyCleanupReturn(CleanupReturnInst *RI) {
+  // It is possible to transiantly have an undef cleanuppad operand because we
+  // have deleted some, but not all, dead blocks.
+  // Eventually, this block will be deleted.
+  if (isa<UndefValue>(RI->getOperand(0)))
+    return false;
+
   if (removeEmptyCleanup(RI))
     return true;
 

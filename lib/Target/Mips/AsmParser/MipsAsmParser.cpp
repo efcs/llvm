@@ -220,6 +220,9 @@ class MipsAsmParser : public MCTargetAsmParser {
                  SmallVectorImpl<MCInst> &Instructions, const bool IsMips64,
                  const bool Signed);
 
+  bool expandTrunc(MCInst &Inst, bool IsDouble, bool Is64FPU, SMLoc IDLoc,
+                   SmallVectorImpl<MCInst> &Instructions);
+
   bool expandUlh(MCInst &Inst, bool Signed, SMLoc IDLoc,
                  SmallVectorImpl<MCInst> &Instructions);
 
@@ -953,6 +956,16 @@ public:
     addConstantUImmOperands<Bits, 0, 0>(Inst, N);
   }
 
+  template <unsigned Bits, int Offset = 0, int AdjustOffset = 0>
+  void addConstantSImmOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    int64_t Imm = getConstantImm() - Offset;
+    Imm = SignExtend64<Bits>(Imm);
+    Imm += Offset;
+    Imm += AdjustOffset;
+    Inst.addOperand(MCOperand::createImm(Imm));
+  }
+
   void addImmOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     const MCExpr *Expr = getImm();
@@ -1026,8 +1039,12 @@ public:
                               isUInt<Bits>(getConstantImm()))
                            : isImm();
   }
-  template <unsigned Bits> bool isConstantSImm() const {
-    return isConstantImm() && isInt<Bits>(getConstantImm());
+  template <unsigned Bits, int Offset = 0> bool isConstantSImm() const {
+    return isConstantImm() && isInt<Bits>(getConstantImm() - Offset);
+  }
+  template <unsigned Bottom, unsigned Top> bool isConstantUImmRange() const {
+    return isConstantImm() && getConstantImm() >= Bottom &&
+           getConstantImm() <= Top;
   }
   bool isToken() const override {
     // Note: It's not possible to pretend that other operand kinds are tokens.
@@ -1803,14 +1820,6 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
     switch (Inst.getOpcode()) {
       default:
         break;
-      case Mips::ADDIUS5_MM:
-        Opnd = Inst.getOperand(2);
-        if (!Opnd.isImm())
-          return Error(IDLoc, "expected immediate operand kind");
-        Imm = Opnd.getImm();
-        if (Imm < -8 || Imm > 7)
-          return Error(IDLoc, "immediate operand value out of range");
-        break;
       case Mips::ADDIUSP_MM:
         Opnd = Inst.getOperand(0);
         if (!Opnd.isImm())
@@ -1844,16 +1853,6 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
         Imm = Opnd.getImm();
         if (!(Imm == 1 || Imm == -1 ||
               ((Imm % 4 == 0) && Imm < 28 && Imm > 0)))
-          return Error(IDLoc, "immediate operand value out of range");
-        break;
-      case Mips::ADDIUR1SP_MM:
-        Opnd = Inst.getOperand(1);
-        if (!Opnd.isImm())
-          return Error(IDLoc, "expected immediate operand kind");
-        Imm = Opnd.getImm();
-        if (OffsetToAlignment(Imm, 4LL))
-          return Error(IDLoc, "misaligned immediate operand value");
-        if (Imm < 0 || Imm > 255)
           return Error(IDLoc, "immediate operand value out of range");
         break;
       case Mips::ANDI16_MM:
@@ -2054,6 +2053,15 @@ MipsAsmParser::tryExpandInstruction(MCInst &Inst, SMLoc IDLoc,
   case Mips::DUDivMacro:
     return expandDiv(Inst, IDLoc, Instructions, true, false) ? MER_Fail
                                                              : MER_Success;
+  case Mips::PseudoTRUNC_W_S:
+    return expandTrunc(Inst, false, false, IDLoc, Instructions) ? MER_Fail
+                                                                : MER_Success;
+  case Mips::PseudoTRUNC_W_D32:
+    return expandTrunc(Inst, true, false, IDLoc, Instructions) ? MER_Fail
+                                                               : MER_Success;
+  case Mips::PseudoTRUNC_W_D:
+    return expandTrunc(Inst, true, true, IDLoc, Instructions) ? MER_Fail
+                                                              : MER_Success;
   case Mips::Ulh:
     return expandUlh(Inst, true, IDLoc, Instructions) ? MER_Fail : MER_Success;
   case Mips::Ulhu:
@@ -2543,7 +2551,8 @@ bool MipsAsmParser::expandBranchImm(MCInst &Inst, SMLoc IDLoc,
   assert(ImmOp.isImm() && "expected immediate operand kind");
 
   const MCOperand &MemOffsetOp = Inst.getOperand(2);
-  assert(MemOffsetOp.isImm() && "expected immediate operand kind");
+  assert((MemOffsetOp.isImm() || MemOffsetOp.isExpr()) &&
+         "expected immediate or expression operand");
 
   unsigned OpCode = 0;
   switch(Inst.getOpcode()) {
@@ -3054,6 +3063,44 @@ bool MipsAsmParser::expandDiv(MCInst &Inst, SMLoc IDLoc,
     emitII(Mips::BREAK, 0x6, 0, IDLoc, Instructions);
   }
   emitR(Mips::MFLO, RsReg, IDLoc, Instructions);
+  return false;
+}
+
+bool MipsAsmParser::expandTrunc(MCInst &Inst, bool IsDouble, bool Is64FPU,
+                                SMLoc IDLoc,
+                                SmallVectorImpl<MCInst> &Instructions) {
+
+  assert(Inst.getNumOperands() == 3 && "Invalid operand count");
+  assert(Inst.getOperand(0).isReg() && Inst.getOperand(1).isReg() &&
+         Inst.getOperand(2).isReg() && "Invalid instruction operand.");
+
+  unsigned FirstReg = Inst.getOperand(0).getReg();
+  unsigned SecondReg = Inst.getOperand(1).getReg();
+  unsigned ThirdReg = Inst.getOperand(2).getReg();
+
+  if (hasMips1() && !hasMips2()) {
+    unsigned ATReg = getATReg(IDLoc);
+    if (!ATReg)
+      return true;
+    emitRR(Mips::CFC1, ThirdReg, Mips::RA, IDLoc, Instructions);
+    emitRR(Mips::CFC1, ThirdReg, Mips::RA, IDLoc, Instructions);
+    createNop(false, IDLoc, Instructions);
+    emitRRI(Mips::ORi, ATReg, ThirdReg, 0x3, IDLoc, Instructions);
+    emitRRI(Mips::XORi, ATReg, ATReg, 0x2, IDLoc, Instructions);
+    emitRR(Mips::CTC1, Mips::RA, ATReg, IDLoc, Instructions);
+    createNop(false, IDLoc, Instructions);
+    emitRR(IsDouble ? (Is64FPU ? Mips::CVT_W_D64 : Mips::CVT_W_D32)
+                    : Mips::CVT_W_S,
+           FirstReg, SecondReg, IDLoc, Instructions);
+    emitRR(Mips::CTC1, Mips::RA, ThirdReg, IDLoc, Instructions);
+    createNop(false, IDLoc, Instructions);
+    return false;
+  }
+
+  emitRR(IsDouble ? (Is64FPU ? Mips::TRUNC_W_D64 : Mips::TRUNC_W_D32)
+                  : Mips::TRUNC_W_S,
+         FirstReg, SecondReg, IDLoc, Instructions);
+
   return false;
 }
 
@@ -3679,6 +3726,9 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_UImm4_0:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 4-bit unsigned immediate");
+  case Match_SImm4_0:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected 4-bit signed immediate");
   case Match_UImm5_0:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 5-bit unsigned immediate");
@@ -3699,10 +3749,16 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_UImm5_Lsl2:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected both 7-bit unsigned immediate and multiple of 4");
+  case Match_UImmRange2_64:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected immediate in range 2 .. 64");
   case Match_UImm6_0:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 6-bit unsigned immediate");
-  case Match_SImm6:
+  case Match_UImm6_Lsl2:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected both 8-bit unsigned immediate and multiple of 4");
+  case Match_SImm6_0:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 6-bit signed immediate");
   case Match_UImm7_0:
@@ -3718,6 +3774,9 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_UImm16_Relaxed:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 16-bit unsigned immediate");
+  case Match_UImm20_0:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected 20-bit unsigned immediate");
   }
 
   llvm_unreachable("Implement any new match types added!");

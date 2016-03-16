@@ -1228,7 +1228,7 @@ bool AddressSanitizerModule::ShouldInstrumentGlobal(GlobalVariable *G) {
     // Globals from llvm.metadata aren't emitted, do not instrument them.
     if (Section == "llvm.metadata") return false;
     // Do not instrument globals from special LLVM sections.
-    if (Section.find("__llvm") != StringRef::npos) return false;
+    if (Section.find("__llvm") != StringRef::npos || Section.find("__LLVM") != StringRef::npos) return false;
 
     // Do not instrument function pointers to initialization and termination
     // routines: dynamic linker will not properly handle redzones.
@@ -1891,7 +1891,7 @@ void FunctionStackPoisoner::poisonStack() {
 
   int StackMallocIdx = -1;
   DebugLoc EntryDebugLocation;
-  if (auto SP = getDISubprogram(&F))
+  if (auto SP = F.getSubprogram())
     EntryDebugLocation = DebugLoc::get(SP->getScopeLine(), 0, SP);
 
   Instruction *InsBefore = AllocaVec[0];

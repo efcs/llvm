@@ -100,7 +100,7 @@ bool AtomicExpand::runOnFunction(Function &F) {
     assert((LI || SI || RMWI || CASI || isa<FenceInst>(I)) &&
            "Unknown atomic instruction");
 
-    if (TLI->getInsertFencesForAtomic()) {
+    if (TLI->shouldInsertFencesForAtomic(I)) {
       auto FenceOrdering = Monotonic;
       bool IsStore, IsLoad;
       if (LI && isAtLeastAcquire(LI->getOrdering())) {
@@ -514,37 +514,70 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   BasicBlock *BB = CI->getParent();
   Function *F = BB->getParent();
   LLVMContext &Ctx = F->getContext();
-  // If getInsertFencesForAtomic() returns true, then the target does not want
-  // to deal with memory orders, and emitLeading/TrailingFence should take care
-  // of everything. Otherwise, emitLeading/TrailingFence are no-op and we
+  // If shouldInsertFencesForAtomic() returns true, then the target does not
+  // want to deal with memory orders, and emitLeading/TrailingFence should take
+  // care of everything. Otherwise, emitLeading/TrailingFence are no-op and we
   // should preserve the ordering.
+  bool ShouldInsertFencesForAtomic = TLI->shouldInsertFencesForAtomic(CI);
   AtomicOrdering MemOpOrder =
-      TLI->getInsertFencesForAtomic() ? Monotonic : SuccessOrder;
+      ShouldInsertFencesForAtomic ? Monotonic : SuccessOrder;
+
+  // In implementations which use a barrier to achieve release semantics, we can
+  // delay emitting this barrier until we know a store is actually going to be
+  // attempted. The cost of this delay is that we need 2 copies of the block
+  // emitting the load-linked, affecting code size.
+  //
+  // Ideally, this logic would be unconditional except for the minsize check
+  // since in other cases the extra blocks naturally collapse down to the
+  // minimal loop. Unfortunately, this puts too much stress on later
+  // optimisations so we avoid emitting the extra logic in those cases too.
+  bool HasReleasedLoadBB = !CI->isWeak() && ShouldInsertFencesForAtomic &&
+                           SuccessOrder != Monotonic &&
+                           SuccessOrder != Acquire && !F->optForMinSize();
+
+  // There's no overhead for sinking the release barrier in a weak cmpxchg, so
+  // do it even on minsize.
+  bool UseUnconditionalReleaseBarrier = F->optForMinSize() && !CI->isWeak();
 
   // Given: cmpxchg some_op iN* %addr, iN %desired, iN %new success_ord fail_ord
   //
   // The full expansion we produce is:
   //     [...]
-  //     fence?
   // cmpxchg.start:
-  //     %loaded = @load.linked(%addr)
-  //     %should_store = icmp eq %loaded, %desired
-  //     br i1 %should_store, label %cmpxchg.trystore,
+  //     %unreleasedload = @load.linked(%addr)
+  //     %should_store = icmp eq %unreleasedload, %desired
+  //     br i1 %should_store, label %cmpxchg.fencedstore,
   //                          label %cmpxchg.nostore
+  // cmpxchg.releasingstore:
+  //     fence?
+  //     br label cmpxchg.trystore
   // cmpxchg.trystore:
+  //     %loaded.trystore = phi [%unreleasedload, %releasingstore],
+  //                            [%releasedload, %cmpxchg.releasedload]
   //     %stored = @store_conditional(%new, %addr)
   //     %success = icmp eq i32 %stored, 0
-  //     br i1 %success, label %cmpxchg.success, label %loop/%cmpxchg.failure
+  //     br i1 %success, label %cmpxchg.success,
+  //                     label %cmpxchg.releasedload/%cmpxchg.failure
+  // cmpxchg.releasedload:
+  //     %releasedload = @load.linked(%addr)
+  //     %should_store = icmp eq %releasedload, %desired
+  //     br i1 %should_store, label %cmpxchg.trystore,
+  //                          label %cmpxchg.failure
   // cmpxchg.success:
   //     fence?
   //     br label %cmpxchg.end
   // cmpxchg.nostore:
+  //     %loaded.nostore = phi [%unreleasedload, %cmpxchg.start],
+  //                           [%releasedload,
+  //                               %cmpxchg.releasedload/%cmpxchg.trystore]
   //     @load_linked_fail_balance()?
   //     br label %cmpxchg.failure
   // cmpxchg.failure:
   //     fence?
   //     br label %cmpxchg.end
   // cmpxchg.end:
+  //     %loaded = phi [%loaded.nostore, %cmpxchg.failure],
+  //                   [%loaded.trystore, %cmpxchg.trystore]
   //     %success = phi i1 [true, %cmpxchg.success], [false, %cmpxchg.failure]
   //     %restmp = insertvalue { iN, i1 } undef, iN %loaded, 0
   //     %res = insertvalue { iN, i1 } %restmp, i1 %success, 1
@@ -553,8 +586,13 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   auto FailureBB = BasicBlock::Create(Ctx, "cmpxchg.failure", F, ExitBB);
   auto NoStoreBB = BasicBlock::Create(Ctx, "cmpxchg.nostore", F, FailureBB);
   auto SuccessBB = BasicBlock::Create(Ctx, "cmpxchg.success", F, NoStoreBB);
-  auto TryStoreBB = BasicBlock::Create(Ctx, "cmpxchg.trystore", F, SuccessBB);
-  auto LoopBB = BasicBlock::Create(Ctx, "cmpxchg.start", F, TryStoreBB);
+  auto ReleasedLoadBB =
+      BasicBlock::Create(Ctx, "cmpxchg.releasedload", F, SuccessBB);
+  auto TryStoreBB =
+      BasicBlock::Create(Ctx, "cmpxchg.trystore", F, ReleasedLoadBB);
+  auto ReleasingStoreBB =
+      BasicBlock::Create(Ctx, "cmpxchg.fencedstore", F, TryStoreBB);
+  auto StartBB = BasicBlock::Create(Ctx, "cmpxchg.start", F, ReleasingStoreBB);
 
   // This grabs the DebugLoc from CI
   IRBuilder<> Builder(CI);
@@ -564,32 +602,55 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   // the branch entirely.
   std::prev(BB->end())->eraseFromParent();
   Builder.SetInsertPoint(BB);
-  TLI->emitLeadingFence(Builder, SuccessOrder, /*IsStore=*/true,
-                        /*IsLoad=*/true);
-  Builder.CreateBr(LoopBB);
+  if (ShouldInsertFencesForAtomic && UseUnconditionalReleaseBarrier)
+    TLI->emitLeadingFence(Builder, SuccessOrder, /*IsStore=*/true,
+                          /*IsLoad=*/true);
+  Builder.CreateBr(StartBB);
 
   // Start the main loop block now that we've taken care of the preliminaries.
-  Builder.SetInsertPoint(LoopBB);
-  Value *Loaded = TLI->emitLoadLinked(Builder, Addr, MemOpOrder);
-  Value *ShouldStore =
-      Builder.CreateICmpEQ(Loaded, CI->getCompareOperand(), "should_store");
+  Builder.SetInsertPoint(StartBB);
+  Value *UnreleasedLoad = TLI->emitLoadLinked(Builder, Addr, MemOpOrder);
+  Value *ShouldStore = Builder.CreateICmpEQ(
+      UnreleasedLoad, CI->getCompareOperand(), "should_store");
 
   // If the cmpxchg doesn't actually need any ordering when it fails, we can
   // jump straight past that fence instruction (if it exists).
-  Builder.CreateCondBr(ShouldStore, TryStoreBB, NoStoreBB);
+  Builder.CreateCondBr(ShouldStore, ReleasingStoreBB, NoStoreBB);
+
+  Builder.SetInsertPoint(ReleasingStoreBB);
+  if (ShouldInsertFencesForAtomic && !UseUnconditionalReleaseBarrier)
+    TLI->emitLeadingFence(Builder, SuccessOrder, /*IsStore=*/true,
+                          /*IsLoad=*/true);
+  Builder.CreateBr(TryStoreBB);
 
   Builder.SetInsertPoint(TryStoreBB);
   Value *StoreSuccess = TLI->emitStoreConditional(
       Builder, CI->getNewValOperand(), Addr, MemOpOrder);
   StoreSuccess = Builder.CreateICmpEQ(
       StoreSuccess, ConstantInt::get(Type::getInt32Ty(Ctx), 0), "success");
+  BasicBlock *RetryBB = HasReleasedLoadBB ? ReleasedLoadBB : StartBB;
   Builder.CreateCondBr(StoreSuccess, SuccessBB,
-                       CI->isWeak() ? FailureBB : LoopBB);
+                       CI->isWeak() ? FailureBB : RetryBB);
 
-  // Make sure later instructions don't get reordered with a fence if necessary.
+  Builder.SetInsertPoint(ReleasedLoadBB);
+  Value *SecondLoad;
+  if (HasReleasedLoadBB) {
+    SecondLoad = TLI->emitLoadLinked(Builder, Addr, MemOpOrder);
+    ShouldStore = Builder.CreateICmpEQ(SecondLoad, CI->getCompareOperand(),
+                                       "should_store");
+
+    // If the cmpxchg doesn't actually need any ordering when it fails, we can
+    // jump straight past that fence instruction (if it exists).
+    Builder.CreateCondBr(ShouldStore, TryStoreBB, NoStoreBB);
+  } else
+    Builder.CreateUnreachable();
+
+  // Make sure later instructions don't get reordered with a fence if
+  // necessary.
   Builder.SetInsertPoint(SuccessBB);
-  TLI->emitTrailingFence(Builder, SuccessOrder, /*IsStore=*/true,
-                         /*IsLoad=*/true);
+  if (ShouldInsertFencesForAtomic)
+    TLI->emitTrailingFence(Builder, SuccessOrder, /*IsStore=*/true,
+                           /*IsLoad=*/true);
   Builder.CreateBr(ExitBB);
 
   Builder.SetInsertPoint(NoStoreBB);
@@ -600,19 +661,42 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   Builder.CreateBr(FailureBB);
 
   Builder.SetInsertPoint(FailureBB);
-  TLI->emitTrailingFence(Builder, FailureOrder, /*IsStore=*/true,
-                         /*IsLoad=*/true);
+  if (ShouldInsertFencesForAtomic)
+    TLI->emitTrailingFence(Builder, FailureOrder, /*IsStore=*/true,
+                           /*IsLoad=*/true);
   Builder.CreateBr(ExitBB);
 
   // Finally, we have control-flow based knowledge of whether the cmpxchg
   // succeeded or not. We expose this to later passes by converting any
-  // subsequent "icmp eq/ne %loaded, %oldval" into a use of an appropriate PHI.
-
-  // Setup the builder so we can create any PHIs we need.
+  // subsequent "icmp eq/ne %loaded, %oldval" into a use of an appropriate
+  // PHI.
   Builder.SetInsertPoint(ExitBB, ExitBB->begin());
   PHINode *Success = Builder.CreatePHI(Type::getInt1Ty(Ctx), 2);
   Success->addIncoming(ConstantInt::getTrue(Ctx), SuccessBB);
   Success->addIncoming(ConstantInt::getFalse(Ctx), FailureBB);
+
+  // Setup the builder so we can create any PHIs we need.
+  Value *Loaded;
+  if (!HasReleasedLoadBB)
+    Loaded = UnreleasedLoad;
+  else {
+    Builder.SetInsertPoint(TryStoreBB, TryStoreBB->begin());
+    PHINode *TryStoreLoaded = Builder.CreatePHI(UnreleasedLoad->getType(), 2);
+    TryStoreLoaded->addIncoming(UnreleasedLoad, ReleasingStoreBB);
+    TryStoreLoaded->addIncoming(SecondLoad, ReleasedLoadBB);
+
+    Builder.SetInsertPoint(NoStoreBB, NoStoreBB->begin());
+    PHINode *NoStoreLoaded = Builder.CreatePHI(UnreleasedLoad->getType(), 2);
+    NoStoreLoaded->addIncoming(UnreleasedLoad, StartBB);
+    NoStoreLoaded->addIncoming(SecondLoad, ReleasedLoadBB);
+
+    Builder.SetInsertPoint(ExitBB, ++ExitBB->begin());
+    PHINode *ExitLoaded = Builder.CreatePHI(UnreleasedLoad->getType(), 2);
+    ExitLoaded->addIncoming(TryStoreLoaded, SuccessBB);
+    ExitLoaded->addIncoming(NoStoreLoaded, FailureBB);
+
+    Loaded = ExitLoaded;
+  }
 
   // Look for any users of the cmpxchg that are just comparing the loaded value
   // against the desired one, and replace them with the CFG-derived version.
