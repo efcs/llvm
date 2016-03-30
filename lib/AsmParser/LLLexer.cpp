@@ -533,6 +533,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(notail);
   KEYWORD(target);
   KEYWORD(triple);
+  KEYWORD(source_filename);
   KEYWORD(unwind);
   KEYWORD(deplibs);             // FIXME: Remove in 4.0.
   KEYWORD(datalayout);
@@ -647,6 +648,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(sanitize_address);
   KEYWORD(sanitize_thread);
   KEYWORD(sanitize_memory);
+  KEYWORD(swiftself);
   KEYWORD(uwtable);
   KEYWORD(zeroext);
 
