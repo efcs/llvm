@@ -146,10 +146,6 @@ struct AArch64LoadStoreOpt : public MachineFunctionPass {
   mergeUpdateInsn(MachineBasicBlock::iterator I,
                   MachineBasicBlock::iterator Update, bool IsPreIdx);
 
-  // Is this a candidate for ld/st merging or pairing?  For example, we don't
-  // touch volatiles or load/stores that have a hint to avoid pair formation.
-  bool isCandidateToMergeOrPair(MachineInstr *MI);
-
   // Find and merge foldable ldr/str instructions.
   bool tryToMergeLdStInst(MachineBasicBlock::iterator &MBBI);
 
@@ -682,6 +678,7 @@ AArch64LoadStoreOpt::mergeNarrowInsns(MachineBasicBlock::iterator I,
             .addOperand(BaseRegOp)
             .addImm(OffsetImm)
             .setMemRefs(I->mergeMemRefsWith(*MergeMI));
+    (void)NewMemMI;
 
     DEBUG(
         dbgs()
@@ -746,6 +743,9 @@ AArch64LoadStoreOpt::mergeNarrowInsns(MachineBasicBlock::iterator I,
               .addImm(LSBHigh)
               .addImm(ImmsHigh);
     }
+    (void)BitExtMI1;
+    (void)BitExtMI2;
+
     DEBUG(dbgs() << "    ");
     DEBUG((BitExtMI1)->print(dbgs()));
     DEBUG(dbgs() << "    ");
@@ -766,7 +766,6 @@ AArch64LoadStoreOpt::mergeNarrowInsns(MachineBasicBlock::iterator I,
             .addOperand(BaseRegOp)
             .addImm(OffsetImm)
             .setMemRefs(I->mergeMemRefsWith(*MergeMI));
-
   (void)MIB;
 
   DEBUG(dbgs() << "Creating wider load/store. Replacing instructions:\n    ");
@@ -1000,6 +999,7 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
               .addImm(Imms);
     }
   }
+  (void)BitExtMI;
 
   DEBUG(dbgs() << "Promoting load by replacing :\n    ");
   DEBUG(StoreI->print(dbgs()));
@@ -1588,29 +1588,6 @@ bool AArch64LoadStoreOpt::tryToPromoteLoadFromStore(
   return false;
 }
 
-bool AArch64LoadStoreOpt::isCandidateToMergeOrPair(MachineInstr *MI) {
-  // If this is a volatile load/store, don't mess with it.
-  if (MI->hasOrderedMemoryRef())
-    return false;
-
-  // Make sure this is a reg+imm (as opposed to an address reloc).
-  if (!getLdStOffsetOp(MI).isImm())
-    return false;
-
-  // Can't merge/pair if the instruction modifies the base register.
-  // e.g., ldr x0, [x0]
-  unsigned BaseReg = getLdStBaseOp(MI).getReg();
-  if (MI->modifiesRegister(BaseReg, TRI))
-    return false;
-
-  // Check if this load/store has a hint to avoid pair formation.
-  // MachineMemOperands hints are set by the AArch64StorePairSuppress pass.
-  if (TII->isLdStPairSuppressed(MI))
-    return false;
-
-  return true;
-}
-
 // Find narrow loads that can be converted into a single wider load with
 // bitfield extract instructions.  Also merge adjacent zero stores into a wider
 // store.
@@ -1621,7 +1598,7 @@ bool AArch64LoadStoreOpt::tryToMergeLdStInst(
   MachineInstr *MI = MBBI;
   MachineBasicBlock::iterator E = MI->getParent()->end();
 
-  if (!isCandidateToMergeOrPair(MI))
+  if (!TII->isCandidateToMergeOrPair(MI))
     return false;
 
   // For promotable zero stores, the stored value should be WZR.
@@ -1653,7 +1630,7 @@ bool AArch64LoadStoreOpt::tryToPairLdStInst(MachineBasicBlock::iterator &MBBI) {
   MachineInstr *MI = MBBI;
   MachineBasicBlock::iterator E = MI->getParent()->end();
 
-  if (!isCandidateToMergeOrPair(MI))
+  if (!TII->isCandidateToMergeOrPair(MI))
     return false;
 
   // Early exit if the offset is not possible to match. (6 bits of positive

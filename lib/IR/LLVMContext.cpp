@@ -128,6 +128,11 @@ LLVMContext::LLVMContext() : pImpl(new LLVMContextImpl(*this)) {
   assert(AlignID == MD_align && "align kind id drifted");
   (void)AlignID;
 
+  // Create the 'llvm.loop' metadata kind.
+  unsigned LoopID = getMDKindID("llvm.loop");
+  assert(LoopID == MD_loop && "llvm.loop kind id drifted");
+  (void)LoopID;
+
   auto *DeoptEntry = pImpl->getOrInsertBundleTag("deopt");
   assert(DeoptEntry->second == LLVMContext::OB_deopt &&
          "deopt operand bundle id drifted!");
@@ -326,7 +331,7 @@ void LLVMContext::deleteGC(const Function &Fn) {
   pImpl->GCNames.erase(&Fn);
 }
 
-bool LLVMContext::discardValueNames() { return pImpl->DiscardValueNames; }
+bool LLVMContext::discardValueNames() const { return pImpl->DiscardValueNames; }
 
 void LLVMContext::setDiscardValueNames(bool Discard) {
   pImpl->DiscardValueNames = Discard;

@@ -59,6 +59,7 @@ namespace lltok {
     kw_notail,
     kw_target,
     kw_triple,
+    kw_source_filename,
     kw_unwind,
     kw_deplibs,                 // FIXME: Remove in 4.0
     kw_datalayout,
@@ -151,6 +152,7 @@ namespace lltok {
     kw_sret,
     kw_sanitize_thread,
     kw_sanitize_memory,
+    kw_swiftself,
     kw_uwtable,
     kw_zeroext,
 
