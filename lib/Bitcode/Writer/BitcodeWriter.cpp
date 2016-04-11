@@ -12,12 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "ValueEnumerator.h"
-#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/Analysis/BlockFrequencyInfoImpl.h"
-#include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Bitcode/BitstreamWriter.h"
 #include "llvm/Bitcode/LLVMBitCodes.h"
 #include "llvm/Bitcode/ReaderWriter.h"
@@ -25,10 +21,8 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Dominators.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
@@ -39,6 +33,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/SHA1.h"
 #include <cctype>
 #include <map>
 using namespace llvm;
@@ -131,13 +126,13 @@ static unsigned GetEncodedRMWOperation(AtomicRMWInst::BinOp Op) {
 
 static unsigned GetEncodedOrdering(AtomicOrdering Ordering) {
   switch (Ordering) {
-  case NotAtomic: return bitc::ORDERING_NOTATOMIC;
-  case Unordered: return bitc::ORDERING_UNORDERED;
-  case Monotonic: return bitc::ORDERING_MONOTONIC;
-  case Acquire: return bitc::ORDERING_ACQUIRE;
-  case Release: return bitc::ORDERING_RELEASE;
-  case AcquireRelease: return bitc::ORDERING_ACQREL;
-  case SequentiallyConsistent: return bitc::ORDERING_SEQCST;
+  case AtomicOrdering::NotAtomic: return bitc::ORDERING_NOTATOMIC;
+  case AtomicOrdering::Unordered: return bitc::ORDERING_UNORDERED;
+  case AtomicOrdering::Monotonic: return bitc::ORDERING_MONOTONIC;
+  case AtomicOrdering::Acquire: return bitc::ORDERING_ACQUIRE;
+  case AtomicOrdering::Release: return bitc::ORDERING_RELEASE;
+  case AtomicOrdering::AcquireRelease: return bitc::ORDERING_ACQREL;
+  case AtomicOrdering::SequentiallyConsistent: return bitc::ORDERING_SEQCST;
   }
   llvm_unreachable("Invalid ordering");
 }
@@ -259,6 +254,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_SANITIZE_THREAD;
   case Attribute::SanitizeMemory:
     return bitc::ATTR_KIND_SANITIZE_MEMORY;
+  case Attribute::SwiftError:
+    return bitc::ATTR_KIND_SWIFT_ERROR;
   case Attribute::SwiftSelf:
     return bitc::ATTR_KIND_SWIFT_SELF;
   case Attribute::UWTable:
@@ -802,6 +799,18 @@ static uint64_t WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
     Vals.push_back(A.hasUnnamedAddr());
     unsigned AbbrevToUse = 0;
     Stream.EmitRecord(bitc::MODULE_CODE_ALIAS, Vals, AbbrevToUse);
+    Vals.clear();
+  }
+
+  // Emit the ifunc information.
+  for (const GlobalIFunc &I : M->ifuncs()) {
+    // IFUNC: [ifunc type, address space, resolver val#, linkage, visibility]
+    Vals.push_back(VE.getTypeID(I.getValueType()));
+    Vals.push_back(I.getType()->getAddressSpace());
+    Vals.push_back(VE.getValueID(I.getResolver()));
+    Vals.push_back(getEncodedLinkage(I));
+    Vals.push_back(getEncodedVisibility(I));
+    Stream.EmitRecord(bitc::MODULE_CODE_IFUNC, Vals);
     Vals.clear();
   }
 
@@ -1425,7 +1434,7 @@ static void writeMetadataRecords(ArrayRef<const Metadata *> MDs,
 static void writeModuleMetadata(const Module &M,
                                 const ValueEnumerator &VE,
                                 BitstreamWriter &Stream) {
-  if (VE.getMDs().empty() && M.named_metadata_empty())
+  if (!VE.hasMDs() && M.named_metadata_empty())
     return;
 
   Stream.EnterSubblock(bitc::METADATA_BLOCK_ID, 3);
@@ -1438,13 +1447,13 @@ static void writeModuleMetadata(const Module &M,
 
 static void writeFunctionMetadata(const Function &F, const ValueEnumerator &VE,
                                   BitstreamWriter &Stream) {
-  ArrayRef<const Metadata *> MDs = VE.getFunctionMDs();
-  if (MDs.empty())
+  if (!VE.hasMDs())
     return;
 
   Stream.EnterSubblock(bitc::METADATA_BLOCK_ID, 3);
   SmallVector<uint64_t, 64> Record;
-  writeMetadataRecords(MDs, VE, Stream, Record);
+  writeMetadataStrings(VE.getMDStrings(), Stream, Record);
+  writeMetadataRecords(VE.getNonMDStrings(), VE, Stream, Record);
   Stream.ExitBlock();
 }
 
@@ -1704,8 +1713,7 @@ static void WriteConstants(unsigned FirstVal, unsigned LastVal,
           Record.push_back(
               CDS->getElementAsAPFloat(i).bitcastToAPInt().getLimitedValue());
       }
-    } else if (isa<ConstantArray>(C) || isa<ConstantStruct>(C) ||
-               isa<ConstantVector>(C)) {
+    } else if (isa<ConstantAggregate>(C)) {
       Code = bitc::CST_CODE_AGGREGATE;
       for (const Value *Op : C->operands())
         Record.push_back(VE.getValueID(Op));
@@ -2140,8 +2148,7 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
     assert(AlignRecord < 1 << 5 && "alignment greater than 1 << 64");
     AlignRecord |= AI.isUsedWithInAlloca() << 5;
     AlignRecord |= 1 << 6;
-    // Reserve bit 7 for SwiftError flag.
-    // AlignRecord |= AI.isSwiftError() << 7;
+    AlignRecord |= AI.isSwiftError() << 7;
     Vals.push_back(AlignRecord);
     break;
   }
@@ -2268,8 +2275,7 @@ static void WriteValueSymbolTable(
     const ValueSymbolTable &VST, const ValueEnumerator &VE,
     BitstreamWriter &Stream, uint64_t VSTOffsetPlaceholder = 0,
     uint64_t BitcodeStartBit = 0,
-    DenseMap<const Function *, std::unique_ptr<GlobalValueInfo>>
-        *FunctionIndex = nullptr) {
+    DenseMap<const Function *, uint64_t> *FunctionToBitcodeIndex = nullptr) {
   if (VST.empty()) {
     // WriteValueSymbolTableForwardDecl should have returned early as
     // well. Ensure this handling remains in sync by asserting that
@@ -2358,13 +2364,12 @@ static void WriteValueSymbolTable(
       // Must be the module-level VST, where we pass in the Index and
       // have a VSTOffsetPlaceholder. The function-level VST should not
       // contain any Function symbols.
-      assert(FunctionIndex);
+      assert(FunctionToBitcodeIndex);
       assert(VSTOffsetPlaceholder > 0);
 
       // Save the word offset of the function (from the start of the
       // actual bitcode written to the stream).
-      uint64_t BitcodeIndex =
-          (*FunctionIndex)[F]->bitcodeIndex() - BitcodeStartBit;
+      uint64_t BitcodeIndex = (*FunctionToBitcodeIndex)[F] - BitcodeStartBit;
       assert((BitcodeIndex & 31) == 0 && "function block not 32-bit aligned");
       NameVals.push_back(BitcodeIndex / 32);
 
@@ -2394,11 +2399,10 @@ static void WriteValueSymbolTable(
 
 /// Emit function names and summary offsets for the combined index
 /// used by ThinLTO.
-static void
-WriteCombinedValueSymbolTable(const ModuleSummaryIndex &Index,
-                              BitstreamWriter &Stream,
-                              std::map<uint64_t, unsigned> &GUIDToValueIdMap,
-                              uint64_t VSTOffsetPlaceholder) {
+static void WriteCombinedValueSymbolTable(
+    const ModuleSummaryIndex &Index, BitstreamWriter &Stream,
+    std::map<GlobalValue::GUID, unsigned> &GUIDToValueIdMap,
+    uint64_t VSTOffsetPlaceholder) {
   assert(VSTOffsetPlaceholder > 0 && "Expected non-zero VSTOffsetPlaceholder");
   // Get the offset of the VST we are writing, and backpatch it into
   // the VST forward declaration record.
@@ -2424,7 +2428,7 @@ WriteCombinedValueSymbolTable(const ModuleSummaryIndex &Index,
   SmallVector<uint64_t, 64> NameVals;
 
   for (const auto &FII : Index) {
-    uint64_t FuncGUID = FII.first;
+    GlobalValue::GUID FuncGUID = FII.first;
     const auto &VMI = GUIDToValueIdMap.find(FuncGUID);
     assert(VMI != GUIDToValueIdMap.end());
 
@@ -2487,60 +2491,14 @@ static void WriteUseListBlock(const Function *F, ValueEnumerator &VE,
   Stream.ExitBlock();
 }
 
-// Walk through the operands of a given User via worklist iteration and populate
-// the set of GlobalValue references encountered. Invoked either on an
-// Instruction or a GlobalVariable (which walks its initializer).
-static void findRefEdges(const User *CurUser, const ValueEnumerator &VE,
-                         DenseSet<unsigned> &RefEdges,
-                         SmallPtrSet<const User *, 8> &Visited) {
-  SmallVector<const User *, 32> Worklist;
-  Worklist.push_back(CurUser);
-
-  while (!Worklist.empty()) {
-    const User *U = Worklist.pop_back_val();
-
-    if (!Visited.insert(U).second)
-      continue;
-
-    ImmutableCallSite CS(U);
-
-    for (const auto &OI : U->operands()) {
-      const User *Operand = dyn_cast<User>(OI);
-      if (!Operand)
-        continue;
-      if (isa<BlockAddress>(Operand))
-        continue;
-      if (isa<GlobalValue>(Operand)) {
-        // We have a reference to a global value. This should be added to
-        // the reference set unless it is a callee. Callees are handled
-        // specially by WriteFunction and are added to a separate list.
-        if (!(CS && CS.isCallee(&OI)))
-          RefEdges.insert(VE.getValueID(Operand));
-        continue;
-      }
-      Worklist.push_back(Operand);
-    }
-  }
-}
-
 /// Emit a function body to the module stream.
-static void WriteFunction(
-    const Function &F, const Module *M, ValueEnumerator &VE,
-    BitstreamWriter &Stream,
-    DenseMap<const Function *, std::unique_ptr<GlobalValueInfo>> &FunctionIndex,
-    bool EmitSummaryIndex) {
+static void
+WriteFunction(const Function &F, const Module *M, ValueEnumerator &VE,
+              BitstreamWriter &Stream,
+              DenseMap<const Function *, uint64_t> &FunctionToBitcodeIndex) {
   // Save the bitcode index of the start of this function block for recording
   // in the VST.
-  uint64_t BitcodeIndex = Stream.GetCurrentBitNo();
-
-  bool HasProfileData = F.getEntryCount().hasValue();
-  std::unique_ptr<BlockFrequencyInfo> BFI;
-  if (EmitSummaryIndex && HasProfileData) {
-    Function &Func = const_cast<Function &>(F);
-    LoopInfo LI{DominatorTree(Func)};
-    BranchProbabilityInfo BPI{Func, LI};
-    BFI = llvm::make_unique<BlockFrequencyInfo>(Func, BPI, LI);
-  }
+  FunctionToBitcodeIndex[&F] = Stream.GetCurrentBitNo();
 
   Stream.EnterSubblock(bitc::FUNCTION_BLOCK_ID, 4);
   VE.incorporateFunction(F);
@@ -2567,39 +2525,14 @@ static void WriteFunction(
   bool NeedsMetadataAttachment = F.hasMetadata();
 
   DILocation *LastDL = nullptr;
-  unsigned NumInsts = 0;
-  // Map from callee ValueId to profile count. Used to accumulate profile
-  // counts for all static calls to a given callee.
-  DenseMap<unsigned, CalleeInfo> CallGraphEdges;
-  DenseSet<unsigned> RefEdges;
-
-  SmallPtrSet<const User *, 8> Visited;
   // Finally, emit all the instructions, in order.
   for (Function::const_iterator BB = F.begin(), E = F.end(); BB != E; ++BB)
     for (BasicBlock::const_iterator I = BB->begin(), E = BB->end();
          I != E; ++I) {
       WriteInstruction(*I, InstID, VE, Stream, Vals);
 
-      if (!isa<DbgInfoIntrinsic>(I))
-        ++NumInsts;
-
       if (!I->getType()->isVoidTy())
         ++InstID;
-
-      if (EmitSummaryIndex) {
-        if (auto CS = ImmutableCallSite(&*I)) {
-          auto *CalledFunction = CS.getCalledFunction();
-          if (CalledFunction && CalledFunction->hasName() &&
-              !CalledFunction->isIntrinsic()) {
-            auto ScaledCount = BFI ? BFI->getBlockProfileCount(&*BB) : None;
-            unsigned CalleeId = VE.getValueID(
-                M->getValueSymbolTable().lookup(CalledFunction->getName()));
-            CallGraphEdges[CalleeId] +=
-                (ScaledCount ? ScaledCount.getValue() : 0);
-          }
-        }
-        findRefEdges(&*I, VE, RefEdges, Visited);
-      }
 
       // If the instruction has metadata, write a metadata attachment later.
       NeedsMetadataAttachment |= I->hasMetadataOtherThanDebugLoc();
@@ -2624,15 +2557,6 @@ static void WriteFunction(
 
       LastDL = DL;
     }
-
-  std::unique_ptr<FunctionSummary> FuncSummary;
-  if (EmitSummaryIndex) {
-    FuncSummary = llvm::make_unique<FunctionSummary>(F.getLinkage(), NumInsts);
-    FuncSummary->addCallGraphEdges(CallGraphEdges);
-    FuncSummary->addRefEdges(RefEdges);
-  }
-  FunctionIndex[&F] =
-      llvm::make_unique<GlobalValueInfo>(BitcodeIndex, std::move(FuncSummary));
 
   // Emit names for all the instructions etc.
   WriteValueSymbolTable(F.getValueSymbolTable(), VE, Stream);
@@ -2852,8 +2776,18 @@ static void WriteModStrings(const ModuleSummaryIndex &I,
   Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Char6));
   unsigned Abbrev6Bit = Stream.EmitAbbrev(Abbv);
 
-  SmallVector<unsigned, 64> NameVals;
-  for (const StringMapEntry<uint64_t> &MPSE : I.modulePaths()) {
+  // Module Hash, 160 bits SHA1. Optionally, emitted after each MST_CODE_ENTRY.
+  Abbv = new BitCodeAbbrev();
+  Abbv->Add(BitCodeAbbrevOp(bitc::MST_CODE_HASH));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  unsigned AbbrevHash = Stream.EmitAbbrev(Abbv);
+
+  SmallVector<unsigned, 64> Vals;
+  for (const auto &MPSE : I.modulePaths()) {
     StringEncoding Bits =
         getStringEncoding(MPSE.getKey().data(), MPSE.getKey().size());
     unsigned AbbrevToUse = Abbrev8Bit;
@@ -2862,35 +2796,51 @@ static void WriteModStrings(const ModuleSummaryIndex &I,
     else if (Bits == SE_Fixed7)
       AbbrevToUse = Abbrev7Bit;
 
-    NameVals.push_back(MPSE.getValue());
+    Vals.push_back(MPSE.getValue().first);
 
     for (const auto P : MPSE.getKey())
-      NameVals.push_back((unsigned char)P);
+      Vals.push_back((unsigned char)P);
 
     // Emit the finished record.
-    Stream.EmitRecord(bitc::MST_CODE_ENTRY, NameVals, AbbrevToUse);
-    NameVals.clear();
+    Stream.EmitRecord(bitc::MST_CODE_ENTRY, Vals, AbbrevToUse);
+
+    Vals.clear();
+    // Emit an optional hash for the module now
+    auto &Hash = MPSE.getValue().second;
+    bool AllZero = true; // Detect if the hash is empty, and do not generate it
+    for (auto Val : Hash) {
+      if (Val)
+        AllZero = false;
+      Vals.push_back(Val);
+    }
+    if (!AllZero) {
+      // Emit the hash record.
+      Stream.EmitRecord(bitc::MST_CODE_HASH, Vals, AbbrevHash);
+    }
+
+    Vals.clear();
   }
   Stream.ExitBlock();
 }
 
 // Helper to emit a single function summary record.
 static void WritePerModuleFunctionSummaryRecord(
-    SmallVector<uint64_t, 64> &NameVals, FunctionSummary *FS, unsigned ValueID,
-    unsigned FSCallsAbbrev, unsigned FSCallsProfileAbbrev,
-    BitstreamWriter &Stream, const Function &F) {
-  assert(FS);
+    SmallVector<uint64_t, 64> &NameVals, GlobalValueInfo *Info,
+    unsigned ValueID, const ValueEnumerator &VE, unsigned FSCallsAbbrev,
+    unsigned FSCallsProfileAbbrev, BitstreamWriter &Stream, const Function &F) {
   NameVals.push_back(ValueID);
+
+  FunctionSummary *FS = cast<FunctionSummary>(Info->summary());
   NameVals.push_back(getEncodedLinkage(FS->linkage()));
   NameVals.push_back(FS->instCount());
   NameVals.push_back(FS->refs().size());
 
   for (auto &RI : FS->refs())
-    NameVals.push_back(RI);
+    NameVals.push_back(VE.getValueID(RI.getValue()));
 
   bool HasProfileData = F.getEntryCount().hasValue();
   for (auto &ECI : FS->calls()) {
-    NameVals.push_back(ECI.first);
+    NameVals.push_back(VE.getValueID(ECI.first.getValue()));
     assert(ECI.second.CallsiteCount > 0 && "Expected at least one callsite");
     NameVals.push_back(ECI.second.CallsiteCount);
     if (HasProfileData)
@@ -2909,6 +2859,7 @@ static void WritePerModuleFunctionSummaryRecord(
 // Collect the global value references in the given variable's initializer,
 // and emit them in a summary record.
 static void WriteModuleLevelReferences(const GlobalVariable &V,
+                                       const ModuleSummaryIndex &Index,
                                        const ValueEnumerator &VE,
                                        SmallVector<uint64_t, 64> &NameVals,
                                        unsigned FSModRefsAbbrev,
@@ -2916,14 +2867,12 @@ static void WriteModuleLevelReferences(const GlobalVariable &V,
   // Only interested in recording variable defs in the summary.
   if (V.isDeclaration())
     return;
-  DenseSet<unsigned> RefEdges;
-  SmallPtrSet<const User *, 8> Visited;
-  findRefEdges(&V, VE, RefEdges, Visited);
   NameVals.push_back(VE.getValueID(&V));
   NameVals.push_back(getEncodedLinkage(V.getLinkage()));
-  for (auto RefId : RefEdges) {
-    NameVals.push_back(RefId);
-  }
+  auto *Info = Index.getGlobalValueInfo(V);
+  GlobalVarSummary *VS = cast<GlobalVarSummary>(Info->summary());
+  for (auto Ref : VS->refs())
+    NameVals.push_back(VE.getValueID(Ref.getValue()));
   Stream.EmitRecord(bitc::FS_PERMODULE_GLOBALVAR_INIT_REFS, NameVals,
                     FSModRefsAbbrev);
   NameVals.clear();
@@ -2931,9 +2880,10 @@ static void WriteModuleLevelReferences(const GlobalVariable &V,
 
 /// Emit the per-module summary section alongside the rest of
 /// the module's bitcode.
-static void WritePerModuleGlobalValueSummary(
-    DenseMap<const Function *, std::unique_ptr<GlobalValueInfo>> &FunctionIndex,
-    const Module *M, const ValueEnumerator &VE, BitstreamWriter &Stream) {
+static void WritePerModuleGlobalValueSummary(const Module *M,
+                                             const ModuleSummaryIndex &Index,
+                                             const ValueEnumerator &VE,
+                                             BitstreamWriter &Stream) {
   if (M->empty())
     return;
 
@@ -2973,7 +2923,7 @@ static void WritePerModuleGlobalValueSummary(
   unsigned FSModRefsAbbrev = Stream.EmitAbbrev(Abbv);
 
   SmallVector<uint64_t, 64> NameVals;
-  // Iterate over the list of functions instead of the FunctionIndex map to
+  // Iterate over the list of functions instead of the Index to
   // ensure the ordering is stable.
   for (const Function &F : *M) {
     if (F.isDeclaration())
@@ -2983,48 +2933,26 @@ static void WritePerModuleGlobalValueSummary(
     if (!F.hasName())
       continue;
 
-    assert(FunctionIndex.count(&F) == 1);
-
+    auto *Info = Index.getGlobalValueInfo(F);
     WritePerModuleFunctionSummaryRecord(
-        NameVals, cast<FunctionSummary>(FunctionIndex[&F]->summary()),
-        VE.getValueID(M->getValueSymbolTable().lookup(F.getName())),
+        NameVals, Info,
+        VE.getValueID(M->getValueSymbolTable().lookup(F.getName())), VE,
         FSCallsAbbrev, FSCallsProfileAbbrev, Stream, F);
-  }
-
-  for (const GlobalAlias &A : M->aliases()) {
-    if (!A.getBaseObject())
-      continue;
-    const Function *F = dyn_cast<Function>(A.getBaseObject());
-    if (!F || F->isDeclaration())
-      continue;
-
-    assert(FunctionIndex.count(F) == 1);
-    FunctionSummary *FS =
-        cast<FunctionSummary>(FunctionIndex[F]->summary());
-    // Add the alias to the reference list of aliasee function.
-    FS->addRefEdge(
-        VE.getValueID(M->getValueSymbolTable().lookup(A.getName())));
-    WritePerModuleFunctionSummaryRecord(
-        NameVals, FS,
-        VE.getValueID(M->getValueSymbolTable().lookup(A.getName())),
-        FSCallsAbbrev, FSCallsProfileAbbrev, Stream, *F);
   }
 
   // Capture references from GlobalVariable initializers, which are outside
   // of a function scope.
   for (const GlobalVariable &G : M->globals())
-    WriteModuleLevelReferences(G, VE, NameVals, FSModRefsAbbrev, Stream);
-  for (const GlobalAlias &A : M->aliases())
-    if (auto *GV = dyn_cast<GlobalVariable>(A.getBaseObject()))
-      WriteModuleLevelReferences(*GV, VE, NameVals, FSModRefsAbbrev, Stream);
+    WriteModuleLevelReferences(G, Index, VE, NameVals, FSModRefsAbbrev, Stream);
 
   Stream.ExitBlock();
 }
 
 /// Emit the combined summary section into the combined index file.
 static void WriteCombinedGlobalValueSummary(
-    const ModuleSummaryIndex &I, BitstreamWriter &Stream,
-    std::map<uint64_t, unsigned> &GUIDToValueIdMap, unsigned GlobalValueId) {
+    const ModuleSummaryIndex &Index, BitstreamWriter &Stream,
+    std::map<GlobalValue::GUID, unsigned> &GUIDToValueIdMap,
+    unsigned GlobalValueId) {
   Stream.EnterSubblock(bitc::GLOBALVAL_SUMMARY_BLOCK_ID, 3);
 
   // Abbrev for FS_COMBINED.
@@ -3061,20 +2989,20 @@ static void WriteCombinedGlobalValueSummary(
   unsigned FSModRefsAbbrev = Stream.EmitAbbrev(Abbv);
 
   SmallVector<uint64_t, 64> NameVals;
-  for (const auto &FII : I) {
+  for (const auto &FII : Index) {
     for (auto &FI : FII.second) {
       GlobalValueSummary *S = FI->summary();
       assert(S);
 
       if (auto *VS = dyn_cast<GlobalVarSummary>(S)) {
-        NameVals.push_back(I.getModuleId(VS->modulePath()));
+        NameVals.push_back(Index.getModuleId(VS->modulePath()));
         NameVals.push_back(getEncodedLinkage(VS->linkage()));
         for (auto &RI : VS->refs()) {
-          const auto &VMI = GUIDToValueIdMap.find(RI);
+          const auto &VMI = GUIDToValueIdMap.find(RI.getGUID());
           unsigned RefId;
           // If this GUID doesn't have an entry, assign one.
           if (VMI == GUIDToValueIdMap.end()) {
-            GUIDToValueIdMap[RI] = ++GlobalValueId;
+            GUIDToValueIdMap[RI.getGUID()] = ++GlobalValueId;
             RefId = GlobalValueId;
           } else {
             RefId = VMI->second;
@@ -3096,17 +3024,17 @@ static void WriteCombinedGlobalValueSummary(
       }
 
       auto *FS = cast<FunctionSummary>(S);
-      NameVals.push_back(I.getModuleId(FS->modulePath()));
+      NameVals.push_back(Index.getModuleId(FS->modulePath()));
       NameVals.push_back(getEncodedLinkage(FS->linkage()));
       NameVals.push_back(FS->instCount());
       NameVals.push_back(FS->refs().size());
 
       for (auto &RI : FS->refs()) {
-        const auto &VMI = GUIDToValueIdMap.find(RI);
+        const auto &VMI = GUIDToValueIdMap.find(RI.getGUID());
         unsigned RefId;
         // If this GUID doesn't have an entry, assign one.
         if (VMI == GUIDToValueIdMap.end()) {
-          GUIDToValueIdMap[RI] = ++GlobalValueId;
+          GUIDToValueIdMap[RI.getGUID()] = ++GlobalValueId;
           RefId = GlobalValueId;
         } else {
           RefId = VMI->second;
@@ -3122,7 +3050,7 @@ static void WriteCombinedGlobalValueSummary(
       }
 
       for (auto &EI : FS->calls()) {
-        const auto &VMI = GUIDToValueIdMap.find(EI.first);
+        const auto &VMI = GUIDToValueIdMap.find(EI.first.getGUID());
         // If this GUID doesn't have an entry, it doesn't have a function
         // summary and we don't need to record any calls to it.
         if (VMI == GUIDToValueIdMap.end())
@@ -3177,11 +3105,37 @@ static void WriteIdentificationBlock(const Module *M, BitstreamWriter &Stream) {
   Stream.ExitBlock();
 }
 
+static void writeModuleHash(BitstreamWriter &Stream,
+                            SmallVectorImpl<char> &Buffer,
+                            size_t BlockStartPos) {
+  // Emit the module's hash.
+  // MODULE_CODE_HASH: [5*i32]
+  SHA1 Hasher;
+  Hasher.update(ArrayRef<uint8_t>((uint8_t *)&Buffer[BlockStartPos],
+                                  Buffer.size() - BlockStartPos));
+  auto Hash = Hasher.result();
+  SmallVector<uint64_t, 20> Vals;
+  auto LShift = [&](unsigned char Val, unsigned Amount)
+                    -> uint64_t { return ((uint64_t)Val) << Amount; };
+  for (int Pos = 0; Pos < 20; Pos += 4) {
+    uint32_t SubHash = LShift(Hash[Pos + 0], 24);
+    SubHash |= LShift(Hash[Pos + 1], 16) | LShift(Hash[Pos + 2], 8) |
+               (unsigned)(unsigned char)Hash[Pos + 3];
+    Vals.push_back(SubHash);
+  }
+
+  // Emit the finished record.
+  Stream.EmitRecord(bitc::MODULE_CODE_HASH, Vals);
+}
+
 /// WriteModule - Emit the specified module to the bitstream.
 static void WriteModule(const Module *M, BitstreamWriter &Stream,
                         bool ShouldPreserveUseListOrder,
-                        uint64_t BitcodeStartBit, bool EmitSummaryIndex) {
+                        uint64_t BitcodeStartBit,
+                        const ModuleSummaryIndex *Index, bool GenerateHash,
+                        SmallVectorImpl<char> &Buffer) {
   Stream.EnterSubblock(bitc::MODULE_BLOCK_ID, 3);
+  size_t BlockStartPos = Buffer.size();
 
   SmallVector<unsigned, 1> Vals;
   unsigned CurVersion = 1;
@@ -3225,18 +3179,23 @@ static void WriteModule(const Module *M, BitstreamWriter &Stream,
   WriteOperandBundleTags(M, Stream);
 
   // Emit function bodies.
-  DenseMap<const Function *, std::unique_ptr<GlobalValueInfo>> FunctionIndex;
+  DenseMap<const Function *, uint64_t> FunctionToBitcodeIndex;
   for (Module::const_iterator F = M->begin(), E = M->end(); F != E; ++F)
     if (!F->isDeclaration())
-      WriteFunction(*F, M, VE, Stream, FunctionIndex, EmitSummaryIndex);
+      WriteFunction(*F, M, VE, Stream, FunctionToBitcodeIndex);
 
   // Need to write after the above call to WriteFunction which populates
   // the summary information in the index.
-  if (EmitSummaryIndex)
-    WritePerModuleGlobalValueSummary(FunctionIndex, M, VE, Stream);
+  if (Index)
+    WritePerModuleGlobalValueSummary(M, *Index, VE, Stream);
 
   WriteValueSymbolTable(M->getValueSymbolTable(), VE, Stream,
-                        VSTOffsetPlaceholder, BitcodeStartBit, &FunctionIndex);
+                        VSTOffsetPlaceholder, BitcodeStartBit,
+                        &FunctionToBitcodeIndex);
+
+  if (GenerateHash) {
+    writeModuleHash(Stream, Buffer, BlockStartPos);
+  }
 
   Stream.ExitBlock();
 }
@@ -3322,7 +3281,8 @@ static void WriteBitcodeHeader(BitstreamWriter &Stream) {
 /// stream.
 void llvm::WriteBitcodeToFile(const Module *M, raw_ostream &Out,
                               bool ShouldPreserveUseListOrder,
-                              bool EmitSummaryIndex) {
+                              const ModuleSummaryIndex *Index,
+                              bool GenerateHash) {
   SmallVector<char, 0> Buffer;
   Buffer.reserve(256*1024);
 
@@ -3347,8 +3307,8 @@ void llvm::WriteBitcodeToFile(const Module *M, raw_ostream &Out,
     WriteIdentificationBlock(M, Stream);
 
     // Emit the module.
-    WriteModule(M, Stream, ShouldPreserveUseListOrder, BitcodeStartBit,
-                EmitSummaryIndex);
+    WriteModule(M, Stream, ShouldPreserveUseListOrder, BitcodeStartBit, Index,
+                GenerateHash, Buffer);
   }
 
   if (TT.isOSDarwin() || TT.isOSBinFormatMachO())
@@ -3388,7 +3348,7 @@ void llvm::WriteIndexToFile(const ModuleSummaryIndex &Index, raw_ostream &Out) {
   // in writing out the call graph edges. Save the mapping from GUID
   // to the new global value id to use when writing those edges, which
   // are currently saved in the index in terms of GUID.
-  std::map<uint64_t, unsigned> GUIDToValueIdMap;
+  std::map<GlobalValue::GUID, unsigned> GUIDToValueIdMap;
   unsigned GlobalValueId = 0;
   for (auto &II : Index)
     GUIDToValueIdMap[II.first] = ++GlobalValueId;

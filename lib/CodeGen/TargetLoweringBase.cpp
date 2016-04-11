@@ -790,8 +790,9 @@ void TargetLoweringBase::initActions() {
   memset(TruncStoreActions, 0, sizeof(TruncStoreActions));
   memset(IndexedModeActions, 0, sizeof(IndexedModeActions));
   memset(CondCodeActions, 0, sizeof(CondCodeActions));
-  memset(RegClassForVT, 0,MVT::LAST_VALUETYPE*sizeof(TargetRegisterClass*));
-  memset(TargetDAGCombineArray, 0, array_lengthof(TargetDAGCombineArray));
+  std::fill(std::begin(RegClassForVT), std::end(RegClassForVT), nullptr);
+  std::fill(std::begin(TargetDAGCombineArray),
+            std::end(TargetDAGCombineArray), 0);
 
   // Set default actions for various operations.
   for (MVT VT : MVT::all_valuetypes()) {
@@ -1744,4 +1745,33 @@ bool TargetLoweringBase::isLegalAddressingMode(const DataLayout &DL,
   }
 
   return true;
+}
+
+//===----------------------------------------------------------------------===//
+//  Stack Protector
+//===----------------------------------------------------------------------===//
+
+// For OpenBSD return its special guard variable. Otherwise return nullptr,
+// so that SelectionDAG handle SSP.
+Value *TargetLoweringBase::getIRStackGuard(IRBuilder<> &IRB) const {
+  if (getTargetMachine().getTargetTriple().isOSOpenBSD()) {
+    Module &M = *IRB.GetInsertBlock()->getParent()->getParent();
+    PointerType *PtrTy = Type::getInt8PtrTy(M.getContext());
+    auto Guard = cast<GlobalValue>(M.getOrInsertGlobal("__guard_local", PtrTy));
+    Guard->setVisibility(GlobalValue::HiddenVisibility);
+    return Guard;
+  }
+  return nullptr;
+}
+
+// Currently only support "standard" __stack_chk_guard.
+// TODO: add LOAD_STACK_GUARD support.
+void TargetLoweringBase::insertSSPDeclarations(Module &M) const {
+  M.getOrInsertGlobal("__stack_chk_guard", Type::getInt8PtrTy(M.getContext()));
+}
+
+// Currently only support "standard" __stack_chk_guard.
+// TODO: add LOAD_STACK_GUARD support.
+Value *TargetLoweringBase::getSDStackGuard(const Module &M) const {
+  return M.getGlobalVariable("__stack_chk_guard");
 }

@@ -16,10 +16,8 @@
 ;   f1();
 ; }
 
-; Check that there's only one DW_TAG_subprogram, nothing for the 'f2' function.
-; CHECK: DW_TAG_subprogram
-; CHECK-NOT: DW_TAG
-; CHECK:   DW_AT_name {{.*}} "f1"
+; Check that there's no DW_TAG_subprogram, not even for the 'f2' function.
+; CHECK: DW_TAG_compile_unit
 ; CHECK-NOT: DW_TAG_subprogram
 
 @i = external global i32
@@ -37,7 +35,7 @@ attributes #0 = { uwtable "less-precise-fpmad"="false" "no-frame-pointer-elim"="
 !llvm.module.flags = !{!8, !9}
 !llvm.ident = !{!10}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0 ", isOptimized: false, emissionKind: 1, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0 ", isOptimized: false, emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
 !1 = !DIFile(filename: "nodebug.cpp", directory: "/tmp/dbginfo")
 !2 = !{}
 !3 = !{!4}

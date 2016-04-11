@@ -170,6 +170,10 @@ namespace {
       initializeHexagonCallFrameInformationPass(PR);
     }
     bool runOnMachineFunction(MachineFunction &MF) override;
+    MachineFunctionProperties getRequiredProperties() const override {
+      return MachineFunctionProperties().set(
+          MachineFunctionProperties::Property::AllVRegsAllocated);
+    }
   };
 
   char HexagonCallFrameInformation::ID = 0;
@@ -1060,15 +1064,15 @@ bool HexagonFrameLowering::insertCSRRestoresInBlock(MachineBasicBlock &MBB,
   return true;
 }
 
-
-void HexagonFrameLowering::eliminateCallFramePseudoInstr(MachineFunction &MF,
-      MachineBasicBlock &MBB, MachineBasicBlock::iterator I) const {
+MachineBasicBlock::iterator HexagonFrameLowering::eliminateCallFramePseudoInstr(
+    MachineFunction &MF, MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator I) const {
   MachineInstr &MI = *I;
   unsigned Opc = MI.getOpcode();
   (void)Opc; // Silence compiler warning.
   assert((Opc == Hexagon::ADJCALLSTACKDOWN || Opc == Hexagon::ADJCALLSTACKUP) &&
          "Cannot handle this call frame pseudo instruction");
-  MBB.erase(I);
+  return MBB.erase(I);
 }
 
 

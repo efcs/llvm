@@ -78,6 +78,7 @@ void TargetLowering::ArgListEntry::setAttributes(ImmutableCallSite *CS,
   isInAlloca = CS->paramHasAttr(AttrIdx, Attribute::InAlloca);
   isReturned = CS->paramHasAttr(AttrIdx, Attribute::Returned);
   isSwiftSelf = CS->paramHasAttr(AttrIdx, Attribute::SwiftSelf);
+  isSwiftError = CS->paramHasAttr(AttrIdx, Attribute::SwiftError);
   Alignment  = CS->getParamAlignment(AttrIdx);
 }
 
@@ -2329,7 +2330,7 @@ TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *RI,
 
     for (TargetRegisterClass::iterator I = RC->begin(), E = RC->end();
          I != E; ++I) {
-      if (RegName.equals_lower(RI->getName(*I))) {
+      if (RegName.equals_lower(RI->getRegAsmName(*I))) {
         std::pair<unsigned, const TargetRegisterClass*> S =
           std::make_pair(*I, RC);
 

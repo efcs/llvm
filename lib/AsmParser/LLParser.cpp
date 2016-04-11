@@ -46,7 +46,7 @@ bool LLParser::Run() {
   // Prime the lexer.
   Lex.Lex();
 
-  if (Context.discardValueNames())
+  if (Context.shouldDiscardValueNames())
     return Error(
         Lex.getLoc(),
         "Can't read textual IR with a Context that discards named Values");
@@ -100,9 +100,6 @@ void LLParser::restoreParsingState(const SlotMapping *Slots) {
 /// ValidateEndOfModule - Do final validity and sanity checks at the end of the
 /// module.
 bool LLParser::ValidateEndOfModule() {
-  for (unsigned I = 0, E = InstsWithTBAATag.size(); I < E; I++)
-    UpgradeInstWithTBAATag(InstsWithTBAATag[I]);
-
   // Handle any function attribute group forward references.
   for (std::map<Value*, std::vector<unsigned> >::iterator
          I = ForwardRefAttrGroups.begin(), E = ForwardRefAttrGroups.end();
@@ -204,6 +201,9 @@ bool LLParser::ValidateEndOfModule() {
     if (N.second && !N.second->isResolved())
       N.second->resolveCycles();
   }
+
+  for (unsigned I = 0, E = InstsWithTBAATag.size(); I < E; I++)
+    UpgradeInstWithTBAATag(InstsWithTBAATag[I]);
 
   // Look for intrinsic functions and CallInst that need to be upgraded
   for (Module::iterator FI = M->begin(), FE = M->end(); FI != FE; )
@@ -467,10 +467,10 @@ bool LLParser::ParseGlobalType(bool &IsConstant) {
 }
 
 /// ParseUnnamedGlobal:
-///   OptionalVisibility ALIAS ...
+///   OptionalVisibility (ALIAS | IFUNC) ...
 ///   OptionalLinkage OptionalVisibility OptionalDLLStorageClass
 ///                                                     ...   -> global variable
-///   GlobalID '=' OptionalVisibility ALIAS ...
+///   GlobalID '=' OptionalVisibility (ALIAS | IFUNC) ...
 ///   GlobalID '=' OptionalLinkage OptionalVisibility OptionalDLLStorageClass
 ///                                                     ...   -> global variable
 bool LLParser::ParseUnnamedGlobal() {
@@ -500,15 +500,16 @@ bool LLParser::ParseUnnamedGlobal() {
       parseOptionalUnnamedAddr(UnnamedAddr))
     return true;
 
-  if (Lex.getKind() != lltok::kw_alias)
+  if (Lex.getKind() != lltok::kw_alias && Lex.getKind() != lltok::kw_ifunc)
     return ParseGlobal(Name, NameLoc, Linkage, HasLinkage, Visibility,
                        DLLStorageClass, TLM, UnnamedAddr);
-  return ParseAlias(Name, NameLoc, Linkage, Visibility, DLLStorageClass, TLM,
-                    UnnamedAddr);
+
+  return parseIndirectSymbol(Name, NameLoc, Linkage, Visibility,
+                             DLLStorageClass, TLM, UnnamedAddr);
 }
 
 /// ParseNamedGlobal:
-///   GlobalVar '=' OptionalVisibility ALIAS ...
+///   GlobalVar '=' OptionalVisibility (ALIAS | IFUNC) ...
 ///   GlobalVar '=' OptionalLinkage OptionalVisibility OptionalDLLStorageClass
 ///                                                     ...   -> global variable
 bool LLParser::ParseNamedGlobal() {
@@ -529,12 +530,12 @@ bool LLParser::ParseNamedGlobal() {
       parseOptionalUnnamedAddr(UnnamedAddr))
     return true;
 
-  if (Lex.getKind() != lltok::kw_alias)
+  if (Lex.getKind() != lltok::kw_alias && Lex.getKind() != lltok::kw_ifunc)
     return ParseGlobal(Name, NameLoc, Linkage, HasLinkage, Visibility,
                        DLLStorageClass, TLM, UnnamedAddr);
 
-  return ParseAlias(Name, NameLoc, Linkage, Visibility, DLLStorageClass, TLM,
-                    UnnamedAddr);
+  return parseIndirectSymbol(Name, NameLoc, Linkage, Visibility,
+                             DLLStorageClass, TLM, UnnamedAddr);
 }
 
 bool LLParser::parseComdat() {
@@ -600,6 +601,7 @@ bool LLParser::ParseMDString(MDString *&Result) {
 //   ::= '!' MDNodeNumber
 bool LLParser::ParseMDNodeID(MDNode *&Result) {
   // !{ ..., !42, ... }
+  LocTy IDLoc = Lex.getLoc();
   unsigned MID = 0;
   if (ParseUInt32(MID))
     return true;
@@ -612,7 +614,7 @@ bool LLParser::ParseMDNodeID(MDNode *&Result) {
 
   // Otherwise, create MDNode forward reference.
   auto &FwdRef = ForwardRefMDNodes[MID];
-  FwdRef = std::make_pair(MDTuple::getTemporary(Context, None), Lex.getLoc());
+  FwdRef = std::make_pair(MDTuple::getTemporary(Context, None), IDLoc);
 
   Result = FwdRef.first.get();
   NumberedMetadata[MID].reset(Result);
@@ -690,26 +692,33 @@ static bool isValidVisibilityForLinkage(unsigned V, unsigned L) {
          (GlobalValue::VisibilityTypes)V == GlobalValue::DefaultVisibility;
 }
 
-/// ParseAlias:
+/// parseIndirectSymbol:
 ///   ::= GlobalVar '=' OptionalLinkage OptionalVisibility
 ///                     OptionalDLLStorageClass OptionalThreadLocal
-///                     OptionalUnnamedAddr 'alias' Aliasee
+///                     OptionalUnnamedAddr 'alias|ifunc' IndirectSymbol
 ///
-/// Aliasee
+/// IndirectSymbol
 ///   ::= TypeAndValue
 ///
 /// Everything through OptionalUnnamedAddr has already been parsed.
 ///
-bool LLParser::ParseAlias(const std::string &Name, LocTy NameLoc, unsigned L,
-                          unsigned Visibility, unsigned DLLStorageClass,
-                          GlobalVariable::ThreadLocalMode TLM,
-                          bool UnnamedAddr) {
-  assert(Lex.getKind() == lltok::kw_alias);
+bool LLParser::parseIndirectSymbol(const std::string &Name, LocTy NameLoc,
+                                   unsigned L, unsigned Visibility,
+                                   unsigned DLLStorageClass,
+                                   GlobalVariable::ThreadLocalMode TLM,
+                                   bool UnnamedAddr) {
+  bool IsAlias;
+  if (Lex.getKind() == lltok::kw_alias)
+    IsAlias = true;
+  else if (Lex.getKind() == lltok::kw_ifunc)
+    IsAlias = false;
+  else
+    llvm_unreachable("Not an alias or ifunc!");
   Lex.Lex();
 
   GlobalValue::LinkageTypes Linkage = (GlobalValue::LinkageTypes) L;
 
-  if(!GlobalAlias::isValidLinkage(Linkage))
+  if(IsAlias && !GlobalAlias::isValidLinkage(Linkage))
     return Error(NameLoc, "invalid linkage type for alias");
 
   if (!isValidVisibilityForLinkage(Visibility, L))
@@ -719,7 +728,7 @@ bool LLParser::ParseAlias(const std::string &Name, LocTy NameLoc, unsigned L,
   Type *Ty;
   LocTy ExplicitTypeLoc = Lex.getLoc();
   if (ParseType(Ty) ||
-      ParseToken(lltok::comma, "expected comma after alias's type"))
+      ParseToken(lltok::comma, "expected comma after alias or ifunc's type"))
     return true;
 
   Constant *Aliasee;
@@ -743,13 +752,18 @@ bool LLParser::ParseAlias(const std::string &Name, LocTy NameLoc, unsigned L,
   Type *AliaseeType = Aliasee->getType();
   auto *PTy = dyn_cast<PointerType>(AliaseeType);
   if (!PTy)
-    return Error(AliaseeLoc, "An alias must have pointer type");
+    return Error(AliaseeLoc, "An alias or ifunc must have pointer type");
   unsigned AddrSpace = PTy->getAddressSpace();
 
-  if (Ty != PTy->getElementType())
+  if (IsAlias && Ty != PTy->getElementType())
     return Error(
         ExplicitTypeLoc,
         "explicit pointee type doesn't match operand's pointee type");
+
+  if (!IsAlias && !PTy->getElementType()->isFunctionTy())
+    return Error(
+        ExplicitTypeLoc,
+        "explicit pointee type should be a function type");
 
   GlobalValue *GVal = nullptr;
 
@@ -770,9 +784,15 @@ bool LLParser::ParseAlias(const std::string &Name, LocTy NameLoc, unsigned L,
   }
 
   // Okay, create the alias but do not insert it into the module yet.
-  std::unique_ptr<GlobalAlias> GA(
-      GlobalAlias::create(Ty, AddrSpace, (GlobalValue::LinkageTypes)Linkage,
-                          Name, Aliasee, /*Parent*/ nullptr));
+  std::unique_ptr<GlobalIndirectSymbol> GA;
+  if (IsAlias)
+    GA.reset(GlobalAlias::create(Ty, AddrSpace,
+                                 (GlobalValue::LinkageTypes)Linkage, Name,
+                                 Aliasee, /*Parent*/ nullptr));
+  else
+    GA.reset(GlobalIFunc::create(Ty, AddrSpace,
+                                 (GlobalValue::LinkageTypes)Linkage, Name,
+                                 Aliasee, /*Parent*/ nullptr));
   GA->setThreadLocalMode(TLM);
   GA->setVisibility((GlobalValue::VisibilityTypes)Visibility);
   GA->setDLLStorageClass((GlobalValue::DLLStorageClassTypes)DLLStorageClass);
@@ -795,7 +815,10 @@ bool LLParser::ParseAlias(const std::string &Name, LocTy NameLoc, unsigned L,
   }
 
   // Insert into the module, we know its name won't collide now.
-  M->getAliasList().push_back(GA.get());
+  if (IsAlias)
+    M->getAliasList().push_back(cast<GlobalAlias>(GA.get()));
+  else
+    M->getIFuncList().push_back(cast<GlobalIFunc>(GA.get()));
   assert(GA->getName() == Name && "Should not be a name conflict!");
 
   // The module owns this now
@@ -1088,6 +1111,7 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
     case lltok::kw_nonnull:
     case lltok::kw_returned:
     case lltok::kw_sret:
+    case lltok::kw_swifterror:
     case lltok::kw_swiftself:
       HaveError |=
         Error(Lex.getLoc(),
@@ -1362,6 +1386,7 @@ bool LLParser::ParseOptionalParamAttrs(AttrBuilder &B) {
     case lltok::kw_returned:        B.addAttribute(Attribute::Returned); break;
     case lltok::kw_signext:         B.addAttribute(Attribute::SExt); break;
     case lltok::kw_sret:            B.addAttribute(Attribute::StructRet); break;
+    case lltok::kw_swifterror:      B.addAttribute(Attribute::SwiftError); break;
     case lltok::kw_swiftself:       B.addAttribute(Attribute::SwiftSelf); break;
     case lltok::kw_zeroext:         B.addAttribute(Attribute::ZExt); break;
 
@@ -1450,6 +1475,7 @@ bool LLParser::ParseOptionalReturnAttrs(AttrBuilder &B) {
     case lltok::kw_nocapture:
     case lltok::kw_returned:
     case lltok::kw_sret:
+    case lltok::kw_swifterror:
     case lltok::kw_swiftself:
       HaveError |= Error(Lex.getLoc(), "invalid use of parameter-only attribute");
       break;
@@ -1589,10 +1615,17 @@ bool LLParser::ParseOptionalDLLStorageClass(unsigned &Res) {
 ///   ::= 'preserve_mostcc'
 ///   ::= 'preserve_allcc'
 ///   ::= 'ghccc'
+///   ::= 'swiftcc'
 ///   ::= 'x86_intrcc'
 ///   ::= 'hhvmcc'
 ///   ::= 'hhvm_ccc'
 ///   ::= 'cxx_fast_tlscc'
+///   ::= 'amdgpu_vs'
+///   ::= 'amdgpu_tcs'
+///   ::= 'amdgpu_tes'
+///   ::= 'amdgpu_gs'
+///   ::= 'amdgpu_ps'
+///   ::= 'amdgpu_cs'
 ///   ::= 'cc' UINT
 ///
 bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
@@ -1623,10 +1656,15 @@ bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
   case lltok::kw_preserve_mostcc:CC = CallingConv::PreserveMost; break;
   case lltok::kw_preserve_allcc: CC = CallingConv::PreserveAll; break;
   case lltok::kw_ghccc:          CC = CallingConv::GHC; break;
+  case lltok::kw_swiftcc:        CC = CallingConv::Swift; break;
   case lltok::kw_x86_intrcc:     CC = CallingConv::X86_INTR; break;
   case lltok::kw_hhvmcc:         CC = CallingConv::HHVM; break;
   case lltok::kw_hhvm_ccc:       CC = CallingConv::HHVM_C; break;
   case lltok::kw_cxx_fast_tlscc: CC = CallingConv::CXX_FAST_TLS; break;
+  case lltok::kw_amdgpu_vs:      CC = CallingConv::AMDGPU_VS; break;
+  case lltok::kw_amdgpu_gs:      CC = CallingConv::AMDGPU_GS; break;
+  case lltok::kw_amdgpu_ps:      CC = CallingConv::AMDGPU_PS; break;
+  case lltok::kw_amdgpu_cs:      CC = CallingConv::AMDGPU_CS; break;
   case lltok::kw_cc: {
       Lex.Lex();
       return ParseUInt32(CC);
@@ -1776,12 +1814,16 @@ bool LLParser::ParseScopeAndOrdering(bool isAtomic, SynchronizationScope &Scope,
 bool LLParser::ParseOrdering(AtomicOrdering &Ordering) {
   switch (Lex.getKind()) {
   default: return TokError("Expected ordering on atomic instruction");
-  case lltok::kw_unordered: Ordering = Unordered; break;
-  case lltok::kw_monotonic: Ordering = Monotonic; break;
-  case lltok::kw_acquire: Ordering = Acquire; break;
-  case lltok::kw_release: Ordering = Release; break;
-  case lltok::kw_acq_rel: Ordering = AcquireRelease; break;
-  case lltok::kw_seq_cst: Ordering = SequentiallyConsistent; break;
+  case lltok::kw_unordered: Ordering = AtomicOrdering::Unordered; break;
+  case lltok::kw_monotonic: Ordering = AtomicOrdering::Monotonic; break;
+  // Not specified yet:
+  // case lltok::kw_consume: Ordering = AtomicOrdering::Consume; break;
+  case lltok::kw_acquire: Ordering = AtomicOrdering::Acquire; break;
+  case lltok::kw_release: Ordering = AtomicOrdering::Release; break;
+  case lltok::kw_acq_rel: Ordering = AtomicOrdering::AcquireRelease; break;
+  case lltok::kw_seq_cst:
+    Ordering = AtomicOrdering::SequentiallyConsistent;
+    break;
   }
   Lex.Lex();
   return false;
@@ -3260,6 +3302,9 @@ struct DwarfVirtualityField : public MDUnsignedField {
 struct DwarfLangField : public MDUnsignedField {
   DwarfLangField() : MDUnsignedField(0, dwarf::DW_LANG_hi_user) {}
 };
+struct EmissionKindField : public MDUnsignedField {
+  EmissionKindField() : MDUnsignedField(0, DICompileUnit::LastEmissionKind) {}
+};
 
 struct DIFlagField : public MDUnsignedField {
   DIFlagField() : MDUnsignedField(0, UINT32_MAX) {}
@@ -3399,6 +3444,24 @@ bool LLParser::ParseMDField(LocTy Loc, StringRef Name, DwarfLangField &Result) {
   return false;
 }
 
+template <>
+bool LLParser::ParseMDField(LocTy Loc, StringRef Name, EmissionKindField &Result) {
+  if (Lex.getKind() == lltok::APSInt)
+    return ParseMDField(Loc, Name, static_cast<MDUnsignedField &>(Result));
+
+  if (Lex.getKind() != lltok::EmissionKind)
+    return TokError("expected emission kind");
+
+  auto Kind = DICompileUnit::getEmissionKind(Lex.getStrVal());
+  if (!Kind)
+    return TokError("invalid emission kind" + Twine(" '") + Lex.getStrVal() +
+                    "'");
+  assert(*Kind <= Result.Max && "Expected valid emission kind");
+  Result.assign(*Kind);
+  Lex.Lex();
+  return false;
+}
+  
 template <>
 bool LLParser::ParseMDField(LocTy Loc, StringRef Name,
                             DwarfAttEncodingField &Result) {
@@ -3772,7 +3835,8 @@ bool LLParser::ParseDIFile(MDNode *&Result, bool IsDistinct) {
 /// ParseDICompileUnit:
 ///   ::= !DICompileUnit(language: DW_LANG_C99, file: !0, producer: "clang",
 ///                      isOptimized: true, flags: "-O2", runtimeVersion: 1,
-///                      splitDebugFilename: "abc.debug", emissionKind: 1,
+///                      splitDebugFilename: "abc.debug",
+///                      emissionKind: FullDebug,
 ///                      enums: !1, retainedTypes: !2, subprograms: !3,
 ///                      globals: !4, imports: !5, macros: !6, dwoId: 0x0abcd)
 bool LLParser::ParseDICompileUnit(MDNode *&Result, bool IsDistinct) {
@@ -3787,7 +3851,7 @@ bool LLParser::ParseDICompileUnit(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(flags, MDStringField, );                                            \
   OPTIONAL(runtimeVersion, MDUnsignedField, (0, UINT32_MAX));                  \
   OPTIONAL(splitDebugFilename, MDStringField, );                               \
-  OPTIONAL(emissionKind, MDUnsignedField, (0, UINT32_MAX));                    \
+  OPTIONAL(emissionKind, EmissionKindField, );                                 \
   OPTIONAL(enums, MDField, );                                                  \
   OPTIONAL(retainedTypes, MDField, );                                          \
   OPTIONAL(subprograms, MDField, );                                            \
@@ -5780,7 +5844,8 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
 //===----------------------------------------------------------------------===//
 
 /// ParseAlloc
-///   ::= 'alloca' 'inalloca'? Type (',' TypeAndValue)? (',' 'align' i32)?
+///   ::= 'alloca' 'inalloca'? 'swifterror'? Type (',' TypeAndValue)?
+///       (',' 'align' i32)?
 int LLParser::ParseAlloc(Instruction *&Inst, PerFunctionState &PFS) {
   Value *Size = nullptr;
   LocTy SizeLoc, TyLoc;
@@ -5788,6 +5853,7 @@ int LLParser::ParseAlloc(Instruction *&Inst, PerFunctionState &PFS) {
   Type *Ty = nullptr;
 
   bool IsInAlloca = EatIfPresent(lltok::kw_inalloca);
+  bool IsSwiftError = EatIfPresent(lltok::kw_swifterror);
 
   if (ParseType(Ty, TyLoc)) return true;
 
@@ -5812,6 +5878,7 @@ int LLParser::ParseAlloc(Instruction *&Inst, PerFunctionState &PFS) {
 
   AllocaInst *AI = new AllocaInst(Ty, Size, Alignment);
   AI->setUsedWithInAlloca(IsInAlloca);
+  AI->setSwiftError(IsSwiftError);
   Inst = AI;
   return AteExtraComma ? InstExtraComma : InstNormal;
 }
@@ -5825,7 +5892,7 @@ int LLParser::ParseLoad(Instruction *&Inst, PerFunctionState &PFS) {
   unsigned Alignment = 0;
   bool AteExtraComma = false;
   bool isAtomic = false;
-  AtomicOrdering Ordering = NotAtomic;
+  AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
   SynchronizationScope Scope = CrossThread;
 
   if (Lex.getKind() == lltok::kw_atomic) {
@@ -5852,7 +5919,8 @@ int LLParser::ParseLoad(Instruction *&Inst, PerFunctionState &PFS) {
     return Error(Loc, "load operand must be a pointer to a first class type");
   if (isAtomic && !Alignment)
     return Error(Loc, "atomic load must have explicit non-zero alignment");
-  if (Ordering == Release || Ordering == AcquireRelease)
+  if (Ordering == AtomicOrdering::Release ||
+      Ordering == AtomicOrdering::AcquireRelease)
     return Error(Loc, "atomic load cannot use Release ordering");
 
   if (Ty != cast<PointerType>(Val->getType())->getElementType())
@@ -5873,7 +5941,7 @@ int LLParser::ParseStore(Instruction *&Inst, PerFunctionState &PFS) {
   unsigned Alignment = 0;
   bool AteExtraComma = false;
   bool isAtomic = false;
-  AtomicOrdering Ordering = NotAtomic;
+  AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
   SynchronizationScope Scope = CrossThread;
 
   if (Lex.getKind() == lltok::kw_atomic) {
@@ -5902,7 +5970,8 @@ int LLParser::ParseStore(Instruction *&Inst, PerFunctionState &PFS) {
     return Error(Loc, "stored value and pointer type do not match");
   if (isAtomic && !Alignment)
     return Error(Loc, "atomic store must have explicit non-zero alignment");
-  if (Ordering == Acquire || Ordering == AcquireRelease)
+  if (Ordering == AtomicOrdering::Acquire ||
+      Ordering == AtomicOrdering::AcquireRelease)
     return Error(Loc, "atomic store cannot use Acquire ordering");
 
   Inst = new StoreInst(Val, Ptr, isVolatile, Alignment, Ordering, Scope);
@@ -5915,8 +5984,8 @@ int LLParser::ParseStore(Instruction *&Inst, PerFunctionState &PFS) {
 int LLParser::ParseCmpXchg(Instruction *&Inst, PerFunctionState &PFS) {
   Value *Ptr, *Cmp, *New; LocTy PtrLoc, CmpLoc, NewLoc;
   bool AteExtraComma = false;
-  AtomicOrdering SuccessOrdering = NotAtomic;
-  AtomicOrdering FailureOrdering = NotAtomic;
+  AtomicOrdering SuccessOrdering = AtomicOrdering::NotAtomic;
+  AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic;
   SynchronizationScope Scope = CrossThread;
   bool isVolatile = false;
   bool isWeak = false;
@@ -5936,12 +6005,16 @@ int LLParser::ParseCmpXchg(Instruction *&Inst, PerFunctionState &PFS) {
       ParseOrdering(FailureOrdering))
     return true;
 
-  if (SuccessOrdering == Unordered || FailureOrdering == Unordered)
+  if (SuccessOrdering == AtomicOrdering::Unordered ||
+      FailureOrdering == AtomicOrdering::Unordered)
     return TokError("cmpxchg cannot be unordered");
-  if (SuccessOrdering < FailureOrdering)
-    return TokError("cmpxchg must be at least as ordered on success as failure");
-  if (FailureOrdering == Release || FailureOrdering == AcquireRelease)
-    return TokError("cmpxchg failure ordering cannot include release semantics");
+  if (isStrongerThan(FailureOrdering, SuccessOrdering))
+    return TokError("cmpxchg failure argument shall be no stronger than the "
+                    "success argument");
+  if (FailureOrdering == AtomicOrdering::Release ||
+      FailureOrdering == AtomicOrdering::AcquireRelease)
+    return TokError(
+        "cmpxchg failure ordering cannot include release semantics");
   if (!Ptr->getType()->isPointerTy())
     return Error(PtrLoc, "cmpxchg operand must be a pointer");
   if (cast<PointerType>(Ptr->getType())->getElementType() != Cmp->getType())
@@ -5964,7 +6037,7 @@ int LLParser::ParseCmpXchg(Instruction *&Inst, PerFunctionState &PFS) {
 int LLParser::ParseAtomicRMW(Instruction *&Inst, PerFunctionState &PFS) {
   Value *Ptr, *Val; LocTy PtrLoc, ValLoc;
   bool AteExtraComma = false;
-  AtomicOrdering Ordering = NotAtomic;
+  AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
   SynchronizationScope Scope = CrossThread;
   bool isVolatile = false;
   AtomicRMWInst::BinOp Operation;
@@ -5994,7 +6067,7 @@ int LLParser::ParseAtomicRMW(Instruction *&Inst, PerFunctionState &PFS) {
       ParseScopeAndOrdering(true /*Always atomic*/, Scope, Ordering))
     return true;
 
-  if (Ordering == Unordered)
+  if (Ordering == AtomicOrdering::Unordered)
     return TokError("atomicrmw cannot be unordered");
   if (!Ptr->getType()->isPointerTy())
     return Error(PtrLoc, "atomicrmw operand must be a pointer");
@@ -6017,14 +6090,14 @@ int LLParser::ParseAtomicRMW(Instruction *&Inst, PerFunctionState &PFS) {
 /// ParseFence
 ///   ::= 'fence' 'singlethread'? AtomicOrdering
 int LLParser::ParseFence(Instruction *&Inst, PerFunctionState &PFS) {
-  AtomicOrdering Ordering = NotAtomic;
+  AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
   SynchronizationScope Scope = CrossThread;
   if (ParseScopeAndOrdering(true /*Always atomic*/, Scope, Ordering))
     return true;
 
-  if (Ordering == Unordered)
+  if (Ordering == AtomicOrdering::Unordered)
     return TokError("fence cannot be unordered");
-  if (Ordering == Monotonic)
+  if (Ordering == AtomicOrdering::Monotonic)
     return TokError("fence cannot be monotonic");
 
   Inst = new FenceInst(Context, Ordering, Scope);

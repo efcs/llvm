@@ -1,7 +1,7 @@
 ; Do setup work for all below tests: generate bitcode and combined index
 ; RUN: llvm-as -module-summary %s -o %t.bc
 ; RUN: llvm-as -module-summary %p/Inputs/funcimport.ll -o %t2.bc
-; RUN: llvm-lto -thinlto -o %t3 %t.bc %t2.bc
+; RUN: llvm-lto -thinlto -print-summary-global-ids -o %t3 %t.bc %t2.bc 2>&1 | FileCheck %s --check-prefix=GUID
 
 ; Do the import now
 ; RUN: opt -function-import -stats -print-imports -summary-file %t3.thinlto.bc %t.bc -S 2>&1 | FileCheck %s --check-prefix=CHECK --check-prefix=INSTLIMDEF
@@ -34,12 +34,10 @@ declare void @weakalias(...) #1
 ; CHECK-DAG: declare void @analias
 declare void @analias(...) #1
 
+; FIXME: Add this checking back when follow on fix to add alias summary
+; records is committed.
 ; Aliases import the aliasee function
 declare void @linkoncealias(...) #1
-; INSTLIMDEF-DAG: Import linkoncealias
-; INSTLIMDEF-DAG: Import linkoncefunc
-; CHECK-DAG: define linkonce_odr void @linkoncefunc()
-; CHECK-DAG: @linkoncealias = alias void (...), bitcast (void ()* @linkoncefunc to void (...)*
 
 ; INSTLIMDEF-DAG: Import referencestatics
 ; INSTLIMDEF-DAG: define available_externally i32 @referencestatics(i32 %i)
@@ -89,4 +87,38 @@ declare void @weakfunc(...) #1
 ; INSTLIM5-DAG: declare hidden void @funcwithpersonality.llvm.2()
 
 ; INSTLIMDEF-DAG: Import globalfunc2
-; INSTLIMDEF-DAG: 11 function-import - Number of functions imported
+; INSTLIMDEF-DAG: 9 function-import - Number of functions imported
+
+; The actual GUID values will depend on path to test.
+; GUID-DAG: GUID {{.*}} is weakalias
+; GUID-DAG: GUID {{.*}} is referenceglobals
+; GUID-DAG: GUID {{.*}} is weakfunc
+; GUID-DAG: GUID {{.*}} is main
+; GUID-DAG: GUID {{.*}} is referencecommon
+; GUID-DAG: GUID {{.*}} is analias
+; GUID-DAG: GUID {{.*}} is referencestatics
+; GUID-DAG: GUID {{.*}} is linkoncealias
+; GUID-DAG: GUID {{.*}} is setfuncptr
+; GUID-DAG: GUID {{.*}} is callfuncptr
+; GUID-DAG: GUID {{.*}} is funcwithpersonality
+; GUID-DAG: GUID {{.*}} is setfuncptr
+; GUID-DAG: GUID {{.*}} is staticfunc2
+; GUID-DAG: GUID {{.*}} is __gxx_personality_v0
+; GUID-DAG: GUID {{.*}} is referencestatics
+; GUID-DAG: GUID {{.*}} is globalfunc1
+; GUID-DAG: GUID {{.*}} is globalfunc2
+; GUID-DAG: GUID {{.*}} is P
+; GUID-DAG: GUID {{.*}} is staticvar
+; GUID-DAG: GUID {{.*}} is commonvar
+; GUID-DAG: GUID {{.*}} is weakalias
+; GUID-DAG: GUID {{.*}} is staticfunc
+; GUID-DAG: GUID {{.*}} is weakfunc
+; GUID-DAG: GUID {{.*}} is referenceglobals
+; GUID-DAG: GUID {{.*}} is weakvar
+; GUID-DAG: GUID {{.*}} is staticconstvar
+; GUID-DAG: GUID {{.*}} is analias
+; GUID-DAG: GUID {{.*}} is globalvar
+; GUID-DAG: GUID {{.*}} is referencecommon
+; GUID-DAG: GUID {{.*}} is linkoncealias
+; GUID-DAG: GUID {{.*}} is callfuncptr
+; GUID-DAG: GUID {{.*}} is linkoncefunc

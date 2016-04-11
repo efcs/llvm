@@ -43,6 +43,10 @@ opt<bool> DisableVSXSwapRemoval("disable-ppc-vsx-swap-removal", cl::Hidden,
                                 cl::desc("Disable VSX Swap Removal for PPC"));
 
 static cl::
+opt<bool> DisableQPXLoadSplat("disable-ppc-qpx-load-splat", cl::Hidden,
+                              cl::desc("Disable QPX load splat simplification"));
+
+static cl::
 opt<bool> DisableMIPeephole("disable-ppc-peephole", cl::Hidden,
                             cl::desc("Disable machine peepholes for PPC"));
 
@@ -314,7 +318,7 @@ void PPCPassConfig::addIRPasses() {
   if (UsePrefetching)
     addPass(createLoopDataPrefetchPass());
 
-  if (TM->getOptLevel() == CodeGenOpt::Aggressive && EnableGEPOpt) {
+  if (TM->getOptLevel() >= CodeGenOpt::Default && EnableGEPOpt) {
     // Call SeparateConstOffsetFromGEP pass to extract constants within indices
     // and lower a GEP with multiple indices to either arithmetic operations or
     // multiple GEPs with single index.
@@ -388,8 +392,15 @@ void PPCPassConfig::addPreRegAlloc() {
 }
 
 void PPCPassConfig::addPreSched2() {
-  if (getOptLevel() != CodeGenOpt::None)
+  if (getOptLevel() != CodeGenOpt::None) {
     addPass(&IfConverterID);
+
+    // This optimization must happen after anything that might do store-to-load
+    // forwarding. Here we're after RA (and, thus, when spills are inserted)
+    // but before post-RA scheduling.
+    if (!DisableQPXLoadSplat)
+      addPass(createPPCQPXLoadSplatPass());
+  }
 }
 
 void PPCPassConfig::addPreEmitPass() {

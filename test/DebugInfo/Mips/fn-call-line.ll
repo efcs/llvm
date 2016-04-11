@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=mips-linux-gnu -filetype=asm -asm-verbose=0 -O0 < %s | FileCheck %s
+; RUN: llc -mtriple=mips-linux-gnu -filetype=asm -asm-verbose=0 -O0 -relocation-model=pic < %s | FileCheck %s
 ; RUN: llc -mtriple=mips-linux-gnu -filetype=obj -O0 < %s | llvm-dwarfdump -debug-dump=line - | FileCheck %s --check-prefix=INT
 
 ; Mips used to generate 'jumpy' debug line info around calls. The address
@@ -68,7 +68,7 @@ attributes #1 = { "less-precise-fpmad"="false" "no-frame-pointer-elim"="true" "n
 !llvm.module.flags = !{!8, !9}
 !llvm.ident = !{!10}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.7.0 (trunk 226641)", isOptimized: false, emissionKind: 1, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.7.0 (trunk 226641)", isOptimized: false, emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
 !1 = !DIFile(filename: "fn-call-line.c", directory: "/tmp/dbginfo")
 !2 = !{}
 !3 = !{!4}

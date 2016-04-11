@@ -98,9 +98,8 @@ std::string getPGOFuncName(const Function &F, bool InLTO, uint64_t Version) {
     return getPGOFuncName(F.getName(), F.getLinkage(), F.getParent()->getName(),
                           Version);
 
-  // InLTO mode. First check if these is a meta data.
-  MDNode *MD = F.getMetadata("PGOFuncName");
-  if (MD != nullptr) {
+  // In LTO mode (when InLTO is true), first check if there is a meta data.
+  if (MDNode *MD = getPGOFuncNameMetadata(F)) {
     StringRef S = cast<MDString>(MD->getOperand(0))->getString();
     return S.str();
   }
@@ -108,7 +107,7 @@ std::string getPGOFuncName(const Function &F, bool InLTO, uint64_t Version) {
   // If there is no meta data, the function must be a global before the value
   // profile annotation pass. Its current linkage may be internal if it is
   // internalized in LTO mode.
-  return getPGOFuncName (F.getName(), GlobalValue::ExternalLinkage, "");
+  return getPGOFuncName(F.getName(), GlobalValue::ExternalLinkage, "");
 }
 
 StringRef getFuncNameWithoutPrefix(StringRef PGOFuncName, StringRef FileName) {
@@ -180,7 +179,7 @@ void InstrProfSymtab::create(Module &M, bool InLTO) {
       continue;
     const std::string &PGOFuncName = getPGOFuncName(F, InLTO);
     addFuncName(PGOFuncName);
-    MD5FuncMap.push_back(std::make_pair(Function::getGUID(PGOFuncName), &F));
+    MD5FuncMap.emplace_back(Function::getGUID(PGOFuncName), &F);
   }
 
   finalizeSymtab();
@@ -399,8 +398,14 @@ uint64_t InstrProfRecord::remapValue(uint64_t Value, uint32_t ValueKind,
         std::lower_bound(ValueMap->begin(), ValueMap->end(), Value,
                          [](const std::pair<uint64_t, uint64_t> &LHS,
                             uint64_t RHS) { return LHS.first < RHS; });
-    if (Result != ValueMap->end())
+   // Raw function pointer collected by value profiler may be from 
+   // external functions that are not instrumented. They won't have
+   // mapping data to be used by the deserializer. Force the value to
+   // be 0 in this case.
+    if (Result != ValueMap->end() && Result->first == Value)
       Value = (uint64_t)Result->second;
+    else
+      Value = 0;
     break;
   }
   }
@@ -720,4 +725,19 @@ bool getValueProfDataFromInst(const Instruction &Inst,
   }
   return true;
 }
+
+MDNode *getPGOFuncNameMetadata(const Function &F) {
+  return F.getMetadata(getPGOFuncNameMetadataName());
+}
+
+void createPGOFuncNameMetadata(Function &F) {
+  const std::string &FuncName = getPGOFuncName(F);
+  if (FuncName == F.getName())
+    return;
+
+  LLVMContext &C = F.getContext();
+  MDNode *N = MDNode::get(C, MDString::get(C, FuncName.c_str()));
+  F.setMetadata(getPGOFuncNameMetadataName(), N);
+}
+
 } // end namespace llvm

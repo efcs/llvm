@@ -4394,6 +4394,7 @@ static SDValue getMemcpyLoadsAndStores(SelectionDAG &DAG, SDLoc dl,
                              DAG.getMemBasePlusOffset(Src, SrcOff, dl),
                              SrcPtrInfo.getWithOffset(SrcOff), VT, isVol, false,
                              false, MinAlign(SrcAlign, SrcOff));
+      OutChains.push_back(Value.getValue(1));
       Store = DAG.getTruncStore(Chain, dl, Value,
                                 DAG.getMemBasePlusOffset(Dst, DstOff, dl),
                                 DstPtrInfo.getWithOffset(DstOff), VT, isVol,
@@ -6707,6 +6708,10 @@ bool llvm::isOneConstant(SDValue V) {
   return Const != nullptr && Const->isOne();
 }
 
+bool llvm::isBitwiseNot(SDValue V) {
+  return V.getOpcode() == ISD::XOR && isAllOnesConstant(V.getOperand(1));
+}
+
 HandleSDNode::~HandleSDNode() {
   DropOperands();
 }
@@ -6959,12 +6964,12 @@ SDValue SelectionDAG::UnrollVectorOp(SDNode *N, unsigned ResNE) {
                  EVT::getVectorVT(*getContext(), EltVT, ResNE), Scalars);
 }
 
-
-/// isConsecutiveLoad - Return true if LD is loading 'Bytes' bytes from a
-/// location that is 'Dist' units away from the location that the 'Base' load
-/// is loading from.
-bool SelectionDAG::isConsecutiveLoad(LoadSDNode *LD, LoadSDNode *Base,
-                                     unsigned Bytes, int Dist) const {
+bool SelectionDAG::areNonVolatileConsecutiveLoads(LoadSDNode *LD,
+                                                  LoadSDNode *Base,
+                                                  unsigned Bytes,
+                                                  int Dist) const {
+  if (LD->isVolatile() || Base->isVolatile())
+    return false;
   if (LD->getChain() != Base->getChain())
     return false;
   EVT VT = LD->getValueType(0);

@@ -153,7 +153,7 @@ AArch64FrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
   return !MF.getFrameInfo()->hasVarSizedObjects();
 }
 
-void AArch64FrameLowering::eliminateCallFramePseudoInstr(
+MachineBasicBlock::iterator AArch64FrameLowering::eliminateCallFramePseudoInstr(
     MachineFunction &MF, MachineBasicBlock &MBB,
     MachineBasicBlock::iterator I) const {
   const AArch64InstrInfo *TII =
@@ -196,7 +196,7 @@ void AArch64FrameLowering::eliminateCallFramePseudoInstr(
     emitFrameOffset(MBB, I, DL, AArch64::SP, AArch64::SP, -CalleePopAmount,
                     TII);
   }
-  MBB.erase(I);
+  return MBB.erase(I);
 }
 
 void AArch64FrameLowering::emitCalleeSavedFrameMoves(
@@ -245,7 +245,7 @@ static unsigned findScratchNonCalleeSaveRegister(MachineBasicBlock *MBB) {
     return AArch64::X9;
 
   RegScavenger RS;
-  RS.enterBasicBlock(MBB);
+  RS.enterBasicBlock(*MBB);
 
   // Prefer X9 since it was historically used for the prologue scratch reg.
   if (!RS.isRegUsed(AArch64::X9))

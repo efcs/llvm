@@ -1,6 +1,6 @@
-; RUN: llc -march=mips -mcpu=mips32r2 -O1 -filetype=obj <%s | \
+; RUN: llc -march=mips -mcpu=mips32r2 -O1 -filetype=obj -relocation-model=pic <%s | \
 ; RUN:    llvm-dwarfdump -debug-dump=all - | FileCheck %s -check-prefix=F0
-; RUN: llc -march=mips -mcpu=mips32r2 -O1 -filetype=obj <%s | \
+; RUN: llc -march=mips -mcpu=mips32r2 -O1 -filetype=obj -relocation-model=pic <%s | \
 ; RUN:    llvm-dwarfdump -debug-dump=all - | FileCheck %s -check-prefix=F1
 
 ; void foo(int *);
@@ -98,7 +98,7 @@ declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
 !llvm.module.flags = !{!23, !24}
 !llvm.ident = !{!25}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 251783) (llvm/trunk 251781)", isOptimized: true, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 251783) (llvm/trunk 251781)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3)
 !1 = !DIFile(filename: "test.c", directory: "/home/vk/repos/tmp/dwarf")
 !2 = !{}
 !3 = !{!4, !15}

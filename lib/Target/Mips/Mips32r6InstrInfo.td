@@ -412,10 +412,11 @@ class JMP_IDX_COMPACT_DESC_BASE<string opstr, DAGOperand opnd,
   dag InOperandList = (ins GPROpnd:$rt, opnd:$offset);
   string AsmString = !strconcat(opstr, "\t$rt, $offset");
   list<dag> Pattern = [];
-  bit isTerminator = 1;
   bit hasDelaySlot = 0;
   InstrItinClass Itinerary = itin;
   bit isCTI = 1;
+  bit isBranch = 1;
+  bit isIndirectBranch = 1;
 }
 
 class JIALC_DESC : JMP_IDX_COMPACT_DESC_BASE<"jialc", calloffset16,
@@ -427,6 +428,7 @@ class JIALC_DESC : JMP_IDX_COMPACT_DESC_BASE<"jialc", calloffset16,
 class JIC_DESC : JMP_IDX_COMPACT_DESC_BASE<"jic", jmpoffset16,
                                            GPR32Opnd, II_JIALC> {
   bit isBarrier = 1;
+  bit isTerminator = 1;
   list<Register> Defs = [AT];
 }
 
@@ -746,10 +748,8 @@ def CLO_R6 : R6MMR6Rel, CLO_R6_ENC, CLO_R6_DESC, ISA_MIPS32R6;
 def CLZ_R6 : R6MMR6Rel, CLZ_R6_ENC, CLZ_R6_DESC, ISA_MIPS32R6;
 defm S : CMP_CC_M<FIELD_CMP_FORMAT_S, "s", FGR32Opnd>;
 defm D : CMP_CC_M<FIELD_CMP_FORMAT_D, "d", FGR64Opnd>;
-let AdditionalPredicates = [NotInMicroMips] in {
-  def DIV : R6MMR6Rel, DIV_ENC, DIV_DESC, ISA_MIPS32R6;
-  def DIVU : R6MMR6Rel, DIVU_ENC, DIVU_DESC, ISA_MIPS32R6;
-}
+def DIV : R6MMR6Rel, DIV_ENC, DIV_DESC, ISA_MIPS32R6;
+def DIVU : R6MMR6Rel, DIVU_ENC, DIVU_DESC, ISA_MIPS32R6;
 def JIALC : R6MMR6Rel, JIALC_ENC, JIALC_DESC, ISA_MIPS32R6;
 def JIC : R6MMR6Rel, JIC_ENC, JIC_DESC, ISA_MIPS32R6;
 def JR_HB_R6 : JR_HB_R6_ENC, JR_HB_R6_DESC, ISA_MIPS32R6;
@@ -771,10 +771,8 @@ let AdditionalPredicates = [NotInMicroMips] in {
   def MIN_D : MIN_D_ENC, MIN_D_DESC, ISA_MIPS32R6, HARDFLOAT;
   def MIN_S : MIN_S_ENC, MIN_S_DESC, ISA_MIPS32R6, HARDFLOAT;
 }
-let AdditionalPredicates = [NotInMicroMips] in {
-  def MOD : R6MMR6Rel, MOD_ENC, MOD_DESC, ISA_MIPS32R6;
-  def MODU : R6MMR6Rel, MODU_ENC, MODU_DESC, ISA_MIPS32R6;
-}
+def MOD : R6MMR6Rel, MOD_ENC, MOD_DESC, ISA_MIPS32R6;
+def MODU : R6MMR6Rel, MODU_ENC, MODU_DESC, ISA_MIPS32R6;
 let AdditionalPredicates = [NotInMicroMips] in {
   def MSUBF_S : MSUBF_S_ENC, MSUBF_S_DESC, ISA_MIPS32R6, HARDFLOAT;
   def MSUBF_D : MSUBF_D_ENC, MSUBF_D_DESC, ISA_MIPS32R6, HARDFLOAT;
