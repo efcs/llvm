@@ -963,6 +963,9 @@ class LoopVectorizeHints {
   /// Return the loop metadata prefix.
   static StringRef Prefix() { return "llvm.loop."; }
 
+  /// True if there is any unsafe math in the loop.
+  bool PotentiallyUnsafe;
+
 public:
   enum ForceKind {
     FK_Undefined = -1, ///< Not selected.
@@ -975,7 +978,7 @@ public:
               HK_WIDTH),
         Interleave("interleave.count", DisableInterleaving, HK_UNROLL),
         Force("vectorize.enable", FK_Undefined, HK_FORCE),
-        TheLoop(L) {
+        PotentiallyUnsafe(false), TheLoop(L) {
     // Populate values with existing loop metadata.
     getHintsFromMetadata();
 
@@ -1071,6 +1074,19 @@ public:
     // reordering floating-point operations will change the way round-off
     // error accumulates in the loop.
     return getForce() == LoopVectorizeHints::FK_Enabled || getWidth() > 1;
+  }
+
+  bool isPotentiallyUnsafe() const {
+    // Avoid FP vectorization if the target is unsure about proper support.
+    // This may be related to the SIMD unit in the target not handling
+    // IEEE 754 FP ops properly, or bad single-to-double promotions.
+    // Otherwise, a sequence of vectorized loops, even without reduction,
+    // could lead to different end results on the destination vectors.
+    return getForce() != LoopVectorizeHints::FK_Enabled && PotentiallyUnsafe;
+  }
+
+  void setPotentiallyUnsafe() {
+    PotentiallyUnsafe = true;
   }
 
 private:
@@ -1234,7 +1250,7 @@ public:
                             const TargetTransformInfo *TTI,
                             LoopAccessAnalysis *LAA,
                             LoopVectorizationRequirements *R,
-                            const LoopVectorizeHints *H)
+                            LoopVectorizeHints *H)
       : NumPredStores(0), TheLoop(L), PSE(PSE), TLI(TLI), TheFunction(F),
         TTI(TTI), DT(DT), LAA(LAA), LAI(nullptr), InterleaveInfo(PSE, L, DT),
         Induction(nullptr), WidestIndTy(nullptr), HasFunNoNaNAttr(false),
@@ -1460,7 +1476,7 @@ private:
   LoopVectorizationRequirements *Requirements;
 
   /// Used to emit an analysis of any legality issues.
-  const LoopVectorizeHints *Hints;
+  LoopVectorizeHints *Hints;
 
   ValueToValueMap Strides;
   SmallPtrSet<Value *, 8> StrideSet;
@@ -1482,9 +1498,9 @@ public:
   LoopVectorizationCostModel(Loop *L, ScalarEvolution *SE, LoopInfo *LI,
                              LoopVectorizationLegality *Legal,
                              const TargetTransformInfo &TTI,
-                             const TargetLibraryInfo *TLI, DemandedBits *DB,
-                             AssumptionCache *AC, const Function *F,
-                             const LoopVectorizeHints *Hints,
+                             const TargetLibraryInfo *TLI,
+                             DemandedBits *DB, AssumptionCache *AC,
+                             const Function *F, const LoopVectorizeHints *Hints,
                              SmallPtrSetImpl<const Value *> &ValuesToIgnore)
       : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), TLI(TLI), DB(DB),
         TheFunction(F), Hints(Hints), ValuesToIgnore(ValuesToIgnore) {}
@@ -1691,6 +1707,9 @@ struct LoopVectorize : public FunctionPass {
   BlockFrequency ColdEntryFreq;
 
   bool runOnFunction(Function &F) override {
+    if (skipFunction(F))
+      return false;
+
     SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
     LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
     TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
@@ -1701,7 +1720,7 @@ struct LoopVectorize : public FunctionPass {
     AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
     AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
     LAA = &getAnalysis<LoopAccessAnalysis>();
-    DB = &getAnalysis<DemandedBits>();
+    DB = &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
 
     // Compute some weights outside of the loop over the loops. Compute this
     // using a BranchProbability to re-use its scaling math.
@@ -1884,6 +1903,21 @@ struct LoopVectorize : public FunctionPass {
       return false;
     }
 
+    // Check if the target supports potentially unsafe FP vectorization.
+    // FIXME: Add a check for the type of safety issue (denormal, signaling)
+    // for the target we're vectorizing for, to make sure none of the
+    // additional fp-math flags can help.
+    if (Hints.isPotentiallyUnsafe() &&
+        TTI->isFPVectorizationPotentiallyUnsafe()) {
+      DEBUG(dbgs() << "LV: Potentially unsafe FP op prevents vectorization.\n");
+      emitAnalysisDiag(
+          F, L, Hints,
+          VectorizationReport()
+             << "loop not vectorized due to unsafe FP support.");
+      emitMissedWarning(F, L, Hints);
+      return false;
+    }
+
     // Select the optimal vectorization factor.
     const LoopVectorizationCostModel::VectorizationFactor VF =
         CM.selectVectorizationFactor(OptForSize);
@@ -2004,7 +2038,7 @@ struct LoopVectorize : public FunctionPass {
     AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<LoopAccessAnalysis>();
-    AU.addRequired<DemandedBits>();
+    AU.addRequired<DemandedBitsWrapperPass>();
     AU.addPreserved<LoopInfoWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
     AU.addPreserved<BasicAAWrapperPass>();
@@ -3294,7 +3328,7 @@ static unsigned getVectorCallCost(CallInst *CI, unsigned VF,
 static unsigned getVectorIntrinsicCost(CallInst *CI, unsigned VF,
                                        const TargetTransformInfo &TTI,
                                        const TargetLibraryInfo *TLI) {
-  Intrinsic::ID ID = getIntrinsicIDForCall(CI, TLI);
+  Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
   assert(ID && "Expected intrinsic call!");
 
   Type *RetTy = ToVectorTy(CI->getType(), VF);
@@ -3302,7 +3336,11 @@ static unsigned getVectorIntrinsicCost(CallInst *CI, unsigned VF,
   for (unsigned i = 0, ie = CI->getNumArgOperands(); i != ie; ++i)
     Tys.push_back(ToVectorTy(CI->getArgOperand(i)->getType(), VF));
 
-  return TTI.getIntrinsicInstrCost(ID, RetTy, Tys);
+  FastMathFlags FMF;
+  if (auto *FPMO = dyn_cast<FPMathOperator>(CI))
+    FMF = FPMO->getFastMathFlags();
+
+  return TTI.getIntrinsicInstrCost(ID, RetTy, Tys, FMF);
 }
 
 static Type *smallestIntegerVectorType(Type *T1, Type *T2) {
@@ -4216,7 +4254,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
       for (unsigned i = 0, ie = CI->getNumArgOperands(); i != ie; ++i)
         Tys.push_back(ToVectorTy(CI->getArgOperand(i)->getType(), VF));
 
-      Intrinsic::ID ID = getIntrinsicIDForCall(CI, TLI);
+      Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
       if (ID &&
           (ID == Intrinsic::assume || ID == Intrinsic::lifetime_end ||
            ID == Intrinsic::lifetime_start)) {
@@ -4269,7 +4307,13 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
           }
         }
         assert(VectorF && "Can't create vector function.");
-        Entry[Part] = Builder.CreateCall(VectorF, Args);
+
+        CallInst *V = Builder.CreateCall(VectorF, Args);
+
+        if (isa<FPMathOperator>(V))
+          V->copyFastMathFlags(CI);
+
+        Entry[Part] = V;
       }
 
       addMetadata(Entry, &*it);
@@ -4643,7 +4687,7 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
       //   * Have a mapping to an IR intrinsic.
       //   * Have a vector version available.
       CallInst *CI = dyn_cast<CallInst>(it);
-      if (CI && !getIntrinsicIDForCall(CI, TLI) && !isa<DbgInfoIntrinsic>(CI) &&
+      if (CI && !getVectorIntrinsicIDForCall(CI, TLI) && !isa<DbgInfoIntrinsic>(CI) &&
           !(CI->getCalledFunction() && TLI &&
             TLI->isFunctionVectorizable(CI->getCalledFunction()->getName()))) {
         emitAnalysis(VectorizationReport(&*it)
@@ -4655,7 +4699,7 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
       // Intrinsics such as powi,cttz and ctlz are legal to vectorize if the
       // second argument is the same (i.e. loop invariant)
       if (CI &&
-          hasVectorInstrinsicScalarOpd(getIntrinsicIDForCall(CI, TLI), 1)) {
+          hasVectorInstrinsicScalarOpd(getVectorIntrinsicIDForCall(CI, TLI), 1)) {
         auto *SE = PSE.getSE();
         if (!SE->isLoopInvariant(PSE.getSCEV(CI->getOperand(1)), TheLoop)) {
           emitAnalysis(VectorizationReport(&*it)
@@ -4685,11 +4729,22 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
         }
         if (EnableMemAccessVersioning)
           collectStridedAccess(ST);
-      }
 
-      if (EnableMemAccessVersioning)
-        if (LoadInst *LI = dyn_cast<LoadInst>(it))
+      } else if (LoadInst *LI = dyn_cast<LoadInst>(it)) {
+        if (EnableMemAccessVersioning)
           collectStridedAccess(LI);
+
+      // FP instructions can allow unsafe algebra, thus vectorizable by
+      // non-IEEE-754 compliant SIMD units.
+      // This applies to floating-point math operations and calls, not memory
+      // operations, shuffles, or casts, as they don't change precision or
+      // semantics.
+      } else if (it->getType()->isFloatingPointTy() &&
+                (CI || it->isBinaryOp()) &&
+                !it->hasUnsafeAlgebra()) {
+        DEBUG(dbgs() << "LV: Found FP op with unsafe algebra.\n");
+        Hints->setPotentiallyUnsafe();
+      }
 
       // Reduction instructions are allowed to have exit users.
       // All other instructions must not have external users.
@@ -5968,7 +6023,7 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF,
     bool NeedToScalarize;
     CallInst *CI = cast<CallInst>(I);
     unsigned CallCost = getVectorCallCost(CI, VF, TTI, TLI, NeedToScalarize);
-    if (getIntrinsicIDForCall(CI, TLI))
+    if (getVectorIntrinsicIDForCall(CI, TLI))
       return std::min(CallCost, getVectorIntrinsicCost(CI, VF, TTI, TLI));
     return CallCost;
   }
@@ -6012,7 +6067,7 @@ INITIALIZE_PASS_DEPENDENCY(LCSSA)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(LoopAccessAnalysis)
-INITIALIZE_PASS_DEPENDENCY(DemandedBits)
+INITIALIZE_PASS_DEPENDENCY(DemandedBitsWrapperPass)
 INITIALIZE_PASS_END(LoopVectorize, LV_NAME, lv_name, false, false)
 
 namespace llvm {

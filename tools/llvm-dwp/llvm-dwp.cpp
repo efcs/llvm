@@ -36,11 +36,9 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include <list>
 #include <iostream>
 #include <memory>
 #include <system_error>
-#include <unordered_set>
 
 using namespace llvm;
 using namespace llvm::object;
@@ -131,7 +129,9 @@ static const char *getIndexedString(uint32_t Form, DataExtractor InfoData,
                                     StringRef Str) {
   if (Form == dwarf::DW_FORM_string)
     return InfoData.getCStr(&InfoOffset);
-  assert(Form == dwarf::DW_FORM_GNU_str_index);
+  assert(Form == dwarf::DW_FORM_GNU_str_index && "Only string and str_index "
+                                                 "forms are supported for DWP "
+                                                 "string attributes");
   auto StrIndex = InfoData.getULEB128(&InfoOffset);
   DataExtractor StrOffsetsData(StrOffsets, true, 0);
   uint32_t StrOffsetsOffset = 4 * StrIndex;

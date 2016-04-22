@@ -697,14 +697,25 @@ ModuleSlotTracker::ModuleSlotTracker(SlotTracker &Machine, const Module *M,
 
 ModuleSlotTracker::ModuleSlotTracker(const Module *M,
                                      bool ShouldInitializeAllMetadata)
-    : MachineStorage(M ? new SlotTracker(M, ShouldInitializeAllMetadata)
-                       : nullptr),
-      M(M), Machine(MachineStorage.get()) {}
+    : ShouldCreateStorage(M),
+      ShouldInitializeAllMetadata(ShouldInitializeAllMetadata), M(M) {}
 
 ModuleSlotTracker::~ModuleSlotTracker() {}
 
+SlotTracker *ModuleSlotTracker::getMachine() {
+  if (!ShouldCreateStorage)
+    return Machine;
+
+  ShouldCreateStorage = false;
+  MachineStorage =
+      llvm::make_unique<SlotTracker>(M, ShouldInitializeAllMetadata);
+  Machine = MachineStorage.get();
+  return Machine;
+}
+
 void ModuleSlotTracker::incorporateFunction(const Function &F) {
-  if (!Machine)
+  // Using getMachine() may lazily create the slot tracker.
+  if (!getMachine())
     return;
 
   // Nothing to do if this is the right function already.
@@ -1673,7 +1684,6 @@ static void writeDICompileUnit(raw_ostream &Out, const DICompileUnit *N,
   Printer.printEmissionKind("emissionKind", N->getEmissionKind());
   Printer.printMetadata("enums", N->getRawEnumTypes());
   Printer.printMetadata("retainedTypes", N->getRawRetainedTypes());
-  Printer.printMetadata("subprograms", N->getRawSubprograms());
   Printer.printMetadata("globals", N->getRawGlobalVariables());
   Printer.printMetadata("imports", N->getRawImportedEntities());
   Printer.printMetadata("macros", N->getRawMacros());
@@ -1703,6 +1713,7 @@ static void writeDISubprogram(raw_ostream &Out, const DISubprogram *N,
     Printer.printInt("virtualIndex", N->getVirtualIndex(), false);
   Printer.printDIFlags("flags", N->getFlags());
   Printer.printBool("isOptimized", N->isOptimized());
+  Printer.printMetadata("unit", N->getRawUnit());
   Printer.printMetadata("templateParams", N->getRawTemplateParams());
   Printer.printMetadata("declaration", N->getRawDeclaration());
   Printer.printMetadata("variables", N->getRawVariables());
@@ -3266,6 +3277,22 @@ void NamedMDNode::print(raw_ostream &ROS, bool IsForDebug) const {
   SlotTracker SlotTable(getParent());
   formatted_raw_ostream OS(ROS);
   AssemblyWriter W(OS, SlotTable, getParent(), nullptr, IsForDebug);
+  W.printNamedMDNode(this);
+}
+
+void NamedMDNode::print(raw_ostream &ROS, ModuleSlotTracker &MST,
+                        bool IsForDebug) const {
+  Optional<SlotTracker> LocalST;
+  SlotTracker *SlotTable;
+  if (auto *ST = MST.getMachine())
+    SlotTable = ST;
+  else {
+    LocalST.emplace(getParent());
+    SlotTable = &*LocalST;
+  }
+
+  formatted_raw_ostream OS(ROS);
+  AssemblyWriter W(OS, *SlotTable, getParent(), nullptr, IsForDebug);
   W.printNamedMDNode(this);
 }
 

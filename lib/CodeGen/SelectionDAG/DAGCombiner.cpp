@@ -2765,7 +2765,7 @@ SDValue DAGCombiner::SimplifyBinOpWithSameOpcodeHands(SDNode *N) {
   }
 
   // Simplify xor/and/or (bitcast(A), bitcast(B)) -> bitcast(op (A,B))
-  // Only perform this optimization after type legalization and before
+  // Only perform this optimization up until type legalization, before
   // LegalizeVectorOprs. LegalizeVectorOprs promotes vector operations by
   // adding bitcasts. For example (xor v4i32) is promoted to (v2i64), and
   // we don't want to undo this promotion.
@@ -2773,7 +2773,7 @@ SDValue DAGCombiner::SimplifyBinOpWithSameOpcodeHands(SDNode *N) {
   // on scalars.
   if ((N0.getOpcode() == ISD::BITCAST ||
        N0.getOpcode() == ISD::SCALAR_TO_VECTOR) &&
-      Level == AfterLegalizeTypes) {
+       Level <= AfterLegalizeTypes) {
     SDValue In0 = N0.getOperand(0);
     SDValue In1 = N1.getOperand(0);
     EVT In0Ty = In0.getValueType();
@@ -2964,6 +2964,50 @@ SDValue DAGCombiner::visitANDLike(SDValue N0, SDValue N1,
               return SDValue(LocReference, 0);
             }
           }
+        }
+      }
+    }
+  }
+
+  // Reduce bit extract of low half of an integer to the narrower type.
+  // (and (srl i64:x, K), KMask) ->
+  //   (i64 zero_extend (and (srl (i32 (trunc i64:x)), K)), KMask)
+  if (N0.getOpcode() == ISD::SRL && N0.hasOneUse()) {
+    if (ConstantSDNode *CAnd = dyn_cast<ConstantSDNode>(N1)) {
+      if (ConstantSDNode *CShift = dyn_cast<ConstantSDNode>(N0.getOperand(1))) {
+        unsigned Size = VT.getSizeInBits();
+        const APInt &AndMask = CAnd->getAPIntValue();
+        unsigned ShiftBits = CShift->getZExtValue();
+        unsigned MaskBits = AndMask.countTrailingOnes();
+        EVT HalfVT = EVT::getIntegerVT(*DAG.getContext(), Size / 2);
+
+        if (APIntOps::isMask(AndMask) &&
+            // Required bits must not span the two halves of the integer and
+            // must fit in the half size type.
+            (ShiftBits + MaskBits <= Size / 2) &&
+            TLI.isNarrowingProfitable(VT, HalfVT) &&
+            TLI.isTypeDesirableForOp(ISD::AND, HalfVT) &&
+            TLI.isTypeDesirableForOp(ISD::SRL, HalfVT) &&
+            TLI.isTruncateFree(VT, HalfVT) &&
+            TLI.isZExtFree(HalfVT, VT)) {
+          // The isNarrowingProfitable is to avoid regressions on PPC and
+          // AArch64 which match a few 64-bit bit insert / bit extract patterns
+          // on downstream users of this. Those patterns could probably be
+          // extended to handle extensions mixed in.
+
+          SDValue SL(N0);
+          assert(ShiftBits != 0 && MaskBits <= Size);
+
+          // Extracting the highest bit of the low half.
+          EVT ShiftVT = TLI.getShiftAmountTy(HalfVT, DAG.getDataLayout());
+          SDValue Trunc = DAG.getNode(ISD::TRUNCATE, SL, HalfVT,
+                                      N0.getOperand(0));
+
+          SDValue NewMask = DAG.getConstant(AndMask.trunc(Size / 2), SL, HalfVT);
+          SDValue ShiftK = DAG.getConstant(ShiftBits, SL, ShiftVT);
+          SDValue Shift = DAG.getNode(ISD::SRL, SL, HalfVT, Trunc, ShiftK);
+          SDValue And = DAG.getNode(ISD::AND, SL, HalfVT, Shift, NewMask);
+          return DAG.getNode(ISD::ZERO_EXTEND, SL, VT, And);
         }
       }
     }
@@ -11226,26 +11270,34 @@ bool DAGCombiner::MergeStoresOfConstantsOrVecElts(
                                   false, false,
                                   FirstInChain->getAlignment());
 
-  // Replace the last store with the new store
-  CombineTo(LatestOp, NewStore);
-  // Erase all other stores.
-  for (unsigned i = 0; i < NumStores; ++i) {
-    if (StoreNodes[i].MemNode == LatestOp)
-      continue;
-    StoreSDNode *St = cast<StoreSDNode>(StoreNodes[i].MemNode);
-    // ReplaceAllUsesWith will replace all uses that existed when it was
-    // called, but graph optimizations may cause new ones to appear. For
-    // example, the case in pr14333 looks like
-    //
-    //  St's chain -> St -> another store -> X
-    //
-    // And the only difference from St to the other store is the chain.
-    // When we change it's chain to be St's chain they become identical,
-    // get CSEed and the net result is that X is now a use of St.
-    // Since we know that St is redundant, just iterate.
-    while (!St->use_empty())
-      DAG.ReplaceAllUsesWith(SDValue(St, 0), St->getChain());
-    deleteAndRecombine(St);
+  bool UseAA = CombinerAA.getNumOccurrences() > 0 ? CombinerAA
+                                                  : DAG.getSubtarget().useAA();
+  if (UseAA) {
+    // Replace all merged stores with the new store.
+    for (unsigned i = 0; i < NumStores; ++i)
+      CombineTo(StoreNodes[i].MemNode, NewStore);
+  } else {
+    // Replace the last store with the new store.
+    CombineTo(LatestOp, NewStore);
+    // Erase all other stores.
+    for (unsigned i = 0; i < NumStores; ++i) {
+      if (StoreNodes[i].MemNode == LatestOp)
+        continue;
+      StoreSDNode *St = cast<StoreSDNode>(StoreNodes[i].MemNode);
+      // ReplaceAllUsesWith will replace all uses that existed when it was
+      // called, but graph optimizations may cause new ones to appear. For
+      // example, the case in pr14333 looks like
+      //
+      //  St's chain -> St -> another store -> X
+      //
+      // And the only difference from St to the other store is the chain.
+      // When we change it's chain to be St's chain they become identical,
+      // get CSEed and the net result is that X is now a use of St.
+      // Since we know that St is redundant, just iterate.
+      while (!St->use_empty())
+        DAG.ReplaceAllUsesWith(SDValue(St, 0), St->getChain());
+      deleteAndRecombine(St);
+    }
   }
 
   return true;
@@ -11778,16 +11830,22 @@ bool DAGCombiner::MergeConsecutiveStores(StoreSDNode* St) {
                                   SDValue(NewLoad.getNode(), 1));
   }
 
-  // Replace the last store with the new store.
-  CombineTo(LatestOp, NewStore);
-  // Erase all other stores.
-  for (unsigned i = 0; i < NumElem ; ++i) {
-    // Remove all Store nodes.
-    if (StoreNodes[i].MemNode == LatestOp)
-      continue;
-    StoreSDNode *St = cast<StoreSDNode>(StoreNodes[i].MemNode);
-    DAG.ReplaceAllUsesOfValueWith(SDValue(St, 0), St->getChain());
-    deleteAndRecombine(St);
+  if (UseAA) {
+    // Replace the all stores with the new store.
+    for (unsigned i = 0; i < NumElem; ++i)
+      CombineTo(StoreNodes[i].MemNode, NewStore);
+  } else {
+    // Replace the last store with the new store.
+    CombineTo(LatestOp, NewStore);
+    // Erase all other stores.
+    for (unsigned i = 0; i < NumElem; ++i) {
+      // Remove all Store nodes.
+      if (StoreNodes[i].MemNode == LatestOp)
+        continue;
+      StoreSDNode *St = cast<StoreSDNode>(StoreNodes[i].MemNode);
+      DAG.ReplaceAllUsesOfValueWith(SDValue(St, 0), St->getChain());
+      deleteAndRecombine(St);
+    }
   }
 
   return true;

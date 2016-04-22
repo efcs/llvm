@@ -13,6 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm-c/Core.h"
+#include "llvm/ADT/StringSwitch.h"
+#include "AttributeImpl.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/CallSite.h"
@@ -73,13 +75,13 @@ void LLVMDisposeMessage(char *Message) {
 
 /*===-- Operations on contexts --------------------------------------------===*/
 
+static ManagedStatic<LLVMContext> GlobalContext;
+
 LLVMContextRef LLVMContextCreate() {
   return wrap(new LLVMContext());
 }
 
-LLVMContextRef LLVMGetGlobalContext() {
-  return wrap(&getGlobalContext());
-}
+LLVMContextRef LLVMGetGlobalContext() { return wrap(&*GlobalContext); }
 
 void LLVMContextSetDiagnosticHandler(LLVMContextRef C,
                                      LLVMDiagnosticHandler Handler,
@@ -119,6 +121,18 @@ unsigned LLVMGetMDKindID(const char *Name, unsigned SLen) {
   return LLVMGetMDKindIDInContext(LLVMGetGlobalContext(), Name, SLen);
 }
 
+#define GET_ATTR_KIND_FROM_NAME
+#include "AttributesCompatFunc.inc"
+
+unsigned LLVMGetAttrKindID(const char *Name, size_t SLen) {
+  auto K = getAttrKindFromName(StringRef(Name, SLen));
+  if (K == Attribute::None) {
+    return 0;
+  }
+
+  return AttributeImpl::getAttrMask(K);
+}
+
 char *LLVMGetDiagInfoDescription(LLVMDiagnosticInfoRef DI) {
   std::string MsgStorage;
   raw_string_ostream Stream(MsgStorage);
@@ -155,7 +169,7 @@ LLVMDiagnosticSeverity LLVMGetDiagInfoSeverity(LLVMDiagnosticInfoRef DI) {
 /*===-- Operations on modules ---------------------------------------------===*/
 
 LLVMModuleRef LLVMModuleCreateWithName(const char *ModuleID) {
-  return wrap(new Module(ModuleID, getGlobalContext()));
+  return wrap(new Module(ModuleID, *GlobalContext));
 }
 
 LLVMModuleRef LLVMModuleCreateWithNameInContext(const char *ModuleID,

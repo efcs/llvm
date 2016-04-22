@@ -40,6 +40,7 @@ class DMFC2_MM64R6_ENC : POOL32A_MFTC2_FM_MMR6<"dmfc2", 0b0110110100>;
 class DADD_MM64R6_ENC : POOL32S_ARITH_FM_MMR6<"dadd", 0b100010000>;
 class DADDIU_MM64R6_ENC : DADDIU_FM_MMR6<"daddiu">;
 class DADDU_MM64R6_ENC : POOL32S_ARITH_FM_MMR6<"daddu", 0b101010000>;
+class LDPC_MMR646_ENC : PCREL18_FM_MMR6<0b110>;
 
 //===----------------------------------------------------------------------===//
 //
@@ -97,10 +98,10 @@ class DALIGN_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
 
 class DALIGN_MMR6_DESC : DALIGN_DESC_BASE<"dalign", GPR64Opnd, uimm3>;
 
-class DDIV_MM64R6_DESC : ArithLogicR<"ddiv", GPR32Opnd>;
-class DMOD_MM64R6_DESC : ArithLogicR<"dmod", GPR32Opnd>;
-class DDIVU_MM64R6_DESC : ArithLogicR<"ddivu", GPR32Opnd>;
-class DMODU_MM64R6_DESC : ArithLogicR<"dmodu", GPR32Opnd>;
+class DDIV_MM64R6_DESC : DIVMOD_MMR6_DESC_BASE<"ddiv", GPR64Opnd, sdiv>;
+class DMOD_MM64R6_DESC : DIVMOD_MMR6_DESC_BASE<"dmod", GPR64Opnd, srem>;
+class DDIVU_MM64R6_DESC : DIVMOD_MMR6_DESC_BASE<"ddivu", GPR64Opnd, udiv>;
+class DMODU_MM64R6_DESC : DIVMOD_MMR6_DESC_BASE<"dmodu", GPR64Opnd, urem>;
 
 class DINSU_MM64R6_DESC : InsBase<"dinsu", GPR64Opnd, uimm5_plus32,
                                   uimm5_inssize_plus1, MipsIns>;
@@ -122,6 +123,8 @@ class DADDIU_MM64R6_DESC : ArithLogicI<"daddiu", simm16_64, GPR64Opnd,
                                        II_DADDIU, immSExt16, add>,
                            IsAsCheapAsAMove;
 class DADDU_MM64R6_DESC : ArithLogicR<"daddu", GPR64Opnd, 1, II_DADDU, add>;
+
+class LDPC_MM64R6_DESC : PCREL_MMR6_DESC_BASE<"ldpc", GPR64Opnd, simm18_lsl3>;
 
 //===----------------------------------------------------------------------===//
 //
@@ -173,6 +176,8 @@ let DecoderNamespace = "MicroMipsR6" in {
                      ISA_MICROMIPS64R6;
   def DADDU_MM64R6: StdMMR6Rel, DADDU_MM64R6_DESC, DADDU_MM64R6_ENC,
                     ISA_MICROMIPS64R6;
+  def LDPC_MM64R6 :  R6MMR6Rel, LDPC_MMR646_ENC, LDPC_MM64R6_DESC,
+                     ISA_MICROMIPS64R6;
 }
 
 //===----------------------------------------------------------------------===//

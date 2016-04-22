@@ -15,7 +15,6 @@
 #ifndef LLVM_TRANSFORMS_SCALAR_H
 #define LLVM_TRANSFORMS_SCALAR_H
 
-#include "llvm/ADT/StringRef.h"
 #include <functional>
 
 namespace llvm {
@@ -430,6 +429,10 @@ createSeparateConstOffsetFromGEPPass(const TargetMachine *TM = nullptr,
 //
 FunctionPass *createSpeculativeExecutionPass();
 
+// Same as createSpeculativeExecutionPass, but does nothing unless
+// TargetTransformInfo::hasBranchDivergence() is true.
+FunctionPass *createSpeculativeExecutionIfHasBranchDivergencePass();
+
 //===----------------------------------------------------------------------===//
 //
 // LoadCombine - Combine loads into bigger loads.
@@ -502,6 +505,9 @@ FunctionPass *createLoopVersioningPass();
 // LoopDataPrefetch - Perform data prefetching in loops.
 //
 FunctionPass *createLoopDataPrefetchPass();
+
+///===---------------------------------------------------------------------===//
+ModulePass *createNameAnonFunctionPass();
 
 } // End llvm namespace
 

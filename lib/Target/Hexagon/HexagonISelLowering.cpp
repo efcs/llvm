@@ -507,15 +507,13 @@ static bool RetCC_HexagonVector(unsigned ValNo, MVT ValVT,
   return false;
 }
 
-void HexagonTargetLowering::promoteLdStType(EVT VT, EVT PromotedLdStVT) {
+void HexagonTargetLowering::promoteLdStType(MVT VT, MVT PromotedLdStVT) {
   if (VT != PromotedLdStVT) {
-    setOperationAction(ISD::LOAD, VT.getSimpleVT(), Promote);
-    AddPromotedToType(ISD::LOAD, VT.getSimpleVT(),
-                      PromotedLdStVT.getSimpleVT());
+    setOperationAction(ISD::LOAD, VT, Promote);
+    AddPromotedToType(ISD::LOAD, VT, PromotedLdStVT);
 
-    setOperationAction(ISD::STORE, VT.getSimpleVT(), Promote);
-    AddPromotedToType(ISD::STORE, VT.getSimpleVT(),
-                      PromotedLdStVT.getSimpleVT());
+    setOperationAction(ISD::STORE, VT, Promote);
+    AddPromotedToType(ISD::STORE, VT, PromotedLdStVT);
   }
 }
 
@@ -1509,7 +1507,7 @@ HexagonTargetLowering::LowerGLOBALADDRESS(SDValue Op, SelectionDAG &DAG) const {
 
   if (RM == Reloc::Static) {
     SDValue GA = DAG.getTargetGlobalAddress(GV, dl, PtrVT, Offset);
-    if (HLOF.IsGlobalInSmallSection(GV, HTM))
+    if (HLOF.isGlobalInSmallSection(GV, HTM))
       return DAG.getNode(HexagonISD::CONST32_GP, dl, PtrVT, GA);
     return DAG.getNode(HexagonISD::CONST32, dl, PtrVT, GA);
   }

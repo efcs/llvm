@@ -15,7 +15,7 @@
 #define LLVM_LIB_ASMPARSER_LLPARSER_H
 
 #include "LLLexer.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Instructions.h"
@@ -247,7 +247,10 @@ namespace llvm {
     bool ParseOptionalStackAlignment(unsigned &Alignment);
     bool ParseOptionalCommaAlign(unsigned &Alignment, bool &AteExtraComma);
     bool ParseOptionalCommaInAlloca(bool &IsInAlloca);
-    bool ParseIndexList(SmallVectorImpl<unsigned> &Indices,bool &AteExtraComma);
+    bool parseAllocSizeArguments(unsigned &ElemSizeArg,
+                                 Optional<unsigned> &HowManyArg);
+    bool ParseIndexList(SmallVectorImpl<unsigned> &Indices,
+                        bool &AteExtraComma);
     bool ParseIndexList(SmallVectorImpl<unsigned> &Indices) {
       bool AteExtraComma;
       if (ParseIndexList(Indices, AteExtraComma)) return true;

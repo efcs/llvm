@@ -43,6 +43,7 @@
 namespace llvm {
   class CallInst;
   class CCState;
+  class CCValAssign;
   class FastISel;
   class FunctionLoweringInfo;
   class ImmutableCallSite;
@@ -52,6 +53,7 @@ namespace llvm {
   class MachineInstr;
   class MachineJumpTableInfo;
   class MachineLoop;
+  class MachineRegisterInfo;
   class Mangler;
   class MCContext;
   class MCExpr;
@@ -601,21 +603,20 @@ public:
     unsigned MemI = (unsigned) MemVT.getSimpleVT().SimpleTy;
     assert(ExtType < ISD::LAST_LOADEXT_TYPE && ValI < MVT::LAST_VALUETYPE &&
            MemI < MVT::LAST_VALUETYPE && "Table isn't big enough!");
-    return LoadExtActions[ValI][MemI][ExtType];
+    unsigned Shift = 4 * ExtType;
+    return (LegalizeAction)((LoadExtActions[ValI][MemI] >> Shift) & 0xf);
   }
 
   /// Return true if the specified load with extension is legal on this target.
   bool isLoadExtLegal(unsigned ExtType, EVT ValVT, EVT MemVT) const {
-    return ValVT.isSimple() && MemVT.isSimple() &&
-      getLoadExtAction(ExtType, ValVT, MemVT) == Legal;
+    return getLoadExtAction(ExtType, ValVT, MemVT) == Legal;
   }
 
   /// Return true if the specified load with extension is legal or custom
   /// on this target.
   bool isLoadExtLegalOrCustom(unsigned ExtType, EVT ValVT, EVT MemVT) const {
-    return ValVT.isSimple() && MemVT.isSimple() &&
-      (getLoadExtAction(ExtType, ValVT, MemVT) == Legal ||
-       getLoadExtAction(ExtType, ValVT, MemVT) == Custom);
+    return getLoadExtAction(ExtType, ValVT, MemVT) == Legal ||
+           getLoadExtAction(ExtType, ValVT, MemVT) == Custom;
   }
 
   /// Return how this store with truncation should be treated: either it is
@@ -633,16 +634,15 @@ public:
   /// Return true if the specified store with truncation is legal on this
   /// target.
   bool isTruncStoreLegal(EVT ValVT, EVT MemVT) const {
-    return isTypeLegal(ValVT) && MemVT.isSimple() &&
-      getTruncStoreAction(ValVT.getSimpleVT(), MemVT.getSimpleVT()) == Legal;
+    return isTypeLegal(ValVT) && getTruncStoreAction(ValVT, MemVT) == Legal;
   }
 
   /// Return true if the specified store with truncation has solution on this
   /// target.
   bool isTruncStoreLegalOrCustom(EVT ValVT, EVT MemVT) const {
-    return isTypeLegal(ValVT) && MemVT.isSimple() &&
-      (getTruncStoreAction(ValVT.getSimpleVT(), MemVT.getSimpleVT()) == Legal ||
-       getTruncStoreAction(ValVT.getSimpleVT(), MemVT.getSimpleVT()) == Custom);
+    return isTypeLegal(ValVT) &&
+      (getTruncStoreAction(ValVT, MemVT) == Legal ||
+       getTruncStoreAction(ValVT, MemVT) == Custom);
   }
 
   /// Return how the indexed load should be treated: either it is legal, needs
@@ -687,7 +687,7 @@ public:
   LegalizeAction
   getCondCodeAction(ISD::CondCode CC, MVT VT) const {
     assert((unsigned)CC < array_lengthof(CondCodeActions) &&
-           ((unsigned)VT.SimpleTy >> 4) < array_lengthof(CondCodeActions[0]) &&
+           ((unsigned)VT.SimpleTy >> 3) < array_lengthof(CondCodeActions[0]) &&
            "Table isn't big enough!");
     // See setCondCodeAction for how this is encoded.
     uint32_t Shift = 4 * (VT.SimpleTy & 0x7);
@@ -1013,6 +1013,8 @@ public:
 
   /// If the target has a standard location for the stack protector guard,
   /// returns the address of that location. Otherwise, returns nullptr.
+  /// DEPRECATED: please override useLoadStackGuardNode and customize
+  ///             LOAD_STACK_GUARD, or customize @llvm.stackguard().
   virtual Value *getIRStackGuard(IRBuilder<> &IRB) const;
 
   /// Inserts necessary declarations for SSP purpose. Should be used only when
@@ -1022,7 +1024,7 @@ public:
   /// Return the variable that's previously inserted by insertSSPDeclarations,
   /// if any, otherwise return nullptr. Should be used only when
   /// getIRStackGuard returns nullptr.
-  virtual Value *getSDStackGuard(const Module &M) const;
+  virtual Value *getSDagStackGuard(const Module &M) const;
 
   /// If the target has a standard location for the unsafe stack pointer,
   /// returns the address of that location. Otherwise, returns nullptr.
@@ -1058,6 +1060,14 @@ public:
   //===--------------------------------------------------------------------===//
   /// \name Helpers for atomic expansion.
   /// @{
+
+  /// Returns the maximum atomic operation size (in bits) supported by
+  /// the backend. Atomic operations greater than this size (as well
+  /// as ones that are not naturally aligned), will be expanded by
+  /// AtomicExpandPass into an __atomic_* library call.
+  unsigned getMaxAtomicSizeInBitsSupported() const {
+    return MaxAtomicSizeInBitsSupported;
+  }
 
   /// Whether AtomicExpandPass should automatically insert fences and reduce
   /// ordering for this atomic. This should be true for most architectures with
@@ -1189,6 +1199,8 @@ public:
   virtual bool hasSignExtendedAtomicOps() const {
     return false;
   }
+
+  /// @}
 
   /// Returns true if we should normalize
   /// select(N0&N1, X, Y) => select(N0, select(N1, X, Y), Y) and
@@ -1348,7 +1360,10 @@ protected:
                         LegalizeAction Action) {
     assert(ExtType < ISD::LAST_LOADEXT_TYPE && ValVT.isValid() &&
            MemVT.isValid() && "Table isn't big enough!");
-    LoadExtActions[(unsigned)ValVT.SimpleTy][MemVT.SimpleTy][ExtType] = Action;
+    assert((unsigned)Action < 0x10 && "too many bits for bitfield array");
+    unsigned Shift = 4 * ExtType;
+    LoadExtActions[ValVT.SimpleTy][MemVT.SimpleTy] &= ~((uint16_t)0xF << Shift);
+    LoadExtActions[ValVT.SimpleTy][MemVT.SimpleTy] |= (uint16_t)Action << Shift;
   }
 
   /// Indicate that the specified truncating store does not work with the
@@ -1410,6 +1425,13 @@ protected:
     PromoteToType[std::make_pair(Opc, OrigVT.SimpleTy)] = DestVT.SimpleTy;
   }
 
+  /// Convenience method to set an operation to Promote and specify the type
+  /// in a single call.
+  void setOperationPromotedToType(unsigned Opc, MVT OrigVT, MVT DestVT) {
+    setOperationAction(Opc, OrigVT, Promote);
+    AddPromotedToType(Opc, OrigVT, DestVT);
+  }
+
   /// Targets should invoke this method for each target independent node that
   /// they want to provide a custom DAG combiner for by implementing the
   /// PerformDAGCombine virtual method.
@@ -1452,6 +1474,14 @@ protected:
   /// Set the minimum stack alignment of an argument (in log2(bytes)).
   void setMinStackArgumentAlignment(unsigned Align) {
     MinStackArgumentAlignment = Align;
+  }
+
+  /// Set the maximum atomic operation size supported by the
+  /// backend. Atomic operations greater than this size (as well as
+  /// ones that are not naturally aligned), will be expanded by
+  /// AtomicExpandPass into an __atomic_* library call.
+  void setMaxAtomicSizeInBitsSupported(unsigned SizeInBits) {
+    MaxAtomicSizeInBitsSupported = SizeInBits;
   }
 
 public:
@@ -1863,6 +1893,9 @@ private:
   /// The preferred loop alignment.
   unsigned PrefLoopAlignment;
 
+  /// Size in bits of the maximum atomics size the backend supports.
+  /// Accesses larger than this will be expanded by AtomicExpandPass.
+  unsigned MaxAtomicSizeInBitsSupported;
 
   /// If set to a physical register, this specifies the register that
   /// llvm.savestack/llvm.restorestack should save and restore.
@@ -1903,9 +1936,9 @@ private:
 
   /// For each load extension type and each value type, keep a LegalizeAction
   /// that indicates how instruction selection should deal with a load of a
-  /// specific value type and extension type.
-  LegalizeAction LoadExtActions[MVT::LAST_VALUETYPE][MVT::LAST_VALUETYPE]
-                               [ISD::LAST_LOADEXT_TYPE];
+  /// specific value type and extension type. Uses 4-bits to store the action
+  /// for each of the 4 load ext types.
+  uint16_t LoadExtActions[MVT::LAST_VALUETYPE][MVT::LAST_VALUETYPE];
 
   /// For each value type pair keep a LegalizeAction that indicates whether a
   /// truncating store of a specific value type and truncating type is legal.
@@ -2117,6 +2150,14 @@ public:
                                           bool isSigned, SDLoc dl,
                                           bool doesNotReturn = false,
                                           bool isReturnValueUsed = true) const;
+
+  /// Check whether parameters to a call that are passed in callee saved
+  /// registers are the same as from the calling function.  This needs to be
+  /// checked for tail call eligibility.
+  bool parametersInCSRMatch(const MachineRegisterInfo &MRI,
+      const uint32_t *CallerPreservedMask,
+      const SmallVectorImpl<CCValAssign> &ArgLocs,
+      const SmallVectorImpl<SDValue> &OutVals) const;
 
   //===--------------------------------------------------------------------===//
   // TargetLowering Optimization Methods
@@ -2883,6 +2924,15 @@ public:
   /// \param ST Store with a vector value type
   /// \returns MERGE_VALUs of the individual store chains.
   SDValue scalarizeVectorStore(StoreSDNode *ST, SelectionDAG &DAG) const;
+
+  /// Expands an unaligned load to 2 half-size loads for an integer, and
+  /// possibly more for vectors.
+  std::pair<SDValue, SDValue> expandUnalignedLoad(LoadSDNode *LD,
+                                                  SelectionDAG &DAG) const;
+
+  /// Expands an unaligned store to 2 half-size stores for integer values, and
+  /// possibly more for vectors.
+  SDValue expandUnalignedStore(StoreSDNode *ST, SelectionDAG &DAG) const;
 
   //===--------------------------------------------------------------------===//
   // Instruction Emitting Hooks

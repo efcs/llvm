@@ -324,10 +324,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
 
   // Promote the i8 variants and force them on up to i32 which has a shorter
   // encoding.
-  setOperationAction(ISD::CTTZ             , MVT::i8   , Promote);
-  AddPromotedToType (ISD::CTTZ             , MVT::i8   , MVT::i32);
-  setOperationAction(ISD::CTTZ_ZERO_UNDEF  , MVT::i8   , Promote);
-  AddPromotedToType (ISD::CTTZ_ZERO_UNDEF  , MVT::i8   , MVT::i32);
+  setOperationPromotedToType(ISD::CTTZ           , MVT::i8   , MVT::i32);
+  setOperationPromotedToType(ISD::CTTZ_ZERO_UNDEF, MVT::i8   , MVT::i32);
   if (Subtarget.hasBMI()) {
     setOperationAction(ISD::CTTZ_ZERO_UNDEF, MVT::i16  , Expand);
     setOperationAction(ISD::CTTZ_ZERO_UNDEF, MVT::i32  , Expand);
@@ -343,10 +341,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   if (Subtarget.hasLZCNT()) {
     // When promoting the i8 variants, force them to i32 for a shorter
     // encoding.
-    setOperationAction(ISD::CTLZ           , MVT::i8   , Promote);
-    AddPromotedToType (ISD::CTLZ           , MVT::i8   , MVT::i32);
-    setOperationAction(ISD::CTLZ_ZERO_UNDEF, MVT::i8   , Promote);
-    AddPromotedToType (ISD::CTLZ_ZERO_UNDEF, MVT::i8   , MVT::i32);
+    setOperationPromotedToType(ISD::CTLZ           , MVT::i8   , MVT::i32);
+    setOperationPromotedToType(ISD::CTLZ_ZERO_UNDEF, MVT::i8   , MVT::i32);
     setOperationAction(ISD::CTLZ_ZERO_UNDEF, MVT::i16  , Expand);
     setOperationAction(ISD::CTLZ_ZERO_UNDEF, MVT::i32  , Expand);
     if (Subtarget.is64Bit())
@@ -482,14 +478,9 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   // VASTART needs to be custom lowered to use the VarArgsFrameIndex
   setOperationAction(ISD::VASTART           , MVT::Other, Custom);
   setOperationAction(ISD::VAEND             , MVT::Other, Expand);
-  if (Subtarget.is64Bit()) {
-    setOperationAction(ISD::VAARG           , MVT::Other, Custom);
-    setOperationAction(ISD::VACOPY          , MVT::Other, Custom);
-  } else {
-    // TargetInfo::CharPtrBuiltinVaList
-    setOperationAction(ISD::VAARG           , MVT::Other, Expand);
-    setOperationAction(ISD::VACOPY          , MVT::Other, Expand);
-  }
+  bool Is64Bit = Subtarget.is64Bit();
+  setOperationAction(ISD::VAARG,  MVT::Other, Is64Bit ? Custom : Expand);
+  setOperationAction(ISD::VACOPY, MVT::Other, Is64Bit ? Custom : Expand);
 
   setOperationAction(ISD::STACKSAVE,          MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE,       MVT::Other, Expand);
@@ -650,38 +641,36 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   setOperationAction(ISD::FMINNUM, MVT::f80, Expand);
   setOperationAction(ISD::FMAXNUM, MVT::f80, Expand);
 
+  // Some FP actions are always expanded for vector types.
+  for (auto VT : { MVT::v4f32, MVT::v8f32, MVT::v16f32,
+                   MVT::v2f64, MVT::v4f64, MVT::v8f64 }) {
+    setOperationAction(ISD::FSIN,      VT, Expand);
+    setOperationAction(ISD::FSINCOS,   VT, Expand);
+    setOperationAction(ISD::FCOS,      VT, Expand);
+    setOperationAction(ISD::FREM,      VT, Expand);
+    setOperationAction(ISD::FPOWI,     VT, Expand);
+    setOperationAction(ISD::FCOPYSIGN, VT, Expand);
+    setOperationAction(ISD::FPOW,      VT, Expand);
+    setOperationAction(ISD::FLOG,      VT, Expand);
+    setOperationAction(ISD::FLOG2,     VT, Expand);
+    setOperationAction(ISD::FLOG10,    VT, Expand);
+    setOperationAction(ISD::FEXP,      VT, Expand);
+    setOperationAction(ISD::FEXP2,     VT, Expand);
+  }
+
   // First set operation action for all vector types to either promote
   // (for widening) or expand (for scalarization). Then we will selectively
   // turn on ones that can be effectively codegen'd.
   for (MVT VT : MVT::vector_valuetypes()) {
-    setOperationAction(ISD::ADD , VT, Expand);
-    setOperationAction(ISD::SUB , VT, Expand);
-    setOperationAction(ISD::FADD, VT, Expand);
-    setOperationAction(ISD::FNEG, VT, Expand);
-    setOperationAction(ISD::FSUB, VT, Expand);
-    setOperationAction(ISD::MUL , VT, Expand);
-    setOperationAction(ISD::FMUL, VT, Expand);
     setOperationAction(ISD::SDIV, VT, Expand);
     setOperationAction(ISD::UDIV, VT, Expand);
-    setOperationAction(ISD::FDIV, VT, Expand);
     setOperationAction(ISD::SREM, VT, Expand);
     setOperationAction(ISD::UREM, VT, Expand);
-    setOperationAction(ISD::LOAD, VT, Expand);
-    setOperationAction(ISD::VECTOR_SHUFFLE, VT, Expand);
     setOperationAction(ISD::EXTRACT_VECTOR_ELT, VT,Expand);
     setOperationAction(ISD::INSERT_VECTOR_ELT, VT, Expand);
     setOperationAction(ISD::EXTRACT_SUBVECTOR, VT,Expand);
     setOperationAction(ISD::INSERT_SUBVECTOR, VT,Expand);
-    setOperationAction(ISD::FABS, VT, Expand);
-    setOperationAction(ISD::FSIN, VT, Expand);
-    setOperationAction(ISD::FSINCOS, VT, Expand);
-    setOperationAction(ISD::FCOS, VT, Expand);
-    setOperationAction(ISD::FSINCOS, VT, Expand);
-    setOperationAction(ISD::FREM, VT, Expand);
     setOperationAction(ISD::FMA,  VT, Expand);
-    setOperationAction(ISD::FPOWI, VT, Expand);
-    setOperationAction(ISD::FSQRT, VT, Expand);
-    setOperationAction(ISD::FCOPYSIGN, VT, Expand);
     setOperationAction(ISD::FFLOOR, VT, Expand);
     setOperationAction(ISD::FCEIL, VT, Expand);
     setOperationAction(ISD::FTRUNC, VT, Expand);
@@ -693,24 +682,15 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::MULHU, VT, Expand);
     setOperationAction(ISD::SDIVREM, VT, Expand);
     setOperationAction(ISD::UDIVREM, VT, Expand);
-    setOperationAction(ISD::FPOW, VT, Expand);
     setOperationAction(ISD::CTPOP, VT, Expand);
     setOperationAction(ISD::CTTZ, VT, Expand);
     setOperationAction(ISD::CTTZ_ZERO_UNDEF, VT, Expand);
     setOperationAction(ISD::CTLZ, VT, Expand);
     setOperationAction(ISD::CTLZ_ZERO_UNDEF, VT, Expand);
-    setOperationAction(ISD::SHL, VT, Expand);
-    setOperationAction(ISD::SRA, VT, Expand);
-    setOperationAction(ISD::SRL, VT, Expand);
     setOperationAction(ISD::ROTL, VT, Expand);
     setOperationAction(ISD::ROTR, VT, Expand);
     setOperationAction(ISD::BSWAP, VT, Expand);
     setOperationAction(ISD::SETCC, VT, Expand);
-    setOperationAction(ISD::FLOG, VT, Expand);
-    setOperationAction(ISD::FLOG2, VT, Expand);
-    setOperationAction(ISD::FLOG10, VT, Expand);
-    setOperationAction(ISD::FEXP, VT, Expand);
-    setOperationAction(ISD::FEXP2, VT, Expand);
     setOperationAction(ISD::FP_TO_UINT, VT, Expand);
     setOperationAction(ISD::FP_TO_SINT, VT, Expand);
     setOperationAction(ISD::UINT_TO_FP, VT, Expand);
@@ -720,7 +700,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::SIGN_EXTEND, VT, Expand);
     setOperationAction(ISD::ZERO_EXTEND, VT, Expand);
     setOperationAction(ISD::ANY_EXTEND, VT, Expand);
-    setOperationAction(ISD::VSELECT, VT, Expand);
     setOperationAction(ISD::SELECT_CC, VT, Expand);
     for (MVT InnerVT : MVT::vector_valuetypes()) {
       setTruncStoreAction(InnerVT, VT, Expand);
@@ -749,30 +728,11 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     // No operations on x86mmx supported, everything uses intrinsics.
   }
 
-  // MMX-sized vectors (other than x86mmx) are expected to be expanded
-  // into smaller operations.
-  for (MVT MMXTy : {MVT::v8i8, MVT::v4i16, MVT::v2i32, MVT::v1i64}) {
-    setOperationAction(ISD::MULHS,              MMXTy,      Expand);
-    setOperationAction(ISD::AND,                MMXTy,      Expand);
-    setOperationAction(ISD::OR,                 MMXTy,      Expand);
-    setOperationAction(ISD::XOR,                MMXTy,      Expand);
-    setOperationAction(ISD::SCALAR_TO_VECTOR,   MMXTy,      Expand);
-    setOperationAction(ISD::SELECT,             MMXTy,      Expand);
-    setOperationAction(ISD::BITCAST,            MMXTy,      Expand);
-  }
-  setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v1i64, Expand);
-
   if (!Subtarget.useSoftFloat() && Subtarget.hasSSE1()) {
     addRegisterClass(MVT::v4f32, &X86::VR128RegClass);
 
-    setOperationAction(ISD::FADD,               MVT::v4f32, Legal);
-    setOperationAction(ISD::FSUB,               MVT::v4f32, Legal);
-    setOperationAction(ISD::FMUL,               MVT::v4f32, Legal);
-    setOperationAction(ISD::FDIV,               MVT::v4f32, Legal);
-    setOperationAction(ISD::FSQRT,              MVT::v4f32, Legal);
     setOperationAction(ISD::FNEG,               MVT::v4f32, Custom);
     setOperationAction(ISD::FABS,               MVT::v4f32, Custom);
-    setOperationAction(ISD::LOAD,               MVT::v4f32, Legal);
     setOperationAction(ISD::BUILD_VECTOR,       MVT::v4f32, Custom);
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v4f32, Custom);
     setOperationAction(ISD::VSELECT,            MVT::v4f32, Custom);
@@ -791,10 +751,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     addRegisterClass(MVT::v4i32, &X86::VR128RegClass);
     addRegisterClass(MVT::v2i64, &X86::VR128RegClass);
 
-    setOperationAction(ISD::ADD,                MVT::v16i8, Legal);
-    setOperationAction(ISD::ADD,                MVT::v8i16, Legal);
-    setOperationAction(ISD::ADD,                MVT::v4i32, Legal);
-    setOperationAction(ISD::ADD,                MVT::v2i64, Legal);
     setOperationAction(ISD::MUL,                MVT::v16i8, Custom);
     setOperationAction(ISD::MUL,                MVT::v4i32, Custom);
     setOperationAction(ISD::MUL,                MVT::v2i64, Custom);
@@ -804,16 +760,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::MULHS,              MVT::v16i8, Custom);
     setOperationAction(ISD::MULHU,              MVT::v8i16, Legal);
     setOperationAction(ISD::MULHS,              MVT::v8i16, Legal);
-    setOperationAction(ISD::SUB,                MVT::v16i8, Legal);
-    setOperationAction(ISD::SUB,                MVT::v8i16, Legal);
-    setOperationAction(ISD::SUB,                MVT::v4i32, Legal);
-    setOperationAction(ISD::SUB,                MVT::v2i64, Legal);
     setOperationAction(ISD::MUL,                MVT::v8i16, Legal);
-    setOperationAction(ISD::FADD,               MVT::v2f64, Legal);
-    setOperationAction(ISD::FSUB,               MVT::v2f64, Legal);
-    setOperationAction(ISD::FMUL,               MVT::v2f64, Legal);
-    setOperationAction(ISD::FDIV,               MVT::v2f64, Legal);
-    setOperationAction(ISD::FSQRT,              MVT::v2f64, Legal);
     setOperationAction(ISD::FNEG,               MVT::v2f64, Custom);
     setOperationAction(ISD::FABS,               MVT::v2f64, Custom);
 
@@ -842,10 +789,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::CTTZ,               MVT::v8i16, Custom);
     setOperationAction(ISD::CTTZ,               MVT::v4i32, Custom);
     // ISD::CTTZ v2i64 - scalarization is faster.
-    setOperationAction(ISD::CTTZ_ZERO_UNDEF,    MVT::v16i8, Custom);
-    setOperationAction(ISD::CTTZ_ZERO_UNDEF,    MVT::v8i16, Custom);
-    setOperationAction(ISD::CTTZ_ZERO_UNDEF,    MVT::v4i32, Custom);
-    // ISD::CTTZ_ZERO_UNDEF v2i64 - scalarization is faster.
 
     // Custom lower build_vector, vector_shuffle, and extract_vector_elt.
     for (auto VT : { MVT::v16i8, MVT::v8i16, MVT::v4i32 }) {
@@ -885,21 +828,14 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
 
     // Promote v16i8, v8i16, v4i32 load, select, and, or, xor to v2i64.
     for (auto VT : { MVT::v16i8, MVT::v8i16, MVT::v4i32 }) {
-      setOperationAction(ISD::AND,    VT, Promote);
-      AddPromotedToType (ISD::AND,    VT, MVT::v2i64);
-      setOperationAction(ISD::OR,     VT, Promote);
-      AddPromotedToType (ISD::OR,     VT, MVT::v2i64);
-      setOperationAction(ISD::XOR,    VT, Promote);
-      AddPromotedToType (ISD::XOR,    VT, MVT::v2i64);
-      setOperationAction(ISD::LOAD,   VT, Promote);
-      AddPromotedToType (ISD::LOAD,   VT, MVT::v2i64);
-      setOperationAction(ISD::SELECT, VT, Promote);
-      AddPromotedToType (ISD::SELECT, VT, MVT::v2i64);
+      setOperationPromotedToType(ISD::AND,    VT, MVT::v2i64);
+      setOperationPromotedToType(ISD::OR,     VT, MVT::v2i64);
+      setOperationPromotedToType(ISD::XOR,    VT, MVT::v2i64);
+      setOperationPromotedToType(ISD::LOAD,   VT, MVT::v2i64);
+      setOperationPromotedToType(ISD::SELECT, VT, MVT::v2i64);
     }
 
     // Custom lower v2i64 and v2f64 selects.
-    setOperationAction(ISD::LOAD,               MVT::v2f64, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v2i64, Legal);
     setOperationAction(ISD::SELECT,             MVT::v2f64, Custom);
     setOperationAction(ISD::SELECT,             MVT::v2i64, Custom);
 
@@ -924,6 +860,24 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::BITCAST,            MVT::v2i32, Custom);
     setOperationAction(ISD::BITCAST,            MVT::v4i16, Custom);
     setOperationAction(ISD::BITCAST,            MVT::v8i8,  Custom);
+
+    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v2i64, Custom);
+    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v4i32, Custom);
+    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v8i16, Custom);
+
+    for (auto VT : { MVT::v8i16, MVT::v16i8 }) {
+      setOperationAction(ISD::SRL, VT, Custom);
+      setOperationAction(ISD::SHL, VT, Custom);
+      setOperationAction(ISD::SRA, VT, Custom);
+    }
+
+    // In the customized shift lowering, the legal cases in AVX2 will be
+    // recognized.
+    for (auto VT : { MVT::v4i32, MVT::v2i64 }) {
+      setOperationAction(ISD::SRL, VT, Custom);
+      setOperationAction(ISD::SHL, VT, Custom);
+      setOperationAction(ISD::SRA, VT, Custom);
+    }
   }
 
   if (!Subtarget.useSoftFloat() && Subtarget.hasSSE41()) {
@@ -974,49 +928,12 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setLoadExtAction(ISD::ZEXTLOAD, MVT::v2i64, MVT::v2i16, Legal);
     setLoadExtAction(ISD::ZEXTLOAD, MVT::v2i64, MVT::v2i32, Legal);
 
-    // i8 and i16 vectors are custom because the source register and source
-    // source memory operand types are not the same width.  f32 vectors are
-    // custom since the immediate controlling the insert encodes additional
-    // information.
+    // i8 vectors are custom because the source register and source
+    // source memory operand types are not the same width.
     setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v16i8, Custom);
-    setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v8i16, Custom);
-    setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v4i32, Custom);
-    setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v4f32, Custom);
-
-    setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v16i8, Custom);
-    setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v8i16, Custom);
-    setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4i32, Custom);
-    setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4f32, Custom);
-
-    // FIXME: these should be Legal, but that's only for the case where
-    // the index is constant.  For now custom expand to deal with that.
-    if (Subtarget.is64Bit()) {
-      setOperationAction(ISD::INSERT_VECTOR_ELT,  MVT::v2i64, Custom);
-      setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v2i64, Custom);
-    }
   }
 
-  if (Subtarget.hasSSE2()) {
-    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v2i64, Custom);
-    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v4i32, Custom);
-    setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v8i16, Custom);
-
-    for (auto VT : { MVT::v8i16, MVT::v16i8 }) {
-      setOperationAction(ISD::SRL, VT, Custom);
-      setOperationAction(ISD::SHL, VT, Custom);
-      setOperationAction(ISD::SRA, VT, Custom);
-    }
-
-    // In the customized shift lowering, the legal cases in AVX2 will be
-    // recognized.
-    for (auto VT : { MVT::v4i32, MVT::v2i64 }) {
-      setOperationAction(ISD::SRL, VT, Custom);
-      setOperationAction(ISD::SHL, VT, Custom);
-      setOperationAction(ISD::SRA, VT, Custom);
-    }
-  }
-
-  if (Subtarget.hasXOP()) {
+  if (!Subtarget.useSoftFloat() && Subtarget.hasXOP()) {
     for (auto VT : { MVT::v16i8, MVT::v8i16,  MVT::v4i32, MVT::v2i64,
                      MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64 })
       setOperationAction(ISD::ROTL, VT, Custom);
@@ -1038,16 +955,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     addRegisterClass(MVT::v4i64,  &X86::VR256RegClass);
     addRegisterClass(MVT::v4f64,  &X86::VR256RegClass);
 
-    setOperationAction(ISD::LOAD,               MVT::v8f32, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v4f64, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v4i64, Legal);
-
     for (auto VT : { MVT::v8f32, MVT::v4f64 }) {
-      setOperationAction(ISD::FADD,       VT, Legal);
-      setOperationAction(ISD::FSUB,       VT, Legal);
-      setOperationAction(ISD::FMUL,       VT, Legal);
-      setOperationAction(ISD::FDIV,       VT, Legal);
-      setOperationAction(ISD::FSQRT,      VT, Legal);
       setOperationAction(ISD::FFLOOR,     VT, Legal);
       setOperationAction(ISD::FCEIL,      VT, Legal);
       setOperationAction(ISD::FTRUNC,     VT, Legal);
@@ -1104,7 +1012,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64 }) {
       setOperationAction(ISD::CTPOP,           VT, Custom);
       setOperationAction(ISD::CTTZ,            VT, Custom);
-      setOperationAction(ISD::CTTZ_ZERO_UNDEF, VT, Custom);
     }
 
     if (Subtarget.hasAnyFMA()) {
@@ -1113,32 +1020,34 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
         setOperationAction(ISD::FMA, VT, Legal);
     }
 
-    if (Subtarget.hasInt256()) {
-      for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64 }) {
-        setOperationAction(ISD::ADD, VT, Legal);
-        setOperationAction(ISD::SUB, VT, Legal);
-      }
+    bool HasInt256 = Subtarget.hasInt256();
 
-      setOperationAction(ISD::MUL,             MVT::v4i64, Custom);
-      setOperationAction(ISD::MUL,             MVT::v8i32, Legal);
-      setOperationAction(ISD::MUL,             MVT::v16i16, Legal);
-      setOperationAction(ISD::MUL,             MVT::v32i8, Custom);
+    for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64 }) {
+      setOperationAction(ISD::ADD, VT, HasInt256 ? Legal : Custom);
+      setOperationAction(ISD::SUB, VT, HasInt256 ? Legal : Custom);
+    }
 
-      setOperationAction(ISD::UMUL_LOHI,       MVT::v8i32, Custom);
-      setOperationAction(ISD::SMUL_LOHI,       MVT::v8i32, Custom);
+    setOperationAction(ISD::MUL,       MVT::v4i64,  Custom);
+    setOperationAction(ISD::MUL,       MVT::v8i32,  HasInt256 ? Legal : Custom);
+    setOperationAction(ISD::MUL,       MVT::v16i16, HasInt256 ? Legal : Custom);
+    setOperationAction(ISD::MUL,       MVT::v32i8,  Custom);
 
-      setOperationAction(ISD::MULHU,           MVT::v16i16, Legal);
-      setOperationAction(ISD::MULHS,           MVT::v16i16, Legal);
-      setOperationAction(ISD::MULHU,           MVT::v32i8, Custom);
-      setOperationAction(ISD::MULHS,           MVT::v32i8, Custom);
+    setOperationAction(ISD::UMUL_LOHI, MVT::v8i32,  Custom);
+    setOperationAction(ISD::SMUL_LOHI, MVT::v8i32,  Custom);
 
-      for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32 }) {
-        setOperationAction(ISD::SMAX, VT, Legal);
-        setOperationAction(ISD::UMAX, VT, Legal);
-        setOperationAction(ISD::SMIN, VT, Legal);
-        setOperationAction(ISD::UMIN, VT, Legal);
-      }
+    setOperationAction(ISD::MULHU,     MVT::v16i16, HasInt256 ? Legal : Custom);
+    setOperationAction(ISD::MULHS,     MVT::v16i16, HasInt256 ? Legal : Custom);
+    setOperationAction(ISD::MULHU,     MVT::v32i8,  Custom);
+    setOperationAction(ISD::MULHS,     MVT::v32i8,  Custom);
 
+    for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32 }) {
+      setOperationAction(ISD::SMAX, VT, HasInt256 ? Legal : Custom);
+      setOperationAction(ISD::UMAX, VT, HasInt256 ? Legal : Custom);
+      setOperationAction(ISD::SMIN, VT, HasInt256 ? Legal : Custom);
+      setOperationAction(ISD::UMIN, VT, HasInt256 ? Legal : Custom);
+    }
+
+    if (HasInt256) {
       setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v4i64,  Custom);
       setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v8i32,  Custom);
       setOperationAction(ISD::SIGN_EXTEND_VECTOR_INREG, MVT::v16i16, Custom);
@@ -1161,31 +1070,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setLoadExtAction(ISD::ZEXTLOAD, MVT::v8i32,  MVT::v8i16, Legal);
       setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i64,  MVT::v4i16, Legal);
       setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i64,  MVT::v4i32, Legal);
-    } else {
-      for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64 }) {
-        setOperationAction(ISD::ADD, VT, Custom);
-        setOperationAction(ISD::SUB, VT, Custom);
-      }
-
-      setOperationAction(ISD::MUL,             MVT::v4i64, Custom);
-      setOperationAction(ISD::MUL,             MVT::v8i32, Custom);
-      setOperationAction(ISD::MUL,             MVT::v16i16, Custom);
-      setOperationAction(ISD::MUL,             MVT::v32i8, Custom);
-
-      setOperationAction(ISD::UMUL_LOHI,       MVT::v8i32, Custom);
-      setOperationAction(ISD::SMUL_LOHI,       MVT::v8i32, Custom);
-
-      setOperationAction(ISD::MULHU,           MVT::v16i16, Custom);
-      setOperationAction(ISD::MULHS,           MVT::v16i16, Custom);
-      setOperationAction(ISD::MULHU,           MVT::v32i8, Custom);
-      setOperationAction(ISD::MULHS,           MVT::v32i8, Custom);
-
-      for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32 }) {
-        setOperationAction(ISD::SMAX, VT, Custom);
-        setOperationAction(ISD::UMAX, VT, Custom);
-        setOperationAction(ISD::SMIN, VT, Custom);
-        setOperationAction(ISD::UMIN, VT, Custom);
-      }
     }
 
     // In the customized shift lowering, the legal cases in AVX2 will be
@@ -1196,21 +1080,22 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::SRA, VT, Custom);
     }
 
-    // Custom lower several nodes for 256-bit types.
-    for (MVT VT : MVT::vector_valuetypes()) {
-      if (VT.getScalarSizeInBits() >= 32) {
-        setOperationAction(ISD::MLOAD,  VT, Legal);
-        setOperationAction(ISD::MSTORE, VT, Legal);
-      }
-      // Extract subvector is special because the value type
-      // (result) is 128-bit but the source is 256-bit wide.
-      if (VT.is128BitVector()) {
-        setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Custom);
-      }
-      // Do not attempt to custom lower other non-256-bit vectors
-      if (!VT.is256BitVector())
-        continue;
+    for (auto VT : { MVT::v4i32, MVT::v8i32, MVT::v2i64, MVT::v4i64,
+                     MVT::v4f32, MVT::v8f32, MVT::v2f64, MVT::v4f64 }) {
+      setOperationAction(ISD::MLOAD,  VT, Legal);
+      setOperationAction(ISD::MSTORE, VT, Legal);
+    }
 
+    // Extract subvector is special because the value type
+    // (result) is 128-bit but the source is 256-bit wide.
+    for (auto VT : { MVT::v16i8, MVT::v8i16, MVT::v4i32, MVT::v2i64,
+                     MVT::v4f32, MVT::v2f64 }) {
+      setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Custom);
+    }
+
+    // Custom lower several nodes for 256-bit types.
+    for (MVT VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64,
+                    MVT::v8f32, MVT::v4f64 }) {
       setOperationAction(ISD::BUILD_VECTOR,       VT, Custom);
       setOperationAction(ISD::VECTOR_SHUFFLE,     VT, Custom);
       setOperationAction(ISD::VSELECT,            VT, Custom);
@@ -1221,21 +1106,16 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::CONCAT_VECTORS,     VT, Custom);
     }
 
-    if (Subtarget.hasInt256())
+    if (HasInt256)
       setOperationAction(ISD::VSELECT,         MVT::v32i8, Legal);
 
     // Promote v32i8, v16i16, v8i32 select, and, or, xor to v4i64.
     for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32 }) {
-      setOperationAction(ISD::AND,    VT, Promote);
-      AddPromotedToType (ISD::AND,    VT, MVT::v4i64);
-      setOperationAction(ISD::OR,     VT, Promote);
-      AddPromotedToType (ISD::OR,     VT, MVT::v4i64);
-      setOperationAction(ISD::XOR,    VT, Promote);
-      AddPromotedToType (ISD::XOR,    VT, MVT::v4i64);
-      setOperationAction(ISD::LOAD,   VT, Promote);
-      AddPromotedToType (ISD::LOAD,   VT, MVT::v4i64);
-      setOperationAction(ISD::SELECT, VT, Promote);
-      AddPromotedToType (ISD::SELECT, VT, MVT::v4i64);
+      setOperationPromotedToType(ISD::AND,    VT, MVT::v4i64);
+      setOperationPromotedToType(ISD::OR,     VT, MVT::v4i64);
+      setOperationPromotedToType(ISD::XOR,    VT, MVT::v4i64);
+      setOperationPromotedToType(ISD::LOAD,   VT, MVT::v4i64);
+      setOperationPromotedToType(ISD::SELECT, VT, MVT::v4i64);
     }
   }
 
@@ -1275,12 +1155,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::SUB,                MVT::i1,    Custom);
     setOperationAction(ISD::ADD,                MVT::i1,    Custom);
     setOperationAction(ISD::MUL,                MVT::i1,    Custom);
-    setOperationAction(ISD::LOAD,               MVT::v16f32, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v8f64, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v8i64, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v16i32, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v16i1,  Legal);
-    setOperationAction(ISD::LOAD,               MVT::v8i1,   Legal);
 
     for (MVT VT : {MVT::v2i64, MVT::v4i32, MVT::v8i32, MVT::v4i64, MVT::v8i16,
                    MVT::v16i8, MVT::v16i16, MVT::v32i8, MVT::v16i32,
@@ -1293,11 +1167,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     }
 
     for (MVT VT : { MVT::v16f32, MVT::v8f64 }) {
-      setOperationAction(ISD::FADD,  VT, Legal);
-      setOperationAction(ISD::FSUB,  VT, Legal);
-      setOperationAction(ISD::FMUL,  VT, Legal);
-      setOperationAction(ISD::FDIV,  VT, Legal);
-      setOperationAction(ISD::FSQRT, VT, Legal);
       setOperationAction(ISD::FNEG,  VT, Custom);
       setOperationAction(ISD::FABS,  VT, Custom);
       setOperationAction(ISD::FMA,   VT, Legal);
@@ -1348,6 +1217,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::TRUNCATE,           MVT::v8i32, Custom);
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v8i1,  Custom);
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v16i1, Custom);
+    setOperationAction(ISD::VSELECT,            MVT::v8i1,  Expand);
+    setOperationAction(ISD::VSELECT,            MVT::v16i1, Expand);
     if (Subtarget.hasDQI()) {
       setOperationAction(ISD::SINT_TO_FP,       MVT::v8i64, Legal);
       setOperationAction(ISD::UINT_TO_FP,       MVT::v8i64, Legal);
@@ -1433,11 +1304,12 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::UMIN,               MVT::v16i32, Legal);
     setOperationAction(ISD::UMIN,               MVT::v8i64, Legal);
 
-    setOperationAction(ISD::ADD,                MVT::v8i64, Legal);
-    setOperationAction(ISD::ADD,                MVT::v16i32, Legal);
-
-    setOperationAction(ISD::SUB,                MVT::v8i64, Legal);
-    setOperationAction(ISD::SUB,                MVT::v16i32, Legal);
+    setOperationAction(ISD::ADD,                MVT::v8i1,  Expand);
+    setOperationAction(ISD::ADD,                MVT::v16i1, Expand);
+    setOperationAction(ISD::SUB,                MVT::v8i1,  Expand);
+    setOperationAction(ISD::SUB,                MVT::v16i1, Expand);
+    setOperationAction(ISD::MUL,                MVT::v8i1,  Expand);
+    setOperationAction(ISD::MUL,                MVT::v16i1, Expand);
 
     setOperationAction(ISD::MUL,                MVT::v16i32, Legal);
 
@@ -1448,6 +1320,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::AND, VT, Legal);
       setOperationAction(ISD::OR,  VT, Legal);
       setOperationAction(ISD::XOR, VT, Legal);
+      setOperationAction(ISD::CTPOP, VT, Custom);
+      setOperationAction(ISD::CTTZ, VT, Custom);
     }
 
     if (Subtarget.hasCDI()) {
@@ -1481,51 +1355,43 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     } // Subtarget.hasCDI()
 
     if (Subtarget.hasDQI()) {
-      setOperationAction(ISD::MUL,             MVT::v2i64, Legal);
-      setOperationAction(ISD::MUL,             MVT::v4i64, Legal);
+      if (Subtarget.hasVLX()) {
+        setOperationAction(ISD::MUL,             MVT::v2i64, Legal);
+        setOperationAction(ISD::MUL,             MVT::v4i64, Legal);
+      }
       setOperationAction(ISD::MUL,             MVT::v8i64, Legal);
     }
     // Custom lower several nodes.
-    for (MVT VT : MVT::vector_valuetypes()) {
-      unsigned EltSize = VT.getVectorElementType().getSizeInBits();
-      if (EltSize == 1) {
-        setOperationAction(ISD::AND, VT, Legal);
-        setOperationAction(ISD::OR,  VT, Legal);
-        setOperationAction(ISD::XOR,  VT, Legal);
-      }
-      if ((VT.is128BitVector() || VT.is256BitVector()) && EltSize >= 32) {
-        setOperationAction(ISD::MGATHER,  VT, Custom);
-        setOperationAction(ISD::MSCATTER, VT, Custom);
-      }
-      // Extract subvector is special because the value type
-      // (result) is 256/128-bit but the source is 512-bit wide.
-      if (VT.is128BitVector() || VT.is256BitVector()) {
-        setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Custom);
-      }
-      if (VT.getVectorElementType() == MVT::i1)
-        setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Legal);
+    for (auto VT : { MVT::v4i32, MVT::v8i32, MVT::v2i64, MVT::v4i64,
+                     MVT::v4f32, MVT::v8f32, MVT::v2f64, MVT::v4f64 }) {
+      setOperationAction(ISD::MGATHER,  VT, Custom);
+      setOperationAction(ISD::MSCATTER, VT, Custom);
+    }
+    // Extract subvector is special because the value type
+    // (result) is 256-bit but the source is 512-bit wide.
+    // 128-bit was made Custom under AVX1.
+    for (auto VT : { MVT::v32i8, MVT::v16i16, MVT::v8i32, MVT::v4i64,
+                     MVT::v8f32, MVT::v4f64 })
+      setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Custom);
+    for (auto VT : { MVT::v2i1, MVT::v4i1, MVT::v8i1,
+                     MVT::v16i1, MVT::v32i1, MVT::v64i1 })
+      setOperationAction(ISD::EXTRACT_SUBVECTOR, VT, Legal);
 
-      // Do not attempt to custom lower other non-512-bit vectors
-      if (!VT.is512BitVector())
-        continue;
-
-      if (EltSize >= 32) {
-        setOperationAction(ISD::VECTOR_SHUFFLE,      VT, Custom);
-        setOperationAction(ISD::INSERT_VECTOR_ELT,   VT, Custom);
-        setOperationAction(ISD::BUILD_VECTOR,        VT, Custom);
-        setOperationAction(ISD::VSELECT,             VT, Legal);
-        setOperationAction(ISD::EXTRACT_VECTOR_ELT,  VT, Custom);
-        setOperationAction(ISD::SCALAR_TO_VECTOR,    VT, Custom);
-        setOperationAction(ISD::INSERT_SUBVECTOR,    VT, Custom);
-        setOperationAction(ISD::MLOAD,               VT, Legal);
-        setOperationAction(ISD::MSTORE,              VT, Legal);
-        setOperationAction(ISD::MGATHER,  VT, Legal);
-        setOperationAction(ISD::MSCATTER, VT, Custom);
-      }
+    for (auto VT : { MVT::v16i32, MVT::v8i64, MVT::v16f32, MVT::v8f64 }) {
+      setOperationAction(ISD::VECTOR_SHUFFLE,      VT, Custom);
+      setOperationAction(ISD::INSERT_VECTOR_ELT,   VT, Custom);
+      setOperationAction(ISD::BUILD_VECTOR,        VT, Custom);
+      setOperationAction(ISD::VSELECT,             VT, Legal);
+      setOperationAction(ISD::EXTRACT_VECTOR_ELT,  VT, Custom);
+      setOperationAction(ISD::SCALAR_TO_VECTOR,    VT, Custom);
+      setOperationAction(ISD::INSERT_SUBVECTOR,    VT, Custom);
+      setOperationAction(ISD::MLOAD,               VT, Legal);
+      setOperationAction(ISD::MSTORE,              VT, Legal);
+      setOperationAction(ISD::MGATHER,             VT, Legal);
+      setOperationAction(ISD::MSCATTER,            VT, Custom);
     }
     for (auto VT : { MVT::v64i8, MVT::v32i16, MVT::v16i32 }) {
-      setOperationAction(ISD::SELECT, VT, Promote);
-      AddPromotedToType (ISD::SELECT, VT, MVT::v8i64);
+      setOperationPromotedToType(ISD::SELECT, VT, MVT::v8i64);
     }
   }// has  AVX-512
 
@@ -1536,16 +1402,15 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     addRegisterClass(MVT::v32i1,  &X86::VK32RegClass);
     addRegisterClass(MVT::v64i1,  &X86::VK64RegClass);
 
-    setOperationAction(ISD::LOAD,               MVT::v32i1, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v64i1, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v32i16, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v64i8, Legal);
+    setOperationAction(ISD::ADD,                MVT::v32i1, Expand);
+    setOperationAction(ISD::ADD,                MVT::v64i1, Expand);
+    setOperationAction(ISD::SUB,                MVT::v32i1, Expand);
+    setOperationAction(ISD::SUB,                MVT::v64i1, Expand);
+    setOperationAction(ISD::MUL,                MVT::v32i1, Expand);
+    setOperationAction(ISD::MUL,                MVT::v64i1, Expand);
+
     setOperationAction(ISD::SETCC,              MVT::v32i1, Custom);
     setOperationAction(ISD::SETCC,              MVT::v64i1, Custom);
-    setOperationAction(ISD::ADD,                MVT::v32i16, Legal);
-    setOperationAction(ISD::ADD,                MVT::v64i8, Legal);
-    setOperationAction(ISD::SUB,                MVT::v32i16, Legal);
-    setOperationAction(ISD::SUB,                MVT::v64i8, Legal);
     setOperationAction(ISD::MUL,                MVT::v32i16, Legal);
     setOperationAction(ISD::MUL,                MVT::v64i8, Custom);
     setOperationAction(ISD::MULHS,              MVT::v32i16, Legal);
@@ -1585,6 +1450,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v64i1, Custom);
     setOperationAction(ISD::BUILD_VECTOR,       MVT::v32i1, Custom);
     setOperationAction(ISD::BUILD_VECTOR,       MVT::v64i1, Custom);
+    setOperationAction(ISD::VSELECT,            MVT::v32i1, Expand);
+    setOperationAction(ISD::VSELECT,            MVT::v64i1, Expand);
 
     setOperationAction(ISD::SMAX,               MVT::v64i8, Legal);
     setOperationAction(ISD::SMAX,               MVT::v32i16, Legal);
@@ -1619,13 +1486,12 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::SRA,          VT, Custom);
       setOperationAction(ISD::MLOAD,        VT, Legal);
       setOperationAction(ISD::MSTORE,       VT, Legal);
+      setOperationAction(ISD::CTPOP,        VT, Custom);
+      setOperationAction(ISD::CTTZ,         VT, Custom);
 
-      setOperationAction(ISD::AND,    VT, Promote);
-      AddPromotedToType (ISD::AND,    VT, MVT::v8i64);
-      setOperationAction(ISD::OR,     VT, Promote);
-      AddPromotedToType (ISD::OR,     VT, MVT::v8i64);
-      setOperationAction(ISD::XOR,    VT, Promote);
-      AddPromotedToType (ISD::XOR,    VT, MVT::v8i64);
+      setOperationPromotedToType(ISD::AND,  VT, MVT::v8i64);
+      setOperationPromotedToType(ISD::OR,   VT, MVT::v8i64);
+      setOperationPromotedToType(ISD::XOR,  VT, MVT::v8i64);
     }
   }
 
@@ -1633,8 +1499,13 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     addRegisterClass(MVT::v4i1,   &X86::VK4RegClass);
     addRegisterClass(MVT::v2i1,   &X86::VK2RegClass);
 
-    setOperationAction(ISD::LOAD,               MVT::v2i1, Legal);
-    setOperationAction(ISD::LOAD,               MVT::v4i1, Legal);
+    setOperationAction(ISD::ADD,                MVT::v2i1, Expand);
+    setOperationAction(ISD::ADD,                MVT::v4i1, Expand);
+    setOperationAction(ISD::SUB,                MVT::v2i1, Expand);
+    setOperationAction(ISD::SUB,                MVT::v4i1, Expand);
+    setOperationAction(ISD::MUL,                MVT::v2i1, Expand);
+    setOperationAction(ISD::MUL,                MVT::v4i1, Expand);
+
     setOperationAction(ISD::TRUNCATE,           MVT::v2i1, Custom);
     setOperationAction(ISD::TRUNCATE,           MVT::v4i1, Custom);
     setOperationAction(ISD::SETCC,              MVT::v4i1, Custom);
@@ -1649,6 +1520,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::BUILD_VECTOR,       MVT::v2i1, Custom);
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v2i1, Custom);
     setOperationAction(ISD::VECTOR_SHUFFLE,     MVT::v4i1, Custom);
+    setOperationAction(ISD::VSELECT,            MVT::v2i1, Expand);
+    setOperationAction(ISD::VSELECT,            MVT::v4i1, Expand);
 
     for (auto VT : { MVT::v4i32, MVT::v8i32 }) {
       setOperationAction(ISD::AND, VT, Legal);
@@ -2068,14 +1941,6 @@ Value *X86TargetLowering::getIRStackGuard(IRBuilder<> &IRB) const {
 void X86TargetLowering::insertSSPDeclarations(Module &M) const {
   if (!Subtarget.isTargetLinux())
     TargetLowering::insertSSPDeclarations(M);
-  else
-    llvm_unreachable("X86 Linux supports customized IR stack guard load");
-}
-
-Value *X86TargetLowering::getSDStackGuard(const Module &M) const {
-  if (!Subtarget.isTargetLinux())
-    return TargetLowering::getSDStackGuard(M);
-  llvm_unreachable("X86 Linux supports customized IR stack guard load");
 }
 
 Value *X86TargetLowering::getSafeStackPointerLocation(IRBuilder<> &IRB) const {
@@ -2227,7 +2092,26 @@ X86TargetLowering::LowerReturn(SDValue Chain,
   // false, then an sret argument may be implicitly inserted in the SelDAG. In
   // either case FuncInfo->setSRetReturnReg() will have been called.
   if (unsigned SRetReg = FuncInfo->getSRetReturnReg()) {
-    SDValue Val = DAG.getCopyFromReg(Chain, dl, SRetReg,
+    // When we have both sret and another return value, we should use the
+    // original Chain stored in RetOps[0], instead of the current Chain updated
+    // in the above loop. If we only have sret, RetOps[0] equals to Chain.
+
+    // For the case of sret and another return value, we have
+    //   Chain_0 at the function entry
+    //   Chain_1 = getCopyToReg(Chain_0) in the above loop
+    // If we use Chain_1 in getCopyFromReg, we will have
+    //   Val = getCopyFromReg(Chain_1)
+    //   Chain_2 = getCopyToReg(Chain_1, Val) from below
+
+    // getCopyToReg(Chain_0) will be glued together with
+    // getCopyToReg(Chain_1, Val) into Unit A, getCopyFromReg(Chain_1) will be
+    // in Unit B, and we will have cyclic dependency between Unit A and Unit B:
+    //   Data dependency from Unit B to Unit A due to usage of Val in
+    //     getCopyToReg(Chain_1, Val)
+    //   Chain dependency from Unit A to Unit B
+
+    // So here, we use RetOps[0] (i.e Chain_0) for getCopyFromReg.
+    SDValue Val = DAG.getCopyFromReg(RetOps[0], dl, SRetReg,
                                      getPointerTy(MF.getDataLayout()));
 
     unsigned RetValReg
@@ -3357,49 +3241,22 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // non-JIT mode.
     const GlobalValue *GV = G->getGlobal();
     if (!GV->hasDLLImportStorageClass()) {
-      unsigned char OpFlags = 0;
-      bool ExtraLoad = false;
-      unsigned WrapperKind = ISD::DELETED_NODE;
-
-      // On ELF targets, in both X86-64 and X86-32 mode, direct calls to
-      // external symbols most go through the PLT in PIC mode.  If the symbol
-      // has hidden or protected visibility, or if it is static or local, then
-      // we don't need to use the PLT - we can directly call it.
-      if (Subtarget.isTargetELF() &&
-          DAG.getTarget().getRelocationModel() == Reloc::PIC_ &&
-          GV->hasDefaultVisibility() && !GV->hasLocalLinkage()) {
-        OpFlags = X86II::MO_PLT;
-      } else if (Subtarget.isPICStyleStubAny() &&
-                 !GV->isStrongDefinitionForLinker() &&
-                 (!Subtarget.getTargetTriple().isMacOSX() ||
-                  Subtarget.getTargetTriple().isMacOSXVersionLT(10, 5))) {
-        // PC-relative references to external symbols should go through $stub,
-        // unless we're building with the leopard linker or later, which
-        // automatically synthesizes these stubs.
-        OpFlags = X86II::MO_DARWIN_STUB;
-      } else if (Subtarget.isPICStyleRIPRel() && isa<Function>(GV) &&
-                 cast<Function>(GV)->hasFnAttribute(Attribute::NonLazyBind)) {
-        // If the function is marked as non-lazy, generate an indirect call
-        // which loads from the GOT directly. This avoids runtime overhead
-        // at the cost of eager binding (and one extra byte of encoding).
-        OpFlags = X86II::MO_GOTPCREL;
-        WrapperKind = X86ISD::WrapperRIP;
-        ExtraLoad = true;
-      }
+      unsigned char OpFlags =
+          Subtarget.classifyGlobalFunctionReference(GV, DAG.getTarget());
 
       Callee = DAG.getTargetGlobalAddress(
           GV, dl, getPointerTy(DAG.getDataLayout()), G->getOffset(), OpFlags);
 
-      // Add a wrapper if needed.
-      if (WrapperKind != ISD::DELETED_NODE)
+      if (OpFlags == X86II::MO_GOTPCREL) {
+        // Add a wrapper.
         Callee = DAG.getNode(X86ISD::WrapperRIP, dl,
-                             getPointerTy(DAG.getDataLayout()), Callee);
-      // Add extra indirection if needed.
-      if (ExtraLoad)
+          getPointerTy(DAG.getDataLayout()), Callee);
+        // Add extra indirection
         Callee = DAG.getLoad(
-            getPointerTy(DAG.getDataLayout()), dl, DAG.getEntryNode(), Callee,
-            MachinePointerInfo::getGOT(DAG.getMachineFunction()), false, false,
-            false, 0);
+          getPointerTy(DAG.getDataLayout()), dl, DAG.getEntryNode(), Callee,
+          MachinePointerInfo::getGOT(DAG.getMachineFunction()), false, false,
+          false, 0);
+      }
     }
   } else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     unsigned char OpFlags = 0;
@@ -3755,10 +3612,11 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
                                   RetCC_X86, RetCC_X86))
     return false;
   // The callee has to preserve all registers the caller needs to preserve.
+  const X86RegisterInfo *TRI = Subtarget.getRegisterInfo();
+  const uint32_t *CallerPreserved = TRI->getCallPreservedMask(MF, CallerCC);
   if (!CCMatch) {
-    const X86RegisterInfo *TRI = Subtarget.getRegisterInfo();
-    if (!TRI->regmaskSubsetEqual(TRI->getCallPreservedMask(MF, CallerCC),
-                                 TRI->getCallPreservedMask(MF, CalleeCC)))
+    const uint32_t *CalleePreserved = TRI->getCallPreservedMask(MF, CalleeCC);
+    if (!TRI->regmaskSubsetEqual(CallerPreserved, CalleePreserved))
       return false;
   }
 
@@ -3828,6 +3686,10 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
         }
       }
     }
+
+    const MachineRegisterInfo &MRI = MF.getRegInfo();
+    if (!parametersInCSRMatch(MRI, CallerPreserved, ArgLocs, OutVals))
+      return false;
   }
 
   bool CalleeWillPop =
@@ -3893,6 +3755,7 @@ static bool isTargetShuffle(unsigned Opcode) {
   case X86ISD::VPERMILPV:
   case X86ISD::VPERM2X128:
   case X86ISD::VPERMI:
+  case X86ISD::VPPERM:
   case X86ISD::VPERMV:
   case X86ISD::VPERMV3:
   case X86ISD::VZEXT_MOVL:
@@ -4845,6 +4708,7 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
   if (MaskNode.getOpcode() != ISD::BUILD_VECTOR)
     return false;
 
+  // TODO: Handle (MaskEltSizeInBits % VT.getScalarSizeInBits()) == 0
   if ((VT.getScalarSizeInBits() % MaskEltSizeInBits) != 0)
     return false;
   unsigned ElementSplit = VT.getScalarSizeInBits() / MaskEltSizeInBits;
@@ -5030,6 +4894,20 @@ static bool getTargetShuffleMask(SDNode *N, MVT VT, bool AllowSentinelZero,
   case X86ISD::MOVLPS:
     // Not yet implemented
     return false;
+  case X86ISD::VPPERM: {
+    IsUnary = IsFakeUnary = N->getOperand(0) == N->getOperand(1);
+    SDValue MaskNode = N->getOperand(2);
+    SmallVector<uint64_t, 32> RawMask;
+    if (getTargetShuffleMaskIndices(MaskNode, 8, RawMask)) {
+      DecodeVPPERMMask(RawMask, Mask);
+      break;
+    }
+    if (auto *C = getTargetShuffleMaskConstant(MaskNode)) {
+      DecodeVPPERMMask(C, Mask);
+      break;
+    }
+    return false;
+  }
   case X86ISD::VPERMV: {
     IsUnary = true;
     // Unlike most shuffle nodes, VPERMV's mask operand is operand 0.
@@ -10602,6 +10480,10 @@ static SDValue lowerV2X128VectorShuffle(SDLoc DL, MVT VT, SDValue V1,
     // subvector.
     bool OnlyUsesV1 = isShuffleEquivalent(V1, V2, Mask, {0, 1, 0, 1});
     if (OnlyUsesV1 || isShuffleEquivalent(V1, V2, Mask, {0, 1, 4, 5})) {
+      // With AVX2 we should use VPERMQ/VPERMPD to allow memory folding.
+      if (Subtarget.hasAVX2() && isSingleInputShuffleMask(Mask))
+        return SDValue();
+
       MVT SubVT = MVT::getVectorVT(VT.getVectorElementType(),
                                    VT.getVectorNumElements() / 2);
       SDValue LoV = DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, SubVT, V1,
@@ -11054,8 +10936,9 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   SmallVector<int, 4> WidenedMask;
   if (canWidenShuffleElements(Mask, WidenedMask))
-    return lowerV2X128VectorShuffle(DL, MVT::v4f64, V1, V2, Mask, Subtarget,
-                                    DAG);
+    if (SDValue V = lowerV2X128VectorShuffle(DL, MVT::v4f64, V1, V2, Mask,
+                                             Subtarget, DAG))
+      return V;
 
   if (isSingleInputShuffleMask(Mask)) {
     // Check for being able to broadcast a single element.
@@ -11149,8 +11032,9 @@ static SDValue lowerV4I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   SmallVector<int, 4> WidenedMask;
   if (canWidenShuffleElements(Mask, WidenedMask))
-    return lowerV2X128VectorShuffle(DL, MVT::v4i64, V1, V2, Mask, Subtarget,
-                                    DAG);
+    if (SDValue V = lowerV2X128VectorShuffle(DL, MVT::v4i64, V1, V2, Mask,
+                                             Subtarget, DAG))
+      return V;
 
   if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v4i64, V1, V2, Mask,
                                                 Subtarget, DAG))
@@ -14874,19 +14758,19 @@ SDValue X86TargetLowering::LowerToBT(SDValue And, ISD::CondCode CC,
     std::swap(Op0, Op1);
   if (Op0.getOpcode() == ISD::SHL) {
     if (isOneConstant(Op0.getOperand(0))) {
-        // If we looked past a truncate, check that it's only truncating away
-        // known zeros.
-        unsigned BitWidth = Op0.getValueSizeInBits();
-        unsigned AndBitWidth = And.getValueSizeInBits();
-        if (BitWidth > AndBitWidth) {
-          APInt Zeros, Ones;
-          DAG.computeKnownBits(Op0, Zeros, Ones);
-          if (Zeros.countLeadingOnes() < BitWidth - AndBitWidth)
-            return SDValue();
-        }
-        LHS = Op1;
-        RHS = Op0.getOperand(1);
+      // If we looked past a truncate, check that it's only truncating away
+      // known zeros.
+      unsigned BitWidth = Op0.getValueSizeInBits();
+      unsigned AndBitWidth = And.getValueSizeInBits();
+      if (BitWidth > AndBitWidth) {
+        APInt Zeros, Ones;
+        DAG.computeKnownBits(Op0, Zeros, Ones);
+        if (Zeros.countLeadingOnes() < BitWidth - AndBitWidth)
+          return SDValue();
       }
+      LHS = Op1;
+      RHS = Op0.getOperand(1);
+    }
   } else if (Op1.getOpcode() == ISD::Constant) {
     ConstantSDNode *AndRHS = cast<ConstantSDNode>(Op1);
     uint64_t AndRHSVal = AndRHS->getZExtValue();
@@ -20642,7 +20526,7 @@ static SDValue LowerVectorCTPOPInRegLUT(SDValue Op, SDLoc DL,
   int NumByteElts = VecSize / 8;
   MVT ByteVecVT = MVT::getVectorVT(MVT::i8, NumByteElts);
   SDValue In = DAG.getBitcast(ByteVecVT, Op);
-  SmallVector<SDValue, 16> LUTVec;
+  SmallVector<SDValue, 64> LUTVec;
   for (int i = 0; i < NumByteElts; ++i)
     LUTVec.push_back(DAG.getConstant(LUT[i % 16], DL, MVT::i8));
   SDValue InRegLUT = DAG.getNode(ISD::BUILD_VECTOR, DL, ByteVecVT, LUTVec);
@@ -20738,8 +20622,7 @@ static SDValue LowerVectorCTPOPBitmath(SDValue Op, SDLoc DL,
 static SDValue LowerVectorCTPOP(SDValue Op, const X86Subtarget &Subtarget,
                                 SelectionDAG &DAG) {
   MVT VT = Op.getSimpleValueType();
-  // FIXME: Need to add AVX-512 support here!
-  assert((VT.is256BitVector() || VT.is128BitVector()) &&
+  assert((VT.is512BitVector() || VT.is256BitVector() || VT.is128BitVector()) &&
          "Unknown CTPOP type to handle");
   SDLoc DL(Op.getNode());
   SDValue Op0 = Op.getOperand(0);
@@ -20756,6 +20639,18 @@ static SDValue LowerVectorCTPOP(SDValue Op, const X86Subtarget &Subtarget,
     // Extract each 128-bit vector, compute pop count and concat the result.
     SDValue LHS = extract128BitVector(Op0, 0, DAG, DL);
     SDValue RHS = extract128BitVector(Op0, NumElems / 2, DAG, DL);
+
+    return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT,
+                       LowerVectorCTPOPInRegLUT(LHS, DL, Subtarget, DAG),
+                       LowerVectorCTPOPInRegLUT(RHS, DL, Subtarget, DAG));
+  }
+
+  if (VT.is512BitVector() && !Subtarget.hasBWI()) {
+    unsigned NumElems = VT.getVectorNumElements();
+
+    // Extract each 256-bit vector, compute pop count and concat the result.
+    SDValue LHS = extract256BitVector(Op0, 0, DAG, DL);
+    SDValue RHS = extract256BitVector(Op0, NumElems / 2, DAG, DL);
 
     return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT,
                        LowerVectorCTPOPInRegLUT(LHS, DL, Subtarget, DAG),
@@ -29710,6 +29605,7 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case X86ISD::MOVDDUP:
   case X86ISD::MOVSS:
   case X86ISD::MOVSD:
+  case X86ISD::VPPERM:
   case X86ISD::VPERMV3:
   case X86ISD::VPERMILPI:
   case X86ISD::VPERMILPV:

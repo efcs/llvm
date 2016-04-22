@@ -150,6 +150,74 @@ define i1 @andn_cmp(i32 %x, i32 %y) {
   ret i1 %cmp
 }
 
+; TODO: Recognize a disguised andn in the following 4 tests.
+define i1 @and_cmp1(i32 %x, i32 %y) {
+; CHECK-LABEL: and_cmp1:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andl %esi, %edi
+; CHECK-NEXT:    cmpl %esi, %edi
+; CHECK-NEXT:    sete %al
+; CHECK-NEXT:    retq
+;
+  %and = and i32 %x, %y
+  %cmp = icmp eq i32 %and, %y
+  ret i1 %cmp
+}
+
+define i1 @and_cmp2(i32 %x, i32 %y) {
+; CHECK-LABEL: and_cmp2:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andl %esi, %edi
+; CHECK-NEXT:    cmpl %esi, %edi
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    retq
+;
+  %and = and i32 %y, %x
+  %cmp = icmp ne i32 %and, %y
+  ret i1 %cmp
+}
+
+define i1 @and_cmp3(i32 %x, i32 %y) {
+; CHECK-LABEL: and_cmp3:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andl %esi, %edi
+; CHECK-NEXT:    cmpl %edi, %esi
+; CHECK-NEXT:    sete %al
+; CHECK-NEXT:    retq
+;
+  %and = and i32 %x, %y
+  %cmp = icmp eq i32 %y, %and
+  ret i1 %cmp
+}
+
+define i1 @and_cmp4(i32 %x, i32 %y) {
+; CHECK-LABEL: and_cmp4:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andl %esi, %edi
+; CHECK-NEXT:    cmpl %edi, %esi
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    retq
+;
+  %and = and i32 %y, %x
+  %cmp = icmp ne i32 %y, %and
+  ret i1 %cmp
+}
+
+; A mask and compare against constant is ok for an 'andn' too
+; even though the BMI instruction doesn't have an immediate form.
+define i1 @and_cmp_const(i32 %x) {
+; CHECK-LABEL: and_cmp_const:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andl $43, %edi
+; CHECK-NEXT:    cmpl $43, %edi
+; CHECK-NEXT:    sete %al
+; CHECK-NEXT:    retq
+;
+  %and = and i32 %x, 43
+  %cmp = icmp eq i32 %and, 43
+  ret i1 %cmp
+}
+
 ; Don't choose a 'test' if an 'andn' can be used.
 define i1 @andn_cmp_swap_ops(i64 %x, i64 %y) {
 ; CHECK-LABEL: andn_cmp_swap_ops:
@@ -243,7 +311,7 @@ define i64 @bextr64b(i64 %x)  uwtable  ssp {
 ; CHECK-LABEL: bextr64b:
 ; CHECK:       # BB#0:
 ; CHECK-NEXT:    movl $3076, %eax # imm = 0xC04
-; CHECK-NEXT:    bextrq %rax, %rdi, %rax
+; CHECK-NEXT:    bextrl %eax, %edi, %eax
 ; CHECK-NEXT:    retq
 ;
   %1 = lshr i64 %x, 4
@@ -255,7 +323,7 @@ define i64 @bextr64b_load(i64* %x) {
 ; CHECK-LABEL: bextr64b_load:
 ; CHECK:       # BB#0:
 ; CHECK-NEXT:    movl $3076, %eax # imm = 0xC04
-; CHECK-NEXT:    bextrq %rax, (%rdi), %rax
+; CHECK-NEXT:    bextrl %eax, (%rdi), %eax
 ; CHECK-NEXT:    retq
 ;
   %1 = load i64, i64* %x, align 8

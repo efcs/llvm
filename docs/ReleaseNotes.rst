@@ -38,6 +38,8 @@ Non-comprehensive list of changes in this release
   (other than GlobalValue). This is intended to be used in release builds by
   clients that are interested in saving CPU/memory as much as possible.
 
+* There is no longer a "global context" available in LLVM, except for the C API.
+
 * .. note about autoconf build having been removed.
 
 * .. note about C API functions LLVMParseBitcode,
@@ -51,6 +53,9 @@ Non-comprehensive list of changes in this release
 
 * The C API function LLVMGetDataLayout is deprecated
   in favor of LLVMGetDataLayoutStr.
+
+* The C API enum LLVMAttribute is deprecated in favor of
+  LLVMGetAttrKindID.
 
 * ``TargetFrameLowering::eliminateCallFramePseudoInstr`` now returns an
   iterator to the next instruction instead of ``void``. Targets that previously

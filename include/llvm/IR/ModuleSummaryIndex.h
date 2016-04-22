@@ -20,11 +20,9 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <array>
 
@@ -92,7 +90,7 @@ struct ValueInfo {
 class GlobalValueSummary {
 public:
   /// \brief Sububclass discriminator (for dyn_cast<> et al.)
-  enum SummaryKind { FunctionKind, GlobalVarKind };
+  enum SummaryKind { AliasKind, FunctionKind, GlobalVarKind };
 
 private:
   /// Kind of summary for use in dyn_cast<> et al.
@@ -161,6 +159,32 @@ public:
   /// Return the list of values referenced by this global value definition.
   std::vector<ValueInfo> &refs() { return RefEdgeList; }
   const std::vector<ValueInfo> &refs() const { return RefEdgeList; }
+};
+
+/// \brief Alias summary information.
+class AliasSummary : public GlobalValueSummary {
+  GlobalValueSummary *AliaseeSummary;
+
+public:
+  /// Summary constructors.
+  AliasSummary(GlobalValue::LinkageTypes Linkage)
+      : GlobalValueSummary(AliasKind, Linkage) {}
+
+  /// Check if this is an alias summary.
+  static bool classof(const GlobalValueSummary *GVS) {
+    return GVS->getSummaryKind() == AliasKind;
+  }
+
+  void setAliasee(GlobalValueSummary *Aliasee) { AliaseeSummary = Aliasee; }
+
+  const GlobalValueSummary &getAliasee() const {
+    return const_cast<AliasSummary *>(this)->getAliasee();
+  }
+
+  GlobalValueSummary &getAliasee() {
+    assert(AliaseeSummary && "Unexpected missing aliasee summary");
+    return *AliaseeSummary;
+  }
 };
 
 /// \brief Function summary information to aid decisions and implementation of
@@ -403,10 +427,10 @@ public:
 
   /// Convenience method for creating a promoted global name
   /// for the given value name of a local, and its original module's ID.
-  static std::string getGlobalNameForLocal(StringRef Name, uint64_t ModId) {
+  static std::string getGlobalNameForLocal(StringRef Name, ModuleHash ModHash) {
     SmallString<256> NewName(Name);
     NewName += ".llvm.";
-    raw_svector_ostream(NewName) << ModId;
+    NewName += utohexstr(ModHash[0]); // Take the first 32 bits
     return NewName.str();
   }
 
@@ -433,6 +457,18 @@ public:
   /// but if there was only one module or this was the first module we might
   /// not invoke mergeFrom.
   void removeEmptySummaryEntries();
+
+  /// Collect for the given module the list of function it defines
+  /// (GUID -> Summary).
+  void collectDefinedFunctionsForModule(
+      StringRef ModulePath,
+      std::map<GlobalValue::GUID, GlobalValueSummary *> &FunctionInfoMap) const;
+
+  /// Collect for each module the list of Summaries it defines (GUID ->
+  /// Summary).
+  void collectDefinedGVSummariesPerModule(
+      StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>> &
+          ModuleToDefinedGVSummaries) const;
 };
 
 } // End llvm namespace

@@ -67,6 +67,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Statepoint.h"
 #include "llvm/Pass.h"
@@ -82,14 +83,14 @@ static cl::opt<bool> VerifyDebugInfo("verify-debug-info", cl::init(true));
 
 namespace {
 struct VerifierSupport {
-  raw_ostream &OS;
-  const Module *M;
+  raw_ostream *OS;
+  const Module *M = nullptr;
+  Optional<ModuleSlotTracker> MST;
 
-  /// \brief Track the brokenness of the module while recursively visiting.
-  bool Broken;
+  /// Track the brokenness of the module while recursively visiting.
+  bool Broken = false;
 
-  explicit VerifierSupport(raw_ostream &OS)
-      : OS(OS), M(nullptr), Broken(false) {}
+  explicit VerifierSupport(raw_ostream *OS) : OS(OS) {}
 
 private:
   template <class NodeTy> void Write(const ilist_iterator<NodeTy> &I) {
@@ -99,17 +100,18 @@ private:
   void Write(const Module *M) {
     if (!M)
       return;
-    OS << "; ModuleID = '" << M->getModuleIdentifier() << "'\n";
+    *OS << "; ModuleID = '" << M->getModuleIdentifier() << "'\n";
   }
 
   void Write(const Value *V) {
     if (!V)
       return;
     if (isa<Instruction>(V)) {
-      OS << *V << '\n';
+      V->print(*OS, *MST);
+      *OS << '\n';
     } else {
-      V->printAsOperand(OS, true, M);
-      OS << '\n';
+      V->printAsOperand(*OS, true, *MST);
+      *OS << '\n';
     }
   }
   void Write(ImmutableCallSite CS) {
@@ -119,8 +121,8 @@ private:
   void Write(const Metadata *MD) {
     if (!MD)
       return;
-    MD->print(OS, M);
-    OS << '\n';
+    MD->print(*OS, *MST, M);
+    *OS << '\n';
   }
 
   template <class T> void Write(const MDTupleTypedArrayWrapper<T> &MD) {
@@ -130,20 +132,20 @@ private:
   void Write(const NamedMDNode *NMD) {
     if (!NMD)
       return;
-    NMD->print(OS);
-    OS << '\n';
+    NMD->print(*OS, *MST);
+    *OS << '\n';
   }
 
   void Write(Type *T) {
     if (!T)
       return;
-    OS << ' ' << *T;
+    *OS << ' ' << *T;
   }
 
   void Write(const Comdat *C) {
     if (!C)
       return;
-    OS << *C;
+    *OS << *C;
   }
 
   template <typename T> void Write(ArrayRef<T> Vs) {
@@ -165,7 +167,8 @@ public:
   /// This provides a nice place to put a breakpoint if you want to see why
   /// something is not correct.
   void CheckFailed(const Twine &Message) {
-    OS << Message << '\n';
+    if (OS)
+      *OS << Message << '\n';
     Broken = true;
   }
 
@@ -176,7 +179,8 @@ public:
   template <typename T1, typename... Ts>
   void CheckFailed(const Twine &Message, const T1 &V1, const Ts &... Vs) {
     CheckFailed(Message);
-    WriteTs(V1, Vs...);
+    if (OS)
+      WriteTs(V1, Vs...);
   }
 };
 
@@ -228,30 +232,42 @@ class Verifier : public InstVisitor<Verifier>, VerifierSupport {
 
   void checkAtomicMemAccessSize(const Module *M, Type *Ty,
                                 const Instruction *I);
+
+  void updateModule(const Module *NewM) {
+    if (M == NewM)
+      return;
+    MST.emplace(NewM);
+    M = NewM;
+  }
+
 public:
-  explicit Verifier(raw_ostream &OS)
+  explicit Verifier(raw_ostream *OS)
       : VerifierSupport(OS), Context(nullptr), LandingPadResultTy(nullptr),
         SawFrameEscape(false) {}
 
   bool verify(const Function &F) {
-    M = F.getParent();
+    updateModule(F.getParent());
     Context = &M->getContext();
 
     // First ensure the function is well-enough formed to compute dominance
     // information.
     if (F.empty()) {
-      OS << "Function '" << F.getName()
-         << "' does not contain an entry block!\n";
+      if (OS)
+        *OS << "Function '" << F.getName()
+            << "' does not contain an entry block!\n";
       return false;
     }
     for (const BasicBlock &BB : F) {
-      if (BB.empty() || !BB.back().isTerminator()) {
-        OS << "Basic Block in function '" << F.getName()
-           << "' does not have terminator!\n";
-        BB.printAsOperand(OS, true);
-        OS << "\n";
-        return false;
+      if (!BB.empty() && BB.back().isTerminator())
+        continue;
+
+      if (OS) {
+        *OS << "Basic Block in function '" << F.getName()
+            << "' does not have terminator!\n";
+        BB.printAsOperand(*OS, true, *MST);
+        *OS << "\n";
       }
+      return false;
     }
 
     // Now directly compute a dominance tree. We don't rely on the pass
@@ -274,7 +290,7 @@ public:
   }
 
   bool verify(const Module &M) {
-    this->M = &M;
+    updateModule(&M);
     Context = &M.getContext();
     Broken = false;
 
@@ -860,7 +876,7 @@ void Verifier::visitDIDerivedType(const DIDerivedType &N) {
            N.getExtraData());
   }
 
-  Assert(isScopeRef(N, N.getScope()), "invalid scope", &N, N.getScope());
+  Assert(isScopeRef(N, N.getScope()), "invalid scope", &N, N.getRawScope());
   Assert(isTypeRef(N, N.getBaseType()), "invalid base type", &N,
          N.getBaseType());
 }
@@ -890,7 +906,7 @@ void Verifier::visitDICompositeType(const DICompositeType &N) {
              N.getTag() == dwarf::DW_TAG_class_type,
          "invalid tag", &N);
 
-  Assert(isScopeRef(N, N.getScope()), "invalid scope", &N, N.getScope());
+  Assert(isScopeRef(N, N.getScope()), "invalid scope", &N, N.getRawScope());
   Assert(isTypeRef(N, N.getBaseType()), "invalid base type", &N,
          N.getBaseType());
 
@@ -951,13 +967,10 @@ void Verifier::visitDICompileUnit(const DICompileUnit &N) {
   if (auto *Array = N.getRawRetainedTypes()) {
     Assert(isa<MDTuple>(Array), "invalid retained type list", &N, Array);
     for (Metadata *Op : N.getRetainedTypes()->operands()) {
-      Assert(Op && isa<DIType>(Op), "invalid retained type", &N, Op);
-    }
-  }
-  if (auto *Array = N.getRawSubprograms()) {
-    Assert(isa<MDTuple>(Array), "invalid subprogram list", &N, Array);
-    for (Metadata *Op : N.getSubprograms()->operands()) {
-      Assert(Op && isa<DISubprogram>(Op), "invalid subprogram ref", &N, Op);
+      Assert(Op && (isa<DIType>(Op) ||
+                    (isa<DISubprogram>(Op) &&
+                     cast<DISubprogram>(Op)->isDefinition() == false)),
+             "invalid retained type", &N, Op);
     }
   }
   if (auto *Array = N.getRawGlobalVariables()) {
@@ -994,10 +1007,9 @@ void Verifier::visitDISubprogram(const DISubprogram &N) {
          N.getRawContainingType());
   if (auto *Params = N.getRawTemplateParams())
     visitTemplateParams(N, *Params);
-  if (auto *S = N.getRawDeclaration()) {
+  if (auto *S = N.getRawDeclaration())
     Assert(isa<DISubprogram>(S) && !cast<DISubprogram>(S)->isDefinition(),
            "invalid subprogram declaration", &N, S);
-  }
   if (auto *RawVars = N.getRawVariables()) {
     auto *Vars = dyn_cast<MDTuple>(RawVars);
     Assert(Vars, "invalid variable list", &N, RawVars);
@@ -1009,8 +1021,16 @@ void Verifier::visitDISubprogram(const DISubprogram &N) {
   Assert(!hasConflictingReferenceFlags(N.getFlags()), "invalid reference flags",
          &N);
 
-  if (N.isDefinition())
+  auto *Unit = N.getRawUnit();
+  if (N.isDefinition()) {
+    // Subprogram definitions (not part of the type hierarchy).
     Assert(N.isDistinct(), "subprogram definitions must be distinct", &N);
+    Assert(Unit, "subprogram definitions must have a compile unit", &N);
+    Assert(isa<DICompileUnit>(Unit), "invalid unit type", &N, Unit);
+  } else {
+    // Subprogram declarations (part of the type hierarchy).
+    Assert(!Unit, "subprogram declarations must not have a compile unit", &N);
+  }
 }
 
 void Verifier::visitDILexicalBlockBase(const DILexicalBlockBase &N) {
@@ -1313,7 +1333,8 @@ void Verifier::verifyAttributeTypes(AttributeSet Attrs, unsigned Idx,
         I->getKindAsEnum() == Attribute::ArgMemOnly ||
         I->getKindAsEnum() == Attribute::NoRecurse ||
         I->getKindAsEnum() == Attribute::InaccessibleMemOnly ||
-        I->getKindAsEnum() == Attribute::InaccessibleMemOrArgMemOnly) {
+        I->getKindAsEnum() == Attribute::InaccessibleMemOrArgMemOnly ||
+        I->getKindAsEnum() == Attribute::AllocSize) {
       if (!isFunction) {
         CheckFailed("Attribute '" + I->getAsString() +
                     "' only applies to functions!", V);
@@ -1545,6 +1566,33 @@ void Verifier::verifyFunctionAttrs(FunctionType *FT, AttributeSet Attrs,
     Assert(GV->hasUnnamedAddr(),
            "Attribute 'jumptable' requires 'unnamed_addr'", V);
   }
+
+  if (Attrs.hasAttribute(AttributeSet::FunctionIndex, Attribute::AllocSize)) {
+    std::pair<unsigned, Optional<unsigned>> Args =
+        Attrs.getAllocSizeArgs(AttributeSet::FunctionIndex);
+
+    auto CheckParam = [&](StringRef Name, unsigned ParamNo) {
+      if (ParamNo >= FT->getNumParams()) {
+        CheckFailed("'allocsize' " + Name + " argument is out of bounds", V);
+        return false;
+      }
+
+      if (!FT->getParamType(ParamNo)->isIntegerTy()) {
+        CheckFailed("'allocsize' " + Name +
+                        " argument must refer to an integer parameter",
+                    V);
+        return false;
+      }
+
+      return true;
+    };
+
+    if (!CheckParam("element size", Args.first))
+      return;
+
+    if (Args.second && !CheckParam("number of elements", *Args.second))
+      return;
+  }
 }
 
 void Verifier::verifyFunctionMetadata(
@@ -1746,11 +1794,11 @@ void Verifier::verifyStatepoint(ImmutableCallSite CS) {
     const CallInst *Call = dyn_cast<const CallInst>(U);
     Assert(Call, "illegal use of statepoint token", &CI, U);
     if (!Call) continue;
-    Assert(isa<GCRelocateInst>(Call) || isGCResult(Call),
+    Assert(isa<GCRelocateInst>(Call) || isa<GCResultInst>(Call),
            "gc.result or gc.relocate are the only value uses"
            "of a gc.statepoint",
            &CI, U);
-    if (isGCResult(Call)) {
+    if (isa<GCResultInst>(Call)) {
       Assert(Call->getArgOperand(0) == &CI,
              "gc.result connected to wrong gc.statepoint", &CI, Call);
     } else if (isa<GCRelocateInst>(Call)) {
@@ -1994,6 +2042,8 @@ void Verifier::visitFunction(const Function &F) {
   auto *N = F.getSubprogram();
   if (!N)
     return;
+
+  visitDISubprogram(*N);
 
   // Check that all !dbg attachments lead to back to N (or, at least, another
   // subprogram that describes the same function).
@@ -4391,7 +4441,7 @@ void Verifier::verifyTypeRefs() {
     auto *Array = CU->getRawRetainedTypes();
     if (!Array || !isa<MDTuple>(Array))
       continue;
-    for (DIType *Op : CU->getRetainedTypes())
+    for (DIScope *Op : CU->getRetainedTypes())
       if (auto *T = dyn_cast_or_null<DICompositeType>(Op))
         if (auto *S = T->getRawIdentifier()) {
           UnresolvedTypeRefs.erase(S);
@@ -4435,8 +4485,8 @@ bool llvm::verifyFunction(const Function &f, raw_ostream *OS) {
   Function &F = const_cast<Function &>(f);
   assert(!F.isDeclaration() && "Cannot verify external functions");
 
-  raw_null_ostream NullStr;
-  Verifier V(OS ? *OS : NullStr);
+  // Don't use a raw_null_ostream.  Printing IR is expensive.
+  Verifier V(OS);
 
   // Note that this function's return value is inverted from what you would
   // expect of a function called "verify".
@@ -4444,8 +4494,8 @@ bool llvm::verifyFunction(const Function &f, raw_ostream *OS) {
 }
 
 bool llvm::verifyModule(const Module &M, raw_ostream *OS) {
-  raw_null_ostream NullStr;
-  Verifier V(OS ? *OS : NullStr);
+  // Don't use a raw_null_ostream.  Printing IR is expensive.
+  Verifier V(OS);
 
   bool Broken = false;
   for (const Function &F : M)
@@ -4464,11 +4514,11 @@ struct VerifierLegacyPass : public FunctionPass {
   Verifier V;
   bool FatalErrors;
 
-  VerifierLegacyPass() : FunctionPass(ID), V(dbgs()), FatalErrors(true) {
+  VerifierLegacyPass() : FunctionPass(ID), V(&dbgs()), FatalErrors(true) {
     initializeVerifierLegacyPassPass(*PassRegistry::getPassRegistry());
   }
   explicit VerifierLegacyPass(bool FatalErrors)
-      : FunctionPass(ID), V(dbgs()), FatalErrors(FatalErrors) {
+      : FunctionPass(ID), V(&dbgs()), FatalErrors(FatalErrors) {
     initializeVerifierLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 

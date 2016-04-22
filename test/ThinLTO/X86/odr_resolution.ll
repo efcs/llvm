@@ -1,6 +1,6 @@
 ; Do setup work for all below tests: generate bitcode and combined index
-; RUN: llvm-as -module-summary %s -o %t.bc
-; RUN: llvm-as -module-summary %p/Inputs/odr_resolution.ll -o %t2.bc
+; RUN: opt -module-summary %s -o %t.bc
+; RUN: opt -module-summary %p/Inputs/odr_resolution.ll -o %t2.bc
 ; RUN: llvm-lto -thinlto-action=thinlink -o %t3.bc %t.bc %t2.bc
 
 ; Verify that only one ODR is selected across modules, but non ODR are not affected.
@@ -10,8 +10,8 @@
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.11.0"
 
-; Alias are not optimized
-; MOD1: @linkoncealias = linkonce_odr alias void (), void ()* @linkonceodrfuncwithalias
+; Alias are resolved, but can't be turned into "available_externally"
+; MOD1: @linkoncealias = weak_odr alias void (), void ()* @linkonceodrfuncwithalias
 ; MOD2: @linkoncealias = linkonce_odr alias void (), void ()* @linkonceodrfuncwithalias
 @linkoncealias = linkonce_odr alias void (), void ()* @linkonceodrfuncwithalias
 

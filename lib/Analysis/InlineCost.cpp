@@ -655,6 +655,10 @@ void CallAnalyzer::updateThreshold(CallSite CS, Function &Callee) {
        ColdThreshold.getNumOccurrences() > 0) &&
       ColdCallee && ColdThreshold < Threshold)
     Threshold = ColdThreshold;
+
+  // Finally, take the target-specific inlining threshold multiplier into
+  // account.
+  Threshold *= TTI.getInliningThresholdMultiplier();
 }
 
 bool CallAnalyzer::visitCmpInst(CmpInst &I) {
@@ -1337,20 +1341,8 @@ bool CallAnalyzer::analyzeCall(CallSite CS) {
 
     // Analyze the cost of this block. If we blow through the threshold, this
     // returns false, and we can bail on out.
-    if (!analyzeBlock(BB, EphValues)) {
-      if (IsRecursiveCall || ExposesReturnsTwice || HasDynamicAlloca ||
-          HasIndirectBr || HasFrameEscape)
-        return false;
-
-      // If the caller is a recursive function then we don't want to inline
-      // functions which allocate a lot of stack space because it would increase
-      // the caller stack usage dramatically.
-      if (IsCallerRecursive &&
-          AllocatedSize > InlineConstants::TotalAllocaSizeRecursiveCaller)
-        return false;
-
-      break;
-    }
+    if (!analyzeBlock(BB, EphValues))
+      return false;
 
     TerminatorInst *TI = BB->getTerminator();
 

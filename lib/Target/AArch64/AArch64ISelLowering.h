@@ -400,6 +400,10 @@ public:
       MachineBasicBlock *Entry,
       const SmallVectorImpl<MachineBasicBlock *> &Exits) const override;
 
+  bool supportSwiftError() const override {
+    return true;
+  }
+
 private:
   bool isExtFreeImpl(const Instruction *Ext) const override;
 
@@ -407,7 +411,7 @@ private:
   /// make the right decision when generating code for different targets.
   const AArch64Subtarget *Subtarget;
 
-  void addTypeForNEON(EVT VT, EVT PromotedBitwiseVT);
+  void addTypeForNEON(MVT VT, MVT PromotedBitwiseVT);
   void addDRTypeForNEON(MVT VT);
   void addQRTypeForNEON(MVT VT);
 

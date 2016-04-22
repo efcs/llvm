@@ -38,7 +38,6 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
-#include <queue>
 
 using namespace llvm;
 
@@ -62,9 +61,18 @@ static cl::opt<unsigned> HugeRegion("dag-maps-huge-region", cl::Hidden,
                              "prior to scheduling, at which point a trade-off "
                              "is made to avoid excessive compile time."));
 
-static cl::opt<unsigned> ReductionSize("dag-maps-reduction-size", cl::Hidden,
+static cl::opt<unsigned> ReductionSize(
+    "dag-maps-reduction-size", cl::Hidden,
     cl::desc("A huge scheduling region will have maps reduced by this many "
-	     "nodes at a time. Defaults to HugeRegion / 2."));
+             "nodes at a time. Defaults to HugeRegion / 2."));
+
+static unsigned getReductionSize() {
+  // Always reduce a huge region with half of the elements, except
+  // when user sets this number explicitly.
+  if (ReductionSize.getNumOccurrences() == 0)
+    return HugeRegion / 2;
+  return ReductionSize;
+}
 
 static void dumpSUList(ScheduleDAGInstrs::SUList &L) {
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
@@ -159,46 +167,46 @@ static void getUnderlyingObjectsForInstr(const MachineInstr *MI,
                                          const MachineFrameInfo *MFI,
                                          UnderlyingObjectsVector &Objects,
                                          const DataLayout &DL) {
-  if (!MI->hasOneMemOperand() ||
-      (!(*MI->memoperands_begin())->getValue() &&
-       !(*MI->memoperands_begin())->getPseudoValue()) ||
-      (*MI->memoperands_begin())->isVolatile())
-    return;
+  auto allMMOsOkay = [&]() {
+    for (const MachineMemOperand *MMO : MI->memoperands()) {
+      if (MMO->isVolatile())
+        return false;
 
-  if (const PseudoSourceValue *PSV =
-      (*MI->memoperands_begin())->getPseudoValue()) {
-    // Function that contain tail calls don't have unique PseudoSourceValue
-    // objects. Two PseudoSourceValues might refer to the same or overlapping
-    // locations. The client code calling this function assumes this is not the
-    // case. So return a conservative answer of no known object.
-    if (MFI->hasTailCall())
-      return;
+      if (const PseudoSourceValue *PSV = MMO->getPseudoValue()) {
+        // Function that contain tail calls don't have unique PseudoSourceValue
+        // objects. Two PseudoSourceValues might refer to the same or
+        // overlapping locations. The client code calling this function assumes
+        // this is not the case. So return a conservative answer of no known
+        // object.
+        if (MFI->hasTailCall())
+          return false;
 
-    // For now, ignore PseudoSourceValues which may alias LLVM IR values
-    // because the code that uses this function has no way to cope with
-    // such aliases.
-    if (!PSV->isAliased(MFI)) {
-      bool MayAlias = PSV->mayAlias(MFI);
-      Objects.push_back(UnderlyingObjectsVector::value_type(PSV, MayAlias));
+        // For now, ignore PseudoSourceValues which may alias LLVM IR values
+        // because the code that uses this function has no way to cope with
+        // such aliases.
+        if (PSV->isAliased(MFI))
+          return false;
+
+        bool MayAlias = PSV->mayAlias(MFI);
+        Objects.push_back(UnderlyingObjectsVector::value_type(PSV, MayAlias));
+      } else if (const Value *V = MMO->getValue()) {
+        SmallVector<Value *, 4> Objs;
+        getUnderlyingObjects(V, Objs, DL);
+
+        for (Value *V : Objs) {
+          if (!isIdentifiedObject(V))
+            return false;
+
+          Objects.push_back(UnderlyingObjectsVector::value_type(V, true));
+        }
+      } else
+        return false;
     }
-    return;
-  }
+    return true;
+  };
 
-  const Value *V = (*MI->memoperands_begin())->getValue();
-  if (!V)
-    return;
-
-  SmallVector<Value *, 4> Objs;
-  getUnderlyingObjects(V, Objs, DL);
-
-  for (Value *V : Objs) {
-    if (!isIdentifiedObject(V)) {
-      Objects.clear();
-      return;
-    }
-
-    Objects.push_back(UnderlyingObjectsVector::value_type(V, true));
-  }
+  if (!allMMOsOkay())
+    Objects.clear();
 }
 
 void ScheduleDAGInstrs::startBlock(MachineBasicBlock *bb) {
@@ -878,11 +886,6 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
   // done.
   Value2SUsMap NonAliasStores, NonAliasLoads(1 /*TrueMemOrderLatency*/);
 
-  // Always reduce a huge region with half of the elements, except
-  // when user sets this number explicitly.
-  if (ReductionSize.getNumOccurrences() == 0)
-    ReductionSize = (HugeRegion / 2);
-
   // Remove any stale debug info; sometimes BuildSchedGraph is called again
   // without emitting the info from the previous call.
   DbgValues.clear();
@@ -1028,18 +1031,22 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
       } else {
         // Add precise dependencies against all previously seen memory
         // accesses mapped to the same Value(s).
-        for (auto &underlObj : Objs) {
-          ValueType V = underlObj.getPointer();
-          bool ThisMayAlias = underlObj.getInt();
-
-          Value2SUsMap &stores_ = (ThisMayAlias ? Stores : NonAliasStores);
+        for (const UnderlyingObject &UnderlObj : Objs) {
+          ValueType V = UnderlObj.getValue();
+          bool ThisMayAlias = UnderlObj.mayAlias();
 
           // Add dependencies to previous stores and loads mapped to V.
-          addChainDependencies(SU, stores_, V);
+          addChainDependencies(SU, (ThisMayAlias ? Stores : NonAliasStores), V);
           addChainDependencies(SU, (ThisMayAlias ? Loads : NonAliasLoads), V);
+        }
+        // Update the store map after all chains have been added to avoid adding
+        // self-loop edge if multiple underlying objects are present.
+        for (const UnderlyingObject &UnderlObj : Objs) {
+          ValueType V = UnderlObj.getValue();
+          bool ThisMayAlias = UnderlObj.mayAlias();
 
           // Map this store to V.
-          stores_.insert(SU, V);
+          (ThisMayAlias ? Stores : NonAliasStores).insert(SU, V);
         }
         // The store may have dependencies to unanalyzable loads and
         // stores.
@@ -1054,9 +1061,9 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
 
         Loads.insert(SU, UnknownValue);
       } else {
-        for (auto &underlObj : Objs) {
-          ValueType V = underlObj.getPointer();
-          bool ThisMayAlias = underlObj.getInt();
+        for (const UnderlyingObject &UnderlObj : Objs) {
+          ValueType V = UnderlObj.getValue();
+          bool ThisMayAlias = UnderlObj.mayAlias();
 
           // Add precise dependencies against all previously seen stores
           // mapping to the same Value(s).
@@ -1073,11 +1080,11 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
     // Reduce maps if they grow huge.
     if (Stores.size() + Loads.size() >= HugeRegion) {
       DEBUG(dbgs() << "Reducing Stores and Loads maps.\n";);
-      reduceHugeMemNodeMaps(Stores, Loads, ReductionSize);
+      reduceHugeMemNodeMaps(Stores, Loads, getReductionSize());
     }
     if (NonAliasStores.size() + NonAliasLoads.size() >= HugeRegion) {
       DEBUG(dbgs() << "Reducing NonAliasStores and NonAliasLoads maps.\n";);
-      reduceHugeMemNodeMaps(NonAliasStores, NonAliasLoads, ReductionSize);
+      reduceHugeMemNodeMaps(NonAliasStores, NonAliasLoads, getReductionSize());
     }
   }
 

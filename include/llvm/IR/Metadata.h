@@ -52,7 +52,7 @@ protected:
   enum StorageType { Uniqued, Distinct, Temporary };
 
   /// \brief Storage flag for non-uniqued, otherwise unowned, metadata.
-  unsigned Storage : 2;
+  unsigned char Storage;
   // TODO: expose remaining bits to subclasses.
 
   unsigned short SubclassData16;
@@ -60,39 +60,14 @@ protected:
 
 public:
   enum MetadataKind {
-    MDTupleKind,
-    DILocationKind,
-    GenericDINodeKind,
-    DISubrangeKind,
-    DIEnumeratorKind,
-    DIBasicTypeKind,
-    DIDerivedTypeKind,
-    DICompositeTypeKind,
-    DISubroutineTypeKind,
-    DIFileKind,
-    DICompileUnitKind,
-    DISubprogramKind,
-    DILexicalBlockKind,
-    DILexicalBlockFileKind,
-    DINamespaceKind,
-    DIModuleKind,
-    DITemplateTypeParameterKind,
-    DITemplateValueParameterKind,
-    DIGlobalVariableKind,
-    DILocalVariableKind,
-    DIExpressionKind,
-    DIObjCPropertyKind,
-    DIImportedEntityKind,
-    ConstantAsMetadataKind,
-    LocalAsMetadataKind,
-    MDStringKind,
-    DIMacroKind,
-    DIMacroFileKind
+#define HANDLE_METADATA_LEAF(CLASS) CLASS##Kind,
+#include "llvm/IR/Metadata.def"
   };
 
 protected:
   Metadata(unsigned ID, StorageType Storage)
       : SubclassID(ID), Storage(Storage), SubclassData16(0), SubclassData32(0) {
+    static_assert(sizeof(*this) == 8, "Metdata fields poorly packed");
   }
   ~Metadata() = default;
 
@@ -1294,6 +1269,8 @@ public:
   void setOperand(unsigned I, MDNode *New);
   StringRef getName() const;
   void print(raw_ostream &ROS, bool IsForDebug = false) const;
+  void print(raw_ostream &ROS, ModuleSlotTracker &MST,
+             bool IsForDebug = false) const;
   void dump() const;
 
   // ---------------------------------------------------------------------------

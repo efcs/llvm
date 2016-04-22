@@ -54,14 +54,19 @@ static cl::opt<unsigned>
 
 void MachineFunctionInitializer::anchor() {}
 
-void MachineFunctionProperties::print(raw_ostream &ROS) const {
+void MachineFunctionProperties::print(raw_ostream &ROS, bool OnlySet) const {
   // Leave this function even in NDEBUG as an out-of-line anchor.
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   for (BitVector::size_type i = 0; i < Properties.size(); ++i) {
     bool HasProperty = Properties[i];
+    if (OnlySet && !HasProperty)
+      continue;
     switch(static_cast<Property>(i)) {
       case Property::IsSSA:
         ROS << (HasProperty ? "SSA, " : "Post SSA, ");
+        break;
+      case Property::TracksLiveness:
+        ROS << (HasProperty ? "" : "not ") << "tracking liveness, ";
         break;
       case Property::AllVRegsAllocated:
         ROS << (HasProperty ? "AllVRegsAllocated" : "HasVRegs");
@@ -95,8 +100,9 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : Fn(F), Target(TM), STI(TM.getSubtargetImpl(*F)), Ctx(mmi.getContext()),
       MMI(mmi) {
-  // Assume the function starts in SSA form.
+  // Assume the function starts in SSA form with correct liveness.
   Properties.set(MachineFunctionProperties::Property::IsSSA);
+  Properties.set(MachineFunctionProperties::Property::TracksLiveness);
   if (STI->getRegisterInfo())
     RegInfo = new (Allocator) MachineRegisterInfo(this);
   else
@@ -404,12 +410,7 @@ void MachineFunction::print(raw_ostream &OS, SlotIndexes *Indexes) const {
   OS << "# Machine code for function " << getName() << ": ";
   OS << "Properties: <";
   getProperties().print(OS);
-  OS << "> : ";
-  if (RegInfo) {
-    if (!RegInfo->tracksLiveness())
-      OS << "not tracking liveness";
-  }
-  OS << '\n';
+  OS << ">\n";
 
   // Print Frame Information
   FrameInfo->print(*this, OS);
