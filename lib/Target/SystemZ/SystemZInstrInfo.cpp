@@ -160,6 +160,37 @@ void SystemZInstrInfo::expandZExtPseudo(MachineInstr *MI, unsigned LowOpcode,
   MI->eraseFromParent();
 }
 
+void SystemZInstrInfo::expandLoadStackGuard(MachineInstr *MI) const {
+  MachineBasicBlock *MBB = MI->getParent();
+  MachineFunction &MF = *MBB->getParent();
+  const unsigned Reg = MI->getOperand(0).getReg();
+
+  // Conveniently, all 4 instructions are cloned from LOAD_STACK_GUARD,
+  // so they already have operand 0 set to reg.
+
+  // ear <reg>, %a0
+  MachineInstr *Ear1MI = MF.CloneMachineInstr(MI);
+  MBB->insert(MI, Ear1MI);
+  Ear1MI->setDesc(get(SystemZ::EAR));
+  MachineInstrBuilder(MF, Ear1MI).addImm(0);
+
+  // sllg <reg>, <reg>, 32
+  MachineInstr *SllgMI = MF.CloneMachineInstr(MI);
+  MBB->insert(MI, SllgMI);
+  SllgMI->setDesc(get(SystemZ::SLLG));
+  MachineInstrBuilder(MF, SllgMI).addReg(Reg).addReg(0).addImm(32);
+
+  // ear <reg>, %a1
+  MachineInstr *Ear2MI = MF.CloneMachineInstr(MI);
+  MBB->insert(MI, Ear2MI);
+  Ear2MI->setDesc(get(SystemZ::EAR));
+  MachineInstrBuilder(MF, Ear2MI).addImm(1);
+
+  // lg <reg>, 40(<reg>)
+  MI->setDesc(get(SystemZ::LG));
+  MachineInstrBuilder(MF, MI).addReg(Reg).addImm(40).addReg(0);
+}
+
 // Emit a zero-extending move from 32-bit GPR SrcReg to 32-bit GPR
 // DestReg before MBBI in MBB.  Use LowLowOpcode when both DestReg and SrcReg
 // are low registers, otherwise use RISB[LH]G.  Size is the number of bits
@@ -706,6 +737,14 @@ static LogicOp interpretAndImmediate(unsigned Opcode) {
   }
 }
 
+static void transferDeadCC(MachineInstr *OldMI, MachineInstr *NewMI) {
+  if (OldMI->registerDefIsDead(SystemZ::CC)) {
+    MachineOperand *CCDef = NewMI->findRegisterDefOperand(SystemZ::CC);
+    if (CCDef != nullptr)
+      CCDef->setIsDead(true);
+  }
+}
+
 // Used to return from convertToThreeAddress after replacing two-address
 // instruction OldMI with three-address instruction NewMI.
 static MachineInstr *finishConvertToThreeAddress(MachineInstr *OldMI,
@@ -719,6 +758,7 @@ static MachineInstr *finishConvertToThreeAddress(MachineInstr *OldMI,
         LV->replaceKillInstruction(Op.getReg(), OldMI, NewMI);
     }
   }
+  transferDeadCC(OldMI, NewMI);
   return NewMI;
 }
 
@@ -811,19 +851,26 @@ MachineInstr *SystemZInstrInfo::foldMemoryOperandImpl(
   unsigned Size = MFI->getObjectSize(FrameIndex);
   unsigned Opcode = MI->getOpcode();
 
+// XXX This is an introduction of a CC def and is illegal! Reactivate
+// with a check of liveness of CC reg.
+#if 0
   if (Ops.size() == 2 && Ops[0] == 0 && Ops[1] == 1) {
     if ((Opcode == SystemZ::LA || Opcode == SystemZ::LAY) &&
         isInt<8>(MI->getOperand(2).getImm()) &&
         !MI->getOperand(3).getReg()) {
       // LA(Y) %reg, CONST(%reg) -> AGSI %mem, CONST
-      return BuildMI(*InsertPt->getParent(), InsertPt, MI->getDebugLoc(),
+      MachineInstr *BuiltMI =
+        BuildMI(*InsertPt->getParent(), InsertPt, MI->getDebugLoc(),
                      get(SystemZ::AGSI))
           .addFrameIndex(FrameIndex)
           .addImm(0)
           .addImm(MI->getOperand(2).getImm());
+      BuiltMI->findRegisterDefOperand(SystemZ::CC)->setIsDead(true);
+      return BuiltMI;
     }
     return nullptr;
   }
+#endif
 
   // All other cases require a single operand.
   if (Ops.size() != 1)
@@ -839,11 +886,14 @@ MachineInstr *SystemZInstrInfo::foldMemoryOperandImpl(
       isInt<8>(MI->getOperand(2).getImm())) {
     // A(G)HI %reg, CONST -> A(G)SI %mem, CONST
     Opcode = (Opcode == SystemZ::AHI ? SystemZ::ASI : SystemZ::AGSI);
-    return BuildMI(*InsertPt->getParent(), InsertPt, MI->getDebugLoc(),
+    MachineInstr *BuiltMI =
+      BuildMI(*InsertPt->getParent(), InsertPt, MI->getDebugLoc(),
                    get(Opcode))
         .addFrameIndex(FrameIndex)
         .addImm(0)
         .addImm(MI->getOperand(2).getImm());
+    transferDeadCC(MI, BuiltMI);
+    return BuiltMI;
   }
 
   if (Opcode == SystemZ::LGDR || Opcode == SystemZ::LDGR) {
@@ -932,6 +982,7 @@ MachineInstr *SystemZInstrInfo::foldMemoryOperandImpl(
       MIB.addFrameIndex(FrameIndex).addImm(Offset);
       if (MemDesc.TSFlags & SystemZII::HasIndex)
         MIB.addReg(0);
+      transferDeadCC(MI, MIB);
       return MIB;
     }
   }
@@ -1098,6 +1149,10 @@ SystemZInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
 
   case SystemZ::ADJDYNALLOC:
     splitAdjDynAlloc(MI);
+    return true;
+
+  case TargetOpcode::LOAD_STACK_GUARD:
+    expandLoadStackGuard(MI);
     return true;
 
   default:

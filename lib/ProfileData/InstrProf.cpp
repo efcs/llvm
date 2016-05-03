@@ -457,7 +457,6 @@ uint32_t getNumValueDataForSiteInstrProf(const void *R, uint32_t VK,
 void getValueForSiteInstrProf(const void *R, InstrProfValueData *Dst,
                               uint32_t K, uint32_t S) {
   reinterpret_cast<const InstrProfRecord *>(R)->getValueForSite(Dst, K, S);
-  return;
 }
 
 ValueProfData *allocValueProfDataInstrProf(size_t TotalSizeInBytes) {
@@ -732,13 +731,15 @@ MDNode *getPGOFuncNameMetadata(const Function &F) {
   return F.getMetadata(getPGOFuncNameMetadataName());
 }
 
-void createPGOFuncNameMetadata(Function &F) {
-  const std::string &FuncName = getPGOFuncName(F);
-  if (FuncName == F.getName())
+void createPGOFuncNameMetadata(Function &F, const std::string &PGOFuncName) {
+  // Only for internal linkage functions.
+  if (PGOFuncName == F.getName())
+      return;
+  // Don't create duplicated meta-data.
+  if (getPGOFuncNameMetadata(F))
     return;
-
   LLVMContext &C = F.getContext();
-  MDNode *N = MDNode::get(C, MDString::get(C, FuncName.c_str()));
+  MDNode *N = MDNode::get(C, MDString::get(C, PGOFuncName.c_str()));
   F.setMetadata(getPGOFuncNameMetadataName(), N);
 }
 

@@ -508,7 +508,7 @@ uint64_t MachOObjectFile::getCommonSymbolSizeImpl(DataRefImpl DRI) const {
   return getNValue(DRI);
 }
 
-ErrorOr<SymbolRef::Type>
+Expected<SymbolRef::Type>
 MachOObjectFile::getSymbolType(DataRefImpl Symb) const {
   MachO::nlist_base Entry = getSymbolTableEntryBase(this, Symb);
   uint8_t n_type = Entry.n_type;
@@ -521,9 +521,9 @@ MachOObjectFile::getSymbolType(DataRefImpl Symb) const {
     case MachO::N_UNDF :
       return SymbolRef::ST_Unknown;
     case MachO::N_SECT :
-      ErrorOr<section_iterator> SecOrError = getSymbolSection(Symb);
+      Expected<section_iterator> SecOrError = getSymbolSection(Symb);
       if (!SecOrError)
-        return SecOrError.getError();
+        return SecOrError.takeError();
       section_iterator Sec = *SecOrError;
       if (Sec->isData() || Sec->isBSS())
         return SymbolRef::ST_Data;
@@ -571,7 +571,7 @@ uint32_t MachOObjectFile::getSymbolFlags(DataRefImpl DRI) const {
   return Result;
 }
 
-ErrorOr<section_iterator>
+Expected<section_iterator>
 MachOObjectFile::getSymbolSection(DataRefImpl Symb) const {
   MachO::nlist_base Entry = getSymbolTableEntryBase(this, Symb);
   uint8_t index = Entry.n_sect;
@@ -581,9 +581,10 @@ MachOObjectFile::getSymbolSection(DataRefImpl Symb) const {
   DataRefImpl DRI;
   DRI.d.a = index - 1;
   if (DRI.d.a >= Sections.size()){
-    // Diagnostic("bad section index (" + index + ") for symbol at index " +
-    //  SymbolIndex);
-    return object_error::parse_failed;
+    return malformedError(*this, Twine("truncated or malformed object (bad "
+                          "section index: ") + Twine((int)index) + Twine(" for "
+                          "symbol at index ") + Twine(getSymbolIndex(Symb)) +
+                          Twine(")"));
   }
   return section_iterator(SectionRef(DRI, this));
 }
@@ -1184,8 +1185,8 @@ Triple::ArchType MachOObjectFile::getArch(uint32_t CPUType) {
   }
 }
 
-Triple MachOObjectFile::getArch(uint32_t CPUType, uint32_t CPUSubType,
-                                const char **McpuDefault) {
+Triple MachOObjectFile::getArchTriple(uint32_t CPUType, uint32_t CPUSubType,
+                                      const char **McpuDefault) {
   if (McpuDefault)
     *McpuDefault = nullptr;
 
@@ -1225,13 +1226,13 @@ Triple MachOObjectFile::getArch(uint32_t CPUType, uint32_t CPUSubType,
     case MachO::CPU_SUBTYPE_ARM_V7EM:
       if (McpuDefault)
         *McpuDefault = "cortex-m4";
-      return Triple("armv7em-apple-darwin");
+      return Triple("thumbv7em-apple-darwin");
     case MachO::CPU_SUBTYPE_ARM_V7K:
       return Triple("armv7k-apple-darwin");
     case MachO::CPU_SUBTYPE_ARM_V7M:
       if (McpuDefault)
         *McpuDefault = "cortex-m3";
-      return Triple("armv7m-apple-darwin");
+      return Triple("thumbv7m-apple-darwin");
     case MachO::CPU_SUBTYPE_ARM_V7S:
       return Triple("armv7s-apple-darwin");
     default:
@@ -1263,56 +1264,6 @@ Triple MachOObjectFile::getArch(uint32_t CPUType, uint32_t CPUSubType,
   }
 }
 
-Triple MachOObjectFile::getThumbArch(uint32_t CPUType, uint32_t CPUSubType,
-                                     const char **McpuDefault) {
-  if (McpuDefault)
-    *McpuDefault = nullptr;
-
-  switch (CPUType) {
-  case MachO::CPU_TYPE_ARM:
-    switch (CPUSubType & ~MachO::CPU_SUBTYPE_MASK) {
-    case MachO::CPU_SUBTYPE_ARM_V4T:
-      return Triple("thumbv4t-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V5TEJ:
-      return Triple("thumbv5e-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_XSCALE:
-      return Triple("xscale-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V6:
-      return Triple("thumbv6-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V6M:
-      if (McpuDefault)
-        *McpuDefault = "cortex-m0";
-      return Triple("thumbv6m-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V7:
-      return Triple("thumbv7-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V7EM:
-      if (McpuDefault)
-        *McpuDefault = "cortex-m4";
-      return Triple("thumbv7em-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V7K:
-      return Triple("thumbv7k-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V7M:
-      if (McpuDefault)
-        *McpuDefault = "cortex-m3";
-      return Triple("thumbv7m-apple-darwin");
-    case MachO::CPU_SUBTYPE_ARM_V7S:
-      return Triple("thumbv7s-apple-darwin");
-    default:
-      return Triple();
-    }
-  default:
-    return Triple();
-  }
-}
-
-Triple MachOObjectFile::getArch(uint32_t CPUType, uint32_t CPUSubType,
-                                const char **McpuDefault, Triple *ThumbTriple) {
-  Triple T = MachOObjectFile::getArch(CPUType, CPUSubType, McpuDefault);
-  *ThumbTriple = MachOObjectFile::getThumbArch(CPUType, CPUSubType,
-                                               McpuDefault);
-  return T;
-}
-
 Triple MachOObjectFile::getHostArch() {
   return Triple(sys::getDefaultTargetTriple());
 }
@@ -1342,10 +1293,8 @@ unsigned MachOObjectFile::getArch() const {
   return getArch(getCPUType(this));
 }
 
-Triple MachOObjectFile::getArch(const char **McpuDefault,
-                                Triple *ThumbTriple) const {
-  *ThumbTriple = getThumbArch(Header.cputype, Header.cpusubtype, McpuDefault);
-  return getArch(Header.cputype, Header.cpusubtype, McpuDefault);
+Triple MachOObjectFile::getArchTriple(const char **McpuDefault) const {
+  return getArchTriple(Header.cputype, Header.cpusubtype, McpuDefault);
 }
 
 relocation_iterator MachOObjectFile::section_rel_begin(unsigned Index) const {

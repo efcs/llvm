@@ -137,8 +137,7 @@ void MachODebugMapParser::switchToNewDebugMapObject(StringRef Filename,
 }
 
 static std::string getArchName(const object::MachOObjectFile &Obj) {
-  Triple ThumbTriple;
-  Triple T = Obj.getArch(nullptr, &ThumbTriple);
+  Triple T = Obj.getArchTriple();
   return T.getArchName();
 }
 
@@ -146,8 +145,7 @@ std::unique_ptr<DebugMap>
 MachODebugMapParser::parseOneBinary(const MachOObjectFile &MainBinary,
                                     StringRef BinaryPath) {
   loadMainBinarySymbols(MainBinary);
-  Result =
-      make_unique<DebugMap>(BinaryHolder::getTriple(MainBinary), BinaryPath);
+  Result = make_unique<DebugMap>(MainBinary.getArchTriple(), BinaryPath);
   MainBinaryStrings = MainBinary.getStringTableData();
   for (const SymbolRef &Symbol : MainBinary.symbols()) {
     const DataRefImpl &DRI = Symbol.getRawDataRefImpl();
@@ -308,9 +306,8 @@ bool MachODebugMapParser::dumpStab() {
     return false;
   }
 
-  Triple T;
   for (const auto *Binary : *MainBinOrError)
-    if (shouldLinkArch(Archs, Binary->getArch(nullptr, &T).getArchName()))
+    if (shouldLinkArch(Archs, Binary->getArchTriple().getArchName()))
       dumpOneBinaryStab(*Binary, BinaryPath);
 
   return true;
@@ -326,9 +323,8 @@ ErrorOr<std::vector<std::unique_ptr<DebugMap>>> MachODebugMapParser::parse() {
     return Error;
 
   std::vector<std::unique_ptr<DebugMap>> Results;
-  Triple T;
   for (const auto *Binary : *MainBinOrError)
-    if (shouldLinkArch(Archs, Binary->getArch(nullptr, &T).getArchName()))
+    if (shouldLinkArch(Archs, Binary->getArchTriple().getArchName()))
       Results.push_back(parseOneBinary(*Binary, BinaryPath));
 
   return std::move(Results);
@@ -440,9 +436,12 @@ void MachODebugMapParser::loadMainBinarySymbols(
   section_iterator Section = MainBinary.section_end();
   MainBinarySymbolAddresses.clear();
   for (const auto &Sym : MainBinary.symbols()) {
-    ErrorOr<SymbolRef::Type> TypeOrErr = Sym.getType();
-    if (!TypeOrErr)
+    Expected<SymbolRef::Type> TypeOrErr = Sym.getType();
+    if (!TypeOrErr) {
+      // TODO: Actually report errors helpfully.
+      consumeError(TypeOrErr.takeError());
       continue;
+    }
     SymbolRef::Type Type = *TypeOrErr;
     // Skip undefined and STAB entries.
     if ((Type & SymbolRef::ST_Debug) || (Type & SymbolRef::ST_Unknown))
@@ -453,9 +452,12 @@ void MachODebugMapParser::loadMainBinarySymbols(
     // addresses should be fetched for the debug map.
     if (!(Sym.getFlags() & SymbolRef::SF_Global))
       continue;
-    ErrorOr<section_iterator> SectionOrErr = Sym.getSection();
-    if (!SectionOrErr)
+    Expected<section_iterator> SectionOrErr = Sym.getSection();
+    if (!SectionOrErr) {
+      // TODO: Actually report errors helpfully.
+      consumeError(SectionOrErr.takeError());
       continue;
+    }
     Section = *SectionOrErr;
     if (Section == MainBinary.section_end() || Section->isText())
       continue;

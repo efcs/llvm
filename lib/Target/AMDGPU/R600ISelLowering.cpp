@@ -659,8 +659,8 @@ SDValue R600TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const 
         interp = DAG.getMachineNode(AMDGPU::INTERP_PAIR_ZW, DL,
             MVT::f32, MVT::f32, DAG.getTargetConstant(slot, DL, MVT::i32),
             RegisterJNode, RegisterINode);
-      return DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v2f32,
-          SDValue(interp, 0), SDValue(interp, 1));
+      return DAG.getBuildVector(MVT::v2f32, DL,
+                                {SDValue(interp, 0), SDValue(interp, 1)});
     }
     case AMDGPUIntrinsic::r600_tex:
     case AMDGPUIntrinsic::r600_texc:
@@ -902,6 +902,55 @@ SDValue R600TargetLowering::LowerINSERT_VECTOR_ELT(SDValue Op,
   SDValue Insert = DAG.getNode(ISD::INSERT_VECTOR_ELT, DL, Op.getValueType(),
                                Vector, Value, Index);
   return vectorToVerticalVector(DAG, Insert);
+}
+
+SDValue R600TargetLowering::LowerGlobalAddress(AMDGPUMachineFunction *MFI,
+                                               SDValue Op,
+                                               SelectionDAG &DAG) const {
+
+  GlobalAddressSDNode *GSD = cast<GlobalAddressSDNode>(Op);
+  if (GSD->getAddressSpace() != AMDGPUAS::CONSTANT_ADDRESS)
+    return AMDGPUTargetLowering::LowerGlobalAddress(MFI, Op, DAG);
+
+  const DataLayout &DL = DAG.getDataLayout();
+  const GlobalValue *GV = GSD->getGlobal();
+  MachineFrameInfo *FrameInfo = DAG.getMachineFunction().getFrameInfo();
+  Type *EltType = GV->getValueType();
+  unsigned Size = DL.getTypeAllocSize(EltType);
+  unsigned Alignment = DL.getPrefTypeAlignment(EltType);
+
+  MVT PrivPtrVT = getPointerTy(DL, AMDGPUAS::PRIVATE_ADDRESS);
+  MVT ConstPtrVT = getPointerTy(DL, AMDGPUAS::CONSTANT_ADDRESS);
+
+  int FI = FrameInfo->CreateStackObject(Size, Alignment, false);
+  SDValue InitPtr = DAG.getFrameIndex(FI, PrivPtrVT);
+
+  const GlobalVariable *Var = cast<GlobalVariable>(GV);
+  if (!Var->hasInitializer()) {
+    // This has no use, but bugpoint will hit it.
+    return DAG.getZExtOrTrunc(InitPtr, SDLoc(Op), ConstPtrVT);
+  }
+
+  const Constant *Init = Var->getInitializer();
+  SmallVector<SDNode*, 8> WorkList;
+
+  for (SDNode::use_iterator I = DAG.getEntryNode()->use_begin(),
+                            E = DAG.getEntryNode()->use_end(); I != E; ++I) {
+    if (I->getOpcode() != AMDGPUISD::REGISTER_LOAD && I->getOpcode() != ISD::LOAD)
+      continue;
+    WorkList.push_back(*I);
+  }
+  SDValue Chain = LowerConstantInitializer(Init, GV, InitPtr, DAG.getEntryNode(), DAG);
+  for (SmallVector<SDNode*, 8>::iterator I = WorkList.begin(),
+                                         E = WorkList.end(); I != E; ++I) {
+    SmallVector<SDValue, 8> Ops;
+    Ops.push_back(Chain);
+    for (unsigned i = 1; i < (*I)->getNumOperands(); ++i) {
+      Ops.push_back((*I)->getOperand(i));
+    }
+    DAG.UpdateNodeOperands(*I, Ops);
+  }
+  return DAG.getZExtOrTrunc(InitPtr, SDLoc(Op), ConstPtrVT);
 }
 
 SDValue R600TargetLowering::LowerTrig(SDValue Op, SelectionDAG &DAG) const {
@@ -1374,7 +1423,7 @@ SDValue R600TargetLowering::LowerSTORE(SDValue Op, SelectionDAG &DAG) const {
         DAG.getConstant(0, DL, MVT::i32),
         Mask
       };
-      SDValue Input = DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v4i32, Src);
+      SDValue Input = DAG.getBuildVector(MVT::v4i32, DL, Src);
       SDValue Args[3] = { Chain, Input, DWordAddr };
       return DAG.getMemIntrinsicNode(AMDGPUISD::STORE_MSKOR, DL,
                                      Op->getVTList(), Args, MemVT,
@@ -1604,8 +1653,7 @@ SDValue R600TargetLowering::LowerLOAD(SDValue Op, SelectionDAG &DAG) const {
         NewVT = VT;
         NumElements = VT.getVectorNumElements();
       }
-      Result = DAG.getNode(ISD::BUILD_VECTOR, DL, NewVT,
-                           makeArrayRef(Slots, NumElements));
+      Result = DAG.getBuildVector(NewVT, DL, makeArrayRef(Slots, NumElements));
     } else {
       // non-constant ptr can't be folded, keeps it as a v4f32 load
       Result = DAG.getNode(AMDGPUISD::CONST_ADDRESS, DL, MVT::v4i32,
@@ -1687,7 +1735,7 @@ SDValue R600TargetLowering::LowerLOAD(SDValue Op, SelectionDAG &DAG) const {
       Loads[i] = DAG.getUNDEF(ElemVT);
     }
     EVT TargetVT = EVT::getVectorVT(*DAG.getContext(), ElemVT, 4);
-    LoweredLoad = DAG.getNode(ISD::BUILD_VECTOR, DL, TargetVT, Loads);
+    LoweredLoad = DAG.getBuildVector(TargetVT, DL, Loads);
   } else {
     LoweredLoad = DAG.getNode(AMDGPUISD::REGISTER_LOAD, DL, VT,
                               Chain, Ptr,
@@ -1873,8 +1921,8 @@ static SDValue CompactSwizzlableVector(
     }
   }
 
-  return DAG.getNode(ISD::BUILD_VECTOR, SDLoc(VectorEntry),
-                     VectorEntry.getValueType(), NewBldVec);
+  return DAG.getBuildVector(VectorEntry.getValueType(), SDLoc(VectorEntry),
+                            NewBldVec);
 }
 
 static SDValue ReorganizeVector(SelectionDAG &DAG, SDValue VectorEntry,
@@ -1911,8 +1959,8 @@ static SDValue ReorganizeVector(SelectionDAG &DAG, SDValue VectorEntry,
     }
   }
 
-  return DAG.getNode(ISD::BUILD_VECTOR, SDLoc(VectorEntry),
-                     VectorEntry.getValueType(), NewBldVec);
+  return DAG.getBuildVector(VectorEntry.getValueType(), SDLoc(VectorEntry),
+                            NewBldVec);
 }
 
 
@@ -2042,7 +2090,7 @@ SDValue R600TargetLowering::PerformDAGCombine(SDNode *N,
     }
 
     // Return the new vector
-    return DAG.getNode(ISD::BUILD_VECTOR, dl, VT, Ops);
+    return DAG.getBuildVector(VT, dl, Ops);
   }
 
   // Extract_vec (Build_vector) generated by custom lowering

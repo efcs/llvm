@@ -9,10 +9,14 @@
 
 #include "llvm/DebugInfo/PDB/Raw/PDBFile.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/DebugInfo/PDB/Raw/DbiStream.h"
+#include "llvm/DebugInfo/PDB/Raw/InfoStream.h"
+#include "llvm/DebugInfo/PDB/Raw/TpiStream.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
 
 using namespace llvm;
+using namespace llvm::pdb;
 
 namespace {
 static const char Magic[] = {'M',  'i',  'c',    'r', 'o', 's',  'o',  'f',
@@ -43,7 +47,7 @@ struct SuperBlock {
 };
 }
 
-struct llvm::PDBContext {
+struct llvm::pdb::PDBFileContext {
   std::unique_ptr<MemoryBuffer> Buffer;
   const SuperBlock *SB;
   std::vector<uint32_t> StreamSizes;
@@ -66,7 +70,7 @@ static std::error_code checkOffset(MemoryBufferRef M, ArrayRef<T> AR) {
 }
 
 PDBFile::PDBFile(std::unique_ptr<MemoryBuffer> MemBuffer) {
-  Context.reset(new PDBContext());
+  Context.reset(new PDBFileContext());
   Context->Buffer = std::move(MemBuffer);
 }
 
@@ -116,16 +120,30 @@ StringRef PDBFile::getBlockData(uint32_t BlockIndex, uint32_t NumBytes) const {
 std::error_code PDBFile::parseFileHeaders() {
   std::error_code EC;
   MemoryBufferRef BufferRef = *Context->Buffer;
+  // Make sure the file is sufficiently large to hold a super block.
+  // Do this before attempting to read the super block.
+  if (BufferRef.getBufferSize() < sizeof(SuperBlock))
+    return std::make_error_code(std::errc::illegal_byte_sequence);
 
   Context->SB =
       reinterpret_cast<const SuperBlock *>(BufferRef.getBufferStart());
   const SuperBlock *SB = Context->SB;
+  switch (SB->BlockSize) {
+  case 512: case 1024: case 2048: case 4096:
+    break;
+  default:
+    // An invalid block size suggests a corrupt PDB file.
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+  }
+  if (BufferRef.getBufferSize() % SB->BlockSize != 0)
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+
   // Check the magic bytes.
   if (memcmp(SB->MagicBytes, Magic, sizeof(Magic)) != 0)
     return std::make_error_code(std::errc::illegal_byte_sequence);
 
   // We don't support blocksizes which aren't a multiple of four bytes.
-  if (SB->BlockSize % sizeof(support::ulittle32_t) != 0)
+  if (SB->BlockSize == 0 || SB->BlockSize % sizeof(support::ulittle32_t) != 0)
     return std::make_error_code(std::errc::not_supported);
 
   // We don't support directories whose sizes aren't a multiple of four bytes.
@@ -171,8 +189,8 @@ std::error_code PDBFile::parseStreamData() {
     uint64_t DirectoryBlockOffset =
         blockToOffset(DirectoryBlockAddr, SB->BlockSize);
     auto DirectoryBlock =
-        makeArrayRef(reinterpret_cast<const uint32_t *>(M.getBufferStart() +
-                                                        DirectoryBlockOffset),
+        makeArrayRef(reinterpret_cast<const support::ulittle32_t *>(
+                         M.getBufferStart() + DirectoryBlockOffset),
                      SB->BlockSize / sizeof(support::ulittle32_t));
     if (auto EC = checkOffset(M, DirectoryBlock))
       return EC;
@@ -230,9 +248,33 @@ std::error_code PDBFile::parseStreamData() {
   return std::error_code();
 }
 
-llvm::ArrayRef<uint32_t> PDBFile::getDirectoryBlockArray() {
+llvm::ArrayRef<support::ulittle32_t> PDBFile::getDirectoryBlockArray() {
   return makeArrayRef(
-      reinterpret_cast<const uint32_t *>(Context->Buffer->getBufferStart() +
-                                         getBlockMapOffset()),
+      reinterpret_cast<const support::ulittle32_t *>(
+          Context->Buffer->getBufferStart() + getBlockMapOffset()),
       getNumDirectoryBlocks());
+}
+
+InfoStream &PDBFile::getPDBInfoStream() {
+  if (!Info) {
+    Info.reset(new InfoStream(*this));
+    Info->reload();
+  }
+  return *Info;
+}
+
+DbiStream &PDBFile::getPDBDbiStream() {
+  if (!Dbi) {
+    Dbi.reset(new DbiStream(*this));
+    Dbi->reload();
+  }
+  return *Dbi;
+}
+
+TpiStream &PDBFile::getPDBTpiStream() {
+  if (!Tpi) {
+    Tpi.reset(new TpiStream(*this));
+    Tpi->reload();
+  }
+  return *Tpi;
 }
