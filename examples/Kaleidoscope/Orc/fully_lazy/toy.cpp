@@ -1,25 +1,44 @@
-#include "llvm/Analysis/Passes.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/RuntimeDyld.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/IndirectionUtils.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
+#include "llvm/ExecutionEngine/Orc/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/LambdaResolver.h"
 #include "llvm/ExecutionEngine/Orc/LazyEmittingLayer.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
-#include "llvm/ExecutionEngine/Orc/OrcArchitectureSupport.h"
-#include "llvm/IR/DataLayout.h"
+#include "llvm/ExecutionEngine/Orc/OrcABISupport.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/Target/TargetMachine.h"
+#include <cassert>
 #include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
@@ -304,7 +323,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken();  // eat (
   std::vector<std::unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
-    while (1) {
+    while (true) {
       auto Arg = ParseExpression();
       if (!Arg) return nullptr;
       Args.push_back(std::move(Arg));
@@ -430,7 +449,7 @@ static std::unique_ptr<VarExprAST> ParseVarExpr() {
   if (CurTok != tok_identifier)
     return ErrorU<VarExprAST>("expected identifier after var");
 
-  while (1) {
+  while (true) {
     std::string Name = IdentifierStr;
     getNextToken();  // eat identifier.
 
@@ -506,7 +525,7 @@ static std::unique_ptr<ExprAST> ParseUnary() {
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS) {
   // If this is a binop, find its precedence.
-  while (1) {
+  while (true) {
     int TokPrec = GetTokPrecedence();
 
     // If this is a binop that binds at least as tightly as the current binop,
@@ -688,6 +707,7 @@ public:
   TargetMachine& getTarget() { return *TM; }
   void addPrototypeAST(std::unique_ptr<PrototypeAST> P);
   PrototypeAST* getPrototypeAST(const std::string &Name);
+
 private:
   typedef std::map<std::string, std::unique_ptr<PrototypeAST>> PrototypeMap;
 
@@ -710,7 +730,6 @@ PrototypeAST* SessionContext::getPrototypeAST(const std::string &Name) {
 
 class IRGenContext {
 public:
-
   IRGenContext(SessionContext &S)
     : Session(S),
       M(new Module(GenerateUniqueName("jit_module_"),
@@ -727,6 +746,7 @@ public:
   Function* getPrototype(const std::string &Name);
 
   std::map<std::string, AllocaInst*> NamedValues;
+
 private:
   SessionContext &Session;
   std::unique_ptr<Module> M;
@@ -746,9 +766,9 @@ Function* IRGenContext::getPrototype(const std::string &Name) {
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
                                           const std::string &VarName) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
-                 TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(getGlobalContext()), nullptr,
-                           VarName.c_str());
+                   TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(TheFunction->getContext()),
+                           nullptr, VarName);
 }
 
 Value *NumberExprAST::IRGen(IRGenContext &C) const {
@@ -807,8 +827,8 @@ Value *BinaryExprAST::IRGen(IRGenContext &C) const {
   case '<':
     L = C.getBuilder().CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
-    return C.getBuilder().CreateUIToFP(L, Type::getDoubleTy(getGlobalContext()),
-                                "booltmp");
+    return C.getBuilder().CreateUIToFP(L, Type::getDoubleTy(C.getLLVMContext()),
+                                       "booltmp");
   default: break;
   }
 
@@ -885,8 +905,8 @@ Value *IfExprAST::IRGen(IRGenContext &C) const {
   // Emit merge block.
   TheFunction->getBasicBlockList().push_back(MergeBB);
   C.getBuilder().SetInsertPoint(MergeBB);
-  PHINode *PN = C.getBuilder().CreatePHI(Type::getDoubleTy(getGlobalContext()), 2,
-                                  "iftmp");
+  PHINode *PN = C.getBuilder().CreatePHI(Type::getDoubleTy(C.getLLVMContext()),
+                                         2, "iftmp");
 
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
@@ -928,7 +948,8 @@ Value *ForExprAST::IRGen(IRGenContext &C) const {
 
   // Make the new basic block for the loop header, inserting after current
   // block.
-  BasicBlock *LoopBB = BasicBlock::Create(getGlobalContext(), "loop", TheFunction);
+  BasicBlock *LoopBB =
+      BasicBlock::Create(C.getLLVMContext(), "loop", TheFunction);
 
   // Insert an explicit fall through from the current block to the LoopBB.
   C.getBuilder().CreateBr(LoopBB);
@@ -954,7 +975,7 @@ Value *ForExprAST::IRGen(IRGenContext &C) const {
     if (!StepVal) return nullptr;
   } else {
     // If not specified, use 1.0.
-    StepVal = ConstantFP::get(getGlobalContext(), APFloat(1.0));
+    StepVal = ConstantFP::get(C.getLLVMContext(), APFloat(1.0));
   }
 
   // Compute the end condition.
@@ -968,12 +989,12 @@ Value *ForExprAST::IRGen(IRGenContext &C) const {
   C.getBuilder().CreateStore(NextVar, Alloca);
 
   // Convert condition to a bool by comparing equal to 0.0.
-  EndCond = C.getBuilder().CreateFCmpONE(EndCond,
-                              ConstantFP::get(getGlobalContext(), APFloat(0.0)),
-                                  "loopcond");
+  EndCond = C.getBuilder().CreateFCmpONE(
+      EndCond, ConstantFP::get(C.getLLVMContext(), APFloat(0.0)), "loopcond");
 
   // Create the "after loop" block and insert it.
-  BasicBlock *AfterBB = BasicBlock::Create(getGlobalContext(), "afterloop", TheFunction);
+  BasicBlock *AfterBB =
+      BasicBlock::Create(C.getLLVMContext(), "afterloop", TheFunction);
 
   // Insert the conditional branch into the end of LoopEndBB.
   C.getBuilder().CreateCondBr(EndCond, LoopBB, AfterBB);
@@ -988,7 +1009,7 @@ Value *ForExprAST::IRGen(IRGenContext &C) const {
     C.NamedValues.erase(VarName);
 
   // for expr always returns 0.0.
-  return Constant::getNullValue(Type::getDoubleTy(getGlobalContext()));
+  return Constant::getNullValue(Type::getDoubleTy(C.getLLVMContext()));
 }
 
 Value *VarExprAST::IRGen(IRGenContext &C) const {
@@ -1011,7 +1032,7 @@ Value *VarExprAST::IRGen(IRGenContext &C) const {
       InitVal = Init->IRGen(C);
       if (!InitVal) return nullptr;
     } else // If not specified, use 0.0.
-      InitVal = ConstantFP::get(getGlobalContext(), APFloat(0.0));
+      InitVal = ConstantFP::get(C.getLLVMContext(), APFloat(0.0));
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
     C.getBuilder().CreateStore(InitVal, Alloca);
@@ -1040,10 +1061,10 @@ Function *PrototypeAST::IRGen(IRGenContext &C) const {
   std::string FnName = MakeLegalFunctionName(Name);
 
   // Make the function type:  double(double,double) etc.
-  std::vector<Type*> Doubles(Args.size(),
-                             Type::getDoubleTy(getGlobalContext()));
-  FunctionType *FT = FunctionType::get(Type::getDoubleTy(getGlobalContext()),
-                                       Doubles, false);
+  std::vector<Type *> Doubles(Args.size(),
+                              Type::getDoubleTy(C.getLLVMContext()));
+  FunctionType *FT =
+      FunctionType::get(Type::getDoubleTy(C.getLLVMContext()), Doubles, false);
   Function *F = Function::Create(FT, Function::ExternalLinkage, FnName,
                                  &C.getM());
 
@@ -1104,7 +1125,7 @@ Function *FunctionAST::IRGen(IRGenContext &C) const {
     BinopPrecedence[Proto->getOperatorName()] = Proto->Precedence;
 
   // Create a new basic block to start insertion into.
-  BasicBlock *BB = BasicBlock::Create(getGlobalContext(), "entry", TheFunction);
+  BasicBlock *BB = BasicBlock::Create(C.getLLVMContext(), "entry", TheFunction);
   C.getBuilder().SetInsertPoint(BB);
 
   // Add all arguments to the symbol table and create their allocas.
@@ -1226,7 +1247,6 @@ public:
   }
 
 private:
-
   // This method searches the FunctionDefs map for a definition of 'Name'. If it
   // finds one it generates a stub for it and returns the address of the stub.
   RuntimeDyld::SymbolInfo searchFunctionASTs(const std::string &Name) {
@@ -1308,7 +1328,7 @@ private:
 
   std::map<std::string, std::unique_ptr<FunctionAST>> FunctionDefs;
 
-  LocalJITCompileCallbackManager<OrcX86_64> CompileCallbacks;
+  LocalJITCompileCallbackManager<OrcX86_64_SysV> CompileCallbacks;
 };
 
 static void HandleDefinition(SessionContext &S, KaleidoscopeJIT &J) {
@@ -1366,10 +1386,11 @@ static void HandleTopLevelExpression(SessionContext &S, KaleidoscopeJIT &J) {
 
 /// top ::= definition | external | expression | ';'
 static void MainLoop() {
-  SessionContext S(getGlobalContext());
+  LLVMContext TheContext;
+  SessionContext S(TheContext);
   KaleidoscopeJIT J(S);
 
-  while (1) {
+  while (true) {
     switch (CurTok) {
     case tok_eof:    return;
     case ';':        getNextToken(); continue;  // ignore top-level semicolons.

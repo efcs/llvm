@@ -97,16 +97,6 @@ static unsigned int branchTargetOperand(MachineInstr *MI) {
   llvm_unreachable("Unknown branch type");
 }
 
-static bool isUnconditionalBranch(unsigned int Opcode) {
-  switch (Opcode) {
-  default: return false;
-  case Mips::Bimm16:
-  case Mips::BimmX16:
-  case Mips::JalB16:
-    return true;
-  }
-}
-
 static unsigned int longformBranchOpcode(unsigned int Opcode) {
   switch (Opcode) {
   case Mips::Bimm16:
@@ -374,6 +364,11 @@ namespace {
     }
 
     bool runOnMachineFunction(MachineFunction &F) override;
+
+    MachineFunctionProperties getRequiredProperties() const override {
+      return MachineFunctionProperties().set(
+          MachineFunctionProperties::Property::AllVRegsAllocated);
+    }
 
     void doInitialPlacement(std::vector<MachineInstr*> &CPEMIs);
     CPEntry *findConstPoolEntry(unsigned CPI, const MachineInstr *CPEMI);
@@ -1610,7 +1605,7 @@ MipsConstantIslands::fixupConditionalBr(ImmBranch &Br) {
   ++NumCBrFixed;
   if (BMI != MI) {
     if (std::next(MachineBasicBlock::iterator(MI)) == std::prev(MBB->end()) &&
-        isUnconditionalBranch(BMI->getOpcode())) {
+        BMI->isUnconditionalBranch()) {
       // Last MI in the BB is an unconditional branch. Can we simply invert the
       // condition and swap destinations:
       // beqz L1
@@ -1710,4 +1705,3 @@ void MipsConstantIslands::prescanForConstants() {
     }
   }
 }
-

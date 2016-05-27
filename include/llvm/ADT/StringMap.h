@@ -15,8 +15,8 @@
 #define LLVM_ADT_STRINGMAP_H
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/PointerLikeTypeTraits.h"
 #include <cstring>
 #include <utility>
 
@@ -95,7 +95,9 @@ protected:
 
 public:
   static StringMapEntryBase *getTombstoneVal() {
-    return (StringMapEntryBase*)-1;
+    uintptr_t Val = static_cast<uintptr_t>(-1);
+    Val <<= PointerLikeTypeTraits<StringMapEntryBase *>::NumLowBitsAvailable;
+    return reinterpret_cast<StringMapEntryBase *>(Val);
   }
 
   unsigned getNumBuckets() const { return NumBuckets; }
@@ -260,14 +262,15 @@ public:
     NumItems = RHS.NumItems;
     NumTombstones = RHS.NumTombstones;
     for (unsigned I = 0, E = NumBuckets; I != E; ++I) {
-      MapEntryTy *Bucket = ((MapEntryTy**) RHS.TheTable)[I];
+      StringMapEntryBase *Bucket = RHS.TheTable[I];
       if (!Bucket || Bucket == getTombstoneVal()) {
         TheTable[I] = Bucket;
         continue;
       }
 
-      TheTable[I] = MapEntryTy::Create(Bucket->getKey(), Allocator,
-                                       Bucket->getValue());
+      TheTable[I] = MapEntryTy::Create(
+          static_cast<MapEntryTy *>(Bucket)->getKey(), Allocator,
+          static_cast<MapEntryTy *>(Bucket)->getValue());
       HashTable[I] = RHSHashTable[I];
     }
 

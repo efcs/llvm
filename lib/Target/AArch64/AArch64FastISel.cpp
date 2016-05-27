@@ -37,7 +37,6 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Support/CommandLine.h"
 using namespace llvm;
 
 namespace {
@@ -1608,8 +1607,8 @@ unsigned AArch64FastISel::emitLogicalOp(unsigned ISDOpc, MVT RetVT,
 unsigned AArch64FastISel::emitLogicalOp_ri(unsigned ISDOpc, MVT RetVT,
                                            unsigned LHSReg, bool LHSIsKill,
                                            uint64_t Imm) {
-  assert((ISD::AND + 1 == ISD::OR) && (ISD::AND + 2 == ISD::XOR) &&
-         "ISD nodes are not consecutive!");
+  static_assert((ISD::AND + 1 == ISD::OR) && (ISD::AND + 2 == ISD::XOR),
+                "ISD nodes are not consecutive!");
   static const unsigned OpcTable[3][2] = {
     { AArch64::ANDWri, AArch64::ANDXri },
     { AArch64::ORRWri, AArch64::ORRXri },
@@ -1655,8 +1654,8 @@ unsigned AArch64FastISel::emitLogicalOp_rs(unsigned ISDOpc, MVT RetVT,
                                            unsigned LHSReg, bool LHSIsKill,
                                            unsigned RHSReg, bool RHSIsKill,
                                            uint64_t ShiftImm) {
-  assert((ISD::AND + 1 == ISD::OR) && (ISD::AND + 2 == ISD::XOR) &&
-         "ISD nodes are not consecutive!");
+  static_assert((ISD::AND + 1 == ISD::OR) && (ISD::AND + 2 == ISD::XOR),
+                "ISD nodes are not consecutive!");
   static const unsigned OpcTable[3][2] = {
     { AArch64::ANDWrs, AArch64::ANDXrs },
     { AArch64::ORRWrs, AArch64::ORRXrs },
@@ -1900,6 +1899,21 @@ bool AArch64FastISel::selectLoad(const Instruction *I) {
       cast<LoadInst>(I)->isAtomic())
     return false;
 
+  const Value *SV = I->getOperand(0);
+  if (TLI.supportSwiftError()) {
+    // Swifterror values can come from either a function parameter with
+    // swifterror attribute or an alloca with swifterror attribute.
+    if (const Argument *Arg = dyn_cast<Argument>(SV)) {
+      if (Arg->hasSwiftErrorAttr())
+        return false;
+    }
+
+    if (const AllocaInst *Alloca = dyn_cast<AllocaInst>(SV)) {
+      if (Alloca->isSwiftError())
+        return false;
+    }
+  }
+
   // See if we can handle this address.
   Address Addr;
   if (!computeAddress(I->getOperand(0), Addr, I->getType()))
@@ -2063,6 +2077,21 @@ bool AArch64FastISel::selectStore(const Instruction *I) {
   if (!isTypeSupported(Op0->getType(), VT, /*IsVectorAllowed=*/true) ||
       cast<StoreInst>(I)->isAtomic())
     return false;
+
+  const Value *PtrV = I->getOperand(1);
+  if (TLI.supportSwiftError()) {
+    // Swifterror values can come from either a function parameter with
+    // swifterror attribute or an alloca with swifterror attribute.
+    if (const Argument *Arg = dyn_cast<Argument>(PtrV)) {
+      if (Arg->hasSwiftErrorAttr())
+        return false;
+    }
+
+    if (const AllocaInst *Alloca = dyn_cast<AllocaInst>(PtrV)) {
+      if (Alloca->isSwiftError())
+        return false;
+    }
+  }
 
   // Get the value to be stored into a register. Use the zero register directly
   // when possible to avoid an unnecessary copy and a wasted register.
@@ -2810,6 +2839,7 @@ bool AArch64FastISel::fastLowerArguments() {
         F->getAttributes().hasAttribute(Idx, Attribute::InReg) ||
         F->getAttributes().hasAttribute(Idx, Attribute::StructRet) ||
         F->getAttributes().hasAttribute(Idx, Attribute::SwiftSelf) ||
+        F->getAttributes().hasAttribute(Idx, Attribute::SwiftError) ||
         F->getAttributes().hasAttribute(Idx, Attribute::Nest))
       return false;
 
@@ -3062,7 +3092,7 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
 
   for (auto Flag : CLI.OutFlags)
     if (Flag.isInReg() || Flag.isSRet() || Flag.isNest() || Flag.isByVal() ||
-        Flag.isSwiftSelf())
+        Flag.isSwiftSelf() || Flag.isSwiftError())
       return false;
 
   // Set up the argument vectors.
@@ -3642,6 +3672,10 @@ bool AArch64FastISel::selectRet(const Instruction *I) {
     return false;
 
   if (F.isVarArg())
+    return false;
+
+  if (TLI.supportSwiftError() &&
+      F.getAttributes().hasAttrSomewhere(Attribute::SwiftError))
     return false;
 
   if (TLI.supportSplitCSR(FuncInfo.MF))

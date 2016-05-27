@@ -161,8 +161,14 @@ a:
         j       1328             # CHECK: j 1328                 # encoding: [0x08,0x00,0x01,0x4c]
         jal       21100                # CHECK: jal 21100     # encoding: [0x0c,0x00,0x14,0x9b]
         jr.hb   $4               # CHECK: jr.hb $4               # encoding: [0x00,0x80,0x04,0x09]
+        jr      $ra              # CHECK: jr $ra                 # encoding: [0x03,0xe0,0x00,0x09]
+        jr      $25              # CHECK: jr $25                 # encoding: [0x03,0x20,0x00,0x09]
+        jrc     $27              # CHECK: jrc $27                # encoding: [0xd8,0x1b,0x00,0x00]
         jalr.hb $4               # CHECK: jalr.hb $4             # encoding: [0x00,0x80,0xfc,0x09]
         jalr.hb $4, $5           # CHECK: jalr.hb $4, $5         # encoding: [0x00,0xa0,0x24,0x09]
+        jalrc   $25              # CHECK: jalrc $25              # encoding: [0xf8,0x19,0x00,0x00]
+        jialc   $15, 16161       # CHECK: jialc $15, 16161       # encoding: [0xf8,0x0f,0x3f,0x21]
+        jic     $12, -3920       # CHECK: jic $12, -3920         # encoding: [0xd8,0x0c,0xf0,0xb0]
         ldc2    $8, -701($at)    # CHECK: ldc2 $8, -701($1)      # encoding: [0x49,0xc8,0x0d,0x43]
         lwc2    $18,-841($a2)    # CHECK: lwc2 $18, -841($6)     # encoding: [0x49,0x52,0x34,0xb7]
         sdc2    $20,629($s2)     # CHECK: sdc2 $20, 629($18)     # encoding: [0x49,0xf4,0x92,0x75]
@@ -194,3 +200,22 @@ a:
         xor     $2, 4            # CHECK: xori $2, $2, 4         # encoding: [0x38,0x42,0x00,0x04]
 
 1:
+
+        # Check that we accept traditional %relocation(symbol) offsets for stores
+        # and loads, not just a sign 16 bit offset.
+
+        lui     $2, %hi(g_8)            # CHECK:  encoding: [0x3c,0x02,A,A]
+        lb      $3, %lo(g_8)($2)        # CHECK:  encoding: [0x80,0x43,A,A]
+        lh      $3, %lo(g_8)($2)        # CHECK:  encoding: [0x84,0x43,A,A]
+        lhu     $3, %lo(g_8)($2)        # CHECK:  encoding: [0x94,0x43,A,A]
+        lw      $3, %lo(g_8)($2)        # CHECK:  encoding: [0x8c,0x43,A,A]
+        sb      $3, %lo(g_8)($2)        # CHECK:  encoding: [0xa0,0x43,A,A]
+        sh      $3, %lo(g_8)($2)        # CHECK:  encoding: [0xa4,0x43,A,A]
+        sw      $3, %lo(g_8)($2)        # CHECK:  encoding: [0xac,0x43,A,A]
+
+        lwc1    $f0, %lo(g_8)($2)       # CHECK:  encoding: [0xc4,0x40,A,A]
+        ldc1    $f0, %lo(g_8)($2)       # CHECK:  encoding: [0xd4,0x40,A,A]
+        swc1    $f0, %lo(g_8)($2)       # CHECK:  encoding: [0xe4,0x40,A,A]
+        sdc1    $f0, %lo(g_8)($2)       # CHECK:  encoding: [0xf4,0x40,A,A]
+        .type   g_8,@object
+        .comm   g_8,16,16

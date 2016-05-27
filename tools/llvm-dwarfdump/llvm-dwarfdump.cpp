@@ -29,7 +29,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cstring>
-#include <list>
 #include <string>
 #include <system_error>
 
@@ -96,9 +95,10 @@ static void DumpInput(StringRef Filename) {
   error(Filename, BuffOrErr.getError());
   std::unique_ptr<MemoryBuffer> Buff = std::move(BuffOrErr.get());
 
-  ErrorOr<std::unique_ptr<Binary>> BinOrErr =
+  Expected<std::unique_ptr<Binary>> BinOrErr =
       object::createBinary(Buff->getMemBufferRef());
-  error(Filename, BinOrErr.getError());
+  if (!BinOrErr)
+    error(Filename, errorToErrorCode(BinOrErr.takeError()));
 
   if (auto *Obj = dyn_cast<ObjectFile>(BinOrErr->get()))
     DumpObjectFile(*Obj, Filename);
@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
 
   // Expand any .dSYM bundles to the individual object files contained therein.
   std::vector<std::string> Objects;
-  for (auto F : InputFilenames) {
+  for (const auto &F : InputFilenames) {
     auto Objs = expandBundle(F);
     Objects.insert(Objects.end(), Objs.begin(), Objs.end());
   }

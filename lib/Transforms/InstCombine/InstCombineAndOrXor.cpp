@@ -465,11 +465,9 @@ static unsigned getTypeOfMaskedICmp(Value* A, Value* B, Value* C,
   if (CCst && CCst->isZero()) {
     // if C is zero, then both A and B qualify as mask
     result |= (icmp_eq ? (FoldMskICmp_Mask_AllZeroes |
-                          FoldMskICmp_Mask_AllZeroes |
                           FoldMskICmp_AMask_Mixed |
                           FoldMskICmp_BMask_Mixed)
                        : (FoldMskICmp_Mask_NotAllZeroes |
-                          FoldMskICmp_Mask_NotAllZeroes |
                           FoldMskICmp_AMask_NotMixed |
                           FoldMskICmp_BMask_NotMixed));
     if (icmp_abit)
@@ -666,7 +664,7 @@ static unsigned foldLogOpOfMaskedICmpsHelper(Value*& A,
   if (!ICmpInst::isEquality(RHSCC))
     return 0;
 
-  // Look for ANDs in on the right side of the RHS icmp.
+  // Look for ANDs on the right side of the RHS icmp.
   if (!ok && R2->getType()->isIntegerTy()) {
     if (!match(R2, m_And(m_Value(R11), m_Value(R12)))) {
       R11 = R2;
@@ -1619,11 +1617,35 @@ Instruction *InstCombiner::visitAnd(BinaryOperator &I) {
   return Changed ? &I : nullptr;
 }
 
-/// Given an OR instruction, check to see if this is a bswap or bitreverse
-/// idiom. If so, insert the new intrinsic and return it.
-Instruction *InstCombiner::MatchBSwapOrBitReverse(BinaryOperator &I) {
+/// Given an OR instruction, check to see if this is a bswap idiom. If so,
+/// insert the new intrinsic and return it.
+Instruction *InstCombiner::MatchBSwap(BinaryOperator &I) {
+  Value *Op0 = I.getOperand(0), *Op1 = I.getOperand(1);
+
+  // Look through zero extends.
+  if (Instruction *Ext = dyn_cast<ZExtInst>(Op0))
+    Op0 = Ext->getOperand(0);
+
+  if (Instruction *Ext = dyn_cast<ZExtInst>(Op1))
+    Op1 = Ext->getOperand(0);
+
+  // (A | B) | C  and  A | (B | C)                  -> bswap if possible.
+  bool OrOfOrs = match(Op0, m_Or(m_Value(), m_Value())) ||
+                 match(Op1, m_Or(m_Value(), m_Value()));
+
+  // (A >> B) | (C << D)  and  (A << B) | (B >> C)  -> bswap if possible.
+  bool OrOfShifts = match(Op0, m_LogicalShift(m_Value(), m_Value())) &&
+                    match(Op1, m_LogicalShift(m_Value(), m_Value()));
+
+  // (A & B) | (C & D)                              -> bswap if possible.
+  bool OrOfAnds = match(Op0, m_And(m_Value(), m_Value())) &&
+                  match(Op1, m_And(m_Value(), m_Value()));
+
+  if (!OrOfOrs && !OrOfShifts && !OrOfAnds)
+    return nullptr;
+
   SmallVector<Instruction*, 4> Insts;
-  if (!recognizeBitReverseOrBSwapIdiom(&I, true, false, Insts))
+  if (!recognizeBSwapOrBitReverseIdiom(&I, true, false, Insts))
     return nullptr;
   Instruction *LastInst = Insts.pop_back_val();
   LastInst->removeFromParent();
@@ -2164,22 +2186,12 @@ Instruction *InstCombiner::visitOr(BinaryOperator &I) {
         return NV;
   }
 
+  // Given an OR instruction, check to see if this is a bswap.
+  if (Instruction *BSwap = MatchBSwap(I))
+    return BSwap;
+
   Value *A = nullptr, *B = nullptr;
   ConstantInt *C1 = nullptr, *C2 = nullptr;
-
-  // (A | B) | C  and  A | (B | C)                  -> bswap if possible.
-  bool OrOfOrs = match(Op0, m_Or(m_Value(), m_Value())) ||
-                 match(Op1, m_Or(m_Value(), m_Value()));
-  // (A >> B) | (C << D)  and  (A << B) | (B >> C)  -> bswap if possible.
-  bool OrOfShifts = match(Op0, m_LogicalShift(m_Value(), m_Value())) &&
-                    match(Op1, m_LogicalShift(m_Value(), m_Value()));
-  // (A & B) | (C & D)                              -> bswap if possible.
-  bool OrOfAnds = match(Op0, m_And(m_Value(), m_Value())) &&
-                  match(Op1, m_And(m_Value(), m_Value()));
-
-  if (OrOfOrs || OrOfShifts || OrOfAnds)
-    if (Instruction *BSwap = MatchBSwapOrBitReverse(I))
-      return BSwap;
 
   // (X^C)|Y -> (X|Y)^C iff Y&C == 0
   if (Op0->hasOneUse() &&

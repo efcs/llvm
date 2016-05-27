@@ -104,6 +104,7 @@ void PPCSubtarget::initializeEnvironment() {
   HasHTM = false;
   HasFusion = false;
   HasFloat128 = false;
+  IsISA3_0 = false;
 
   HasPOPCNTD = POPCNTD_Unavailable;
 }
@@ -169,6 +170,8 @@ static bool needsAggressiveScheduling(unsigned Directive) {
   case PPC::DIR_E5500:
   case PPC::DIR_PWR7:
   case PPC::DIR_PWR8:
+  // FIXME: Same as P8 until POWER9 scheduling info is available
+  case PPC::DIR_PWR9:
     return true;
   }
 }

@@ -14,8 +14,8 @@
 
 #include "BPFISelLowering.h"
 #include "BPF.h"
-#include "BPFTargetMachine.h"
 #include "BPFSubtarget.h"
+#include "BPFTargetMachine.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -24,12 +24,11 @@
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/ValueTypes.h"
-#include "llvm/Support/CommandLine.h"
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/DiagnosticInfo.h"
-#include "llvm/IR/DiagnosticPrinter.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "bpf-lower"
@@ -175,7 +174,7 @@ SDValue BPFTargetLowering::LowerFormalArguments(
       switch (RegVT.getSimpleVT().SimpleTy) {
       default: {
         errs() << "LowerFormalArguments Unhandled argument type: "
-               << RegVT.getSimpleVT().SimpleTy << '\n';
+               << RegVT.getEVTString() << '\n';
         llvm_unreachable(0);
       }
       case MVT::i64:
@@ -200,6 +199,7 @@ SDValue BPFTargetLowering::LowerFormalArguments(
       }
     } else {
       fail(DL, DAG, "defined with too many args");
+      InVals.push_back(DAG.getConstant(0, DL, VA.getLocVT()));
     }
   }
 
@@ -209,6 +209,8 @@ SDValue BPFTargetLowering::LowerFormalArguments(
 
   return Chain;
 }
+
+const unsigned BPFTargetLowering::MaxArgs = 5;
 
 SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                      SmallVectorImpl<SDValue> &InVals) const {
@@ -242,9 +244,8 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   unsigned NumBytes = CCInfo.getNextStackOffset();
 
-  if (Outs.size() >= 6) {
+  if (Outs.size() > MaxArgs)
     fail(CLI.DL, DAG, "too many args to ", Callee);
-  }
 
   for (auto &Arg : Outs) {
     ISD::ArgFlagsTy Flags = Arg.Flags;
@@ -258,10 +259,12 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   Chain = DAG.getCALLSEQ_START(
       Chain, DAG.getConstant(NumBytes, CLI.DL, PtrVT, true), CLI.DL);
 
-  SmallVector<std::pair<unsigned, SDValue>, 5> RegsToPass;
+  SmallVector<std::pair<unsigned, SDValue>, MaxArgs> RegsToPass;
 
   // Walk arg assignments
-  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
+  for (unsigned i = 0,
+                e = std::min(static_cast<unsigned>(ArgLocs.size()), MaxArgs);
+       i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
     SDValue Arg = OutVals[i];
 

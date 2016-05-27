@@ -18,6 +18,7 @@
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 using namespace llvm;
 
@@ -45,6 +46,9 @@ class ModuleLinker {
   /// to Add.
   void addLazyFor(GlobalValue &GV, IRMover::ValueAdder Add);
 
+  bool shouldLinkReferencedLinkOnce() {
+    return !(Flags & Linker::DontForceLinkLinkonceODR);
+  }
   bool shouldOverrideFromSrc() { return Flags & Linker::OverrideFromSrc; }
   bool shouldLinkOnlyNeeded() { return Flags & Linker::LinkOnlyNeeded; }
   bool shouldInternalizeLinkedSymbols() {
@@ -268,30 +272,14 @@ bool ModuleLinker::shouldLinkFromSource(bool &LinkFromSrc,
     return false;
   }
 
+  if (isPerformingImport()) {
+    // LinkFromSrc iff this is a global requested for importing.
+    LinkFromSrc = GlobalsToImport->count(&Src);
+    return false;
+  }
+
   bool SrcIsDeclaration = Src.isDeclarationForLinker();
   bool DestIsDeclaration = Dest.isDeclarationForLinker();
-
-  if (isPerformingImport()) {
-    if (isa<Function>(&Src)) {
-      // For functions, LinkFromSrc iff this is a function requested
-      // for importing. For variables, decide below normally.
-      LinkFromSrc = GlobalsToImport->count(&Src);
-      return false;
-    }
-
-    // Check if this is an alias with an already existing definition
-    // in Dest, which must have come from a prior importing pass from
-    // the same Src module. Unlike imported function and variable
-    // definitions, which are imported as available_externally and are
-    // not definitions for the linker, that is not a valid linkage for
-    // imported aliases which must be definitions. Simply use the existing
-    // Dest copy.
-    if (isa<GlobalAlias>(&Src) && !DestIsDeclaration) {
-      assert(isa<GlobalAlias>(&Dest));
-      LinkFromSrc = false;
-      return false;
-    }
-  }
 
   if (SrcIsDeclaration) {
     // If Src is external or if both Src & Dest are external..  Just link the
@@ -429,8 +417,14 @@ bool ModuleLinker::linkIfNeeded(GlobalValue &GV) {
 }
 
 void ModuleLinker::addLazyFor(GlobalValue &GV, IRMover::ValueAdder Add) {
+  if (!shouldLinkReferencedLinkOnce())
+    // For ThinLTO we don't import more than what was required.
+    // The client has to guarantee that the linkonce will be availabe at link
+    // time (by promoting it to weak for instance).
+    return;
+
   // Add these to the internalize list
-  if (!GV.hasLinkOnceLinkage())
+  if (!GV.hasLinkOnceLinkage() && !shouldLinkOnlyNeeded())
     return;
 
   if (shouldInternalizeLinkedSymbols())
@@ -581,11 +575,21 @@ bool ModuleLinker::run() {
       Internalize.insert(GV->getName());
   }
 
-  if (Mover.move(std::move(SrcM), ValuesToLink.getArrayRef(),
-                 [this](GlobalValue &GV, IRMover::ValueAdder Add) {
-                   addLazyFor(GV, Add);
-                 }))
+  // FIXME: Propagate Errors through to the caller instead of emitting
+  // diagnostics.
+  bool HasErrors = false;
+  if (Error E = Mover.move(std::move(SrcM), ValuesToLink.getArrayRef(),
+                           [this](GlobalValue &GV, IRMover::ValueAdder Add) {
+                             addLazyFor(GV, Add);
+                           })) {
+    handleAllErrors(std::move(E), [&](ErrorInfoBase &EIB) {
+      DstM.getContext().diagnose(LinkDiagnosticInfo(DS_Error, EIB.message()));
+      HasErrors = true;
+    });
+  }
+  if (HasErrors)
     return true;
+
   for (auto &P : Internalize) {
     GlobalValue *GV = DstM.getNamedValue(P.first());
     GV->setLinkage(GlobalValue::InternalLinkage);

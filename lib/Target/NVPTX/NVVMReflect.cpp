@@ -7,17 +7,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This pass replaces occurrences of __nvvm_reflect("string") and
-// llvm.nvvm.reflect with an integer based on the value of -nvvm-reflect-list
-// string=<int>.
+// This pass replaces occurrences of __nvvm_reflect("foo") and llvm.nvvm.reflect
+// with an integer.
 //
-// If we see a string not specified in our flags, we replace that call with 0.
+// We choose the value we use by looking, in this order, at:
+//
+//  * the -nvvm-reflect-list flag, which has the format "foo=1,bar=42",
+//  * the StringMap passed to the pass's constructor, and
+//  * metadata in the module itself.
+//
+// If we see an unknown string, we replace its call with 0.
 //
 //===----------------------------------------------------------------------===//
 
 #include "NVPTX.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Constants.h"
@@ -34,10 +37,8 @@
 #include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
-#include <map>
 #include <sstream>
 #include <string>
-#include <vector>
 #define NVVM_REFLECT_FUNCTION "__nvvm_reflect"
 
 using namespace llvm;
@@ -55,16 +56,12 @@ public:
   static char ID;
   NVVMReflect() : NVVMReflect(StringMap<int>()) {}
 
-  NVVMReflect(const StringMap<int> &Mapping) : FunctionPass(ID) {
+  NVVMReflect(const StringMap<int> &Mapping)
+      : FunctionPass(ID), VarMap(Mapping) {
     initializeNVVMReflectPass(*PassRegistry::getPassRegistry());
-    for (const auto &KV : Mapping)
-      VarMap[KV.getKey()] = KV.getValue();
     setVarMap();
   }
 
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.setPreservesAll();
-  }
   bool runOnFunction(Function &) override;
 
 private:
@@ -206,6 +203,12 @@ bool NVVMReflect::runOnFunction(Function &F) {
     auto Iter = VarMap.find(ReflectArg);
     if (Iter != VarMap.end())
       ReflectVal = Iter->second;
+    else if (ReflectArg == "__CUDA_FTZ") {
+      // Try to pull __CUDA_FTZ from the nvvm-reflect-ftz module flag.
+      if (auto *Flag = mdconst::extract_or_null<ConstantInt>(
+              F.getParent()->getModuleFlag("nvvm-reflect-ftz")))
+        ReflectVal = Flag->getSExtValue();
+    }
     Call->replaceAllUsesWith(ConstantInt::get(Call->getType(), ReflectVal));
     ToRemove.push_back(Call);
   }
