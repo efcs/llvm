@@ -121,7 +121,7 @@ class OrcMCJITReplacement : public ExecutionEngine {
 
     RuntimeDyld::SymbolInfo
     findSymbolInLogicalDylib(const std::string &Name) override {
-      return M.ClientResolver->findSymbolInLogicalDylib(Name);
+      return M.ClientResolver->findSymbol(Name);
     }
 
   private:
@@ -263,10 +263,13 @@ private:
         report_fatal_error(EC.message());
       if (ChildIt != A->child_end()) {
         // FIXME: Support nested archives?
-        ErrorOr<std::unique_ptr<object::Binary>> ChildBinOrErr =
+        Expected<std::unique_ptr<object::Binary>> ChildBinOrErr =
             (*ChildIt)->getAsBinary();
-        if (ChildBinOrErr.getError())
+        if (!ChildBinOrErr) {
+          // TODO: Actually report errors helpfully.
+          consumeError(ChildBinOrErr.takeError());
           continue;
+        }
         std::unique_ptr<object::Binary> &ChildBin = ChildBinOrErr.get();
         if (ChildBin->isObject()) {
           std::vector<std::unique_ptr<object::ObjectFile>> ObjSet;

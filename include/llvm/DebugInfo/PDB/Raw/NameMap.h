@@ -12,25 +12,30 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-
-#include <stdint.h>
-#include <utility>
+#include "llvm/Support/Error.h"
+#include <cstdint>
 
 namespace llvm {
-namespace pdb {
+namespace codeview {
 class StreamReader;
+}
+namespace pdb {
+
 class NameMap {
 public:
   NameMap();
 
-  std::error_code load(StreamReader &Stream);
+  Error load(codeview::StreamReader &Stream);
 
   bool tryGetValue(StringRef Name, uint32_t &Value) const;
+
+  iterator_range<StringMapConstIterator<uint32_t>> entries() const;
 
 private:
   StringMap<uint32_t> Mapping;
 };
-}
-}
 
-#endif
+} // end namespace pdb
+} // end namespace llvm
+
+#endif // LLVM_DEBUGINFO_PDB_RAW_PDBNAMEMAP_H

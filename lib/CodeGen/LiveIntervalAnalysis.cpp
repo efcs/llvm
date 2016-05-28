@@ -939,10 +939,13 @@ public:
         hasRegMask = true;
       if (!MO.isReg())
         continue;
-      // Aggressively clear all kill flags.
-      // They are reinserted by VirtRegRewriter.
-      if (MO.isUse())
+      if (MO.isUse()) {
+        if (!MO.readsReg())
+          continue;
+        // Aggressively clear all kill flags.
+        // They are reinserted by VirtRegRewriter.
         MO.setIsKill(false);
+      }
 
       unsigned Reg = MO.getReg();
       if (!Reg)
@@ -1254,20 +1257,16 @@ private:
           // value.
           LiveRange::iterator NewSegment = NewIdxIn;
           LiveRange::iterator Next = std::next(NewSegment);
-          NewSegment->valno = OldIdxVNI;
           if (SlotIndex::isEarlierInstr(Next->start, NewIdx)) {
             // There is no gap between NewSegment and its predecessor.
             *NewSegment = LiveRange::Segment(Next->start, SplitPos,
-                                             NewSegment->valno);
-            NewSegment->valno->def = Next->start;
-
-            *Next = LiveRange::Segment(SplitPos, Next->end, Next->valno);
+                                             Next->valno);
+            *Next = LiveRange::Segment(SplitPos, Next->end, OldIdxVNI);
             Next->valno->def = SplitPos;
           } else {
             // There is a gap between NewSegment and its predecessor
             // Value becomes live in.
-            *NewSegment = LiveRange::Segment(SplitPos, Next->start,
-                                             NewSegment->valno);
+            *NewSegment = LiveRange::Segment(SplitPos, Next->start, OldIdxVNI);
             NewSegment->valno->def = SplitPos;
           }
         } else {
@@ -1493,7 +1492,7 @@ LiveIntervals::repairIntervalsInRange(MachineBasicBlock *MBB,
   else
     endIdx = getInstructionIndex(*End);
 
-  Indexes->repairIndexesInRange(MBB, *Begin, *End);
+  Indexes->repairIndexesInRange(MBB, Begin, End);
 
   for (MachineBasicBlock::iterator I = End; I != Begin;) {
     --I;
@@ -1568,7 +1567,7 @@ void LiveIntervals::splitSeparateComponents(LiveInterval &LI,
 }
 
 void LiveIntervals::renameDisconnectedComponents() {
-  ConnectedSubRegClasses SubRegClasses(*this, *MRI);
+  ConnectedSubRegClasses SubRegClasses(*this, *MRI, *TII);
 
   // Iterate over all vregs. Note that we query getNumVirtRegs() the newly
   // created vregs end up with higher numbers but do not need to be visited as
@@ -1581,4 +1580,10 @@ void LiveIntervals::renameDisconnectedComponents() {
 
     SubRegClasses.renameComponents(*LI);
   }
+}
+
+void LiveIntervals::constructMainRangeFromSubranges(LiveInterval &LI) {
+  assert(LRCalc && "LRCalc not initialized.");
+  LRCalc->reset(MF, getSlotIndexes(), DomTree, &getVNInfoAllocator());
+  LRCalc->constructMainRangeFromSubranges(LI);
 }

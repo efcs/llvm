@@ -187,20 +187,15 @@ namespace {
                   cl::desc("Disable JIT lazy compilation"),
                   cl::init(false));
 
-  cl::opt<Reloc::Model>
-  RelocModel("relocation-model",
-             cl::desc("Choose relocation model"),
-             cl::init(Reloc::Default),
-             cl::values(
-            clEnumValN(Reloc::Default, "default",
-                       "Target default relocation model"),
-            clEnumValN(Reloc::Static, "static",
-                       "Non-relocatable code"),
-            clEnumValN(Reloc::PIC_, "pic",
-                       "Fully relocatable, position independent code"),
-            clEnumValN(Reloc::DynamicNoPIC, "dynamic-no-pic",
-                       "Relocatable external references, non-relocatable code"),
-            clEnumValEnd));
+  cl::opt<Reloc::Model> RelocModel(
+      "relocation-model", cl::desc("Choose relocation model"),
+      cl::values(
+          clEnumValN(Reloc::Static, "static", "Non-relocatable code"),
+          clEnumValN(Reloc::PIC_, "pic",
+                     "Fully relocatable, position independent code"),
+          clEnumValN(Reloc::DynamicNoPIC, "dynamic-no-pic",
+                     "Relocatable external references, non-relocatable code"),
+          clEnumValEnd));
 
   cl::opt<llvm::CodeModel::Model>
   CMModel("code-model",
@@ -425,7 +420,8 @@ int main(int argc, char **argv, char * const *envp) {
   builder.setMArch(MArch);
   builder.setMCPU(MCPU);
   builder.setMAttrs(MAttrs);
-  builder.setRelocationModel(RelocModel);
+  if (RelocModel.getNumOccurrences())
+    builder.setRelocationModel(RelocModel);
   builder.setCodeModel(CMModel);
   builder.setErrorStr(&ErrorMsg);
   builder.setEngineKind(ForceInterpreter
@@ -666,12 +662,12 @@ int main(int argc, char **argv, char * const *envp) {
     // Forward MCJIT's symbol resolution calls to the remote.
     static_cast<ForwardingMemoryManager*>(RTDyldMM)->setResolver(
       orc::createLambdaResolver(
+        [](const std::string &Name) { return nullptr; },
         [&](const std::string &Name) {
           if (auto Addr = ExitOnErr(R.getSymbolAddress(Name)))
 	    return RuntimeDyld::SymbolInfo(Addr, JITSymbolFlags::Exported);
           return RuntimeDyld::SymbolInfo(nullptr);
-        },
-        [](const std::string &Name) { return nullptr; }
+        }
       ));
 
     // Grab the target address of the JIT'd main function on the remote and call

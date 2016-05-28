@@ -33,6 +33,7 @@ class Pass;
 class PredicatedScalarEvolution;
 class PredIteratorCache;
 class ScalarEvolution;
+class SCEV;
 class TargetLibraryInfo;
 
 /// \brief Captures loop safety information.
@@ -268,7 +269,7 @@ public:
 public:
   /// Default constructor - creates an invalid induction.
   InductionDescriptor()
-      : StartValue(nullptr), IK(IK_NoInduction), StepValue(nullptr) {}
+      : StartValue(nullptr), IK(IK_NoInduction), Step(nullptr) {}
 
   /// Get the consecutive direction. Returns:
   ///   0 - unknown or non-consecutive.
@@ -282,11 +283,13 @@ public:
   /// For pointer induction, returns StartValue[Index * StepValue].
   /// FIXME: The newly created binary instructions should contain nsw/nuw
   /// flags, which can be found from the original scalar operations.
-  Value *transform(IRBuilder<> &B, Value *Index) const;
+  Value *transform(IRBuilder<> &B, Value *Index, ScalarEvolution *SE,
+                   const DataLayout& DL) const;
 
   Value *getStartValue() const { return StartValue; }
   InductionKind getKind() const { return IK; }
-  ConstantInt *getStepValue() const { return StepValue; }
+  const SCEV *getStep() const { return Step; }
+  ConstantInt *getConstIntStepValue() const;
 
   /// Returns true if \p Phi is an induction. If \p Phi is an induction,
   /// the induction descriptor \p D will contain the data describing this
@@ -307,14 +310,14 @@ public:
 
 private:
   /// Private constructor - used by \c isInductionPHI.
-  InductionDescriptor(Value *Start, InductionKind K, ConstantInt *Step);
+  InductionDescriptor(Value *Start, InductionKind K, const SCEV *Step);
 
   /// Start value.
   TrackingVH<Value> StartValue;
   /// Induction kind.
   InductionKind IK;
   /// Step value.
-  ConstantInt *StepValue;
+  const SCEV *Step;
 };
 
 BasicBlock *InsertPreheaderForLoop(Loop *L, DominatorTree *DT, LoopInfo *LI,

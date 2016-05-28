@@ -10,16 +10,17 @@
 #include "llvm/DebugInfo/PDB/Raw/InfoStream.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/DebugInfo/CodeView/StreamReader.h"
 #include "llvm/DebugInfo/PDB/Raw/RawConstants.h"
-#include "llvm/DebugInfo/PDB/Raw/StreamReader.h"
+#include "llvm/DebugInfo/PDB/Raw/RawError.h"
 
 using namespace llvm;
 using namespace llvm::pdb;
 
 InfoStream::InfoStream(PDBFile &File) : Pdb(File), Stream(StreamPDB, File) {}
 
-std::error_code InfoStream::reload() {
-  StreamReader Reader(Stream);
+Error InfoStream::reload() {
+  codeview::StreamReader Reader(Stream);
 
   struct Header {
     support::ulittle32_t Version;
@@ -28,20 +29,23 @@ std::error_code InfoStream::reload() {
     PDB_UniqueId Guid;
   };
 
-  Header H;
-  Reader.readObject(&H);
+  const Header *H;
+  if (auto EC = Reader.readObject(H))
+    return joinErrors(
+        std::move(EC),
+        make_error<RawError>(raw_error_code::corrupt_file,
+                             "PDB Stream does not contain a header."));
 
-  if (H.Version < PdbRaw_ImplVer::PdbImplVC70)
-    return std::make_error_code(std::errc::not_supported);
+  if (H->Version < PdbRaw_ImplVer::PdbImplVC70)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Unsupported PDB stream version.");
 
-  Version = H.Version;
-  Signature = H.Signature;
-  Age = H.Age;
-  Guid = H.Guid;
+  Version = H->Version;
+  Signature = H->Signature;
+  Age = H->Age;
+  Guid = H->Guid;
 
-  NamedStreams.load(Reader);
-
-  return std::error_code();
+  return NamedStreams.load(Reader);
 }
 
 uint32_t InfoStream::getNamedStreamIndex(llvm::StringRef Name) const {
@@ -49,6 +53,11 @@ uint32_t InfoStream::getNamedStreamIndex(llvm::StringRef Name) const {
   if (!NamedStreams.tryGetValue(Name, Result))
     return 0;
   return Result;
+}
+
+iterator_range<StringMapConstIterator<uint32_t>>
+InfoStream::named_streams() const {
+  return NamedStreams.entries();
 }
 
 PdbRaw_ImplVer InfoStream::getVersion() const {

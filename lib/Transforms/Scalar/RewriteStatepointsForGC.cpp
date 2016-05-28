@@ -131,6 +131,7 @@ ModulePass *llvm::createRewriteStatepointsForGCPass() {
 INITIALIZE_PASS_BEGIN(RewriteStatepointsForGC, "rewrite-statepoints-for-gc",
                       "Make relocations explicit at statepoints", false, false)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(RewriteStatepointsForGC, "rewrite-statepoints-for-gc",
                     "Make relocations explicit at statepoints", false, false)
 
@@ -342,8 +343,10 @@ findBaseDefiningValueOfVector(Value *I) {
     return BaseDefiningValueResult(I, true);
 
   if (isa<Constant>(I))
-    // Constant vectors consist only of constant pointers.
-    return BaseDefiningValueResult(I, true);
+    // Base of constant vector consists only of constant null pointers. 
+    // For reasoning see similar case inside 'findBaseDefiningValue' function.
+    return BaseDefiningValueResult(ConstantAggregateZero::get(I->getType()),
+                                   true);
 
   if (isa<LoadInst>(I))
     return BaseDefiningValueResult(I, true);
@@ -385,14 +388,20 @@ static BaseDefiningValueResult findBaseDefiningValue(Value *I) {
     // We should have never reached here if this argument isn't an gc value
     return BaseDefiningValueResult(I, true);
 
-  if (isa<Constant>(I))
+  if (isa<Constant>(I)) {
     // We assume that objects with a constant base (e.g. a global) can't move
     // and don't need to be reported to the collector because they are always
-    // live.  All constants have constant bases.  Besides global references, all
-    // kinds of constants (e.g. undef, constant expressions, null pointers) can
-    // be introduced by the inliner or the optimizer, especially on dynamically
-    // dead paths.  See e.g. test4 in constants.ll.
-    return BaseDefiningValueResult(I, true);
+    // live. Besides global references, all kinds of constants (e.g. undef, 
+    // constant expressions, null pointers) can be introduced by the inliner or
+    // the optimizer, especially on dynamically dead paths.
+    // Here we treat all of them as having single null base. By doing this we
+    // trying to avoid problems reporting various conflicts in a form of 
+    // "phi (const1, const2)" or "phi (const, regular gc ptr)".
+    // See constant.ll file for relevant test cases.
+
+    return BaseDefiningValueResult(
+        ConstantPointerNull::get(cast<PointerType>(I->getType())), true);
+  }
 
   if (CastInst *CI = dyn_cast<CastInst>(I)) {
     Value *Def = CI->stripPointerCasts();
@@ -1054,14 +1063,6 @@ findBasePointers(const StatepointLiveSetTy &live,
             DT->dominates(cast<Instruction>(base)->getParent(),
                           cast<Instruction>(ptr)->getParent())) &&
            "The base we found better dominate the derived pointer");
-
-    // If you see this trip and like to live really dangerously, the code should
-    // be correct, just with idioms the verifier can't handle.  You can try
-    // disabling the verifier at your own substantial risk.
-    assert(!isa<ConstantPointerNull>(base) &&
-           "the relocation code needs adjustment to handle the relocation of "
-           "a null pointer constant without causing false positives in the "
-           "safepoint ir verifier.");
   }
 }
 
@@ -1349,7 +1350,7 @@ makeStatepointExplicitImpl(const CallSite CS, /* to replace */
   Value *CallTarget = CS.getCalledValue();
   if (Function *F = dyn_cast<Function>(CallTarget)) {
     if (F->getIntrinsicID() == Intrinsic::experimental_deoptimize) {
-      // Calls to llvm.experimental.deoptimize are lowered to calls the the
+      // Calls to llvm.experimental.deoptimize are lowered to calls to the
       // __llvm_deoptimize symbol.  We want to resolve this now, since the
       // verifier does not allow taking the address of an intrinsic function.
 

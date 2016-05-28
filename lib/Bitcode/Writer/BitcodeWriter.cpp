@@ -37,6 +37,7 @@
 #include <map>
 using namespace llvm;
 
+namespace {
 /// These are manifest constants used by the bitcode writer. They do not need to
 /// be kept in sync with the reader, but need to be consistent within this file.
 enum {
@@ -333,15 +334,24 @@ public:
       // is empty. This will be handled specially in operator== as well.
       if (Writer.ModuleToSummariesForIndex &&
           !Writer.ModuleToSummariesForIndex->empty()) {
-        ModuleSummariesBack =
-            std::prev(Writer.ModuleToSummariesForIndex->end());
-        ModuleSummariesIter = Writer.ModuleToSummariesForIndex->begin();
+        for (ModuleSummariesBack = Writer.ModuleToSummariesForIndex->begin();
+             std::next(ModuleSummariesBack) !=
+             Writer.ModuleToSummariesForIndex->end();
+             ModuleSummariesBack++)
+          ;
+        ModuleSummariesIter = !IsAtEnd
+                                  ? Writer.ModuleToSummariesForIndex->begin()
+                                  : ModuleSummariesBack;
         ModuleGVSummariesIter = !IsAtEnd ? ModuleSummariesIter->second.begin()
                                          : ModuleSummariesBack->second.end();
       } else if (!Writer.ModuleToSummariesForIndex &&
                  Writer.Index.begin() != Writer.Index.end()) {
-        IndexSummariesBack = std::prev(Writer.Index.end());
-        IndexSummariesIter = Writer.Index.begin();
+        for (IndexSummariesBack = Writer.Index.begin();
+             std::next(IndexSummariesBack) != Writer.Index.end();
+             IndexSummariesBack++)
+          ;
+        IndexSummariesIter =
+            !IsAtEnd ? Writer.Index.begin() : IndexSummariesBack;
         IndexGVSummariesIter = !IsAtEnd ? IndexSummariesIter->second.begin()
                                         : IndexSummariesBack->second.end();
       }
@@ -392,6 +402,10 @@ public:
         // empty, they both are.
         if (Writer.ModuleToSummariesForIndex->empty())
           return true;
+        // Ensure the ModuleGVSummariesIter are iterating over the same
+        // container before checking them below.
+        if (ModuleSummariesIter != RHS.ModuleSummariesIter)
+          return false;
         return ModuleGVSummariesIter == RHS.ModuleGVSummariesIter;
       }
       // First ensure RHS also writing the full index, and that both are
@@ -403,6 +417,10 @@ public:
       // empty, they both are.
       if (Writer.Index.begin() == Writer.Index.end())
         return true;
+      // Ensure the IndexGVSummariesIter are iterating over the same
+      // container before checking them below.
+      if (IndexSummariesIter != RHS.IndexSummariesIter)
+        return false;
       return IndexGVSummariesIter == RHS.IndexGVSummariesIter;
     }
   };
@@ -446,6 +464,7 @@ private:
   }
   std::map<GlobalValue::GUID, unsigned> &valueIds() { return GUIDToValueIdMap; }
 };
+} // end anonymous namespace
 
 static unsigned getEncodedCastOpcode(unsigned Opcode) {
   switch (Opcode) {
@@ -1489,7 +1508,8 @@ void ModuleBitcodeWriter::writeDICompileUnit(const DICompileUnit *N,
 void ModuleBitcodeWriter::writeDISubprogram(const DISubprogram *N,
                                             SmallVectorImpl<uint64_t> &Record,
                                             unsigned Abbrev) {
-  Record.push_back(N->isDistinct());
+  uint64_t HasUnitFlag = 1 << 1;
+  Record.push_back(N->isDistinct() | HasUnitFlag);
   Record.push_back(VE.getMetadataOrNullID(N->getScope()));
   Record.push_back(VE.getMetadataOrNullID(N->getRawName()));
   Record.push_back(VE.getMetadataOrNullID(N->getRawLinkageName()));
@@ -3148,11 +3168,22 @@ void ModuleBitcodeWriter::writePerModuleFunctionSummaryRecord(
   NameVals.push_back(FS->instCount());
   NameVals.push_back(FS->refs().size());
 
+  unsigned SizeBeforeRefs = NameVals.size();
   for (auto &RI : FS->refs())
     NameVals.push_back(VE.getValueID(RI.getValue()));
+  // Sort the refs for determinism output, the vector returned by FS->refs() has
+  // been initialized from a DenseSet.
+  std::sort(NameVals.begin() + SizeBeforeRefs, NameVals.end());
 
+  std::vector<FunctionSummary::EdgeTy> Calls = FS->calls();
+  std::sort(Calls.begin(), Calls.end(),
+            [this](const FunctionSummary::EdgeTy &L,
+                   const FunctionSummary::EdgeTy &R) {
+              return VE.getValueID(L.first.getValue()) <
+                     VE.getValueID(R.first.getValue());
+            });
   bool HasProfileData = F.getEntryCount().hasValue();
-  for (auto &ECI : FS->calls()) {
+  for (auto &ECI : Calls) {
     NameVals.push_back(VE.getValueID(ECI.first.getValue()));
     assert(ECI.second.CallsiteCount > 0 && "Expected at least one callsite");
     NameVals.push_back(ECI.second.CallsiteCount);
@@ -3181,8 +3212,14 @@ void ModuleBitcodeWriter::writeModuleLevelReferences(
   NameVals.push_back(getEncodedGVSummaryFlags(V));
   auto *Summary = Index->getGlobalValueSummary(V);
   GlobalVarSummary *VS = cast<GlobalVarSummary>(Summary);
-  for (auto Ref : VS->refs())
-    NameVals.push_back(VE.getValueID(Ref.getValue()));
+
+  unsigned SizeBeforeRefs = NameVals.size();
+  for (auto &RI : VS->refs())
+    NameVals.push_back(VE.getValueID(RI.getValue()));
+  // Sort the refs for determinism output, the vector returned by FS->refs() has
+  // been initialized from a DenseSet.
+  std::sort(NameVals.begin() + SizeBeforeRefs, NameVals.end());
+
   Stream.EmitRecord(bitc::FS_PERMODULE_GLOBALVAR_INIT_REFS, NameVals,
                     FSModRefsAbbrev);
   NameVals.clear();
@@ -3259,10 +3296,8 @@ void ModuleBitcodeWriter::writePerModuleGlobalValueSummary() {
       report_fatal_error("Unexpected anonymous function when writing summary");
 
     auto *Summary = Index->getGlobalValueSummary(F);
-    writePerModuleFunctionSummaryRecord(
-        NameVals, Summary,
-        VE.getValueID(M.getValueSymbolTable().lookup(F.getName())),
-        FSCallsAbbrev, FSCallsProfileAbbrev, F);
+    writePerModuleFunctionSummaryRecord(NameVals, Summary, VE.getValueID(&F),
+                                        FSCallsAbbrev, FSCallsProfileAbbrev, F);
   }
 
   // Capture references from GlobalVariable initializers, which are outside

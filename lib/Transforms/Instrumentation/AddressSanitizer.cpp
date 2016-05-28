@@ -204,10 +204,14 @@ static cl::opt<bool> ClSkipPromotableAllocas(
 
 // These flags allow to change the shadow mapping.
 // The shadow mapping looks like
-//    Shadow = (Mem >> scale) + (1 << offset_log)
+//    Shadow = (Mem >> scale) + offset
 static cl::opt<int> ClMappingScale("asan-mapping-scale",
                                    cl::desc("scale of asan shadow mapping"),
                                    cl::Hidden, cl::init(0));
+static cl::opt<unsigned long long> ClMappingOffset(
+    "asan-mapping-offset",
+    cl::desc("offset of asan shadow mapping [EXPERIMENTAL]"), cl::Hidden,
+    cl::init(0));
 
 // Optimization flags. Not user visible, used mostly for testing
 // and benchmarking the tool.
@@ -404,8 +408,12 @@ static ShadowMapping getShadowMapping(Triple &TargetTriple, int LongSize,
   }
 
   Mapping.Scale = kDefaultShadowScale;
-  if (ClMappingScale) {
+  if (ClMappingScale.getNumOccurrences() > 0) {
     Mapping.Scale = ClMappingScale;
+  }
+
+  if (ClMappingOffset.getNumOccurrences() > 0) {
+    Mapping.Offset = ClMappingOffset;
   }
 
   // OR-ing shadow offset if more efficient (at least on x86) if the offset
@@ -427,9 +435,11 @@ static size_t RedzoneSizeForScale(int MappingScale) {
 
 /// AddressSanitizer: instrument the code in module to find memory bugs.
 struct AddressSanitizer : public FunctionPass {
-  explicit AddressSanitizer(bool CompileKernel = false, bool Recover = false)
+  explicit AddressSanitizer(bool CompileKernel = false, bool Recover = false,
+                            bool UseAfterScope = false)
       : FunctionPass(ID), CompileKernel(CompileKernel || ClEnableKasan),
-        Recover(Recover || ClRecover) {
+        Recover(Recover || ClRecover),
+        UseAfterScope(UseAfterScope || ClUseAfterScope) {
     initializeAddressSanitizerPass(*PassRegistry::getPassRegistry());
   }
   const char *getPassName() const override {
@@ -506,6 +516,7 @@ struct AddressSanitizer : public FunctionPass {
   int LongSize;
   bool CompileKernel;
   bool Recover;
+  bool UseAfterScope;
   Type *IntptrTy;
   ShadowMapping Mapping;
   DominatorTree *DT;
@@ -718,7 +729,8 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
     Intrinsic::ID ID = II.getIntrinsicID();
     if (ID == Intrinsic::stackrestore) StackRestoreVec.push_back(&II);
     if (ID == Intrinsic::localescape) LocalEscapeCall = &II;
-    if (!ClUseAfterScope) return;
+    if (!ASan.UseAfterScope)
+      return;
     if (ID != Intrinsic::lifetime_start && ID != Intrinsic::lifetime_end)
       return;
     // Found lifetime intrinsic, add ASan instrumentation if necessary.
@@ -786,9 +798,10 @@ INITIALIZE_PASS_END(
     "AddressSanitizer: detects use-after-free and out-of-bounds bugs.", false,
     false)
 FunctionPass *llvm::createAddressSanitizerFunctionPass(bool CompileKernel,
-                                                       bool Recover) {
+                                                       bool Recover,
+                                                       bool UseAfterScope) {
   assert(!CompileKernel || Recover);
-  return new AddressSanitizer(CompileKernel, Recover);
+  return new AddressSanitizer(CompileKernel, Recover, UseAfterScope);
 }
 
 char AddressSanitizerModule::ID = 0;
@@ -840,9 +853,9 @@ static GlobalVariable *createPrivateGlobalForSourceLoc(Module &M,
 }
 
 static bool GlobalWasGeneratedByAsan(GlobalVariable *G) {
-  return G->getName().find(kAsanGenPrefix) == 0 ||
-         G->getName().find(kSanCovGenPrefix) == 0 ||
-         G->getName().find(kODRGenPrefix) == 0;
+  return G->getName().startswith(kAsanGenPrefix) ||
+         G->getName().startswith(kSanCovGenPrefix) ||
+         G->getName().startswith(kODRGenPrefix);
 }
 
 Value *AddressSanitizer::memToShadow(Value *Shadow, IRBuilder<> &IRB) {
@@ -1234,7 +1247,7 @@ bool AddressSanitizerModule::ShouldInstrumentGlobal(GlobalVariable *G) {
   if (G->getAlignment() > MinRedzoneSizeForGlobal()) return false;
 
   if (G->hasSection()) {
-    StringRef Section(G->getSection());
+    StringRef Section = G->getSection();
 
     // Globals from llvm.metadata aren't emitted, do not instrument them.
     if (Section == "llvm.metadata") return false;

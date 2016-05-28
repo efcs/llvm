@@ -96,6 +96,7 @@ void GlobalObject::copyAttributesFrom(const GlobalValue *Src) {
   if (const auto *GV = dyn_cast<GlobalObject>(Src)) {
     setAlignment(GV->getAlignment());
     setSection(GV->getSection());
+    setComdat(const_cast<GlobalObject *>(GV)->getComdat());
   }
 }
 
@@ -128,7 +129,7 @@ std::string GlobalValue::getGlobalIdentifier() const {
                              getParent()->getSourceFileName());
 }
 
-const char *GlobalValue::getSection() const {
+StringRef GlobalValue::getSection() const {
   if (auto *GA = dyn_cast<GlobalAlias>(this)) {
     // In general we cannot compute this at the IR level, but we try.
     if (const GlobalObject *GO = GA->getBaseObject())
@@ -151,7 +152,12 @@ Comdat *GlobalValue::getComdat() {
   return cast<GlobalObject>(this)->getComdat();
 }
 
-void GlobalObject::setSection(StringRef S) { Section = S; }
+void GlobalObject::setSection(StringRef S) {
+  Section = S;
+
+  // The C api requires this to be null terminated.
+  Section.c_str();
+}
 
 bool GlobalValue::isDeclaration() const {
   // Globals are definitions if they have an initializer.

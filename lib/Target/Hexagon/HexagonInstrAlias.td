@@ -460,6 +460,38 @@ def : InstAlias<"$Pd=cmp.lt($Rs, $Rt)",
 def : InstAlias<"$Pd=cmp.ltu($Rs, $Rt)",
       (C2_cmpgtu PredRegs:$Pd, IntRegs:$Rt, IntRegs:$Rs), 0>;
 
+// maps if (!Pu) jumpr Rs -> if (!Pu) jumpr:nt Rs
+def : InstAlias<"if (!$Pu) jumpr $Rs",
+      (J2_jumprf PredRegs:$Pu, IntRegs:$Rs)>,
+      Requires<[HasV60T]>;
+
+// maps if (Pu) jumpr Rs -> if (Pu) jumpr:nt Rs
+def : InstAlias<"if ($Pu) jumpr $Rs",
+      (J2_jumprt PredRegs:$Pu, IntRegs:$Rs)>,
+      Requires<[HasV60T]>;
+
+// maps if (!Pu) jump $r15_2 -> if (!Pu) jump:nt $r15_2
+def : InstAlias<"if (!$Pu) jump $r15_2",
+      (J2_jumpf PredRegs:$Pu, brtarget:$r15_2)>,
+      Requires<[HasV60T]>;
+
+// maps if (Pu) jump $r15_2 -> if (Pu) jump:nt $r15_2
+def : InstAlias<"if ($Pu) jump $r15_2",
+     (J2_jumpt PredRegs:$Pu, brtarget:$r15_2)>,
+     Requires<[HasV60T]>;
+
+def : InstAlias<"if ($src) jump $r15_2",
+      (J2_jumpt PredRegs:$src, brtarget:$r15_2), 0>;
+
+def : InstAlias<"if (!$src) jump $r15_2",
+      (J2_jumpf PredRegs:$src, brtarget:$r15_2), 0>;
+
+def : InstAlias<"if ($src1) jumpr $src2",
+      (J2_jumprt PredRegs:$src1, IntRegs:$src2), 0>;
+
+def : InstAlias<"if (!$src1) jumpr $src2",
+      (J2_jumprf PredRegs:$src1, IntRegs:$src2), 0>;
+
 // V6_vassignp: Vector assign mapping.
 let hasNewValue = 1, opNewValue = 0, isAsmParserOnly = 1 in
 def HEXAGON_V6_vassignpair: CVI_VA_DV_Resource <
@@ -541,3 +573,82 @@ def : InstAlias<"$Qd ^= vcmp.eq($Vu.ub, $Vv.ub)",
 def : InstAlias<"$Rd.w = vextract($Vu, $Rs)",
       (V6_extractw IntRegs:$Rd, VectorRegs:$Vu, IntRegs:$Rs)>,
       Requires<[HasV60T]>;
+
+// Mapping from vtrans2x2(Vy32,Vx32,Rt32) to vshuff(Vy32,Vx32,Rt32)
+def : InstAlias<"vtrans2x2($Vy, $Vx, $Rt)",
+      (V6_vshuff VectorRegs:$Vy, VectorRegs:$Vx, IntRegs:$Rt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"$Vt=vmem($Rs)",
+      (V6_vL32b_ai VectorRegs:$Vt, IntRegs:$Rs, 0)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"$Vt=vmem($Rs):nt",
+      (V6_vL32b_nt_ai VectorRegs:$Vt, IntRegs:$Rs, 0)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"vmem($Rs)=$Vt",
+      (V6_vS32b_ai IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"vmem($Rs):nt=$Vt",
+      (V6_vS32b_nt_ai IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"vmem($Rs)=$Vt.new",
+      (V6_vS32b_new_ai IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"vmem($Rs):nt=$Vt.new",
+      (V6_vS32b_nt_new_ai IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if ($Qv) vmem($Rs)=$Vt",
+      (V6_vS32b_qpred_ai VecPredRegs:$Qv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if (!$Qv) vmem($Rs)=$Vt",
+      (V6_vS32b_nqpred_ai VecPredRegs:$Qv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if ($Qv) vmem($Rs):nt=$Vt",
+      (V6_vS32b_nt_qpred_ai VecPredRegs:$Qv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if (!$Qv) vmem($Rs):nt=$Vt",
+      (V6_vS32b_nt_nqpred_ai VecPredRegs:$Qv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if ($Pv) vmem($Rs)=$Vt",
+      (V6_vS32b_pred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if (!$Pv) vmem($Rs)=$Vt",
+      (V6_vS32b_npred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if ($Pv) vmem($Rs):nt=$Vt",
+      (V6_vS32b_nt_pred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if (!$Pv) vmem($Rs):nt=$Vt",
+      (V6_vS32b_nt_npred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"$Vt=vmemu($Rs)",
+      (V6_vL32Ub_ai VectorRegs:$Vt, IntRegs:$Rs, 0)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"vmemu($Rs)=$Vt",
+      (V6_vS32Ub_ai IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if ($Pv) vmemu($Rs)=$Vt",
+      (V6_vS32Ub_pred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+def : InstAlias<"if (!$Pv) vmemu($Rs)=$Vt",
+      (V6_vS32Ub_npred_ai PredRegs:$Pv, IntRegs:$Rs, 0, VectorRegs:$Vt)>,
+      Requires<[HasV60T]>;
+
+

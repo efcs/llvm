@@ -16,6 +16,7 @@
 #include "llvm/MC/MCELFStreamer.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include <functional>
 
 namespace llvm {
 
@@ -24,8 +25,12 @@ struct MipsABIFlagsSection;
 class MipsTargetStreamer : public MCTargetStreamer {
 public:
   MipsTargetStreamer(MCStreamer &S);
+
+  virtual void setPic(bool Value) {}
+
   virtual void emitDirectiveSetMicroMips();
   virtual void emitDirectiveSetNoMicroMips();
+  virtual void setUsesMicroMips();
   virtual void emitDirectiveSetMips16();
   virtual void emitDirectiveSetNoMips16();
 
@@ -78,8 +83,9 @@ public:
 
   // PIC support
   virtual void emitDirectiveCpLoad(unsigned RegNo);
-  virtual void emitDirectiveCpRestore(int Offset, unsigned ATReg, SMLoc IDLoc,
-                                      const MCSubtargetInfo *STI);
+  virtual bool emitDirectiveCpRestore(int Offset,
+                                      std::function<unsigned()> GetATReg,
+                                      SMLoc IDLoc, const MCSubtargetInfo *STI);
   virtual void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                                     const MCSymbol &Sym, bool IsReg);
   virtual void emitDirectiveCpreturn(unsigned SaveLocation,
@@ -117,9 +123,18 @@ public:
   void emitEmptyDelaySlot(bool hasShortDelaySlot, SMLoc IDLoc,
                           const MCSubtargetInfo *STI);
   void emitNop(SMLoc IDLoc, const MCSubtargetInfo *STI);
+
+  /// Emit a store instruction with an offset. If the offset is out of range
+  /// then it will be synthesized using the assembler temporary.
+  ///
+  /// GetATReg() is a callback that can be used to obtain the current assembler
+  /// temporary and is only called when the assembler temporary is required. It
+  /// must handle the case where no assembler temporary is available (typically
+  /// by reporting an error).
   void emitStoreWithImmOffset(unsigned Opcode, unsigned SrcReg,
-                              unsigned BaseReg, int64_t Offset, unsigned ATReg,
-                              SMLoc IDLoc, const MCSubtargetInfo *STI);
+                              unsigned BaseReg, int64_t Offset,
+                              std::function<unsigned()> GetATReg, SMLoc IDLoc,
+                              const MCSubtargetInfo *STI);
   void emitStoreWithSymOffset(unsigned Opcode, unsigned SrcReg,
                               unsigned BaseReg, MCOperand &HiOperand,
                               MCOperand &LoOperand, unsigned ATReg, SMLoc IDLoc,
@@ -232,8 +247,16 @@ public:
 
   // PIC support
   void emitDirectiveCpLoad(unsigned RegNo) override;
-  void emitDirectiveCpRestore(int Offset, unsigned ATReg, SMLoc IDLoc,
-                              const MCSubtargetInfo *STI) override;
+
+  /// Emit a .cprestore directive.  If the offset is out of range then it will
+  /// be synthesized using the assembler temporary.
+  ///
+  /// GetATReg() is a callback that can be used to obtain the current assembler
+  /// temporary and is only called when the assembler temporary is required. It
+  /// must handle the case where no assembler temporary is available (typically
+  /// by reporting an error).
+  bool emitDirectiveCpRestore(int Offset, std::function<unsigned()> GetATReg,
+                              SMLoc IDLoc, const MCSubtargetInfo *STI) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
   void emitDirectiveCpreturn(unsigned SaveLocation,
@@ -260,12 +283,15 @@ public:
   MCELFStreamer &getStreamer();
   MipsTargetELFStreamer(MCStreamer &S, const MCSubtargetInfo &STI);
 
+  void setPic(bool Value) override { Pic = Value; }
+
   void emitLabel(MCSymbol *Symbol) override;
   void emitAssignment(MCSymbol *Symbol, const MCExpr *Value) override;
   void finish() override;
 
   void emitDirectiveSetMicroMips() override;
   void emitDirectiveSetNoMicroMips() override;
+  void setUsesMicroMips() override;
   void emitDirectiveSetMips16() override;
 
   void emitDirectiveSetNoReorder() override;
@@ -285,8 +311,8 @@ public:
 
   // PIC support
   void emitDirectiveCpLoad(unsigned RegNo) override;
-  void emitDirectiveCpRestore(int Offset, unsigned ATReg, SMLoc IDLoc,
-                              const MCSubtargetInfo *STI) override;
+  bool emitDirectiveCpRestore(int Offset, std::function<unsigned()> GetATReg,
+                              SMLoc IDLoc, const MCSubtargetInfo *STI) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
   void emitDirectiveCpreturn(unsigned SaveLocation,

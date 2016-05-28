@@ -32,7 +32,7 @@ using namespace llvm;
 /// ScalarOpts library.
 void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeADCELegacyPassPass(Registry);
-  initializeBDCEPass(Registry);
+  initializeBDCELegacyPassPass(Registry);
   initializeAlignmentFromAssumptionsPass(Registry);
   initializeConstantHoistingPass(Registry);
   initializeConstantPropagationPass(Registry);
@@ -40,7 +40,8 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeDCELegacyPassPass(Registry);
   initializeDeadInstEliminationPass(Registry);
   initializeScalarizerPass(Registry);
-  initializeDSEPass(Registry);
+  initializeDSELegacyPassPass(Registry);
+  initializeGuardWideningLegacyPassPass(Registry);
   initializeGVNLegacyPassPass(Registry);
   initializeEarlyCSELegacyPassPass(Registry);
   initializeFlattenCFGPassPass(Registry);
@@ -60,18 +61,18 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeLoopUnswitchPass(Registry);
   initializeLoopVersioningLICMPass(Registry);
   initializeLoopIdiomRecognizePass(Registry);
-  initializeLowerAtomicPass(Registry);
+  initializeLowerAtomicLegacyPassPass(Registry);
   initializeLowerExpectIntrinsicPass(Registry);
   initializeLowerGuardIntrinsicPass(Registry);
   initializeMemCpyOptPass(Registry);
   initializeMergedLoadStoreMotionPass(Registry);
   initializeNaryReassociatePass(Registry);
-  initializePartiallyInlineLibCallsPass(Registry);
+  initializePartiallyInlineLibCallsLegacyPassPass(Registry);
   initializeReassociateLegacyPassPass(Registry);
   initializeRegToMemPass(Registry);
   initializeRewriteStatepointsForGCPass(Registry);
-  initializeSCCPPass(Registry);
-  initializeIPSCCPPass(Registry);
+  initializeSCCPLegacyPassPass(Registry);
+  initializeIPSCCPLegacyPassPass(Registry);
   initializeSROALegacyPassPass(Registry);
   initializeSROA_DTPass(Registry);
   initializeSROA_SSAUpPass(Registry);

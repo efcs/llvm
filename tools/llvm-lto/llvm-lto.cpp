@@ -26,6 +26,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
@@ -67,6 +68,7 @@ static cl::opt<bool>
 enum ThinLTOModes {
   THINLINK,
   THINDISTRIBUTE,
+  THINEMITIMPORTS,
   THINPROMOTE,
   THINIMPORT,
   THININTERNALIZE,
@@ -83,6 +85,8 @@ cl::opt<ThinLTOModes> ThinLTOMode(
             "ThinLink: produces the index by linking only the summaries."),
         clEnumValN(THINDISTRIBUTE, "distributedindexes",
                    "Produces individual indexes for distributed backends."),
+        clEnumValN(THINEMITIMPORTS, "emitimports",
+                   "Emit imports files for distributed backends."),
         clEnumValN(THINPROMOTE, "promote",
                    "Perform pre-import promotion (requires -thinlto-index)."),
         clEnumValN(THINIMPORT, "import", "Perform both promotion and "
@@ -101,10 +105,20 @@ static cl::opt<std::string>
                  cl::desc("Provide the index produced by a ThinLink, required "
                           "to perform the promotion and/or importing."));
 
+static cl::opt<std::string> ThinLTOPrefixReplace(
+    "thinlto-prefix-replace",
+    cl::desc("Control where files for distributed backends are "
+             "created. Expects 'oldprefix;newprefix' and if path "
+             "prefix of output file is oldprefix it will be "
+             "replaced with newprefix."));
+
 static cl::opt<std::string> ThinLTOModuleId(
     "thinlto-module-id",
     cl::desc("For the module ID for the file to process, useful to "
              "match what is in the index."));
+
+static cl::opt<std::string>
+    ThinLTOCacheDir("thinlto-cache-dir", cl::desc("Enable ThinLTO caching."));
 
 static cl::opt<bool>
     SaveModuleFile("save-merged-module", cl::init(false),
@@ -288,6 +302,37 @@ static void createCombinedModuleSummaryIndex() {
   OS.close();
 }
 
+/// Parse the thinlto_prefix_replace option into the \p OldPrefix and
+/// \p NewPrefix strings, if it was specified.
+static void getThinLTOOldAndNewPrefix(std::string &OldPrefix,
+                                      std::string &NewPrefix) {
+  assert(ThinLTOPrefixReplace.empty() ||
+         ThinLTOPrefixReplace.find(";") != StringRef::npos);
+  StringRef PrefixReplace = ThinLTOPrefixReplace;
+  std::pair<StringRef, StringRef> Split = PrefixReplace.split(";");
+  OldPrefix = Split.first.str();
+  NewPrefix = Split.second.str();
+}
+
+/// Given the original \p Path to an output file, replace any path
+/// prefix matching \p OldPrefix with \p NewPrefix. Also, create the
+/// resulting directory if it does not yet exist.
+static std::string getThinLTOOutputFile(const std::string &Path,
+                                        const std::string &OldPrefix,
+                                        const std::string &NewPrefix) {
+  if (OldPrefix.empty() && NewPrefix.empty())
+    return Path;
+  SmallString<128> NewPath(Path);
+  llvm::sys::path::replace_path_prefix(NewPath, OldPrefix, NewPrefix);
+  StringRef ParentPath = llvm::sys::path::parent_path(NewPath.str());
+  if (!ParentPath.empty()) {
+    // Make sure the new directory exists, creating it if necessary.
+    if (std::error_code EC = llvm::sys::fs::create_directories(ParentPath))
+      error(EC, "error creating the directory '" + ParentPath + "'");
+  }
+  return NewPath.str();
+}
+
 namespace thinlto {
 
 std::vector<std::unique_ptr<MemoryBuffer>>
@@ -345,8 +390,9 @@ public:
   ThinLTOCodeGenerator ThinGenerator;
 
   ThinLTOProcessing(const TargetOptions &Options) {
-    ThinGenerator.setCodePICModel(RelocModel);
+    ThinGenerator.setCodePICModel(getRelocModel());
     ThinGenerator.setTargetOptions(Options);
+    ThinGenerator.setCacheDir(ThinLTOCacheDir);
 
     // Add all the exported symbols to the table of symbols to preserve.
     for (unsigned i = 0; i < ExportedSymbols.size(); ++i)
@@ -359,6 +405,8 @@ public:
       return thinLink();
     case THINDISTRIBUTE:
       return distributedIndexes();
+    case THINEMITIMPORTS:
+      return emitImports();
     case THINPROMOTE:
       return promote();
     case THINIMPORT:
@@ -412,6 +460,9 @@ private:
                          "the output files will be suffixed from the input "
                          "ones.");
 
+    std::string OldPrefix, NewPrefix;
+    getThinLTOOldAndNewPrefix(OldPrefix, NewPrefix);
+
     auto Index = loadCombinedIndex();
     for (auto &Filename : InputFilenames) {
       // Build a map of module to the GUIDs and summary objects that should
@@ -424,10 +475,34 @@ private:
       if (OutputName.empty()) {
         OutputName = Filename + ".thinlto.bc";
       }
+      OutputName = getThinLTOOutputFile(OutputName, OldPrefix, NewPrefix);
       std::error_code EC;
       raw_fd_ostream OS(OutputName, EC, sys::fs::OpenFlags::F_None);
       error(EC, "error opening the file '" + OutputName + "'");
       WriteIndexToFile(*Index, OS, &ModuleToSummariesForIndex);
+    }
+  }
+
+  /// Load the combined index from disk, compute the imports, and emit
+  /// the import file lists for each module to disk.
+  void emitImports() {
+    if (InputFilenames.size() != 1 && !OutputFilename.empty())
+      report_fatal_error("Can't handle a single output filename and multiple "
+                         "input files, do not provide an output filename and "
+                         "the output files will be suffixed from the input "
+                         "ones.");
+
+    std::string OldPrefix, NewPrefix;
+    getThinLTOOldAndNewPrefix(OldPrefix, NewPrefix);
+
+    auto Index = loadCombinedIndex();
+    for (auto &Filename : InputFilenames) {
+      std::string OutputName = OutputFilename;
+      if (OutputName.empty()) {
+        OutputName = Filename + ".imports";
+      }
+      OutputName = getThinLTOOutputFile(OutputName, OldPrefix, NewPrefix);
+      ThinLTOCodeGenerator::emitImports(Filename, OutputName, *Index);
     }
   }
 
@@ -662,7 +737,7 @@ int main(int argc, char **argv) {
   if (UseDiagnosticHandler)
     CodeGen.setDiagnosticHandler(handleDiagnostics, nullptr);
 
-  CodeGen.setCodePICModel(RelocModel);
+  CodeGen.setCodePICModel(getRelocModel());
 
   CodeGen.setDebugInfo(LTO_DEBUG_MODEL_DWARF);
   CodeGen.setTargetOptions(Options);

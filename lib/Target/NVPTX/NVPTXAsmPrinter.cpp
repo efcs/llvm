@@ -117,7 +117,7 @@ void NVPTXAsmPrinter::emitLineNumberAsDotLoc(const MachineInstr &MI) {
   if (ignoreLoc(MI))
     return;
 
-  DebugLoc curLoc = MI.getDebugLoc();
+  const DebugLoc &curLoc = MI.getDebugLoc();
 
   if (!prevDebugLoc && !curLoc)
     return;
@@ -1041,7 +1041,7 @@ void NVPTXAsmPrinter::printModuleLevelGV(const GlobalVariable *GVar,
 
   // Skip meta data
   if (GVar->hasSection()) {
-    if (GVar->getSection() == StringRef("llvm.metadata"))
+    if (GVar->getSection() == "llvm.metadata")
       return;
   }
 

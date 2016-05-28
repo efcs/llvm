@@ -193,12 +193,12 @@ BitVector SIRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     assert(!isSubRegister(ScratchRSrcReg, ScratchWaveOffsetReg));
   }
 
-  // Reserve VGPRs for trap handler usage if "amdgpu-debugger-reserve-trap-regs"
+  // Reserve registers for debugger usage if "amdgpu-debugger-reserve-trap-regs"
   // attribute was specified.
   const AMDGPUSubtarget &ST = MF.getSubtarget<AMDGPUSubtarget>();
-  if (ST.debuggerReserveTrapVGPRs()) {
+  if (ST.debuggerReserveRegs()) {
     unsigned ReservedVGPRFirst =
-      MaxWorkGroupVGPRCount - MFI->getDebuggerReserveTrapVGPRCount();
+      MaxWorkGroupVGPRCount - MFI->getDebuggerReservedVGPRCount();
     for (unsigned i = ReservedVGPRFirst; i < MaxWorkGroupVGPRCount; ++i) {
       unsigned Reg = AMDGPU::VGPR_32RegClass.getRegister(i);
       reserveRegisterTuples(Reserved, Reg);
@@ -505,9 +505,11 @@ void SIRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       unsigned NumSubRegs = getNumSubRegsForSpillOp(MI->getOpcode());
       unsigned TmpReg = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
 
+      unsigned SuperReg = MI->getOperand(0).getReg();
       for (unsigned i = 0, e = NumSubRegs; i < e; ++i) {
-        unsigned SubReg = getPhysRegSubReg(MI->getOperand(0).getReg(),
+        unsigned SubReg = getPhysRegSubReg(SuperReg,
                                            &AMDGPU::SGPR_32RegClass, i);
+
         struct SIMachineFunctionInfo::SpilledReg Spill =
             MFI->getSpilledReg(MF, Index, i);
 
@@ -524,8 +526,14 @@ void SIRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
         } else {
           // Spill SGPR to a frame index.
           // FIXME we should use S_STORE_DWORD here for VI.
-          BuildMI(*MBB, MI, DL, TII->get(AMDGPU::V_MOV_B32_e32), TmpReg)
-                  .addReg(SubReg);
+          MachineInstrBuilder Mov
+            = BuildMI(*MBB, MI, DL, TII->get(AMDGPU::V_MOV_B32_e32), TmpReg)
+            .addReg(SubReg);
+
+          // There could be undef components of a spilled super register.
+          // TODO: Can we detect this and skip the spill?
+          if (NumSubRegs > 1)
+            Mov.addReg(SuperReg, RegState::Implicit);
 
           unsigned Size = FrameInfo->getObjectSize(Index);
           unsigned Align = FrameInfo->getObjectAlignment(Index);

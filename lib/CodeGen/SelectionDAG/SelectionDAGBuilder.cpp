@@ -109,7 +109,7 @@ OptsizeJumpTableDensity("optsize-jump-table-density", cl::init(40), cl::Hidden,
 // MaxParallelChains default is arbitrarily high to avoid affecting
 // optimization, but could be lowered to improve compile time. Any ld-ld-st-st
 // sequence over this should have been converted to llvm.memcpy by the
-// frontend. It easy to induce this behavior with .ll code such as:
+// frontend. It is easy to induce this behavior with .ll code such as:
 // %buffer = alloca [4096 x i8]
 // %data = load [4096 x i8]* %argPtr
 // store [4096 x i8] %data, [4096 x i8]* %buffer
@@ -121,14 +121,14 @@ static SDValue getCopyFromPartsVector(SelectionDAG &DAG, SDLoc DL,
 
 /// getCopyFromParts - Create a value that contains the specified legal parts
 /// combined into the value they represent.  If the parts combine to a type
-/// larger then ValueVT then AssertOp can be used to specify whether the extra
+/// larger than ValueVT then AssertOp can be used to specify whether the extra
 /// bits are known to be zero (ISD::AssertZext) or sign extended from ValueVT
 /// (ISD::AssertSext).
 static SDValue getCopyFromParts(SelectionDAG &DAG, SDLoc DL,
                                 const SDValue *Parts,
                                 unsigned NumParts, MVT PartVT, EVT ValueVT,
                                 const Value *V,
-                                ISD::NodeType AssertOp = ISD::DELETED_NODE) {
+                                Optional<ISD::NodeType> AssertOp = None) {
   if (ValueVT.isVector())
     return getCopyFromPartsVector(DAG, DL, Parts, NumParts,
                                   PartVT, ValueVT, V);
@@ -233,8 +233,8 @@ static SDValue getCopyFromParts(SelectionDAG &DAG, SDLoc DL,
       // For a truncate, see if we have any information to
       // indicate whether the truncated bits will always be
       // zero or sign-extension.
-      if (AssertOp != ISD::DELETED_NODE)
-        Val = DAG.getNode(AssertOp, DL, PartEVT, Val,
+      if (AssertOp.hasValue())
+        Val = DAG.getNode(*AssertOp, DL, PartEVT, Val,
                           DAG.getValueType(ValueVT));
       return DAG.getNode(ISD::TRUNCATE, DL, ValueVT, Val);
     }
@@ -270,7 +270,7 @@ static void diagnosePossiblyInvalidConstraint(LLVMContext &Ctx, const Value *V,
 
 /// getCopyFromPartsVector - Create a value that contains the specified legal
 /// parts combined into the value they represent.  If the parts combine to a
-/// type larger then ValueVT then AssertOp can be used to specify whether the
+/// type larger than ValueVT then AssertOp can be used to specify whether the
 /// extra bits are known to be zero (ISD::AssertZext) or sign extended from
 /// ValueVT (ISD::AssertSext).
 static SDValue getCopyFromPartsVector(SelectionDAG &DAG, SDLoc DL,
@@ -2697,6 +2697,14 @@ void SelectionDAGBuilder::visitFCmp(const User &I) {
   setValue(&I, DAG.getSetCC(getCurSDLoc(), DestVT, Op1, Op2, Condition));
 }
 
+// Check if the condition of the select has one use or two users that are both
+// selects with the same condition.
+bool hasOnlySelectUsers(const Value *Cond) {
+  return std::all_of(Cond->user_begin(), Cond->user_end(), [](const Value *V) {
+    return isa<SelectInst>(V);
+  });
+}
+
 void SelectionDAGBuilder::visitSelect(const User &I) {
   SmallVector<EVT, 4> ValueVTs;
   ComputeValueVTs(DAG.getTargetLoweringInfo(), DAG.getDataLayout(), I.getType(),
@@ -2782,7 +2790,7 @@ void SelectionDAGBuilder::visitSelect(const User &I) {
         // If the underlying comparison instruction is used by any other
         // instruction, the consumed instructions won't be destroyed, so it is
         // not profitable to convert to a min/max.
-        cast<SelectInst>(&I)->getCondition()->hasOneUse()) {
+        hasOnlySelectUsers(cast<SelectInst>(I).getCondition())) {
       OpCode = Opc;
       LHSVal = getValue(LHS);
       RHSVal = getValue(RHS);
@@ -6790,10 +6798,9 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
       // Copy the output from the appropriate register.  Find a register that
       // we can use.
       if (OpInfo.AssignedRegs.Regs.empty()) {
-        LLVMContext &Ctx = *DAG.getContext();
-        Ctx.emitError(CS.getInstruction(),
-                      "couldn't allocate output register for constraint '" +
-                          Twine(OpInfo.ConstraintCode) + "'");
+        emitInlineAsmError(
+            CS, "couldn't allocate output register for constraint '" +
+                    Twine(OpInfo.ConstraintCode) + "'");
         return;
       }
 
@@ -6846,10 +6853,9 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
           // Add (OpFlag&0xffff)>>3 registers to MatchedRegs.
           if (OpInfo.isIndirect) {
             // This happens on gcc/testsuite/gcc.dg/pr8788-1.c
-            LLVMContext &Ctx = *DAG.getContext();
-            Ctx.emitError(CS.getInstruction(), "inline asm not supported yet:"
-                                               " don't know how to handle tied "
-                                               "indirect register inputs");
+            emitInlineAsmError(CS, "inline asm not supported yet:"
+                                   " don't know how to handle tied "
+                                   "indirect register inputs");
             return;
           }
 
@@ -6863,10 +6869,9 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
             if (const TargetRegisterClass *RC = TLI.getRegClassFor(RegVT))
               MatchedRegs.Regs.push_back(RegInfo.createVirtualRegister(RC));
             else {
-              LLVMContext &Ctx = *DAG.getContext();
-              Ctx.emitError(CS.getInstruction(),
-                            "inline asm error: This value"
-                            " type register class is not natively supported!");
+              emitInlineAsmError(
+                  CS, "inline asm error: This value"
+                      " type register class is not natively supported!");
               return;
             }
           }
@@ -6904,10 +6909,8 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
         TLI.LowerAsmOperandForConstraint(InOperandVal, OpInfo.ConstraintCode,
                                           Ops, DAG);
         if (Ops.empty()) {
-          LLVMContext &Ctx = *DAG.getContext();
-          Ctx.emitError(CS.getInstruction(),
-                        "invalid operand for inline asm constraint '" +
-                            Twine(OpInfo.ConstraintCode) + "'");
+          emitInlineAsmError(CS, "invalid operand for inline asm constraint '" +
+                                     Twine(OpInfo.ConstraintCode) + "'");
           return;
         }
 
@@ -6947,20 +6950,17 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
 
       // TODO: Support this.
       if (OpInfo.isIndirect) {
-        LLVMContext &Ctx = *DAG.getContext();
-        Ctx.emitError(CS.getInstruction(),
-                      "Don't know how to handle indirect register inputs yet "
-                      "for constraint '" +
-                          Twine(OpInfo.ConstraintCode) + "'");
+        emitInlineAsmError(
+            CS, "Don't know how to handle indirect register inputs yet "
+                "for constraint '" +
+                    Twine(OpInfo.ConstraintCode) + "'");
         return;
       }
 
       // Copy the input into the appropriate registers.
       if (OpInfo.AssignedRegs.Regs.empty()) {
-        LLVMContext &Ctx = *DAG.getContext();
-        Ctx.emitError(CS.getInstruction(),
-                      "couldn't allocate input reg for constraint '" +
-                          Twine(OpInfo.ConstraintCode) + "'");
+        emitInlineAsmError(CS, "couldn't allocate input reg for constraint '" +
+                                   Twine(OpInfo.ConstraintCode) + "'");
         return;
       }
 
@@ -7056,6 +7056,17 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
     Chain = DAG.getNode(ISD::TokenFactor, getCurSDLoc(), MVT::Other, OutChains);
 
   DAG.setRoot(Chain);
+}
+
+void SelectionDAGBuilder::emitInlineAsmError(ImmutableCallSite CS,
+                                             const Twine &Message) {
+  LLVMContext &Ctx = *DAG.getContext();
+  Ctx.emitError(CS.getInstruction(), Message);
+
+  // Make sure we leave the DAG in a valid state
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  auto VT = TLI.getValueType(DAG.getDataLayout(), CS.getType());
+  setValue(CS.getInstruction(), DAG.getUNDEF(VT));
 }
 
 void SelectionDAGBuilder::visitVAStart(const CallInst &I) {
@@ -7699,7 +7710,7 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
   } else {
     // Collect the legal value parts into potentially illegal values
     // that correspond to the original function's return values.
-    ISD::NodeType AssertOp = ISD::DELETED_NODE;
+    Optional<ISD::NodeType> AssertOp;
     if (CLI.RetSExt)
       AssertOp = ISD::AssertSext;
     else if (CLI.RetZExt)
@@ -7922,7 +7933,7 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
                     PointerType::getUnqual(F.getReturnType()), ValueVTs);
     MVT VT = ValueVTs[0].getSimpleVT();
     MVT RegVT = TLI->getRegisterType(*CurDAG->getContext(), VT);
-    ISD::NodeType AssertOp = ISD::DELETED_NODE;
+    Optional<ISD::NodeType> AssertOp = None;
     SDValue ArgValue = getCopyFromParts(DAG, dl, &InVals[0], 1,
                                         RegVT, VT, nullptr, AssertOp);
 
@@ -7963,7 +7974,7 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
       unsigned NumParts = TLI->getNumRegisters(*CurDAG->getContext(), VT);
 
       if (!I->use_empty()) {
-        ISD::NodeType AssertOp = ISD::DELETED_NODE;
+        Optional<ISD::NodeType> AssertOp;
         if (F.getAttributes().hasAttribute(Idx, Attribute::SExt))
           AssertOp = ISD::AssertSext;
         else if (F.getAttributes().hasAttribute(Idx, Attribute::ZExt))

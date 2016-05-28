@@ -3,7 +3,6 @@
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineFunctionAnalysis.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
@@ -46,7 +45,7 @@ std::unique_ptr<TargetMachine> createTargetMachine() {
 
   TargetOptions Options;
   return std::unique_ptr<TargetMachine>(
-      T->createTargetMachine("x86_64", "", "", Options, Reloc::Default,
+      T->createTargetMachine("x86_64", "", "", Options, None,
                              CodeModel::Default, CodeGenOpt::Aggressive));
 }
 
@@ -69,12 +68,9 @@ std::unique_ptr<Module> parseMIR(LLVMContext &Context,
   if (!F)
     return nullptr;
 
-  MachineModuleInfo *MMI = new MachineModuleInfo(
-      *TM.getMCAsmInfo(), *TM.getMCRegisterInfo(), nullptr);
-  PM.add(MMI);
-
-  MachineFunctionAnalysis *MFA = new MachineFunctionAnalysis(TM, MIR.get());
-  PM.add(MFA);
+  const LLVMTargetMachine &LLVMTM = static_cast<const LLVMTargetMachine&>(TM);
+  LLVMTM.addMachineModuleInfo(PM);
+  LLVMTM.addMachineFunctionAnalysis(PM, MIR.get());
 
   return M;
 }
@@ -113,8 +109,8 @@ private:
  * update affected liveness intervals with LiveIntervalAnalysis::handleMove().
  */
 static void testHandleMove(MachineFunction &MF, LiveIntervals &LIS,
-                           unsigned From, unsigned To) {
-  MachineBasicBlock &MBB = MF.front();
+                           unsigned From, unsigned To, unsigned BlockNum = 0) {
+  MachineBasicBlock &MBB = *MF.getBlockNumbered(BlockNum);
 
   unsigned I = 0;
   MachineInstr *FromInstr = nullptr;
@@ -297,6 +293,39 @@ TEST(LiveIntervalTest, MoveDownKillFollowing) {
 "    RETQ %0\n",
   [](MachineFunction &MF, LiveIntervals &LIS) {
     testHandleMove(MF, LIS, 1, 2);
+  });
+}
+
+TEST(LiveIntervalTest, MoveUndefUse) {
+  liveIntervalTest(
+"    %0 = IMPLICIT_DEF\n"
+"    NOOP implicit undef %0\n"
+"    NOOP implicit %0\n"
+"    NOOP\n",
+  [](MachineFunction &MF, LiveIntervals &LIS) {
+    testHandleMove(MF, LIS, 1, 3);
+  });
+}
+
+TEST(LiveIntervalTest, MoveUpValNos) {
+  // handleMoveUp() had a bug where it would reuse the value number of the
+  // destination segment, even though we have no guarntee that this valno wasn't
+  // used in other segments.
+  liveIntervalTest(
+"    successors: %bb.1, %bb.2\n"
+"    %0 = IMPLICIT_DEF\n"
+"    JG_1 %bb.2, implicit %eflags\n"
+"    JMP_1 %bb.1\n"
+"  bb.2:\n"
+"    NOOP implicit %0\n"
+"  bb.1:\n"
+"    successors: %bb.2\n"
+"    %0 = IMPLICIT_DEF implicit %0(tied-def 0)\n"
+"    %0 = IMPLICIT_DEF implicit %0(tied-def 0)\n"
+"    %0 = IMPLICIT_DEF implicit %0(tied-def 0)\n"
+"    JMP_1 %bb.2\n",
+  [](MachineFunction &MF, LiveIntervals &LIS) {
+    testHandleMove(MF, LIS, 2, 0, 2);
   });
 }
 

@@ -1447,8 +1447,8 @@ bool AArch64InstrInfo::isScaledAddr(const MachineInstr *MI) const {
 
 /// Check all MachineMemOperands for a hint to suppress pairing.
 bool AArch64InstrInfo::isLdStPairSuppressed(const MachineInstr *MI) const {
-  assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits) &&
-         "Too many target MO flags");
+  static_assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits),
+                "Too many target MO flags");
   for (auto *MM : MI->memoperands()) {
     if (MM->getFlags() &
         (MOSuppressPair << MachineMemOperand::MOTargetStartBit)) {
@@ -1463,8 +1463,8 @@ void AArch64InstrInfo::suppressLdStPair(MachineInstr *MI) const {
   if (MI->memoperands_empty())
     return;
 
-  assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits) &&
-         "Too many target MO flags");
+  static_assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits),
+                "Too many target MO flags");
   (*MI->memoperands_begin())
       ->setFlags(MOSuppressPair << MachineMemOperand::MOTargetStartBit);
 }
@@ -1524,17 +1524,17 @@ bool AArch64InstrInfo::isCandidateToMergeOrPair(MachineInstr *MI) const {
 
   // Do not pair quad ld/st for Exynos.
   if (Subtarget.isExynosM1()) {
-      switch (MI->getOpcode()) {
-        default:
-          break;
+    switch (MI->getOpcode()) {
+    default:
+      break;
 
-        case AArch64::LDURQi:
-        case AArch64::STURQi:
-        case AArch64::LDRQui:
-        case AArch64::STRQui:
-          return false;
-        }
+    case AArch64::LDURQi:
+    case AArch64::STURQi:
+    case AArch64::LDRQui:
+    case AArch64::STRQui:
+      return false;
     }
+  }
 
   return true;
 }
@@ -2393,6 +2393,9 @@ void llvm::emitFrameOffset(MachineBasicBlock &MBB,
   if (DestReg == SrcReg && Offset == 0)
     return;
 
+  assert((DestReg != AArch64::SP || Offset % 16 == 0) &&
+         "SP increment/decrement not 16-byte aligned");
+
   bool isSub = Offset < 0;
   if (isSub)
     Offset = -Offset;
@@ -2445,7 +2448,8 @@ void llvm::emitFrameOffset(MachineBasicBlock &MBB,
 
 MachineInstr *AArch64InstrInfo::foldMemoryOperandImpl(
     MachineFunction &MF, MachineInstr *MI, ArrayRef<unsigned> Ops,
-    MachineBasicBlock::iterator InsertPt, int FrameIndex) const {
+    MachineBasicBlock::iterator InsertPt, int FrameIndex,
+    LiveIntervals *LIS) const {
   // This is a bit of a hack. Consider this instruction:
   //
   //   %vreg0<def> = COPY %SP; GPR64all:%vreg0

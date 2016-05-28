@@ -259,6 +259,7 @@ namespace {
     SDValue visitSRL(SDNode *N);
     SDValue visitRotate(SDNode *N);
     SDValue visitBSWAP(SDNode *N);
+    SDValue visitBITREVERSE(SDNode *N);
     SDValue visitCTLZ(SDNode *N);
     SDValue visitCTLZ_ZERO_UNDEF(SDNode *N);
     SDValue visitCTTZ(SDNode *N);
@@ -1392,6 +1393,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::ROTR:
   case ISD::ROTL:               return visitRotate(N);
   case ISD::BSWAP:              return visitBSWAP(N);
+  case ISD::BITREVERSE:         return visitBITREVERSE(N);
   case ISD::CTLZ:               return visitCTLZ(N);
   case ISD::CTLZ_ZERO_UNDEF:    return visitCTLZ_ZERO_UNDEF(N);
   case ISD::CTTZ:               return visitCTTZ(N);
@@ -2428,15 +2430,13 @@ SDValue DAGCombiner::visitREM(SDNode *N) {
     }
     // fold (urem x, (shl pow2, y)) -> (and x, (add (shl pow2, y), -1))
     if (N1.getOpcode() == ISD::SHL) {
-      if (ConstantSDNode *SHC = getAsNonOpaqueConstant(N1.getOperand(0))) {
-        if (SHC->getAPIntValue().isPowerOf2()) {
-          SDValue Add =
-            DAG.getNode(ISD::ADD, DL, VT, N1,
-                 DAG.getConstant(APInt::getAllOnesValue(VT.getSizeInBits()), DL,
-                                 VT));
-          AddToWorklist(Add.getNode());
-          return DAG.getNode(ISD::AND, DL, VT, N0, Add);
-        }
+      ConstantSDNode *SHC = getAsNonOpaqueConstant(N1.getOperand(0));
+      if (SHC && SHC->getAPIntValue().isPowerOf2()) {
+        APInt NegOne = APInt::getAllOnesValue(VT.getSizeInBits());
+        SDValue Add =
+            DAG.getNode(ISD::ADD, DL, VT, N1, DAG.getConstant(NegOne, DL, VT));
+        AddToWorklist(Add.getNode());
+        return DAG.getNode(ISD::AND, DL, VT, N0, Add);
       }
     }
   }
@@ -4973,6 +4973,15 @@ SDValue DAGCombiner::visitBSWAP(SDNode *N) {
   // fold (bswap (bswap x)) -> x
   if (N0.getOpcode() == ISD::BSWAP)
     return N0->getOperand(0);
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitBITREVERSE(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+
+  // fold (bitreverse (bitreverse x)) -> x
+  if (N0.getOpcode() == ISD::BITREVERSE)
+    return N0.getOperand(0);
   return SDValue();
 }
 
@@ -13059,9 +13068,7 @@ SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
   auto IsBuildVectorOrUndef = [](const SDValue &Op) {
     return ISD::UNDEF == Op.getOpcode() || ISD::BUILD_VECTOR == Op.getOpcode();
   };
-  bool AllBuildVectorsOrUndefs =
-      std::all_of(N->op_begin(), N->op_end(), IsBuildVectorOrUndef);
-  if (AllBuildVectorsOrUndefs) {
+  if (llvm::all_of(N->ops(), IsBuildVectorOrUndef)) {
     SmallVector<SDValue, 8> Opnds;
     EVT SVT = VT.getScalarType();
 
@@ -13766,26 +13773,30 @@ SDValue DAGCombiner::visitSCALAR_TO_VECTOR(SDNode *N) {
 
 SDValue DAGCombiner::visitINSERT_SUBVECTOR(SDNode *N) {
   SDValue N0 = N->getOperand(0);
+  SDValue N1 = N->getOperand(1);
   SDValue N2 = N->getOperand(2);
+
+  if (N0.getValueType() != N1.getValueType())
+    return SDValue();
 
   // If the input vector is a concatenation, and the insert replaces
   // one of the halves, we can optimize into a single concat_vectors.
-  if (N0.getOpcode() == ISD::CONCAT_VECTORS &&
-      N0->getNumOperands() == 2 && N2.getOpcode() == ISD::Constant) {
+  if (N0.getOpcode() == ISD::CONCAT_VECTORS && N0->getNumOperands() == 2 &&
+      N2.getOpcode() == ISD::Constant) {
     APInt InsIdx = cast<ConstantSDNode>(N2)->getAPIntValue();
     EVT VT = N->getValueType(0);
 
     // Lower half: fold (insert_subvector (concat_vectors X, Y), Z) ->
     // (concat_vectors Z, Y)
     if (InsIdx == 0)
-      return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT,
-                         N->getOperand(1), N0.getOperand(1));
+      return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT, N1,
+                         N0.getOperand(1));
 
     // Upper half: fold (insert_subvector (concat_vectors X, Y), Z) ->
     // (concat_vectors X, Z)
-    if (InsIdx == VT.getVectorNumElements()/2)
-      return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT,
-                         N0.getOperand(0), N->getOperand(1));
+    if (InsIdx == VT.getVectorNumElements() / 2)
+      return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT, N0.getOperand(0),
+                         N1);
   }
 
   return SDValue();

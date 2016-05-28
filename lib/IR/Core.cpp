@@ -124,13 +124,8 @@ unsigned LLVMGetMDKindID(const char *Name, unsigned SLen) {
 #define GET_ATTR_KIND_FROM_NAME
 #include "AttributesCompatFunc.inc"
 
-unsigned LLVMGetAttrKindID(const char *Name, size_t SLen) {
-  auto K = getAttrKindFromName(StringRef(Name, SLen));
-  if (K == Attribute::None) {
-    return 0;
-  }
-
-  return AttributeImpl::getAttrMask(K);
+unsigned LLVMGetAttributeKindForName(const char *Name, size_t SLen) {
+  return getAttrKindFromName(StringRef(Name, SLen));
 }
 
 char *LLVMGetDiagInfoDescription(LLVMDiagnosticInfoRef DI) {
@@ -1485,7 +1480,9 @@ void LLVMSetLinkage(LLVMValueRef Global, LLVMLinkage Linkage) {
 }
 
 const char *LLVMGetSection(LLVMValueRef Global) {
-  return unwrap<GlobalValue>(Global)->getSection();
+  // Using .data() is safe because of how GlobalObject::setSection is
+  // implemented.
+  return unwrap<GlobalValue>(Global)->getSection().data();
 }
 
 void LLVMSetSection(LLVMValueRef Global, const char *Section) {

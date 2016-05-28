@@ -25,6 +25,7 @@ using namespace rdf;
 
 // Printing functions. Have them here first, so that the rest of the code
 // can use them.
+namespace llvm {
 namespace rdf {
 
 template<>
@@ -298,6 +299,7 @@ raw_ostream &operator<< (raw_ostream &OS,
 }
 
 } // namespace rdf
+} // namespace llvm
 
 // Node allocation functions.
 //
@@ -1564,6 +1566,7 @@ void DataFlowGraph::linkBlockRefs(DefStackMap &DefM, NodeAddr<BlockNode*> BA) {
   // Push block delimiters.
   markBlock(BA.Id, DefM);
 
+  assert(BA.Addr && "block node address is needed to create a data-flow link");
   // For each non-phi instruction in the block, link all the defs and uses
   // to their reaching defs. For any member of the block (including phis),
   // push the defs on the corresponding stacks.

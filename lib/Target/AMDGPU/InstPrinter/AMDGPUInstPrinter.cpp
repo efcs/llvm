@@ -11,6 +11,7 @@
 #include "AMDGPUInstPrinter.h"
 #include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 #include "SIDefines.h"
+#include "Utils/AMDGPUAsmUtils.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
@@ -602,8 +603,15 @@ void AMDGPUInstPrinter::printOModSI(const MCInst *MI, unsigned OpNo,
 
 void AMDGPUInstPrinter::printLiteral(const MCInst *MI, unsigned OpNo,
                                      raw_ostream &O) {
-  int32_t Imm = MI->getOperand(OpNo).getImm();
-  O << Imm << '(' << BitsToFloat(Imm) << ')';
+  const MCOperand &Op = MI->getOperand(OpNo);
+  assert(Op.isImm() || Op.isExpr());
+  if (Op.isImm()) {
+    int64_t Imm = Op.getImm();
+    O << Imm << '(' << BitsToFloat(Imm) << ')';
+  }
+  if (Op.isExpr()) {
+    Op.getExpr()->print(O << '@', &MAI);
+  }
 }
 
 void AMDGPUInstPrinter::printLast(const MCInst *MI, unsigned OpNo,
@@ -763,33 +771,42 @@ void AMDGPUInstPrinter::printKCache(const MCInst *MI, unsigned OpNo,
 
 void AMDGPUInstPrinter::printSendMsg(const MCInst *MI, unsigned OpNo,
                                      raw_ostream &O) {
-  unsigned SImm16 = MI->getOperand(OpNo).getImm();
-  unsigned Msg = SImm16 & 0xF;
-  if (Msg == 2 || Msg == 3) {
-    unsigned Op = (SImm16 >> 4) & 0xF;
-    if (Msg == 3)
-      O << "Gs_done(";
-    else
-      O << "Gs(";
-    if (Op == 0) {
-      O << "nop";
-    } else {
-      unsigned Stream = (SImm16 >> 8) & 0x3;
-      if (Op == 1)
-        O << "cut";
-      else if (Op == 2)
-        O << "emit";
-      else if (Op == 3)
-        O << "emit-cut";
-      O << " stream " << Stream;
+  using namespace llvm::AMDGPU::SendMsg;
+
+  const unsigned SImm16 = MI->getOperand(OpNo).getImm();
+  const unsigned Id = SImm16 & ID_MASK_;
+  do {
+    if (Id == ID_INTERRUPT) {
+      if ((SImm16 & ~ID_MASK_) != 0) // Unused/unknown bits must be 0.
+        break;
+      O << "sendmsg(" << IdSymbolic[Id] << ')';
+      return;
     }
-    O << "), [m0] ";
-  } else if (Msg == 1)
-    O << "interrupt ";
-  else if (Msg == 15)
-    O << "system ";
-  else
-    O << "unknown(" << Msg << ") ";
+    if (Id == ID_GS || Id == ID_GS_DONE) {
+      if ((SImm16 & ~(ID_MASK_|OP_GS_MASK_|STREAM_ID_MASK_)) != 0) // Unused/unknown bits must be 0.
+        break;
+      const unsigned OpGs = (SImm16 & OP_GS_MASK_) >> OP_SHIFT_;
+      const unsigned StreamId = (SImm16 & STREAM_ID_MASK_) >> STREAM_ID_SHIFT_;
+      if (OpGs == OP_GS_NOP && Id != ID_GS_DONE) // NOP to be used for GS_DONE only.
+        break;
+      if (OpGs == OP_GS_NOP && StreamId != 0) // NOP does not use/define stream id bits.
+        break;
+      O << "sendmsg(" << IdSymbolic[Id] << ", " << OpGsSymbolic[OpGs];
+      if (OpGs != OP_GS_NOP) {  O << ", " << StreamId; }
+      O << ')';
+      return;
+    }
+    if (Id == ID_SYSMSG) {
+      if ((SImm16 & ~(ID_MASK_|OP_SYS_MASK_)) != 0) // Unused/unknown bits must be 0.
+        break;
+      const unsigned OpSys = (SImm16 & OP_SYS_MASK_) >> OP_SHIFT_;
+      if (! (OP_SYS_FIRST_ <= OpSys && OpSys < OP_SYS_LAST_)) // Unused/unknown.
+        break;
+      O << "sendmsg(" << IdSymbolic[Id] << ", " << OpSysSymbolic[OpSys] << ')';
+      return;
+    }
+  } while (0);
+  O << SImm16; // Unknown simm16 code.
 }
 
 void AMDGPUInstPrinter::printWaitFlag(const MCInst *MI, unsigned OpNo,
@@ -822,23 +839,20 @@ void AMDGPUInstPrinter::printWaitFlag(const MCInst *MI, unsigned OpNo,
 
 void AMDGPUInstPrinter::printHwreg(const MCInst *MI, unsigned OpNo,
                                    raw_ostream &O) {
+  using namespace llvm::AMDGPU::Hwreg;
+
   unsigned SImm16 = MI->getOperand(OpNo).getImm();
-  const unsigned HwRegCode = SImm16 & 0x3F;
-  const unsigned Offset = (SImm16 >> 6) & 0x1f;
-  const unsigned Width = ((SImm16 >> 11) & 0x1F) + 1;
+  const unsigned Id = (SImm16 & ID_MASK_) >> ID_SHIFT_;
+  const unsigned Offset = (SImm16 & OFFSET_MASK_) >> OFFSET_SHIFT_;
+  const unsigned Width = ((SImm16 & WIDTH_M1_MASK_) >> WIDTH_M1_SHIFT_) + 1;
 
   O << "hwreg(";
-  switch(HwRegCode) {
-    case 1: O << "HW_REG_MODE"      ; break;
-    case 2: O << "HW_REG_STATUS"    ; break;
-    case 3: O << "HW_REG_TRAPSTS"   ; break;
-    case 4: O << "HW_REG_HW_ID"     ; break;
-    case 5: O << "HW_REG_GPR_ALLOC" ; break;
-    case 6: O << "HW_REG_LDS_ALLOC" ; break;
-    case 7: O << "HW_REG_IB_STS"    ; break;
-    default: O << HwRegCode; break;
+  if (ID_SYMBOLIC_FIRST_ <= Id && Id < ID_SYMBOLIC_LAST_) {
+    O << IdSymbolic[Id];
+  } else {
+    O << Id;
   }
-  if (! (Width == 32 && Offset == 0)) {
+  if (Width != WIDTH_M1_DEFAULT_ + 1 || Offset != OFFSET_DEFAULT_) {
     O << ", " << Offset << ", " << Width;
   }
   O << ')';

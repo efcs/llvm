@@ -40,12 +40,6 @@ using namespace llvm;
 STATISTIC(NumTailCalls, "Number of tail calls");
 STATISTIC(NumShiftInserts, "Number of vector shift inserts");
 
-// Place holder until extr generation is tested fully.
-static cl::opt<bool>
-EnableAArch64ExtrGeneration("aarch64-extr-generation", cl::Hidden,
-                          cl::desc("Allow AArch64 (or (shift)(shift))->extract"),
-                          cl::init(true));
-
 static cl::opt<bool>
 EnableAArch64SlrGeneration("aarch64-shift-insert-generation", cl::Hidden,
                            cl::desc("Allow AArch64 SLI/SRI formation"),
@@ -481,7 +475,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   // Also, try to fold ADD into CSINC/CSINV..
   setTargetDAGCombine(ISD::ADD);
   setTargetDAGCombine(ISD::SUB);
-
+  setTargetDAGCombine(ISD::SRL);
   setTargetDAGCombine(ISD::XOR);
   setTargetDAGCombine(ISD::SINT_TO_FP);
   setTargetDAGCombine(ISD::UINT_TO_FP);
@@ -1229,6 +1223,7 @@ static SDValue emitComparison(SDValue LHS, SDValue RHS, ISD::CondCode CC,
     if (VT == MVT::f16) {
       LHS = DAG.getNode(ISD::FP_EXTEND, dl, MVT::f32, LHS);
       RHS = DAG.getNode(ISD::FP_EXTEND, dl, MVT::f32, RHS);
+      VT = MVT::f32;
     }
     return DAG.getNode(AArch64ISD::FCMP, dl, VT, LHS, RHS);
   }
@@ -4687,6 +4682,27 @@ SDValue AArch64TargetLowering::getRsqrtEstimate(SDValue Operand,
 // is prefixed by the %w modifier. Floating-point and SIMD register operands
 // will be output with the v prefix unless prefixed by the %b, %h, %s, %d or
 // %q modifier.
+const char *AArch64TargetLowering::LowerXConstraint(EVT ConstraintVT) const {
+  // At this point, we have to lower this constraint to something else, so we
+  // lower it to an "r" or "w". However, by doing this we will force the result
+  // to be in register, while the X constraint is much more permissive.
+  //
+  // Although we are correct (we are free to emit anything, without
+  // constraints), we might break use cases that would expect us to be more
+  // efficient and emit something else.
+  if (!Subtarget->hasFPARMv8())
+    return "r";
+
+  if (ConstraintVT.isFloatingPoint())
+    return "w";
+
+  if (ConstraintVT.isVector() &&
+     (ConstraintVT.getSizeInBits() == 64 ||
+      ConstraintVT.getSizeInBits() == 128))
+    return "w";
+
+  return "r";
+}
 
 /// getConstraintType - Given a constraint letter, return the type of
 /// constraint it is for this target.
@@ -4781,11 +4797,16 @@ AArch64TargetLowering::getRegForInlineAsmConstraint(
       int RegNo;
       bool Failed = Constraint.slice(2, Size - 1).getAsInteger(10, RegNo);
       if (!Failed && RegNo >= 0 && RegNo <= 31) {
-        // v0 - v31 are aliases of q0 - q31.
+        // v0 - v31 are aliases of q0 - q31 or d0 - d31 depending on size.
         // By default we'll emit v0-v31 for this unless there's a modifier where
         // we'll emit the correct register as well.
-        Res.first = AArch64::FPR128RegClass.getRegister(RegNo);
-        Res.second = &AArch64::FPR128RegClass;
+        if (VT != MVT::Other && VT.getSizeInBits() == 64) {
+          Res.first = AArch64::FPR64RegClass.getRegister(RegNo);
+          Res.second = &AArch64::FPR64RegClass;
+        } else {
+          Res.first = AArch64::FPR128RegClass.getRegister(RegNo);
+          Res.second = &AArch64::FPR128RegClass;
+        }
       }
     }
   }
@@ -7965,8 +7986,6 @@ static SDValue tryCombineToBSL(SDNode *N,
 static SDValue performORCombine(SDNode *N, TargetLowering::DAGCombinerInfo &DCI,
                                 const AArch64Subtarget *Subtarget) {
   // Attempt to form an EXTR from (or (shl VAL1, #N), (srl VAL2, #RegWidth-N))
-  if (!EnableAArch64ExtrGeneration)
-    return SDValue();
   SelectionDAG &DAG = DCI.DAG;
   EVT VT = N->getValueType(0);
 
@@ -7979,6 +7998,34 @@ static SDValue performORCombine(SDNode *N, TargetLowering::DAGCombinerInfo &DCI,
   if (SDValue Res = tryCombineToBSL(N, DCI))
     return Res;
 
+  return SDValue();
+}
+
+static SDValue performSRLCombine(SDNode *N,
+                                 TargetLowering::DAGCombinerInfo &DCI) {
+  SelectionDAG &DAG = DCI.DAG;
+  EVT VT = N->getValueType(0);
+  if (VT != MVT::i32 && VT != MVT::i64)
+    return SDValue();
+
+  // Canonicalize (srl (bswap i32 x), 16) to (rotr (bswap i32 x), 16), if the
+  // high 16-bits of x are zero. Similarly, canonicalize (srl (bswap i64 x), 32)
+  // to (rotr (bswap i64 x), 32), if the high 32-bits of x are zero.
+  SDValue N0 = N->getOperand(0);
+  if (N0.getOpcode() == ISD::BSWAP) {
+    SDLoc DL(N);
+    SDValue N1 = N->getOperand(1);
+    SDValue N00 = N0.getOperand(0);
+    if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(N1)) {
+      uint64_t ShiftAmt = C->getZExtValue();
+      if (VT == MVT::i32 && ShiftAmt == 16 &&
+          DAG.MaskedValueIsZero(N00, APInt::getHighBitsSet(32, 16)))
+        return DAG.getNode(ISD::ROTR, DL, VT, N0, N1);
+      if (VT == MVT::i64 && ShiftAmt == 32 &&
+          DAG.MaskedValueIsZero(N00, APInt::getHighBitsSet(64, 32)))
+        return DAG.getNode(ISD::ROTR, DL, VT, N0, N1);
+    }
+  }
   return SDValue();
 }
 
@@ -9874,6 +9921,8 @@ SDValue AArch64TargetLowering::PerformDAGCombine(SDNode *N,
     return performFDivCombine(N, DAG, Subtarget);
   case ISD::OR:
     return performORCombine(N, DCI, Subtarget);
+  case ISD::SRL:
+    return performSRLCombine(N, DCI);
   case ISD::INTRINSIC_WO_CHAIN:
     return performIntrinsicCombine(N, DCI, Subtarget);
   case ISD::ANY_EXTEND:

@@ -11,6 +11,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/DebugInfo/PDB/Raw/DbiStream.h"
 #include "llvm/DebugInfo/PDB/Raw/InfoStream.h"
+#include "llvm/DebugInfo/PDB/Raw/PublicsStream.h"
+#include "llvm/DebugInfo/PDB/Raw/RawError.h"
+#include "llvm/DebugInfo/PDB/Raw/SymbolStream.h"
 #include "llvm/DebugInfo/PDB/Raw/TpiStream.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -54,18 +57,19 @@ struct llvm::pdb::PDBFileContext {
   DenseMap<uint32_t, std::vector<uint32_t>> StreamMap;
 };
 
-static std::error_code checkOffset(MemoryBufferRef M, uintptr_t Addr,
-                                   const uint64_t Size) {
+static Error checkOffset(MemoryBufferRef M, uintptr_t Addr,
+                         const uint64_t Size) {
   if (Addr + Size < Addr || Addr + Size < Size ||
       Addr + Size > uintptr_t(M.getBufferEnd()) ||
       Addr < uintptr_t(M.getBufferStart())) {
-    return std::make_error_code(std::errc::bad_address);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Invalid buffer address");
   }
-  return std::error_code();
+  return Error::success();
 }
 
 template <typename T>
-static std::error_code checkOffset(MemoryBufferRef M, ArrayRef<T> AR) {
+static Error checkOffset(MemoryBufferRef M, ArrayRef<T> AR) {
   return checkOffset(M, uintptr_t(AR.data()), (uint64_t)AR.size() * sizeof(T));
 }
 
@@ -117,38 +121,46 @@ StringRef PDBFile::getBlockData(uint32_t BlockIndex, uint32_t NumBytes) const {
                    NumBytes);
 }
 
-std::error_code PDBFile::parseFileHeaders() {
+Error PDBFile::parseFileHeaders() {
   std::error_code EC;
   MemoryBufferRef BufferRef = *Context->Buffer;
+
   // Make sure the file is sufficiently large to hold a super block.
   // Do this before attempting to read the super block.
   if (BufferRef.getBufferSize() < sizeof(SuperBlock))
-    return std::make_error_code(std::errc::illegal_byte_sequence);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Does not contain superblock");
 
   Context->SB =
       reinterpret_cast<const SuperBlock *>(BufferRef.getBufferStart());
   const SuperBlock *SB = Context->SB;
+  // Check the magic bytes.
+  if (memcmp(SB->MagicBytes, Magic, sizeof(Magic)) != 0)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "MSF magic header doesn't match");
+
+  // We don't support blocksizes which aren't a multiple of four bytes.
+  if (SB->BlockSize % sizeof(support::ulittle32_t) != 0)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Block size is not multiple of 4.");
+
   switch (SB->BlockSize) {
   case 512: case 1024: case 2048: case 4096:
     break;
   default:
     // An invalid block size suggests a corrupt PDB file.
-    return std::make_error_code(std::errc::illegal_byte_sequence);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Unsupported block size.");
   }
+
   if (BufferRef.getBufferSize() % SB->BlockSize != 0)
-    return std::make_error_code(std::errc::illegal_byte_sequence);
-
-  // Check the magic bytes.
-  if (memcmp(SB->MagicBytes, Magic, sizeof(Magic)) != 0)
-    return std::make_error_code(std::errc::illegal_byte_sequence);
-
-  // We don't support blocksizes which aren't a multiple of four bytes.
-  if (SB->BlockSize == 0 || SB->BlockSize % sizeof(support::ulittle32_t) != 0)
-    return std::make_error_code(std::errc::not_supported);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "File size is not a multiple of block size");
 
   // We don't support directories whose sizes aren't a multiple of four bytes.
   if (SB->NumDirectoryBytes % sizeof(support::ulittle32_t) != 0)
-    return std::make_error_code(std::errc::not_supported);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Directory size is not multiple of 4.");
 
   // The number of blocks which comprise the directory is a simple function of
   // the number of bytes it contains.
@@ -159,12 +171,17 @@ std::error_code PDBFile::parseFileHeaders() {
   // It is unclear what would happen if the number of blocks couldn't fit on a
   // single block.
   if (NumDirectoryBlocks > SB->BlockSize / sizeof(support::ulittle32_t))
-    return std::make_error_code(std::errc::illegal_byte_sequence);
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Too many directory blocks.");
 
-  return std::error_code();
+  // Make sure the directory block array fits within the file.
+  if (auto EC = checkOffset(BufferRef, getDirectoryBlockArray()))
+    return EC;
+
+  return Error::success();
 }
 
-std::error_code PDBFile::parseStreamData() {
+Error PDBFile::parseStreamData() {
   assert(Context && Context->SB);
 
   bool SeenNumStreams = false;
@@ -237,15 +254,39 @@ std::error_code PDBFile::parseStreamData() {
       // It seems this block doesn't belong to any stream?  The stream is either
       // corrupt or something more mysterious is going on.
       if (StreamIdx == NumStreams)
-        return std::make_error_code(std::errc::illegal_byte_sequence);
+        return make_error<RawError>(raw_error_code::corrupt_file,
+                                    "Orphaned block found?");
+
+      uint64_t BlockOffset = blockToOffset(Data, getBlockSize());
+      if (BlockOffset + getBlockSize() < BlockOffset)
+        return make_error<RawError>(raw_error_code::corrupt_file,
+                                    "Bogus stream block number");
+      if (BlockOffset + getBlockSize() > M.getBufferSize())
+        return make_error<RawError>(raw_error_code::corrupt_file,
+                                    "Stream block number is out of bounds");
 
       StreamBlocks->push_back(Data);
     }
   }
 
+  if (Context->StreamSizes.size() != NumStreams)
+    return make_error<RawError>(
+        raw_error_code::corrupt_file,
+        "The directory has fewer streams then expected");
+
+  for (uint32_t I = 0; I != NumStreams; ++I) {
+    uint64_t NumExpectedStreamBlocks =
+        bytesToBlocks(getStreamByteSize(I), getBlockSize());
+    size_t NumStreamBlocks = getStreamBlockList(I).size();
+    if (NumExpectedStreamBlocks != NumStreamBlocks)
+      return make_error<RawError>(raw_error_code::corrupt_file,
+                                  "The number of stream blocks is not "
+                                  "sufficient for the size of this stream");
+  }
+
   // We should have read exactly SB->NumDirectoryBytes bytes.
   assert(DirectoryBytesRead == SB->NumDirectoryBytes);
-  return std::error_code();
+  return Error::success();
 }
 
 llvm::ArrayRef<support::ulittle32_t> PDBFile::getDirectoryBlockArray() {
@@ -255,26 +296,66 @@ llvm::ArrayRef<support::ulittle32_t> PDBFile::getDirectoryBlockArray() {
       getNumDirectoryBlocks());
 }
 
-InfoStream &PDBFile::getPDBInfoStream() {
+Expected<InfoStream &> PDBFile::getPDBInfoStream() {
   if (!Info) {
     Info.reset(new InfoStream(*this));
-    Info->reload();
+    if (auto EC = Info->reload())
+      return std::move(EC);
   }
   return *Info;
 }
 
-DbiStream &PDBFile::getPDBDbiStream() {
+Expected<DbiStream &> PDBFile::getPDBDbiStream() {
   if (!Dbi) {
     Dbi.reset(new DbiStream(*this));
-    Dbi->reload();
+    if (auto EC = Dbi->reload())
+      return std::move(EC);
   }
   return *Dbi;
 }
 
-TpiStream &PDBFile::getPDBTpiStream() {
+Expected<TpiStream &> PDBFile::getPDBTpiStream() {
   if (!Tpi) {
-    Tpi.reset(new TpiStream(*this));
-    Tpi->reload();
+    Tpi.reset(new TpiStream(*this, StreamTPI));
+    if (auto EC = Tpi->reload())
+      return std::move(EC);
   }
   return *Tpi;
+}
+
+Expected<TpiStream &> PDBFile::getPDBIpiStream() {
+  if (!Ipi) {
+    Ipi.reset(new TpiStream(*this, StreamIPI));
+    if (auto EC = Ipi->reload())
+      return std::move(EC);
+  }
+  return *Ipi;
+}
+
+Expected<PublicsStream &> PDBFile::getPDBPublicsStream() {
+  if (!Publics) {
+    auto DbiS = getPDBDbiStream();
+    if (auto EC = DbiS.takeError())
+      return std::move(EC);
+    uint32_t PublicsStreamNum = DbiS->getPublicSymbolStreamIndex();
+
+    Publics.reset(new PublicsStream(*this, PublicsStreamNum));
+    if (auto EC = Publics->reload())
+      return std::move(EC);
+  }
+  return *Publics;
+}
+
+Expected<SymbolStream &> PDBFile::getPDBSymbolStream() {
+  if (!Symbols) {
+    auto DbiS = getPDBDbiStream();
+    if (auto EC = DbiS.takeError())
+      return std::move(EC);
+    uint32_t SymbolStreamNum = DbiS->getSymRecordStreamIndex();
+
+    Symbols.reset(new SymbolStream(*this, SymbolStreamNum));
+    if (auto EC = Symbols->reload())
+      return std::move(EC);
+  }
+  return *Symbols;
 }

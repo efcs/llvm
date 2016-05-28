@@ -26,6 +26,7 @@
 #include "llvm/Config/config.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
@@ -78,6 +79,16 @@ cl::opt<bool> LTODiscardValueNames(
     cl::init(false),
 #endif
     cl::Hidden);
+
+cl::opt<bool> LTOStripInvalidDebugInfo(
+    "lto-strip-invalid-debug-info",
+    cl::desc("Strip invalid debug info metadata during LTO instead of aborting."),
+#ifdef NDEBUG
+    cl::init(true),
+#else
+    cl::init(false),
+#endif
+    cl::Hidden);
 }
 
 LTOCodeGenerator::LTOCodeGenerator(LLVMContext &Context)
@@ -97,7 +108,7 @@ void LTOCodeGenerator::initializeLTOPasses() {
   PassRegistry &R = *PassRegistry::getPassRegistry();
 
   initializeInternalizeLegacyPassPass(R);
-  initializeIPSCCPPass(R);
+  initializeIPSCCPLegacyPassPass(R);
   initializeGlobalOptLegacyPassPass(R);
   initializeConstantMergeLegacyPassPass(R);
   initializeDAHPass(R);
@@ -351,7 +362,7 @@ std::unique_ptr<TargetMachine> LTOCodeGenerator::createTargetMachine() {
 // If a linkonce global is present in the MustPreserveSymbols, we need to make
 // sure we honor this. To force the compiler to not drop it, we add it to the
 // "llvm.compiler.used" global.
-static void preserveDiscardableGVs(
+void LTOCodeGenerator::preserveDiscardableGVs(
     Module &TheModule,
     llvm::function_ref<bool(const GlobalValue &)> mustPreserveGV) {
   SetVector<Constant *> UsedValuesSet;
@@ -368,7 +379,17 @@ static void preserveDiscardableGVs(
       return;
     if (!mustPreserveGV(GV))
       return;
-    assert(!GV.hasAvailableExternallyLinkage() && !GV.hasInternalLinkage());
+    if (GV.hasAvailableExternallyLinkage()) {
+      emitWarning(
+          (Twine("Linker asked to preserve available_externally global: '") +
+           GV.getName() + "'").str());
+      return;
+    }
+    if (GV.hasInternalLinkage()) {
+      emitWarning((Twine("Linker asked to preserve internal global: '") +
+                   GV.getName() + "'").str());
+      return;
+    }
     UsedValuesSet.insert(ConstantExpr::getBitCast(&GV, i8PTy));
   };
   for (auto &GV : TheModule)
@@ -478,6 +499,15 @@ void LTOCodeGenerator::verifyMergedModuleOnce() {
     return;
   HasVerifiedInput = true;
 
+  if (LTOStripInvalidDebugInfo) {
+    bool BrokenDebugInfo = false;
+    if (verifyModule(*MergedModule, &dbgs(), &BrokenDebugInfo))
+      report_fatal_error("Broken module found, compilation aborted!");
+    if (BrokenDebugInfo) {
+      emitWarning("Invalid debug info found, debug info will be stripped");
+      StripDebugInfo(*MergedModule);
+    }
+  }
   if (verifyModule(*MergedModule, &dbgs()))
     report_fatal_error("Broken module found, compilation aborted!");
 }
@@ -642,4 +672,11 @@ void LTOCodeGenerator::emitError(const std::string &ErrMsg) {
     (*DiagHandler)(LTO_DS_ERROR, ErrMsg.c_str(), DiagContext);
   else
     Context.diagnose(LTODiagnosticInfo(ErrMsg));
+}
+
+void LTOCodeGenerator::emitWarning(const std::string &ErrMsg) {
+  if (DiagHandler)
+    (*DiagHandler)(LTO_DS_WARNING, ErrMsg.c_str(), DiagContext);
+  else
+    Context.diagnose(LTODiagnosticInfo(ErrMsg, DS_Warning));
 }

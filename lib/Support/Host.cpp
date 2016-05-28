@@ -622,6 +622,7 @@ StringRef sys::getHostCPUName() {
     .Case("POWER7", "pwr7")
     .Case("POWER8", "pwr8")
     .Case("POWER8E", "pwr8")
+    .Case("POWER9", "pwr9")
     .Default(generic);
 }
 #elif defined(__linux__) && defined(__arm__)
@@ -802,6 +803,7 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
   Features["xop"]    = HasExtLeaf1 && ((ECX >> 11) & 1) && HasAVXSave;
   Features["fma4"]   = HasExtLeaf1 && ((ECX >> 16) & 1) && HasAVXSave;
   Features["tbm"]    = HasExtLeaf1 && ((ECX >> 21) & 1);
+  Features["mwaitx"] = HasExtLeaf1 && ((ECX >> 29) & 1);
 
   bool HasLeaf7 = MaxLevel >= 7 &&
                   !GetX86CpuIDAndInfoEx(0x7, 0x0, &EAX, &EBX, &ECX, &EDX);

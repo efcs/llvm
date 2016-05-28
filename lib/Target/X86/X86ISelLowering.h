@@ -213,6 +213,7 @@ namespace llvm {
       VGETMANT,
       // FP Scale.
       SCALEF,
+      SCALEFS,
 
       // Integer add/sub with unsigned saturation.
       ADDUS,
@@ -249,7 +250,8 @@ namespace llvm {
       /// Note that these typically require refinement
       /// in order to obtain suitable precision.
       FRSQRT, FRCP,
-
+      FRSQRTS, FRCPS,
+   
       // Thread Local Storage.
       TLSADDR,
 
@@ -751,6 +753,8 @@ namespace llvm {
 
     bool isCheapToSpeculateCtlz() const override;
 
+    bool hasAndNotCompare(SDValue Y) const override;
+
     /// Return the value type to use for ISD::SETCC.
     EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
                            EVT VT) const override;
@@ -1159,9 +1163,6 @@ namespace llvm {
 
     MachineBasicBlock *EmitLoweredAtomicFP(MachineInstr *I,
                                            MachineBasicBlock *BB) const;
-
-    MachineBasicBlock *EmitLoweredWinAlloca(MachineInstr *MI,
-                                              MachineBasicBlock *BB) const;
 
     MachineBasicBlock *EmitLoweredCatchRet(MachineInstr *MI,
                                            MachineBasicBlock *BB) const;

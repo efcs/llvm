@@ -37,6 +37,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <deque>
+#include <utility>
 
 using namespace llvm;
 
@@ -2472,28 +2473,30 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
         return error("Invalid record");
 
       IsDistinct =
-          Record[0] || Record[8]; // All definitions should be distinct.
+          (Record[0] & 1) || Record[8]; // All definitions should be distinct.
       // Version 1 has a Function as Record[15].
       // Version 2 has removed Record[15].
       // Version 3 has the Unit as Record[15].
+      bool HasUnit = Record[0] >= 2;
+      if (HasUnit && Record.size() != 19)
+        return error("Invalid record");
       Metadata *CUorFn = getMDOrNull(Record[15]);
       unsigned Offset = Record.size() == 19 ? 1 : 0;
-      bool HasFn = Offset && dyn_cast_or_null<ConstantAsMetadata>(CUorFn);
-      bool HasCU = Offset && !HasFn;
+      bool HasFn = Offset && !HasUnit;
       DISubprogram *SP = GET_OR_DISTINCT(
           DISubprogram,
           (Context, getDITypeRefOrNull(Record[1]), getMDString(Record[2]),
            getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
            getMDOrNull(Record[6]), Record[7], Record[8], Record[9],
            getDITypeRefOrNull(Record[10]), Record[11], Record[12], Record[13],
-           Record[14], HasCU ? CUorFn : nullptr,
+           Record[14], HasUnit ? CUorFn : nullptr,
            getMDOrNull(Record[15 + Offset]), getMDOrNull(Record[16 + Offset]),
            getMDOrNull(Record[17 + Offset])));
       MetadataList.assignValue(SP, NextMetadataNo++);
 
       // Upgrade sp->function mapping to function->sp mapping.
       if (HasFn) {
-        if (auto *CMD = dyn_cast<ConstantAsMetadata>(CUorFn))
+        if (auto *CMD = dyn_cast_or_null<ConstantAsMetadata>(CUorFn))
           if (auto *F = dyn_cast<Function>(CMD->getValue())) {
             if (F->isMaterializable())
               // Defer until materialized; unmaterialized functions may not have
@@ -5632,6 +5635,8 @@ std::error_code BitcodeReader::materializeModule() {
   UpgradedIntrinsics.clear();
 
   UpgradeDebugInfo(*TheModule);
+
+  UpgradeModuleFlags(*TheModule);
   return std::error_code();
 }
 
@@ -5709,13 +5714,13 @@ std::error_code ModuleSummaryIndexBitcodeReader::error(BitcodeError E) {
 ModuleSummaryIndexBitcodeReader::ModuleSummaryIndexBitcodeReader(
     MemoryBuffer *Buffer, DiagnosticHandlerFunction DiagnosticHandler,
     bool CheckGlobalValSummaryPresenceOnly)
-    : DiagnosticHandler(DiagnosticHandler), Buffer(Buffer),
+    : DiagnosticHandler(std::move(DiagnosticHandler)), Buffer(Buffer),
       CheckGlobalValSummaryPresenceOnly(CheckGlobalValSummaryPresenceOnly) {}
 
 ModuleSummaryIndexBitcodeReader::ModuleSummaryIndexBitcodeReader(
     DiagnosticHandlerFunction DiagnosticHandler,
     bool CheckGlobalValSummaryPresenceOnly)
-    : DiagnosticHandler(DiagnosticHandler), Buffer(nullptr),
+    : DiagnosticHandler(std::move(DiagnosticHandler)), Buffer(nullptr),
       CheckGlobalValSummaryPresenceOnly(CheckGlobalValSummaryPresenceOnly) {}
 
 void ModuleSummaryIndexBitcodeReader::freeState() { Buffer = nullptr; }
@@ -6380,6 +6385,9 @@ std::error_code ModuleSummaryIndexBitcodeReader::initLazyStream(
 }
 
 namespace {
+// FIXME: This class is only here to support the transition to llvm::Error. It
+// will be removed once this transition is complete. Clients should prefer to
+// deal with the Error value directly, rather than converting to error_code.
 class BitcodeErrorCategoryType : public std::error_category {
   const char *name() const LLVM_NOEXCEPT override {
     return "llvm.bitcode";

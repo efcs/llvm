@@ -10,10 +10,13 @@
 #ifndef LLVM_DEBUGINFO_PDB_RAW_PDBRAWCONSTANTS_H
 #define LLVM_DEBUGINFO_PDB_RAW_PDBRAWCONSTANTS_H
 
-#include <stdint.h>
+#include "llvm/Support/Endian.h"
+
+#include <cstdint>
 
 namespace llvm {
 namespace pdb {
+
 enum PdbRaw_ImplVer : uint32_t {
   PdbImplVC2 = 19941610,
   PdbImplVC4 = 19950623,
@@ -44,12 +47,46 @@ enum PdbRaw_TpiVer : uint32_t {
 };
 
 enum SpecialStream : uint32_t {
+  // Stream 0 contains the copy of previous version of the MSF directory.
+  // We are not currently using it, but technically if we find the main
+  // MSF is corrupted, we could fallback to it.
+  OldMSFDirectory = 0,
+
   StreamPDB = 1,
   StreamTPI = 2,
   StreamDBI = 3,
   StreamIPI = 4,
 };
-}
-}
 
-#endif
+enum class DbgHeaderType : uint16_t {
+  FPO,
+  Exception,
+  Fixup,
+  OmapToSrc,
+  OmapFromSrc,
+  SectionHdr,
+  TokenRidMap,
+  Xdata,
+  Pdata,
+  NewFPO,
+  SectionHdrOrig,
+  Max
+};
+
+// This struct is defined as "SO" in langapi/include/pdb.h.
+struct SectionOffset {
+  support::ulittle32_t Off;
+  support::ulittle16_t Isect;
+  char Padding[2];
+};
+
+// This is HRFile.
+struct PSHashRecord {
+  support::ulittle32_t Off; // Offset in the symbol record stream
+  support::ulittle32_t CRef;
+};
+
+} // end namespace pdb
+} // end namespace llvm
+
+#endif // LLVM_DEBUGINFO_PDB_RAW_PDBRAWCONSTANTS_H

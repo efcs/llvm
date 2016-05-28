@@ -29,8 +29,6 @@ using namespace llvm;
 // Out of line method to get vtable etc for class.
 void ValueMapTypeRemapper::anchor() {}
 void ValueMaterializer::anchor() {}
-void ValueMaterializer::materializeInitFor(GlobalValue *New, GlobalValue *Old) {
-}
 
 namespace {
 
@@ -363,12 +361,8 @@ Value *Mapper::mapValue(const Value *V) {
 
   // If we have a materializer and it can materialize a value, use that.
   if (auto *Materializer = getMaterializer()) {
-    if (Value *NewV =
-            Materializer->materializeDeclFor(const_cast<Value *>(V))) {
+    if (Value *NewV = Materializer->materialize(const_cast<Value *>(V))) {
       getVM()[V] = NewV;
-      if (auto *NewGV = dyn_cast<GlobalValue>(NewV))
-        Materializer->materializeInitFor(
-            NewGV, cast<GlobalValue>(const_cast<Value *>(V)));
       return NewV;
     }
   }
@@ -442,9 +436,10 @@ Value *Mapper::mapValue(const Value *V) {
   for (; OpNo != NumOperands; ++OpNo) {
     Value *Op = C->getOperand(OpNo);
     Mapped = mapValue(Op);
-    if (Mapped != C) break;
+    if (Mapped != Op)
+      break;
   }
-  
+
   // See if the type mapper wants to remap the type as well.
   Type *NewTy = C->getType();
   if (TypeMapper)
@@ -461,11 +456,11 @@ Value *Mapper::mapValue(const Value *V) {
   Ops.reserve(NumOperands);
   for (unsigned j = 0; j != OpNo; ++j)
     Ops.push_back(cast<Constant>(C->getOperand(j)));
-  
+
   // If one of the operands mismatch, push it and the other mapped operands.
   if (OpNo != NumOperands) {
     Ops.push_back(cast<Constant>(Mapped));
-  
+
     // Map the rest of the operands that aren't processed yet.
     for (++OpNo; OpNo != NumOperands; ++OpNo)
       Ops.push_back(cast<Constant>(mapValue(C->getOperand(OpNo))));

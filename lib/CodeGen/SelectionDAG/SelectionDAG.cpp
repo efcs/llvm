@@ -2465,6 +2465,12 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
     KnownOne = KnownOne.trunc(BitWidth);
     break;
   }
+  case ISD::BSWAP: {
+    computeKnownBits(Op.getOperand(0), KnownZero2, KnownOne2, Depth+1);
+    KnownZero = KnownZero2.byteSwap();
+    KnownOne = KnownOne2.byteSwap();
+    break;
+  }
   case ISD::SMIN:
   case ISD::SMAX:
   case ISD::UMIN:
@@ -2500,6 +2506,35 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
   }
 
   assert((KnownZero & KnownOne) == 0 && "Bits known to be one AND zero?");
+}
+
+bool SelectionDAG::isKnownToBeAPowerOfTwo(SDValue Val) const {
+  // A left-shift of a constant one will have exactly one bit set because
+  // shifting the bit off the end is undefined.
+  if (Val.getOpcode() == ISD::SHL) {
+    auto *C = dyn_cast<ConstantSDNode>(Val.getOperand(0));
+    if (C && C->getAPIntValue() == 1)
+      return true;
+  }
+
+  // Similarly, a logical right-shift of a constant sign-bit will have exactly
+  // one bit set.
+  if (Val.getOpcode() == ISD::SRL) {
+    auto *C = dyn_cast<ConstantSDNode>(Val.getOperand(0));
+    if (C && C->getAPIntValue().isSignBit())
+      return true;
+  }
+
+  // More could be done here, though the above checks are enough
+  // to handle some common cases.
+
+  // Fall back to computeKnownBits to catch other known cases.
+  EVT OpVT = Val.getValueType();
+  unsigned BitWidth = OpVT.getScalarType().getSizeInBits();
+  APInt KnownZero, KnownOne;
+  computeKnownBits(Val, KnownZero, KnownOne);
+  return (KnownZero.countPopulation() == BitWidth - 1) &&
+         (KnownOne.countPopulation() == 1);
 }
 
 /// ComputeNumSignBits - Return the number of times the sign bit of the
@@ -2836,8 +2871,7 @@ static SDValue FoldCONCAT_VECTORS(SDLoc DL, EVT VT, ArrayRef<SDValue> Ops,
     return Ops[0];
 
   // Concat of UNDEFs is UNDEF.
-  if (std::all_of(Ops.begin(), Ops.end(),
-                  [](SDValue Op) { return Op.isUndef(); }))
+  if (llvm::all_of(Ops, [](SDValue Op) { return Op.isUndef(); }))
     return DAG.getUNDEF(VT);
 
   // A CONCAT_VECTOR with all UNDEF/BUILD_VECTOR operands can be
@@ -3143,6 +3177,12 @@ SDValue SelectionDAG::getNode(unsigned Opcode, SDLoc DL,
            "Invalid BSWAP!");
     assert((VT.getScalarSizeInBits() % 16 == 0) &&
            "BSWAP types must be a multiple of 16 bits!");
+    if (OpOpcode == ISD::UNDEF)
+      return getUNDEF(VT);
+    break;
+  case ISD::BITREVERSE:
+    assert(VT.isInteger() && VT == Operand.getValueType() &&
+           "Invalid BITREVERSE!");
     if (OpOpcode == ISD::UNDEF)
       return getUNDEF(VT);
     break;
@@ -5936,10 +5976,14 @@ SDNode *SelectionDAG::SelectNodeTo(SDNode *N, unsigned MachineOpc,
 
 SDNode *SelectionDAG::SelectNodeTo(SDNode *N, unsigned MachineOpc,
                                    SDVTList VTs,ArrayRef<SDValue> Ops) {
-  N = MorphNodeTo(N, ~MachineOpc, VTs, Ops);
+  SDNode *New = MorphNodeTo(N, ~MachineOpc, VTs, Ops);
   // Reset the NodeID to -1.
-  N->setNodeId(-1);
-  return N;
+  New->setNodeId(-1);
+  if (New != N) {
+    ReplaceAllUsesWith(N, New);
+    RemoveDeadNode(N);
+  }
+  return New;
 }
 
 /// UpdadeSDLocOnMergedSDNode - If the opt level is -O0 then it throws away

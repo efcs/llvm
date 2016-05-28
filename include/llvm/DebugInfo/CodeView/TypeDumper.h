@@ -24,14 +24,20 @@ namespace codeview {
 class CVTypeDumper {
 public:
   CVTypeDumper(ScopedPrinter &W, bool PrintRecordBytes)
-      : W(W), PrintRecordBytes(PrintRecordBytes) {}
+      : W(&W), PrintRecordBytes(PrintRecordBytes) {}
 
   StringRef getTypeName(TypeIndex TI);
   void printTypeIndex(StringRef FieldName, TypeIndex TI);
 
+  /// Dumps one type record.  Returns false if there was a type parsing error,
+  /// and true otherwise.  This should be called in order, since the dumper
+  /// maintains state about previous records which are necessary for cross
+  /// type references.
+  bool dump(const CVRecord<TypeLeafKind> &Record);
+
   /// Dumps the type records in Data. Returns false if there was a type stream
   /// parse error, and true otherwise.
-  bool dump(ArrayRef<uint8_t> Data);
+  bool dump(const CVTypeArray &Types);
 
   /// Gets the type index for the next type record.
   unsigned getNextTypeIndex() const {
@@ -46,8 +52,11 @@ public:
     return TypeNames.insert(TypeName).first->getKey();
   }
 
+  void setPrinter(ScopedPrinter *P);
+  ScopedPrinter *getPrinter() { return W; }
+
 private:
-  ScopedPrinter &W;
+  ScopedPrinter *W;
 
   bool PrintRecordBytes = false;
 

@@ -137,11 +137,6 @@ def SIsampleb : SDSample<"AMDGPUISD::SAMPLEB">;
 def SIsampled : SDSample<"AMDGPUISD::SAMPLED">;
 def SIsamplel : SDSample<"AMDGPUISD::SAMPLEL">;
 
-def SIconstdata_ptr : SDNode<
-  "AMDGPUISD::CONST_DATA_PTR", SDTypeProfile <1, 1, [SDTCisVT<0, i64>,
-                                                     SDTCisVT<0, i64>]>
->;
-
 //===----------------------------------------------------------------------===//
 // PatFrags for FLAT instructions
 //===----------------------------------------------------------------------===//
@@ -458,15 +453,43 @@ def sopp_brtarget : Operand<OtherVT> {
 
 def const_ga : Operand<iPTR>;
 
+def InterpSlot : Operand<i32> {
+  let PrintMethod = "printInterpSlot";
+}
+
+def SendMsgMatchClass : AsmOperandClass {
+  let Name = "SendMsg";
+  let PredicateMethod = "isSendMsg";
+  let ParserMethod = "parseSendMsgOp";
+  let RenderMethod = "addImmOperands";
+}
+
+def SendMsgImm : Operand<i32> {
+  let PrintMethod = "printSendMsg";
+  let ParserMatchClass = SendMsgMatchClass;
+}
+
+def SWaitMatchClass : AsmOperandClass {
+  let Name = "SWaitCnt";
+  let RenderMethod = "addImmOperands";
+  let ParserMethod = "parseSWaitCntOps";
+}
+
+def WAIT_FLAG : Operand <i32> {
+  let ParserMatchClass = SWaitMatchClass;
+  let PrintMethod = "printWaitFlag";
+}
+
 include "SIInstrFormats.td"
 include "VIInstrFormats.td"
 
 class NamedMatchClass<string CName, bit Optional = 1> : AsmOperandClass {
   let Name = "Imm"#CName;
   let PredicateMethod = "is"#CName;
-  let ParserMethod = "parse"#CName;
+  let ParserMethod = !if(Optional, "parseOptionalOperand", "parse"#CName);
   let RenderMethod = "addImmOperands";
   let IsOptional = Optional;
+  let DefaultMethod = "default"#CName;
 }
 
 def sdwa_sel : NamedMatchClass<"SDWASel">;
@@ -475,7 +498,7 @@ class NamedOperandBit<string Name, AsmOperandClass MatchClass> : Operand<i1> {
   let PrintMethod = "print"#Name;
   let ParserMatchClass = MatchClass;
 }
- 
+
 class NamedOperandU8<string Name, AsmOperandClass MatchClass> : Operand<i8> {
   let PrintMethod = "print"#Name;
   let ParserMatchClass = MatchClass;
@@ -529,7 +552,7 @@ def src0_sel : NamedOperandU32<"SDWASrc0Sel", sdwa_sel>;
 def src1_sel : NamedOperandU32<"SDWASrc1Sel", sdwa_sel>;
 def dst_unused : NamedOperandU32<"SDWADstUnused", NamedMatchClass<"SDWADstUnused">>;
 
-def hwreg : NamedOperandU16<"Hwreg", NamedMatchClass<"Hwreg">>;
+def hwreg : NamedOperandU16<"Hwreg", NamedMatchClass<"Hwreg", 0>>;
 
 } // End OperandType = "OPERAND_IMMEDIATE"
 
@@ -1075,6 +1098,7 @@ def InputMods : OperandWithDefaultOps <i32, (ops (i32 0))> {
 
 def InputModsMatchClass : AsmOperandClass {
   let Name = "RegOrImmWithInputMods";
+  let ParserMethod = "parseRegOrImmWithInputMods";
 }
 
 def InputModsNoDefault : Operand <i32> {
@@ -1362,14 +1386,14 @@ class VOPProfile <list<ValueType> _ArgVT> {
   field RegisterClass Src1DPP = getVregSrcForVT<Src1VT>.ret;
   field RegisterClass Src0SDWA = getVregSrcForVT<Src0VT>.ret;
   field RegisterClass Src1SDWA = getVregSrcForVT<Src1VT>.ret;
-  
+
   field bit HasDst = !if(!eq(DstVT.Value, untyped.Value), 0, 1);
   field bit HasDst32 = HasDst;
   field int NumSrcArgs = getNumSrcArgs<Src0VT, Src1VT, Src2VT>.ret;
   field bit HasModifiers = hasModifiers<Src0VT>.ret;
 
   field bit HasExt = getHasExt<NumSrcArgs, DstVT, Src0VT, Src1VT>.ret;
-  
+
   field dag Outs = !if(HasDst,(outs DstRC:$vdst),(outs));
 
   // VOP3b instructions are a special case with a second explicit
@@ -1648,10 +1672,10 @@ class SDWADisableFields <VOPProfile p> {
   bits<8> src0 = !if(!eq(p.NumSrcArgs, 0), 0, ?);
   bits<3> src0_sel = !if(!eq(p.NumSrcArgs, 0), 6, ?);
   bits<3> src0_modifiers = !if(p.HasModifiers, ?, 0);
-  bits<3> src1_sel = !if(!eq(p.NumSrcArgs, 0), 6, 
+  bits<3> src1_sel = !if(!eq(p.NumSrcArgs, 0), 6,
                          !if(!eq(p.NumSrcArgs, 1), 6,
                              ?));
-  bits<3> src1_modifiers = !if(!eq(p.NumSrcArgs, 0), 0, 
+  bits<3> src1_modifiers = !if(!eq(p.NumSrcArgs, 0), 0,
                                !if(!eq(p.NumSrcArgs, 1), 0,
                                    !if(p.HasModifiers, ?, 0)));
   bits<3> dst_sel = !if(p.HasDst, ?, 6);
@@ -2813,7 +2837,7 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
   let mayStore = 1, mayLoad = 1, hasPostISelHook = 1, hasSideEffects = 1 in {
 
     // No return variants
-    let glc = 0 in {
+    let glc = 0, AsmMatchConverter = "cvtMubufAtomic" in {
 
       defm _ADDR64 : MUBUFAtomicAddr64_m <
         op, name#"_addr64", (outs),
@@ -2860,13 +2884,14 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
 
     // Variant that return values
     let glc = 1, Constraints = "$vdata = $vdata_in",
+        AsmMatchConverter = "cvtMubufAtomicReturn",
         DisableEncoding = "$vdata_in"  in {
 
       defm _RTN_ADDR64 : MUBUFAtomicAddr64_m <
         op, name#"_rtn_addr64", (outs rc:$vdata),
         (ins rc:$vdata_in, VReg_64:$vaddr, SReg_128:$srsrc,
              SCSrc_32:$soffset, offset:$offset, slc:$slc),
-        name#" $vdata, $vaddr, $srsrc, $soffset addr64"#"$offset"#" glc"#"$slc",
+        name#" $vdata, $vaddr, $srsrc, $soffset addr64$offset glc$slc",
         [(set vt:$vdata,
          (atomic (MUBUFAddr64Atomic v4i32:$srsrc, i64:$vaddr, i32:$soffset,
 	                            i16:$offset, i1:$slc), vt:$vdata_in))], 1
@@ -2876,7 +2901,7 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
         op, name#"_rtn_offset", (outs rc:$vdata),
         (ins rc:$vdata_in, SReg_128:$srsrc, SCSrc_32:$soffset,
              offset:$offset, slc:$slc),
-        name#" $vdata, off, $srsrc, $soffset $offset glc$slc",
+        name#" $vdata, off, $srsrc, $soffset$offset glc$slc",
         [(set vt:$vdata,
          (atomic (MUBUFOffsetAtomic v4i32:$srsrc, i32:$soffset, i16:$offset,
                                     i1:$slc), vt:$vdata_in))], 1
@@ -2887,7 +2912,7 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
           op, name#"_rtn_offen", (outs rc:$vdata),
           (ins rc:$vdata_in, VGPR_32:$vaddr, SReg_128:$srsrc, SCSrc_32:$soffset,
                 offset:$offset, slc:$slc),
-          name#" $vdata, $vaddr, $srsrc, $soffset offen"#"$offset"#" glc"#"$slc",
+          name#" $vdata, $vaddr, $srsrc, $soffset offen$offset glc$slc",
           [], 1
         >;
       }
@@ -2897,7 +2922,7 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
           op, name#"_rtn_idxen", (outs rc:$vdata),
           (ins rc:$vdata_in, VGPR_32:$vaddr, SReg_128:$srsrc, SCSrc_32:$soffset,
                 offset:$offset, slc:$slc),
-          name#" $vdata, $vaddr, $srsrc, $soffset idxen"#"$offset"#" glc"#"$slc",
+          name#" $vdata, $vaddr, $srsrc, $soffset idxen$offset glc$slc",
           [], 1
         >;
       }
@@ -2907,7 +2932,7 @@ multiclass MUBUF_Atomic <mubuf op, string name, RegisterClass rc,
           op, name#"_rtn_bothen", (outs rc:$vdata),
           (ins rc:$vdata_in, VReg_64:$vaddr, SReg_128:$srsrc, SCSrc_32:$soffset,
                 offset:$offset, slc:$slc),
-          name#" $vdata, $vaddr, $srsrc, $soffset idxen offen"#"$offset"#" glc"#"$slc",
+          name#" $vdata, $vaddr, $srsrc, $soffset idxen offen$offset glc$slc",
           [], 1
         >;
       }
@@ -3118,7 +3143,7 @@ multiclass FLAT_ATOMIC <flat op, string asm_name, RegisterClass vdst_rc,
     dag outs_noret = (outs),
     string asm_noret = asm_name#" $addr, $data"#"$slc"#"$tfe"> {
 
-  let mayLoad = 1, mayStore = 1, glc = 0, vdst = 0, AsmMatchConverter = "cvtFlatAtomic" in {
+  let mayLoad = 1, mayStore = 1, glc = 0, vdst = 0 in {
     def "" : FLAT_Pseudo <NAME, outs_noret,
                           (ins VReg_64:$addr, data_rc:$data,
                                slc:$slc, tfe:$tfe), []>,
@@ -3135,7 +3160,7 @@ multiclass FLAT_ATOMIC <flat op, string asm_name, RegisterClass vdst_rc,
                             asm_noret>;
   }
 
-  let glc = 1, hasPostISelHook = 1, AsmMatchConverter = "cvtFlatAtomic" in {
+  let glc = 1, hasPostISelHook = 1 in {
     defm _RTN : FLAT_AtomicRet_m <op, (outs vdst_rc:$vdst),
                         (ins VReg_64:$addr, data_rc:$data, slc:$slc,
                              tfe:$tfe),
