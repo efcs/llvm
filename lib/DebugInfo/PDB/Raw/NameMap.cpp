@@ -50,6 +50,12 @@ Error NameMap::load(codeview::StreamReader &Stream) {
                       make_error<RawError>(raw_error_code::corrupt_file,
                                            "Expected name map max strings"));
 
+  if (MaxNumberOfStrings > (UINT32_MAX / sizeof(uint32_t)))
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Implausible number of strings");
+
+  const uint32_t MaxNumberOfWords = UINT32_MAX / (sizeof(uint32_t) * 8);
+
   // This appears to be a hash table which uses bitfields to determine whether
   // or not a bucket is 'present'.
   uint32_t NumPresentWords;
@@ -57,6 +63,10 @@ Error NameMap::load(codeview::StreamReader &Stream) {
     return joinErrors(std::move(EC),
                       make_error<RawError>(raw_error_code::corrupt_file,
                                            "Expected name map num words"));
+
+  if (NumPresentWords > MaxNumberOfWords)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Number of present words is too large");
 
   // Store all the 'present' bits in a vector for later processing.
   SmallVector<uint32_t, 1> PresentWords;
@@ -78,6 +88,10 @@ Error NameMap::load(codeview::StreamReader &Stream) {
         std::move(EC),
         make_error<RawError>(raw_error_code::corrupt_file,
                              "Expected name map num deleted words"));
+
+  if (NumDeletedWords > MaxNumberOfWords)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Number of deleted words is too large");
 
   // Store all the 'deleted' bits in a vector for later processing.
   SmallVector<uint32_t, 1> DeletedWords;

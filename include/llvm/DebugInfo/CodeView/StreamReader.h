@@ -28,20 +28,28 @@ class StreamReader {
 public:
   StreamReader(const StreamInterface &S);
 
-  Error readBytes(uint32_t Size, ArrayRef<uint8_t> &Buffer);
+  Error readBytes(ArrayRef<uint8_t> &Buffer, uint32_t Size);
   Error readInteger(uint16_t &Dest);
   Error readInteger(uint32_t &Dest);
   Error readZeroString(StringRef &Dest);
   Error readFixedString(StringRef &Dest, uint32_t Length);
   Error readStreamRef(StreamRef &Ref);
   Error readStreamRef(StreamRef &Ref, uint32_t Length);
-  Error readBytes(MutableArrayRef<uint8_t> Buffer);
 
   template <typename T> Error readObject(const T *&Dest) {
     ArrayRef<uint8_t> Buffer;
-    if (auto EC = readBytes(sizeof(T), Buffer))
+    if (auto EC = readBytes(Buffer, sizeof(T)))
       return EC;
     Dest = reinterpret_cast<const T *>(Buffer.data());
+    return Error::success();
+  }
+
+  template <typename T>
+  Error readArray(VarStreamArray<T> &Array, uint32_t Size) {
+    StreamRef S;
+    if (auto EC = readStreamRef(S, Size))
+      return EC;
+    Array = VarStreamArray<T>(S);
     return Error::success();
   }
 
@@ -52,6 +60,8 @@ public:
       return Error::success();
     }
     uint32_t Length = NumItems * sizeof(T);
+    if (Length / sizeof(T) != NumItems)
+      return make_error<CodeViewError>(cv_error_code::corrupt_record);
     if (Offset + Length > Stream.getLength())
       return make_error<CodeViewError>(cv_error_code::insufficient_buffer);
     StreamRef View(Stream, Offset, Length);

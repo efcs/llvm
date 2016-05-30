@@ -591,12 +591,12 @@ void CVSymbolDumperImpl::visitDefRangeSubfieldSym(
 
   if (ObjDelegate) {
     StringRef StringTable = ObjDelegate->getStringTable();
-    if (!StringTable.empty()) {
-      W.printString("Program",
-                    StringTable.drop_front(DefRangeSubfield.Header.Program)
-                        .split('\0')
-                        .first);
-    }
+    auto ProgramStringTableOffset = DefRangeSubfield.Header.Program;
+    if (ProgramStringTableOffset >= StringTable.size())
+      return parseError();
+    StringRef Program =
+        StringTable.drop_front(ProgramStringTableOffset).split('\0').first;
+    W.printString("Program", Program);
   }
   W.printNumber("OffsetInParent", DefRangeSubfield.Header.OffsetInParent);
   printLocalVariableAddrRange(DefRangeSubfield.Header.Range,
@@ -610,11 +610,12 @@ void CVSymbolDumperImpl::visitDefRangeSym(SymbolKind Kind,
 
   if (ObjDelegate) {
     StringRef StringTable = ObjDelegate->getStringTable();
-    if (!StringTable.empty()) {
-      W.printString(
-          "Program",
-          StringTable.drop_front(DefRange.Header.Program).split('\0').first);
-    }
+    auto ProgramStringTableOffset = DefRange.Header.Program;
+    if (ProgramStringTableOffset >= StringTable.size())
+      return parseError();
+    StringRef Program =
+        StringTable.drop_front(ProgramStringTableOffset).split('\0').first;
+    W.printString("Program", Program);
   }
   printLocalVariableAddrRange(DefRange.Header.Range,
                               DefRange.getRelocationOffset());
@@ -866,14 +867,14 @@ void CVSymbolDumperImpl::visitUnknownSymbol(SymbolKind Kind,
   W.printNumber("Length", uint32_t(Data.size()));
 }
 
-bool CVSymbolDumper::dump(const SymbolIterator::Record &Record) {
+bool CVSymbolDumper::dump(const CVRecord<SymbolKind> &Record) {
   CVSymbolDumperImpl Dumper(CVTD, ObjDelegate.get(), W, PrintRecordBytes);
   Dumper.visitSymbolRecord(Record);
   return !Dumper.hadError();
 }
 
-bool CVSymbolDumper::dump(ArrayRef<uint8_t> Data) {
+bool CVSymbolDumper::dump(const CVSymbolArray &Symbols) {
   CVSymbolDumperImpl Dumper(CVTD, ObjDelegate.get(), W, PrintRecordBytes);
-  Dumper.visitSymbolStream(Data);
+  Dumper.visitSymbolStream(Symbols);
   return !Dumper.hadError();
 }

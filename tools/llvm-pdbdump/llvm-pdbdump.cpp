@@ -194,6 +194,8 @@ cl::opt<bool> NoEnumDefs("no-enum-definitions",
                          cl::cat(FilterCategory));
 }
 
+static ExitOnError ExitOnErr;
+
 static Error dumpFileHeaders(ScopedPrinter &P, PDBFile &File) {
   if (!opts::DumpHeaders)
     return Error::success();
@@ -354,7 +356,7 @@ static Error dumpStreamData(ScopedPrinter &P, PDBFile &File) {
     ArrayRef<uint8_t> Data;
     uint32_t BytesToReadInBlock = std::min(
         R.bytesRemaining(), static_cast<uint32_t>(File.getBlockSize()));
-    if (auto EC = R.readBytes(BytesToReadInBlock, Data))
+    if (auto EC = R.readBytes(Data, BytesToReadInBlock))
       return EC;
     P.printBinaryBlock(
         "Data",
@@ -485,7 +487,8 @@ static Error dumpDbiStream(ScopedPrinter &P, PDBFile &File,
           return EC;
 
         codeview::CVSymbolDumper SD(P, TD, nullptr, false);
-        for (auto &S : ModS.symbols()) {
+        bool HadError = false;
+        for (auto &S : ModS.symbols(&HadError)) {
           DictScope DD(P, "");
 
           if (opts::DumpModuleSyms)
@@ -493,6 +496,9 @@ static Error dumpDbiStream(ScopedPrinter &P, PDBFile &File,
           if (opts::DumpSymRecordBytes)
             P.printBinaryBlock("Bytes", S.Data);
         }
+        if (HadError)
+          return make_error<RawError>(raw_error_code::corrupt_file,
+                                      "DBI stream contained corrupt record");
       }
     }
   }
@@ -509,7 +515,7 @@ static Error dumpTpiStream(ScopedPrinter &P, PDBFile &File,
   StringRef VerLabel;
   if (StreamIdx == StreamTPI) {
     DumpRecordBytes = opts::DumpTpiRecordBytes;
-    DumpRecords = opts::DumpTpiRecordBytes;
+    DumpRecords = opts::DumpTpiRecords;
     Label = "Type Info Stream (TPI)";
     VerLabel = "TPI Version";
   } else if (StreamIdx == StreamIPI) {
@@ -595,13 +601,19 @@ static Error dumpPublicsStream(ScopedPrinter &P, PDBFile &File,
               printSectionOffset);
   ListScope L(P, "Symbols");
   codeview::CVSymbolDumper SD(P, TD, nullptr, false);
-  for (auto S : Publics.getSymbols()) {
+  bool HadError = false;
+  for (auto S : Publics.getSymbols(&HadError)) {
     DictScope DD(P, "");
 
     SD.dump(S);
     if (opts::DumpSymRecordBytes)
       P.printBinaryBlock("Bytes", S.Data);
   }
+  if (HadError)
+    return make_error<RawError>(
+        raw_error_code::corrupt_file,
+        "Public symbol stream contained corrupt record");
+
   return Error::success();
 }
 
@@ -676,23 +688,14 @@ bool isRawDumpEnabled() {
 static void dumpInput(StringRef Path) {
   std::unique_ptr<IPDBSession> Session;
   if (isRawDumpEnabled()) {
-    auto E = loadDataForPDB(PDB_ReaderType::Raw, Path, Session);
-    if (!E) {
-      RawSession *RS = static_cast<RawSession *>(Session.get());
-      E = dumpStructure(*RS);
-    }
+    ExitOnErr(loadDataForPDB(PDB_ReaderType::Raw, Path, Session));
 
-    if (E)
-      logAllUnhandledErrors(std::move(E), outs(), "");
-
+    RawSession *RS = static_cast<RawSession *>(Session.get());
+    ExitOnErr(dumpStructure(*RS));
     return;
   }
 
-  Error E = loadDataForPDB(PDB_ReaderType::DIA, Path, Session);
-  if (E) {
-    logAllUnhandledErrors(std::move(E), outs(), "");
-    return;
-  }
+  ExitOnErr(loadDataForPDB(PDB_ReaderType::DIA, Path, Session));
 
   if (opts::LoadAddress)
     Session->setLoadAddress(opts::LoadAddress);
@@ -811,14 +814,12 @@ int main(int argc_, const char *argv_[]) {
   sys::PrintStackTraceOnErrorSignal();
   PrettyStackTraceProgram X(argc_, argv_);
 
+  ExitOnErr.setBanner("llvm-pdbdump: ");
+
   SmallVector<const char *, 256> argv;
   SpecificBumpPtrAllocator<char> ArgAllocator;
-  std::error_code EC = sys::Process::GetArgumentVector(
-      argv, makeArrayRef(argv_, argc_), ArgAllocator);
-  if (EC) {
-    errs() << "error: couldn't get arguments: " << EC.message() << '\n';
-    return 1;
-  }
+  ExitOnErr(errorCodeToError(sys::Process::GetArgumentVector(
+      argv, makeArrayRef(argv_, argc_), ArgAllocator)));
 
   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
 

@@ -22,6 +22,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/DebugInfo/CodeView/ByteStream.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/Line.h"
 #include "llvm/DebugInfo/CodeView/MemoryTypeTableBuilder.h"
@@ -32,7 +33,6 @@
 #include "llvm/DebugInfo/CodeView/TypeDumper.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
-#include "llvm/DebugInfo/CodeView/TypeStream.h"
 #include "llvm/DebugInfo/CodeView/TypeStreamMerger.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
@@ -208,15 +208,19 @@ std::error_code COFFDumper::resolveSymbol(const coff_section *Section,
                                           uint64_t Offset, SymbolRef &Sym) {
   cacheRelocations();
   const auto &Relocations = RelocMap[Section];
+  auto SymI = Obj->symbol_end();
   for (const auto &Relocation : Relocations) {
     uint64_t RelocationOffset = Relocation.getOffset();
 
     if (RelocationOffset == Offset) {
-      Sym = *Relocation.getSymbol();
-      return readobj_error::success;
+      SymI = Relocation.getSymbol();
+      break;
     }
   }
-  return readobj_error::unknown_symbol;
+  if (SymI == Obj->symbol_end())
+    return readobj_error::unknown_symbol;
+  Sym = *SymI;
+  return readobj_error::success;
 }
 
 // Given a section and an offset into this section the function returns the name
@@ -687,7 +691,10 @@ void COFFDumper::initializeFileAndStringTables(StringRef Data) {
     default:
       break;
     }
-    Data = Data.drop_front(alignTo(SubSectionSize, 4));
+    uint32_t PaddedSize = alignTo(SubSectionSize, 4);
+    if (PaddedSize > Data.size())
+      error(object_error::parse_failed);
+    Data = Data.drop_front(PaddedSize);
   }
 }
 
@@ -733,6 +740,8 @@ void COFFDumper::printCodeViewSymbolSection(StringRef SectionName,
     size_t SectionOffset = Data.data() - SectionContents.data();
     size_t NextOffset = SectionOffset + SubSectionSize;
     NextOffset = alignTo(NextOffset, 4);
+    if (NextOffset > SectionContents.size())
+      return error(object_error::parse_failed);
     Data = SectionContents.drop_front(NextOffset);
 
     // Optionally print the subsection bytes in case our parsing gets confused
@@ -794,14 +803,20 @@ void COFFDumper::printCodeViewSymbolSection(StringRef SectionName,
       while (!Contents.empty()) {
         const FrameData *FD;
         error(consumeObject(Contents, FD));
+
+        if (FD->FrameFunc >= CVStringTable.size())
+          error(object_error::parse_failed);
+
+        StringRef FrameFunc =
+            CVStringTable.drop_front(FD->FrameFunc).split('\0').first;
+
         DictScope S(W, "FrameData");
         W.printHex("RvaStart", FD->RvaStart);
         W.printHex("CodeSize", FD->CodeSize);
         W.printHex("LocalSize", FD->LocalSize);
         W.printHex("ParamsSize", FD->ParamsSize);
         W.printHex("MaxStackSize", FD->MaxStackSize);
-        W.printString("FrameFunc",
-                      CVStringTable.drop_front(FD->FrameFunc).split('\0').first);
+        W.printString("FrameFunc", FrameFunc);
         W.printHex("PrologSize", FD->PrologSize);
         W.printHex("SavedRegsSize", FD->SavedRegsSize);
         W.printFlags("Flags", FD->Flags, makeArrayRef(FrameDataFlags));
@@ -898,8 +913,16 @@ void COFFDumper::printCodeViewSymbolsSubsection(StringRef Subsection,
                                                         SectionContents);
 
   CVSymbolDumper CVSD(W, CVTD, std::move(CODD), opts::CodeViewSubsectionBytes);
+  ByteStream Stream(BinaryData);
+  CVSymbolArray Symbols;
+  StreamReader Reader(Stream);
+  if (auto EC = Reader.readArray(Symbols, Reader.getLength())) {
+    consumeError(std::move(EC));
+    W.flush();
+    error(object_error::parse_failed);
+  }
 
-  if (!CVSD.dump(BinaryData)) {
+  if (!CVSD.dump(Symbols)) {
     W.flush();
     error(object_error::parse_failed);
   }
@@ -926,6 +949,8 @@ void COFFDumper::printCodeViewFileChecksums(StringRef Subsection) {
     W.printBinary("ChecksumBytes", ChecksumBytes);
     unsigned PaddedSize = alignTo(FC->ChecksumSize + sizeof(FileChecksum), 4) -
                           sizeof(FileChecksum);
+    if (PaddedSize > Data.size())
+      error(object_error::parse_failed);
     Data = Data.drop_front(PaddedSize);
   }
 }
@@ -990,13 +1015,22 @@ void COFFDumper::mergeCodeViewTypes(MemoryTypeTableBuilder &CVTypes) {
     if (SectionName == ".debug$T") {
       StringRef Data;
       error(S.getContents(Data));
-      unsigned Magic = *reinterpret_cast<const ulittle32_t *>(Data.data());
+      uint32_t Magic;
+      error(consume(Data, Magic));
       if (Magic != 4)
         error(object_error::parse_failed);
-      Data = Data.drop_front(4);
       ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(Data.data()),
                               Data.size());
-      if (!mergeTypeStreams(CVTypes, Bytes))
+      ByteStream Stream(Bytes);
+      CVTypeArray Types;
+      StreamReader Reader(Stream);
+      if (auto EC = Reader.readArray(Types, Reader.getLength())) {
+        consumeError(std::move(EC));
+        W.flush();
+        error(object_error::parse_failed);
+      }
+
+      if (!mergeTypeStreams(CVTypes, Types))
         return error(object_error::parse_failed);
     }
   }
@@ -1020,7 +1054,16 @@ void COFFDumper::printCodeViewTypeSection(StringRef SectionName,
 
   ArrayRef<uint8_t> BinaryData(reinterpret_cast<const uint8_t *>(Data.data()),
                                Data.size());
-  if (!CVTD.dump(BinaryData)) {
+  ByteStream Stream(BinaryData);
+  CVTypeArray Types;
+  StreamReader Reader(Stream);
+  if (auto EC = Reader.readArray(Types, Reader.getLength())) {
+    consumeError(std::move(EC));
+    W.flush();
+    error(object_error::parse_failed);
+  }
+
+  if (!CVTD.dump(Types)) {
     W.flush();
     error(object_error::parse_failed);
   }
@@ -1472,7 +1515,16 @@ void llvm::dumpCodeViewMergedTypes(
   CVTypeDumper CVTD(Writer, opts::CodeViewSubsectionBytes);
   ArrayRef<uint8_t> BinaryData(reinterpret_cast<const uint8_t *>(Buf.data()),
                                Buf.size());
-  if (!CVTD.dump(BinaryData)) {
+  ByteStream Stream(BinaryData);
+  CVTypeArray Types;
+  StreamReader Reader(Stream);
+  if (auto EC = Reader.readArray(Types, Reader.getLength())) {
+    consumeError(std::move(EC));
+    Writer.flush();
+    error(object_error::parse_failed);
+  }
+
+  if (!CVTD.dump(Types)) {
     Writer.flush();
     error(object_error::parse_failed);
   }
