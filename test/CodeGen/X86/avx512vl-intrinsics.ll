@@ -6786,17 +6786,19 @@ define <4 x i64>@test_int_x86_avx512_maskz_pternlog_q_256(<4 x i64> %x0, <4 x i6
 
 declare <8 x i32> @llvm.x86.avx512.pbroadcastd.256(<4 x i32>, <8 x i32>, i8)
 
-define <8 x i32>@test_int_x86_avx512_pbroadcastd_256(<4 x i32> %x0, <8 x i32> %x1, i8 %mask) {
+define <8 x i32>@test_int_x86_avx512_pbroadcastd_256(<4 x i32> %x0, <8 x i32> %x1, i8 %mask, i32 * %y_ptr) {
 ; CHECK-LABEL: test_int_x86_avx512_pbroadcastd_256:
 ; CHECK:       ## BB#0:
 ; CHECK-NEXT:    kmovw %edi, %k1 ## encoding: [0xc5,0xf8,0x92,0xcf]
+; CHECK-NEXT:    vpbroadcastd (%rsi), %ymm2 ## encoding: [0x62,0xf2,0x7d,0x28,0x58,0x16]
 ; CHECK-NEXT:    vpbroadcastd %xmm0, %ymm1 {%k1} ## encoding: [0x62,0xf2,0x7d,0x29,0x58,0xc8]
-; CHECK-NEXT:    vpbroadcastd %xmm0, %ymm2 {%k1} {z} ## encoding: [0x62,0xf2,0x7d,0xa9,0x58,0xd0]
-; CHECK-NEXT:    vpbroadcastd %xmm0, %ymm0 ## encoding: [0x62,0xf2,0x7d,0x28,0x58,0xc0]
+; CHECK-NEXT:    vpbroadcastd %xmm0, %ymm0 {%k1} {z} ## encoding: [0x62,0xf2,0x7d,0xa9,0x58,0xc0]
+; CHECK-NEXT:    vpaddd %ymm1, %ymm2, %ymm1 ## encoding: [0x62,0xf1,0x6d,0x28,0xfe,0xc9]
 ; CHECK-NEXT:    vpaddd %ymm1, %ymm0, %ymm0 ## encoding: [0x62,0xf1,0x7d,0x28,0xfe,0xc1]
-; CHECK-NEXT:    vpaddd %ymm0, %ymm2, %ymm0 ## encoding: [0x62,0xf1,0x6d,0x28,0xfe,0xc0]
 ; CHECK-NEXT:    retq ## encoding: [0xc3]
-  %res = call <8 x i32> @llvm.x86.avx512.pbroadcastd.256(<4 x i32> %x0, <8 x i32> %x1, i8 -1)
+  %y_32  = load i32, i32 * %y_ptr
+  %y = insertelement <4 x i32> undef, i32 %y_32, i32 0
+  %res = call <8 x i32> @llvm.x86.avx512.pbroadcastd.256(<4 x i32> %y, <8 x i32> %x1, i8 -1)
   %res1 = call <8 x i32> @llvm.x86.avx512.pbroadcastd.256(<4 x i32> %x0, <8 x i32> %x1, i8 %mask)
   %res2 = call <8 x i32> @llvm.x86.avx512.pbroadcastd.256(<4 x i32> %x0, <8 x i32> zeroinitializer, i8 %mask)
   %res3 = add <8 x i32> %res, %res1
@@ -6929,24 +6931,41 @@ define <8 x float> @test_x86_vcvtph2ps_256_rrkz(<8 x i16> %a0, i8 %mask) {
 
 declare <8 x float> @llvm.x86.avx512.mask.vcvtph2ps.256(<8 x i16>, <8 x float>, i8) nounwind readonly
 
-define <8 x i16> @test_x86_vcvtps2ph_128(<4 x float> %a0) {
+define <8 x i16> @test_x86_vcvtps2ph_128(<4 x float> %a0, i8 %mask, <8 x i16> %src) {
 ; CHECK-LABEL: test_x86_vcvtps2ph_128:
 ; CHECK:       ## BB#0:
+; CHECK-NEXT:    kmovw %edi, %k1 ## encoding: [0xc5,0xf8,0x92,0xcf]
+; CHECK-NEXT:    vcvtps2ph $2, %xmm0, %xmm1 {%k1} ## encoding: [0x62,0xf3,0x7d,0x09,0x1d,0xc1,0x02]
+; CHECK-NEXT:    vcvtps2ph $2, %xmm0, %xmm2 {%k1} {z} ## encoding: [0x62,0xf3,0x7d,0x89,0x1d,0xc2,0x02]
 ; CHECK-NEXT:    vcvtps2ph $2, %xmm0, %xmm0 ## encoding: [0x62,0xf3,0x7d,0x08,0x1d,0xc0,0x02]
+; CHECK-NEXT:    vpaddw %xmm2, %xmm0, %xmm0 ## encoding: [0xc5,0xf9,0xfd,0xc2]
+; CHECK-NEXT:    vpaddw %xmm0, %xmm1, %xmm0 ## encoding: [0xc5,0xf1,0xfd,0xc0]
 ; CHECK-NEXT:    retq ## encoding: [0xc3]
-  %res = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.128(<4 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 -1)
+  %res1 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.128(<4 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 -1)
+  %res2 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.128(<4 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 %mask)
+  %res3 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.128(<4 x float> %a0, i32 2, <8 x i16> %src, i8 %mask)
+  %res0 = add <8 x i16> %res1, %res2
+  %res = add <8 x i16> %res3, %res0
   ret <8 x i16> %res
 }
 
-
 declare <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.128(<4 x float>, i32, <8 x i16>, i8) nounwind readonly
 
-define <8 x i16> @test_x86_vcvtps2ph_256(<8 x float> %a0) {
+define <8 x i16> @test_x86_vcvtps2ph_256(<8 x float> %a0, i8 %mask, <8 x i16> %src) {
 ; CHECK-LABEL: test_x86_vcvtps2ph_256:
 ; CHECK:       ## BB#0:
+; CHECK-NEXT:    kmovw %edi, %k1 ## encoding: [0xc5,0xf8,0x92,0xcf]
+; CHECK-NEXT:    vcvtps2ph $2, %ymm0, %xmm1 {%k1} ## encoding: [0x62,0xf3,0x7d,0x29,0x1d,0xc1,0x02]
+; CHECK-NEXT:    vcvtps2ph $2, %ymm0, %xmm2 {%k1} {z} ## encoding: [0x62,0xf3,0x7d,0xa9,0x1d,0xc2,0x02]
 ; CHECK-NEXT:    vcvtps2ph $2, %ymm0, %xmm0 ## encoding: [0x62,0xf3,0x7d,0x28,0x1d,0xc0,0x02]
+; CHECK-NEXT:    vpaddw %xmm2, %xmm0, %xmm0 ## encoding: [0xc5,0xf9,0xfd,0xc2]
+; CHECK-NEXT:    vpaddw %xmm0, %xmm1, %xmm0 ## encoding: [0xc5,0xf1,0xfd,0xc0]
 ; CHECK-NEXT:    retq ## encoding: [0xc3]
-  %res = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.256(<8 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 -1)
+  %res1 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.256(<8 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 -1)
+  %res2 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.256(<8 x float> %a0, i32 2, <8 x i16> zeroinitializer, i8 %mask)
+  %res3 = call <8 x i16> @llvm.x86.avx512.mask.vcvtps2ph.256(<8 x float> %a0, i32 2, <8 x i16> %src, i8 %mask)
+  %res0 = add <8 x i16> %res1, %res2
+  %res = add <8 x i16> %res3, %res0
   ret <8 x i16> %res
 }
 
