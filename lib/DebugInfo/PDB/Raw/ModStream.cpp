@@ -11,6 +11,7 @@
 
 #include "llvm/DebugInfo/CodeView/StreamReader.h"
 #include "llvm/DebugInfo/PDB/Raw/ModInfo.h"
+#include "llvm/DebugInfo/PDB/Raw/PDBFile.h"
 #include "llvm/DebugInfo/PDB/Raw/RawError.h"
 
 using namespace llvm;
@@ -59,5 +60,6 @@ Error ModStream::reload() {
 
 iterator_range<codeview::CVSymbolArray::Iterator>
 ModStream::symbols(bool *HadError) const {
-  return llvm::make_range(SymbolsSubstream.begin(), SymbolsSubstream.end());
+  return llvm::make_range(SymbolsSubstream.begin(HadError),
+                          SymbolsSubstream.end());
 }

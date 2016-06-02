@@ -1991,6 +1991,7 @@ void Verifier::visitFunction(const Function &F) {
              "blockaddress may not be used with the entry block!", Entry);
     }
 
+    unsigned NumDebugAttachments = 0;
     // Visit metadata attachments.
     for (const auto &I : MDs) {
       // Verify that the attachment is legal.
@@ -1998,6 +1999,9 @@ void Verifier::visitFunction(const Function &F) {
       default:
         break;
       case LLVMContext::MD_dbg:
+        ++NumDebugAttachments;
+        AssertDI(NumDebugAttachments == 1,
+                 "function must have a single !dbg attachment", &F, I.second);
         AssertDI(isa<DISubprogram>(I.second),
                  "function !dbg attachment must be a subprogram", &F, I.second);
         break;
@@ -2959,6 +2963,7 @@ void Verifier::visitLoadInst(LoadInst &LI) {
   Type *ElTy = LI.getType();
   Assert(LI.getAlignment() <= Value::MaximumAlignment,
          "huge alignment values are unsupported", &LI);
+  Assert(ElTy->isSized(), "loading unsized types is not allowed", &LI);
   if (LI.isAtomic()) {
     Assert(LI.getOrdering() != AtomicOrdering::Release &&
                LI.getOrdering() != AtomicOrdering::AcquireRelease,
@@ -2987,6 +2992,7 @@ void Verifier::visitStoreInst(StoreInst &SI) {
          "Stored value type does not match pointer operand type!", &SI, ElTy);
   Assert(SI.getAlignment() <= Value::MaximumAlignment,
          "huge alignment values are unsupported", &SI);
+  Assert(ElTy->isSized(), "storing unsized types is not allowed", &SI);
   if (SI.isAtomic()) {
     Assert(SI.getOrdering() != AtomicOrdering::Acquire &&
                SI.getOrdering() != AtomicOrdering::AcquireRelease,
