@@ -2438,16 +2438,15 @@ Instruction *InstCombiner::visitICmpInstWithCastAndCast(ICmpInst &ICI) {
     return new ICmpInst(ICI.getUnsignedPredicate(), LHSCIOp, RHSCIOp);
   }
 
-  // If we aren't dealing with a constant on the RHS, exit early
-  ConstantInt *CI = dyn_cast<ConstantInt>(ICI.getOperand(1));
+  // If we aren't dealing with a constant on the RHS, exit early.
+  auto *CI = dyn_cast<Constant>(ICI.getOperand(1));
   if (!CI)
     return nullptr;
 
   // Compute the constant that would happen if we truncated to SrcTy then
-  // reextended to DestTy.
+  // re-extended to DestTy.
   Constant *Res1 = ConstantExpr::getTrunc(CI, SrcTy);
-  Constant *Res2 = ConstantExpr::getCast(LHSCI->getOpcode(),
-                                                Res1, DestTy);
+  Constant *Res2 = ConstantExpr::getCast(LHSCI->getOpcode(), Res1, DestTy);
 
   // If the re-extended constant didn't change...
   if (Res2 == CI) {
@@ -3166,8 +3165,7 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
   /// complex to least complex.  This puts constants before unary operators,
   /// before binary operators.
   if (Op0Cplxity < Op1Cplxity ||
-        (Op0Cplxity == Op1Cplxity &&
-         swapMayExposeCSEOpportunities(Op0, Op1))) {
+      (Op0Cplxity == Op1Cplxity && swapMayExposeCSEOpportunities(Op0, Op1))) {
     I.swapOperands();
     std::swap(Op0, Op1);
     Changed = true;
@@ -3179,8 +3177,7 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
 
   // comparing -val or val with non-zero is the same as just comparing val
   // ie, abs(val) != 0 -> val != 0
-  if (I.getPredicate() == ICmpInst::ICMP_NE && match(Op1, m_Zero()))
-  {
+  if (I.getPredicate() == ICmpInst::ICMP_NE && match(Op1, m_Zero())) {
     Value *Cond, *SelectTrue, *SelectFalse;
     if (match(Op0, m_Select(m_Value(Cond), m_Value(SelectTrue),
                             m_Value(SelectFalse)))) {

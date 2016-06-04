@@ -12975,6 +12975,7 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
   }
 
   if (Subtarget.isTargetKnownWindowsMSVC() ||
+      Subtarget.isTargetWindowsItanium() ||
       Subtarget.isTargetWindowsGNU()) {
     // Just use the implicit TLS architecture
     // Need to generate someting similar to:
@@ -20082,8 +20083,8 @@ static SDValue LowerShift(SDValue Op, const X86Subtarget &Subtarget,
     SDValue Z = getZeroVector(VT, Subtarget, DAG, dl);
     SDValue ALo = DAG.getNode(X86ISD::UNPCKL, dl, VT, Amt, Z);
     SDValue AHi = DAG.getNode(X86ISD::UNPCKH, dl, VT, Amt, Z);
-    SDValue RLo = DAG.getNode(X86ISD::UNPCKL, dl, VT, R, R);
-    SDValue RHi = DAG.getNode(X86ISD::UNPCKH, dl, VT, R, R);
+    SDValue RLo = DAG.getNode(X86ISD::UNPCKL, dl, VT, Z, R);
+    SDValue RHi = DAG.getNode(X86ISD::UNPCKH, dl, VT, Z, R);
     ALo = DAG.getBitcast(ExtVT, ALo);
     AHi = DAG.getBitcast(ExtVT, AHi);
     RLo = DAG.getBitcast(ExtVT, RLo);
@@ -21947,6 +21948,7 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VPSHL:              return "X86ISD::VPSHL";
   case X86ISD::VPCOM:              return "X86ISD::VPCOM";
   case X86ISD::VPCOMU:             return "X86ISD::VPCOMU";
+  case X86ISD::VPERMIL2:           return "X86ISD::VPERMIL2";
   case X86ISD::FMADD:              return "X86ISD::FMADD";
   case X86ISD::FMSUB:              return "X86ISD::FMSUB";
   case X86ISD::FNMADD:             return "X86ISD::FNMADD";
@@ -27793,6 +27795,8 @@ static SDValue detectAVGPattern(SDValue In, EVT VT, SelectionDAG &DAG,
   if (InScalarVT.getSizeInBits() <= ScalarVT.getSizeInBits())
     return SDValue();
 
+  if (!Subtarget.hasSSE2())
+    return SDValue();
   if (Subtarget.hasAVX512()) {
     if (VT.getSizeInBits() > 512)
       return SDValue();
@@ -30689,7 +30693,7 @@ static bool isGRClass(const TargetRegisterClass &RC) {
   }
 }
 
-/// Check if \p RC is a general purpose register class.
+/// Check if \p RC is a vector register class.
 /// I.e., FR* / VR* or one of their variant.
 static bool isFRClass(const TargetRegisterClass &RC) {
   switch (RC.getID()) {
@@ -30700,8 +30704,12 @@ static bool isFRClass(const TargetRegisterClass &RC) {
   case X86::FR128RegClassID:
   case X86::VR64RegClassID:
   case X86::VR128RegClassID:
+  case X86::VR128LRegClassID:
+  case X86::VR128HRegClassID:
   case X86::VR128XRegClassID:
   case X86::VR256RegClassID:
+  case X86::VR256LRegClassID:
+  case X86::VR256HRegClassID:
   case X86::VR256XRegClassID:
   case X86::VR512RegClassID:
     return true;
