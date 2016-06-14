@@ -122,12 +122,12 @@ void LTOCodeGenerator::initializeLTOPasses() {
   initializeSROA_DTPass(R);
   initializeSROA_SSAUpPass(R);
   initializePostOrderFunctionAttrsLegacyPassPass(R);
-  initializeReversePostOrderFunctionAttrsPass(R);
+  initializeReversePostOrderFunctionAttrsLegacyPassPass(R);
   initializeGlobalsAAWrapperPassPass(R);
   initializeLICMPass(R);
-  initializeMergedLoadStoreMotionPass(R);
+  initializeMergedLoadStoreMotionLegacyPassPass(R);
   initializeGVNLegacyPassPass(R);
-  initializeMemCpyOptPass(R);
+  initializeMemCpyOptLegacyPassPass(R);
   initializeDCELegacyPassPass(R);
   initializeCFGSimplifyPassPass(R);
 }
@@ -165,7 +165,7 @@ void LTOCodeGenerator::setModule(std::unique_ptr<LTOModule> Mod) {
   HasVerifiedInput = false;
 }
 
-void LTOCodeGenerator::setTargetOptions(TargetOptions Options) {
+void LTOCodeGenerator::setTargetOptions(const TargetOptions &Options) {
   this->Options = Options;
 }
 

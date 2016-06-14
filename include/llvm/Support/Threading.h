@@ -23,7 +23,8 @@
 // We use std::call_once on all Unix platforms except for NetBSD with
 // libstdc++. That platform has a bug they are working to fix, and they'll
 // remove the NetBSD checks once fixed.
-#if defined(LLVM_ON_UNIX) && !(defined(__NetBSD__) && !defined(_LIBCPP_VERSION))
+#if defined(LLVM_ON_UNIX) &&                                                   \
+    !(defined(__NetBSD__) && !defined(_LIBCPP_VERSION)) && !defined(__ppc__)
 #define LLVM_THREADING_USE_STD_CALL_ONCE 1
 #else
 #define LLVM_THREADING_USE_STD_CALL_ONCE 0
@@ -85,7 +86,7 @@ namespace llvm {
   /// \endcode
   ///
   /// \param flag Flag used for tracking whether or not this has run.
-  /// \param UserFn Function to call once.
+  /// \param F Function to call once.
   template <typename Function, typename... Args>
   void call_once(once_flag &flag, Function &&F, Args &&... ArgList) {
 #if LLVM_THREADING_USE_STD_CALL_ONCE
