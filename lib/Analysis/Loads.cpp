@@ -25,7 +25,7 @@
 
 using namespace llvm;
 
-static bool isAligned(const Value *Base, APInt Offset, unsigned Align,
+static bool isAligned(const Value *Base, const APInt &Offset, unsigned Align,
                       const DataLayout &DL) {
   APInt BaseAlign(Offset.getBitWidth(), Base->getPointerAlignment(DL));
 
@@ -52,7 +52,7 @@ static bool isAligned(const Value *Base, unsigned Align, const DataLayout &DL) {
 /// Test if V is always a pointer to allocated and suitably aligned memory for
 /// a simple load or store.
 static bool isDereferenceableAndAlignedPointer(
-    const Value *V, unsigned Align, APInt Size, const DataLayout &DL,
+    const Value *V, unsigned Align, const APInt &Size, const DataLayout &DL,
     const Instruction *CtxI, const DominatorTree *DT,
     const TargetLibraryInfo *TLI, SmallPtrSetImpl<const Value *> &Visited) {
   // Note that it is not safe to speculate into a malloc'd region because
@@ -322,7 +322,8 @@ llvm::DefMaxInstsToScan("available-load-scan-limit", cl::init(6), cl::Hidden,
 Value *llvm::FindAvailableLoadedValue(LoadInst *Load, BasicBlock *ScanBB,
                                       BasicBlock::iterator &ScanFrom,
                                       unsigned MaxInstsToScan,
-                                      AliasAnalysis *AA, AAMDNodes *AATags) {
+                                      AliasAnalysis *AA, AAMDNodes *AATags,
+                                      bool *IsLoadCSE) {
   if (MaxInstsToScan == 0)
     MaxInstsToScan = ~0U;
 
@@ -374,6 +375,8 @@ Value *llvm::FindAvailableLoadedValue(LoadInst *Load, BasicBlock *ScanBB,
 
         if (AATags)
           LI->getAAMetadata(*AATags);
+        if (IsLoadCSE)
+            *IsLoadCSE = true;
         return LI;
       }
 

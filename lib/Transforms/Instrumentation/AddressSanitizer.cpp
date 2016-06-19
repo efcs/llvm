@@ -745,7 +745,8 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
       return;
     // Find alloca instruction that corresponds to llvm.lifetime argument.
     AllocaInst *AI = findAllocaForValue(II.getArgOperand(1));
-    if (!AI) return;
+    if (!AI || !ASan.isInterestingAlloca(*AI))
+      return;
     bool DoPoison = (ID == Intrinsic::lifetime_end);
     AllocaPoisonCall APC = {&II, AI, SizeValue, DoPoison};
     AllocaPoisonCallVec.push_back(APC);
@@ -831,7 +832,7 @@ static GlobalVariable *createPrivateGlobalForString(Module &M, StringRef Str,
   GlobalVariable *GV =
       new GlobalVariable(M, StrConst->getType(), true,
                          GlobalValue::PrivateLinkage, StrConst, kAsanGenPrefix);
-  if (AllowMerging) GV->setUnnamedAddr(true);
+  if (AllowMerging) GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
   GV->setAlignment(1);  // Strings may not be merged w/o setting align 1.
   return GV;
 }
@@ -848,7 +849,7 @@ static GlobalVariable *createPrivateGlobalForSourceLoc(Module &M,
   auto GV = new GlobalVariable(M, LocStruct->getType(), true,
                                GlobalValue::PrivateLinkage, LocStruct,
                                kAsanGenPrefix);
-  GV->setUnnamedAddr(true);
+  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
   return GV;
 }
 
@@ -1764,6 +1765,8 @@ bool AddressSanitizer::runOnFunction(Function &F) {
   bool IsWrite;
   unsigned Alignment;
   uint64_t TypeSize;
+  const TargetLibraryInfo *TLI =
+      &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
 
   // Fill the set of memory operations to instrument.
   for (auto &BB : F) {
@@ -1792,6 +1795,8 @@ bool AddressSanitizer::runOnFunction(Function &F) {
           TempsToInstrument.clear();
           if (CS.doesNotReturn()) NoReturnCalls.push_back(CS.getInstruction());
         }
+        if (CallInst *CI = dyn_cast<CallInst>(&Inst))
+          maybeMarkSanitizerLibraryCallNoBuiltin(CI, TLI);
         continue;
       }
       ToInstrument.push_back(&Inst);
@@ -1804,8 +1809,6 @@ bool AddressSanitizer::runOnFunction(Function &F) {
       CompileKernel ||
       (ClInstrumentationWithCallsThreshold >= 0 &&
        ToInstrument.size() > (unsigned)ClInstrumentationWithCallsThreshold);
-  const TargetLibraryInfo *TLI =
-      &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   const DataLayout &DL = F.getParent()->getDataLayout();
   ObjectSizeOffsetVisitor ObjSizeVis(DL, TLI, F.getContext(),
                                      /*RoundToAlign=*/true);
@@ -1869,12 +1872,15 @@ void FunctionStackPoisoner::initializeCallbacks(Module &M) {
         M.getOrInsertFunction(kAsanStackFreeNameTemplate + Suffix,
                               IRB.getVoidTy(), IntptrTy, IntptrTy, nullptr));
   }
-  AsanPoisonStackMemoryFunc = checkSanitizerInterfaceFunction(
-      M.getOrInsertFunction(kAsanPoisonStackMemoryName, IRB.getVoidTy(),
-                            IntptrTy, IntptrTy, nullptr));
-  AsanUnpoisonStackMemoryFunc = checkSanitizerInterfaceFunction(
-      M.getOrInsertFunction(kAsanUnpoisonStackMemoryName, IRB.getVoidTy(),
-                            IntptrTy, IntptrTy, nullptr));
+  if (ASan.UseAfterScope) {
+    AsanPoisonStackMemoryFunc = checkSanitizerInterfaceFunction(
+        M.getOrInsertFunction(kAsanPoisonStackMemoryName, IRB.getVoidTy(),
+                              IntptrTy, IntptrTy, nullptr));
+    AsanUnpoisonStackMemoryFunc = checkSanitizerInterfaceFunction(
+        M.getOrInsertFunction(kAsanUnpoisonStackMemoryName, IRB.getVoidTy(),
+                              IntptrTy, IntptrTy, nullptr));
+  }
+
   AsanAllocaPoisonFunc = checkSanitizerInterfaceFunction(M.getOrInsertFunction(
       kAsanAllocaPoison, IRB.getVoidTy(), IntptrTy, IntptrTy, nullptr));
   AsanAllocasUnpoisonFunc =
@@ -1981,13 +1987,21 @@ void FunctionStackPoisoner::poisonStack() {
   assert(AllocaVec.size() > 0 || DynamicAllocaVec.size() > 0);
 
   // Insert poison calls for lifetime intrinsics for alloca.
-  bool HavePoisonedAllocas = false;
+  bool HavePoisonedStaticAllocas = false;
   for (const auto &APC : AllocaPoisonCallVec) {
     assert(APC.InsBefore);
     assert(APC.AI);
+    assert(ASan.isInterestingAlloca(*APC.AI));
+    bool IsDynamicAlloca = ASan.isDynamicAlloca(*APC.AI);
+    if (!ClInstrumentAllocas && IsDynamicAlloca)
+      continue;
+
     IRBuilder<> IRB(APC.InsBefore);
     poisonAlloca(APC.AI, APC.Size, IRB, APC.DoPoison);
-    HavePoisonedAllocas |= APC.DoPoison;
+    // Dynamic allocas will be unpoisoned unconditionally below in
+    // unpoisonDynamicAllocas.
+    // Flag that we need unpoison static allocas.
+    HavePoisonedStaticAllocas |= (APC.DoPoison && !IsDynamicAlloca);
   }
 
   if (ClInstrumentAllocas && DynamicAllocaVec.size() > 0) {
@@ -2133,6 +2147,16 @@ void FunctionStackPoisoner::poisonStack() {
   Value *ShadowBase = ASan.memToShadow(LocalStackBase, IRB);
   poisonRedZones(L.ShadowBytes, IRB, ShadowBase, true);
 
+  auto UnpoisonStack = [&](IRBuilder<> &IRB) {
+    if (HavePoisonedStaticAllocas) {
+      // If we poisoned some allocas in llvm.lifetime analysis,
+      // unpoison whole stack frame now.
+      poisonAlloca(LocalStackBase, LocalStackSize, IRB, false);
+    } else {
+      poisonRedZones(L.ShadowBytes, IRB, ShadowBase, false);
+    }
+  };
+
   // (Un)poison the stack before all ret instructions.
   for (auto Ret : RetVec) {
     IRBuilder<> IRBRet(Ret);
@@ -2177,13 +2201,9 @@ void FunctionStackPoisoner::poisonStack() {
       }
 
       IRBuilder<> IRBElse(ElseTerm);
-      poisonRedZones(L.ShadowBytes, IRBElse, ShadowBase, false);
-    } else if (HavePoisonedAllocas) {
-      // If we poisoned some allocas in llvm.lifetime analysis,
-      // unpoison whole stack frame now.
-      poisonAlloca(LocalStackBase, LocalStackSize, IRBRet, false);
+      UnpoisonStack(IRBElse);
     } else {
-      poisonRedZones(L.ShadowBytes, IRBRet, ShadowBase, false);
+      UnpoisonStack(IRBRet);
     }
   }
 
