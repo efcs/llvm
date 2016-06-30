@@ -216,12 +216,6 @@ def FeatureDumpCodeLower : SubtargetFeature <"dumpcode",
   "Dump MachineInstrs in the CodeEmitter"
 >;
 
-def FeatureIRStructurizer : SubtargetFeature <"disable-irstructurizer",
-  "EnableIRStructurizer",
-  "false",
-  "Disable IR Structurizer"
->;
-
 def FeaturePromoteAlloca : SubtargetFeature <"promote-alloca",
   "EnablePromoteAlloca",
   "true",
@@ -245,12 +239,6 @@ def FeatureEnableUnsafeDSOffsetFolding : SubtargetFeature <
   "EnableUnsafeDSOffsetFolding",
   "true",
   "Force using DS instruction immediate offsets on SI"
->;
-
-def FeatureIfCvt : SubtargetFeature <"disable-ifcvt",
-  "EnableIfCvt",
-  "false",
-  "Disable the if conversion pass"
 >;
 
 def FeatureEnableSIScheduler : SubtargetFeature<"si-scheduler",
@@ -333,6 +321,13 @@ def FeatureDebuggerReserveRegs : SubtargetFeature<
   "DebuggerReserveRegs",
   "true",
   "Reserve registers for debugger usage"
+>;
+
+def FeatureDebuggerEmitPrologue : SubtargetFeature<
+  "amdgpu-debugger-emit-prologue",
+  "DebuggerEmitPrologue",
+  "true",
+  "Emit debugger prologue"
 >;
 
 //===----------------------------------------------------------------------===//

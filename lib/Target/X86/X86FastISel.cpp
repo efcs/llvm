@@ -958,9 +958,8 @@ redo_gep:
     // our address and just match the value instead of completely failing.
     AM = SavedAM;
 
-    for (SmallVectorImpl<const Value *>::reverse_iterator
-           I = GEPs.rbegin(), E = GEPs.rend(); I != E; ++I)
-      if (handleConstantAddresses(*I, AM))
+    for (const Value *I : reverse(GEPs))
+      if (handleConstantAddresses(I, AM))
         return true;
 
     return false;
@@ -3739,7 +3738,7 @@ bool X86FastISel::tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
   AM.getFullAddress(AddrOps);
 
   MachineInstr *Result = XII.foldMemoryOperandImpl(
-      *FuncInfo.MF, MI, OpNo, AddrOps, FuncInfo.InsertPt, Size, Alignment,
+      *FuncInfo.MF, *MI, OpNo, AddrOps, FuncInfo.InsertPt, Size, Alignment,
       /*AllowCommute=*/true);
   if (!Result)
     return false;

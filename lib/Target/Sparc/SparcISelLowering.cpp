@@ -953,8 +953,7 @@ SparcTargetLowering::LowerCall_32(TargetLowering::CallLoweringInfo &CLI,
   // If the callee is a GlobalAddress node (quite common, every direct call is)
   // turn it into a TargetGlobalAddress node so that legalize doesn't hack it.
   // Likewise ExternalSymbol -> TargetExternalSymbol.
-  unsigned TF = ((getTargetMachine().getRelocationModel() == Reloc::PIC_)
-                 ? SparcMCExpr::VK_Sparc_WPLT30 : 0);
+  unsigned TF = isPositionIndependent() ? SparcMCExpr::VK_Sparc_WPLT30 : 0;
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
     Callee = DAG.getTargetGlobalAddress(G->getGlobal(), dl, MVT::i32, 0, TF);
   else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee))
@@ -1307,8 +1306,7 @@ SparcTargetLowering::LowerCall_64(TargetLowering::CallLoweringInfo &CLI,
   // Likewise ExternalSymbol -> TargetExternalSymbol.
   SDValue Callee = CLI.Callee;
   bool hasReturnsTwice = hasReturnsTwiceAttr(DAG, Callee, CLI.CS);
-  unsigned TF = ((getTargetMachine().getRelocationModel() == Reloc::PIC_)
-                 ? SparcMCExpr::VK_Sparc_WPLT30 : 0);
+  unsigned TF = isPositionIndependent() ? SparcMCExpr::VK_Sparc_WPLT30 : 0;
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
     Callee = DAG.getTargetGlobalAddress(G->getGlobal(), DL, PtrVT, 0, TF);
   else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee))
@@ -1640,12 +1638,12 @@ SparcTargetLowering::SparcTargetLowering(const TargetMachine &TM,
   // are unsupported.
   if (Subtarget->isV9())
     setMaxAtomicSizeInBitsSupported(64);
-  else if (false && Subtarget->hasLeonCasa())
-    // Test made to fail pending completion of AtomicExpandPass,
-    // as this will cause a regression until that work is completed.
-    setMaxAtomicSizeInBitsSupported(32);
+  else if (Subtarget->hasLeonCasa())
+    setMaxAtomicSizeInBitsSupported(64);
   else
     setMaxAtomicSizeInBitsSupported(0);
+
+  setMinCmpXchgSizeInBits(32);
 
   setOperationAction(ISD::ATOMIC_SWAP, MVT::i32, Legal);
 
@@ -1822,6 +1820,19 @@ SparcTargetLowering::SparcTargetLowering(const TargetMachine &TM,
     }
   }
 
+  if (Subtarget->fixAllFDIVSQRT()) {
+    // Promote FDIVS and FSQRTS to FDIVD and FSQRTD instructions instead as
+    // the former instructions generate errata on LEON processors.
+    setOperationAction(ISD::FDIV, MVT::f32, Promote);
+    setOperationAction(ISD::FSQRT, MVT::f32, Promote);
+  }
+
+  if (Subtarget->replaceFMULS()) {
+    // Promote FMULS to FMULD instructions instead as
+    // the former instructions generate errata on LEON processors.
+    setOperationAction(ISD::FMUL, MVT::f32, Promote);
+  }
+
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
 
   setMinFunctionAlignment(2);
@@ -1963,8 +1974,8 @@ SDValue SparcTargetLowering::makeAddress(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
   EVT VT = getPointerTy(DAG.getDataLayout());
 
-  // Handle PIC mode first.
-  if (getTargetMachine().getRelocationModel() == Reloc::PIC_) {
+  // Handle PIC mode first. SPARC needs a got load for every variable!
+  if (isPositionIndependent()) {
     // This is the pic32 code model, the GOT is known to be smaller than 4GB.
     SDValue HiLo = makeHiLoPair(Op, SparcMCExpr::VK_Sparc_GOT22,
                                 SparcMCExpr::VK_Sparc_GOT10, DAG);
@@ -2197,7 +2208,7 @@ SparcTargetLowering::LowerF128Op(SDValue Op, SelectionDAG &DAG,
   }
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(SDLoc(Op)).setChain(Chain)
-    .setCallee(CallingConv::C, RetTyABI, Callee, std::move(Args), 0);
+    .setCallee(CallingConv::C, RetTyABI, Callee, std::move(Args));
 
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
 
@@ -2252,7 +2263,7 @@ SDValue SparcTargetLowering::LowerF128Compare(SDValue LHS, SDValue RHS,
 
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL).setChain(Chain)
-    .setCallee(CallingConv::C, RetTy, Callee, std::move(Args), 0);
+    .setCallee(CallingConv::C, RetTy, Callee, std::move(Args));
 
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
 

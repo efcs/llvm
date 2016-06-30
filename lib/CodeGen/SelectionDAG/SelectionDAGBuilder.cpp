@@ -445,9 +445,11 @@ static void getCopyToParts(SelectionDAG &DAG, const SDLoc &DL, SDValue Val,
          "Failed to tile the value with PartVT!");
 
   if (NumParts == 1) {
-    if (PartEVT != ValueVT)
+    if (PartEVT != ValueVT) {
       diagnosePossiblyInvalidConstraint(*DAG.getContext(), V,
                                         "scalar-to-vector conversion failed");
+      Val = DAG.getNode(ISD::BITCAST, DL, PartVT, Val);
+    }
 
     Parts[0] = Val;
     return;
@@ -5479,7 +5481,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
         CallingConv::C, I.getType(),
         DAG.getExternalSymbol(TrapFuncName.data(),
                               TLI.getPointerTy(DAG.getDataLayout())),
-        std::move(Args), 0);
+        std::move(Args));
 
     std::pair<SDValue, SDValue> Result = TLI.LowerCallTo(CLI);
     DAG.setRoot(Result.second);
@@ -6205,9 +6207,10 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
     }
 
     // Check for well-known libc/libm calls.  If the function is internal, it
-    // can't be a library call.
+    // can't be a library call.  Don't do the check if marked as nobuiltin for
+    // some reason.
     LibFunc::Func Func;
-    if (!F->hasLocalLinkage() && F->hasName() &&
+    if (!I.isNoBuiltin() && !F->hasLocalLinkage() && F->hasName() &&
         LibInfo->getLibFunc(F->getName(), Func) &&
         LibInfo->hasOptimizedCodeGen(Func)) {
       switch (Func) {
@@ -6760,6 +6763,8 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
     ExtraInfo |= InlineAsm::Extra_HasSideEffects;
   if (IA->isAlignStack())
     ExtraInfo |= InlineAsm::Extra_IsAlignStack;
+  if (CS.isConvergent())
+    ExtraInfo |= InlineAsm::Extra_IsConvergent;
   // Set the asm dialect.
   ExtraInfo |= IA->getDialect() * InlineAsm::Extra_AsmDialect;
 
@@ -7192,8 +7197,7 @@ void SelectionDAGBuilder::populateCallLoweringInfo(
 
   CLI.setDebugLoc(getCurSDLoc())
       .setChain(getRoot())
-      .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args),
-                 NumArgs)
+      .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args))
       .setDiscardResult(CS->use_empty())
       .setIsPatchPoint(IsPatchPoint);
 }

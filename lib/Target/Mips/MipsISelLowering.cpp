@@ -1107,19 +1107,23 @@ MipsTargetLowering::emitAtomicBinary(MachineInstr *MI, MachineBasicBlock *BB,
   MachineRegisterInfo &RegInfo = MF->getRegInfo();
   const TargetRegisterClass *RC = getRegClassFor(MVT::getIntegerVT(Size * 8));
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
+  const bool ArePtrs64bit = ABI.ArePtrs64bit();
   DebugLoc DL = MI->getDebugLoc();
   unsigned LL, SC, AND, NOR, ZERO, BEQ;
 
-  // FIXME: The below code should check for the ISA to emit the correct 64bit
-  // operations when the size is 4.
   if (Size == 4) {
     if (isMicroMips) {
       LL = Mips::LL_MM;
       SC = Mips::SC_MM;
     } else {
-      LL = Subtarget.hasMips32r6() ? Mips::LL_R6 : Mips::LL;
-      SC = Subtarget.hasMips32r6() ? Mips::SC_R6 : Mips::SC;
+      LL = Subtarget.hasMips32r6()
+               ? (ArePtrs64bit ? Mips::LL64_R6 : Mips::LL_R6)
+               : (ArePtrs64bit ? Mips::LL64 : Mips::LL);
+      SC = Subtarget.hasMips32r6()
+               ? (ArePtrs64bit ? Mips::SC64_R6 : Mips::SC_R6)
+               : (ArePtrs64bit ? Mips::SC64 : Mips::SC);
     }
+
     AND = Mips::AND;
     NOR = Mips::NOR;
     ZERO = Mips::ZERO;
@@ -1226,7 +1230,7 @@ MachineBasicBlock *MipsTargetLowering::emitAtomicBinaryPartword(
   MachineFunction *MF = BB->getParent();
   MachineRegisterInfo &RegInfo = MF->getRegInfo();
   const TargetRegisterClass *RC = getRegClassFor(MVT::i32);
-  bool ArePtrs64bit = ABI.ArePtrs64bit();
+  const bool ArePtrs64bit = ABI.ArePtrs64bit();
   const TargetRegisterClass *RCp =
     getRegClassFor(ArePtrs64bit ? MVT::i64 : MVT::i32);
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
@@ -1253,6 +1257,17 @@ MachineBasicBlock *MipsTargetLowering::emitAtomicBinaryPartword(
   unsigned MaskedOldVal1 = RegInfo.createVirtualRegister(RC);
   unsigned SrlRes = RegInfo.createVirtualRegister(RC);
   unsigned Success = RegInfo.createVirtualRegister(RC);
+
+  unsigned LL, SC;
+  if (isMicroMips) {
+    LL = Mips::LL_MM;
+    SC = Mips::SC_MM;
+  } else {
+    LL = Subtarget.hasMips32r6() ? (ArePtrs64bit ? Mips::LL64_R6 : Mips::LL_R6)
+                                 : (ArePtrs64bit ? Mips::LL64 : Mips::LL);
+    SC = Subtarget.hasMips32r6() ? (ArePtrs64bit ? Mips::SC64_R6 : Mips::SC_R6)
+                                 : (ArePtrs64bit ? Mips::SC64 : Mips::SC);
+  }
 
   // insert new blocks after the current block
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
@@ -1326,7 +1341,6 @@ MachineBasicBlock *MipsTargetLowering::emitAtomicBinaryPartword(
   //   beq     success,$0,loopMBB
 
   BB = loopMBB;
-  unsigned LL = isMicroMips ? Mips::LL_MM : Mips::LL;
   BuildMI(BB, DL, TII->get(LL), OldVal).addReg(AlignedAddr).addImm(0);
   if (Nand) {
     //  and andres, oldval, incr2
@@ -1350,7 +1364,6 @@ MachineBasicBlock *MipsTargetLowering::emitAtomicBinaryPartword(
     .addReg(OldVal).addReg(Mask2);
   BuildMI(BB, DL, TII->get(Mips::OR), StoreVal)
     .addReg(MaskedOldVal0).addReg(NewVal);
-  unsigned SC = isMicroMips ? Mips::SC_MM : Mips::SC;
   BuildMI(BB, DL, TII->get(SC), Success)
     .addReg(StoreVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::BEQ))
@@ -1382,17 +1395,23 @@ MachineBasicBlock * MipsTargetLowering::emitAtomicCmpSwap(MachineInstr *MI,
   MachineRegisterInfo &RegInfo = MF->getRegInfo();
   const TargetRegisterClass *RC = getRegClassFor(MVT::getIntegerVT(Size * 8));
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
+  const bool ArePtrs64bit = ABI.ArePtrs64bit();
   DebugLoc DL = MI->getDebugLoc();
   unsigned LL, SC, ZERO, BNE, BEQ;
 
-   if (Size == 4) {
-     if (isMicroMips) {
-       LL = Mips::LL_MM;
-       SC = Mips::SC_MM;
-     } else {
-       LL = Subtarget.hasMips32r6() ? Mips::LL_R6 : Mips::LL;
-       SC = Subtarget.hasMips32r6() ? Mips::SC_R6 : Mips::SC;
-     }
+  if (Size == 4) {
+    if (isMicroMips) {
+      LL = Mips::LL_MM;
+      SC = Mips::SC_MM;
+    } else {
+      LL = Subtarget.hasMips32r6()
+               ? (ArePtrs64bit ? Mips::LL64_R6 : Mips::LL_R6)
+               : (ArePtrs64bit ? Mips::LL64 : Mips::LL);
+      SC = Subtarget.hasMips32r6()
+               ? (ArePtrs64bit ? Mips::SC64_R6 : Mips::SC_R6)
+               : (ArePtrs64bit ? Mips::SC64 : Mips::SC);
+    }
+
     ZERO = Mips::ZERO;
     BNE = Mips::BNE;
     BEQ = Mips::BEQ;
@@ -1467,7 +1486,7 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
   MachineFunction *MF = BB->getParent();
   MachineRegisterInfo &RegInfo = MF->getRegInfo();
   const TargetRegisterClass *RC = getRegClassFor(MVT::i32);
-  bool ArePtrs64bit = ABI.ArePtrs64bit();
+  const bool ArePtrs64bit = ABI.ArePtrs64bit();
   const TargetRegisterClass *RCp =
     getRegClassFor(ArePtrs64bit ? MVT::i64 : MVT::i32);
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
@@ -1495,6 +1514,17 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
   unsigned StoreVal = RegInfo.createVirtualRegister(RC);
   unsigned SrlRes = RegInfo.createVirtualRegister(RC);
   unsigned Success = RegInfo.createVirtualRegister(RC);
+  unsigned LL, SC;
+
+  if (isMicroMips) {
+    LL = Mips::LL_MM;
+    SC = Mips::SC_MM;
+  } else {
+    LL = Subtarget.hasMips32r6() ? (ArePtrs64bit ? Mips::LL64_R6 : Mips::LL_R6)
+                                 : (ArePtrs64bit ? Mips::LL64 : Mips::LL);
+    SC = Subtarget.hasMips32r6() ? (ArePtrs64bit ? Mips::SC64_R6 : Mips::SC_R6)
+                                 : (ArePtrs64bit ? Mips::SC64 : Mips::SC);
+  }
 
   // insert new blocks after the current block
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
@@ -1568,7 +1598,6 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
   //    and     maskedoldval0,oldval,mask
   //    bne     maskedoldval0,shiftedcmpval,sinkMBB
   BB = loop1MBB;
-  unsigned LL = isMicroMips ? Mips::LL_MM : Mips::LL;
   BuildMI(BB, DL, TII->get(LL), OldVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::AND), MaskedOldVal0)
     .addReg(OldVal).addReg(Mask);
@@ -1585,7 +1614,6 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
     .addReg(OldVal).addReg(Mask2);
   BuildMI(BB, DL, TII->get(Mips::OR), StoreVal)
     .addReg(MaskedOldVal1).addReg(ShiftedNewVal);
-  unsigned SC = isMicroMips ? Mips::SC_MM : Mips::SC;
   BuildMI(BB, DL, TII->get(SC), Success)
       .addReg(StoreVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::BEQ))
@@ -1655,7 +1683,7 @@ SDValue MipsTargetLowering::lowerBR_JT(SDValue Op, SelectionDAG &DAG) const {
                      MemVT, false, false, false, 0);
   Chain = Addr.getValue(1);
 
-  if ((getTargetMachine().getRelocationModel() == Reloc::PIC_) || ABI.IsN64()) {
+  if (isPositionIndependent() || ABI.IsN64()) {
     // For PIC, the sequence is:
     // BRIND(load(Jumptable + index) + RelocBase)
     // RelocBase can be JumpTable, GOT or some sort of global base.
@@ -1724,7 +1752,7 @@ SDValue MipsTargetLowering::lowerGlobalAddress(SDValue Op,
   GlobalAddressSDNode *N = cast<GlobalAddressSDNode>(Op);
   const GlobalValue *GV = N->getGlobal();
 
-  if (getTargetMachine().getRelocationModel() != Reloc::PIC_ && !ABI.IsN64()) {
+  if (!isPositionIndependent() && !ABI.IsN64()) {
     const MipsTargetObjectFile *TLOF =
         static_cast<const MipsTargetObjectFile *>(
             getTargetMachine().getObjFileLowering());
@@ -1736,7 +1764,18 @@ SDValue MipsTargetLowering::lowerGlobalAddress(SDValue Op,
     return getAddrNonPIC(N, SDLoc(N), Ty, DAG);
   }
 
-  if (GV->hasInternalLinkage() || (GV->hasLocalLinkage() && !isa<Function>(GV)))
+  // Every other architecture would use shouldAssumeDSOLocal in here, but
+  // mips is special.
+  // * In PIC code mips requires got loads even for local statics!
+  // * To save on got entries, for local statics the got entry contains the
+  //   page and an additional add instruction takes care of the low bits.
+  // * It is legal to access a hidden symbol with a non hidden undefined,
+  //   so one cannot guarantee that all access to a hidden symbol will know
+  //   it is hidden.
+  // * Mips linkers don't support creating a page and a full got entry for
+  //   the same symbol.
+  // * Given all that, we have to use a full got entry for hidden symbols :-(
+  if (GV->hasLocalLinkage())
     return getAddrLocal(N, SDLoc(N), Ty, DAG, ABI.IsN32() || ABI.IsN64());
 
   if (LargeGOT)
@@ -1756,7 +1795,7 @@ SDValue MipsTargetLowering::lowerBlockAddress(SDValue Op,
   BlockAddressSDNode *N = cast<BlockAddressSDNode>(Op);
   EVT Ty = Op.getValueType();
 
-  if (getTargetMachine().getRelocationModel() != Reloc::PIC_ && !ABI.IsN64())
+  if (!isPositionIndependent() && !ABI.IsN64())
     return getAddrNonPIC(N, SDLoc(N), Ty, DAG);
 
   return getAddrLocal(N, SDLoc(N), Ty, DAG, ABI.IsN32() || ABI.IsN64());
@@ -1800,7 +1839,7 @@ lowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const
 
     TargetLowering::CallLoweringInfo CLI(DAG);
     CLI.setDebugLoc(DL).setChain(DAG.getEntryNode())
-      .setCallee(CallingConv::C, PtrTy, TlsGetAddr, std::move(Args), 0);
+      .setCallee(CallingConv::C, PtrTy, TlsGetAddr, std::move(Args));
     std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
 
     SDValue Ret = CallResult.first;
@@ -1850,7 +1889,7 @@ lowerJumpTable(SDValue Op, SelectionDAG &DAG) const
   JumpTableSDNode *N = cast<JumpTableSDNode>(Op);
   EVT Ty = Op.getValueType();
 
-  if (getTargetMachine().getRelocationModel() != Reloc::PIC_ && !ABI.IsN64())
+  if (!isPositionIndependent() && !ABI.IsN64())
     return getAddrNonPIC(N, SDLoc(N), Ty, DAG);
 
   return getAddrLocal(N, SDLoc(N), Ty, DAG, ABI.IsN32() || ABI.IsN64());
@@ -1862,7 +1901,7 @@ lowerConstantPool(SDValue Op, SelectionDAG &DAG) const
   ConstantPoolSDNode *N = cast<ConstantPoolSDNode>(Op);
   EVT Ty = Op.getValueType();
 
-  if (getTargetMachine().getRelocationModel() != Reloc::PIC_ && !ABI.IsN64()) {
+  if (!isPositionIndependent() && !ABI.IsN64()) {
     const MipsTargetObjectFile *TLOF =
         static_cast<const MipsTargetObjectFile *>(
             getTargetMachine().getObjFileLowering());
@@ -2628,7 +2667,7 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   MachineFrameInfo *MFI = MF.getFrameInfo();
   const TargetFrameLowering *TFL = Subtarget.getFrameLowering();
   MipsFunctionInfo *FuncInfo = MF.getInfo<MipsFunctionInfo>();
-  bool IsPIC = getTargetMachine().getRelocationModel() == Reloc::PIC_;
+  bool IsPIC = isPositionIndependent();
 
   // Analyze operands of the call, assigning locations to each operand.
   SmallVector<CCValAssign, 16> ArgLocs;

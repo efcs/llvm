@@ -70,9 +70,16 @@ void AArch64Subtarget::initializeProperties() {
   case Kryo:
     MaxInterleaveFactor = 4;
     VectorInsertExtractBaseCost = 2;
+    CacheLineSize = 128;
+    PrefetchDistance = 740;
+    MinPrefetchStride = 1024;
+    MaxPrefetchIterationsAhead = 11;
     break;
+  case Vulcan: break;
   case CortexA35: break;
   case CortexA53: break;
+  case CortexA72: break;
+  case CortexA73: break;
   case Others: break;
   }
 }
@@ -105,8 +112,7 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   if (TM.getCodeModel() == CodeModel::Large && isTargetMachO())
     return AArch64II::MO_GOT;
 
-  Reloc::Model RM = TM.getRelocationModel();
-  if (!shouldAssumeDSOLocal(RM, TargetTriple, *GV->getParent(), GV))
+  if (!TM.shouldAssumeDSOLocal(*GV->getParent(), GV))
     return AArch64II::MO_GOT;
 
   // The small code mode's direct accesses use ADRP, which cannot necessarily

@@ -283,6 +283,11 @@ include(AddLLVMDefinitions)
 option(LLVM_ENABLE_PIC "Build Position-Independent Code" ON)
 option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 option(LLVM_ENABLE_MODULES "Compile with C++ modules enabled." OFF)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+  option(LLVM_ENABLE_LOCAL_SUBMODULE_VISIBILITY "Compile with -fmodules-local-submodule-visibility." OFF)
+else()
+  option(LLVM_ENABLE_LOCAL_SUBMODULE_VISIBILITY "Compile with -fmodules-local-submodule-visibility." ON)
+endif()
 option(LLVM_ENABLE_CXX1Y "Compile with C++1y enabled." OFF)
 option(LLVM_ENABLE_LIBCXX "Use libc++ if available." OFF)
 option(LLVM_ENABLE_LIBCXXABI "Use libc++abi when using libc++." OFF)
@@ -732,6 +737,8 @@ if( LLVM_INCLUDE_TOOLS )
   add_subdirectory(tools)
 endif()
 
+add_subdirectory(runtimes)
+
 if( LLVM_INCLUDE_EXAMPLES )
   add_subdirectory(examples)
 endif()
@@ -742,7 +749,8 @@ if( LLVM_INCLUDE_TESTS )
     llvm_ExternalProject_Add(test-suite ${LLVM_MAIN_SRC_DIR}/projects/test-suite
       USE_TOOLCHAIN
       EXCLUDE_FROM_ALL
-      NO_INSTALL)
+      NO_INSTALL
+      ALWAYS_CLEAN)
   endif()
   add_subdirectory(test)
   add_subdirectory(unittests)
