@@ -180,6 +180,8 @@ public:
     EABIHF,
     Android,
     Musl,
+    MuslEABI,
+    MuslEABIHF,
 
     MSVC,
     Itanium,
@@ -470,6 +472,12 @@ public:
     return getOS() == Triple::ELFIAMCU;
   }
 
+  bool isGNUEnvironment() const {
+    EnvironmentType Env = getEnvironment();
+    return Env == Triple::GNU || Env == Triple::GNUEABI ||
+           Env == Triple::GNUEABIHF || Env == Triple::GNUX32;
+  }
+
   /// Checks if the environment could be MSVC.
   bool isWindowsMSVCEnvironment() const {
     return getOS() == Triple::Win32 &&
@@ -564,6 +572,13 @@ public:
 
   /// Tests whether the target is Android
   bool isAndroid() const { return getEnvironment() == Triple::Android; }
+
+  /// Tests whether the environment is musl-libc
+  bool isMusl() const {
+    return getEnvironment() == Triple::Musl ||
+           getEnvironment() == Triple::MuslEABI ||
+           getEnvironment() == Triple::MuslEABIHF;
+  }
 
   /// Tests whether the target is NVPTX (32- or 64-bit).
   bool isNVPTX() const {
@@ -660,6 +675,11 @@ public:
   /// \param Arch the architecture name (e.g., "armv7s"). If it is an empty
   /// string then the triple's arch name is used.
   StringRef getARMCPUForArch(StringRef Arch = StringRef()) const;
+
+  /// Tests whether the target triple is little endian.
+  ///
+  /// \returns true if the triple is little endian, false otherwise.
+  bool isLittleEndian() const;
 
   /// @}
   /// @name Static helpers for IDs.

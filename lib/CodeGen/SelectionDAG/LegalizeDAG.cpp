@@ -16,7 +16,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
@@ -179,8 +178,6 @@ public:
            "Replacing one node with another that produces a different number "
            "of values!");
     DAG.ReplaceAllUsesWith(Old, New);
-    for (unsigned i = 0, e = Old->getNumValues(); i != e; ++i)
-      DAG.TransferDbgValues(SDValue(Old, i), SDValue(New, i));
     if (UpdatedNodes)
       UpdatedNodes->insert(New);
     ReplacedNode(Old);
@@ -190,7 +187,6 @@ public:
           dbgs() << "     with:      "; New->dump(&DAG));
 
     DAG.ReplaceAllUsesWith(Old, New);
-    DAG.TransferDbgValues(Old, New);
     if (UpdatedNodes)
       UpdatedNodes->insert(New.getNode());
     ReplacedNode(Old.getNode());
@@ -203,7 +199,6 @@ public:
       DEBUG(dbgs() << (i == 0 ? "     with:      "
                               : "      and:      ");
             New[i]->dump(&DAG));
-      DAG.TransferDbgValues(SDValue(Old, i), New[i]);
       if (UpdatedNodes)
         UpdatedNodes->insert(New[i].getNode());
     }
@@ -1768,7 +1763,7 @@ ExpandBVWithShuffles(SDNode *Node, SelectionDAG &DAG,
         SmallVector<int, 16> FinalIndices;
         FinalIndices.reserve(IntermedVals[i].second.size() +
                              IntermedVals[i+1].second.size());
-        
+
         int k = 0;
         for (unsigned j = 0, f = IntermedVals[i].second.size(); j != f;
              ++j, ++k) {
@@ -1978,7 +1973,7 @@ SDValue SelectionDAGLegalize::ExpandLibCall(RTLIB::Libcall LC, SDNode *Node,
 
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(SDLoc(Node)).setChain(InChain)
-    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args), 0)
+    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args))
     .setTailCall(isTailCall).setSExtResult(isSigned).setZExtResult(!isSigned);
 
   std::pair<SDValue, SDValue> CallInfo = TLI.LowerCallTo(CLI);
@@ -2013,7 +2008,7 @@ SDValue SelectionDAGLegalize::ExpandLibCall(RTLIB::Libcall LC, EVT RetVT,
 
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(dl).setChain(DAG.getEntryNode())
-    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args), 0)
+    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args))
     .setSExtResult(isSigned).setZExtResult(!isSigned);
 
   std::pair<SDValue,SDValue> CallInfo = TLI.LowerCallTo(CLI);
@@ -2047,7 +2042,7 @@ SelectionDAGLegalize::ExpandChainLibCall(RTLIB::Libcall LC,
 
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(SDLoc(Node)).setChain(InChain)
-    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args), 0)
+    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args))
     .setSExtResult(isSigned).setZExtResult(!isSigned);
 
   std::pair<SDValue, SDValue> CallInfo = TLI.LowerCallTo(CLI);
@@ -2142,7 +2137,7 @@ SelectionDAGLegalize::ExpandDivRemLibCall(SDNode *Node,
   SDLoc dl(Node);
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(dl).setChain(InChain)
-    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args), 0)
+    .setCallee(TLI.getLibcallCallingConv(LC), RetTy, Callee, std::move(Args))
     .setSExtResult(isSigned).setZExtResult(!isSigned);
 
   std::pair<SDValue, SDValue> CallInfo = TLI.LowerCallTo(CLI);
@@ -2176,8 +2171,7 @@ static bool canCombineSinCosLibcall(SDNode *Node, const TargetLowering &TLI,
     return false;
   // GNU sin/cos functions set errno while sincos does not. Therefore
   // combining sin and cos is only safe if unsafe-fpmath is enabled.
-  bool isGNU = Triple(TM.getTargetTriple()).getEnvironment() == Triple::GNU;
-  if (isGNU && !TM.Options.UnsafeFPMath)
+  if (TM.getTargetTriple().isGNUEnvironment() && !TM.Options.UnsafeFPMath)
     return false;
   return true;
 }
@@ -2255,7 +2249,7 @@ SelectionDAGLegalize::ExpandSinCosLibCall(SDNode *Node,
   TargetLowering::CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(dl).setChain(InChain)
     .setCallee(TLI.getLibcallCallingConv(LC),
-               Type::getVoidTy(*DAG.getContext()), Callee, std::move(Args), 0);
+               Type::getVoidTy(*DAG.getContext()), Callee, std::move(Args));
 
   std::pair<SDValue, SDValue> CallInfo = TLI.LowerCallTo(CLI);
 
@@ -2273,7 +2267,7 @@ SDValue SelectionDAGLegalize::ExpandLegalINT_TO_FP(bool isSigned, SDValue Op0,
                                                    EVT DestVT,
                                                    const SDLoc &dl) {
   // TODO: Should any fast-math-flags be set for the created nodes?
-  
+
   if (Op0.getValueType() == MVT::i32 && TLI.isTypeLegal(MVT::f64)) {
     // simple 32-bit [signed|unsigned] integer to float/double expansion
 
@@ -2573,7 +2567,7 @@ SDValue SelectionDAGLegalize::ExpandBITREVERSE(SDValue Op, const SDLoc &dl) {
     else
       Tmp2 =
           DAG.getNode(ISD::SRL, dl, VT, Op, DAG.getConstant(I - J, dl, SHVT));
-    
+
     APInt Shift(Sz, 1);
     Shift = Shift.shl(J);
     Tmp2 = DAG.getNode(ISD::AND, dl, VT, Tmp2, DAG.getConstant(Shift, dl, VT));
@@ -3152,7 +3146,7 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
     Results.push_back(Tmp1);
     break;
   }
-    
+
   case ISD::FSIN:
   case ISD::FCOS: {
     EVT VT = Node->getValueType(0);
@@ -3515,7 +3509,7 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
         MachinePointerInfo::getJumpTable(DAG.getMachineFunction()), MemVT,
         false, false, false, 0);
     Addr = LD;
-    if (TM.getRelocationModel() == Reloc::PIC_) {
+    if (TM.isPositionIndependent()) {
       // For PIC, the sequence is:
       // BRIND(load(Jumptable + index) + RelocBase)
       // RelocBase can be JumpTable, GOT or some sort of global base.
@@ -3760,7 +3754,7 @@ void SelectionDAGLegalize::ConvertNodeToLibcall(SDNode *Node) {
         .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
                    DAG.getExternalSymbol("__sync_synchronize",
                                          TLI.getPointerTy(DAG.getDataLayout())),
-                   std::move(Args), 0);
+                   std::move(Args));
 
     std::pair<SDValue, SDValue> CallResult = TLI.LowerCallTo(CLI);
 
@@ -3800,7 +3794,7 @@ void SelectionDAGLegalize::ConvertNodeToLibcall(SDNode *Node) {
         .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
                    DAG.getExternalSymbol("abort",
                                          TLI.getPointerTy(DAG.getDataLayout())),
-                   std::move(Args), 0);
+                   std::move(Args));
     std::pair<SDValue, SDValue> CallResult = TLI.LowerCallTo(CLI);
 
     Results.push_back(CallResult.second);

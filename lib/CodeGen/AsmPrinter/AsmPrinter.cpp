@@ -124,6 +124,10 @@ AsmPrinter::~AsmPrinter() {
   }
 }
 
+bool AsmPrinter::isPositionIndependent() const {
+  return TM.isPositionIndependent();
+}
+
 /// getFunctionNumber - Return a unique ID for the current function.
 ///
 unsigned AsmPrinter::getFunctionNumber() const {
@@ -632,20 +636,20 @@ static void emitComments(const MachineInstr &MI, raw_ostream &CommentOS) {
   // We assume a single instruction only has a spill or reload, not
   // both.
   const MachineMemOperand *MMO;
-  if (TII->isLoadFromStackSlotPostFE(&MI, FI)) {
+  if (TII->isLoadFromStackSlotPostFE(MI, FI)) {
     if (FrameInfo->isSpillSlotObjectIndex(FI)) {
       MMO = *MI.memoperands_begin();
       CommentOS << MMO->getSize() << "-byte Reload\n";
     }
-  } else if (TII->hasLoadFromStackSlot(&MI, MMO, FI)) {
+  } else if (TII->hasLoadFromStackSlot(MI, MMO, FI)) {
     if (FrameInfo->isSpillSlotObjectIndex(FI))
       CommentOS << MMO->getSize() << "-byte Folded Reload\n";
-  } else if (TII->isStoreToStackSlotPostFE(&MI, FI)) {
+  } else if (TII->isStoreToStackSlotPostFE(MI, FI)) {
     if (FrameInfo->isSpillSlotObjectIndex(FI)) {
       MMO = *MI.memoperands_begin();
       CommentOS << MMO->getSize() << "-byte Spill\n";
     }
-  } else if (TII->hasStoreToStackSlot(&MI, MMO, FI)) {
+  } else if (TII->hasStoreToStackSlot(MI, MMO, FI)) {
     if (FrameInfo->isSpillSlotObjectIndex(FI))
       CommentOS << MMO->getSize() << "-byte Folded Spill\n";
   }
@@ -1173,17 +1177,11 @@ bool AsmPrinter::doFinalization(Module &M) {
     // to notice uses in operands (due to constant exprs etc).  This should
     // happen with the MC stuff eventually.
 
-    // Print out module-level global variables here.
-    for (const auto &G : M.globals()) {
-      if (!G.hasExternalWeakLinkage())
+    // Print out module-level global objects here.
+    for (const auto &GO : M.global_objects()) {
+      if (!GO.hasExternalWeakLinkage())
         continue;
-      OutStreamer->EmitSymbolAttribute(getSymbol(&G), MCSA_WeakReference);
-    }
-
-    for (const auto &F : M) {
-      if (!F.hasExternalWeakLinkage())
-        continue;
-      OutStreamer->EmitSymbolAttribute(getSymbol(&F), MCSA_WeakReference);
+      OutStreamer->EmitSymbolAttribute(getSymbol(&GO), MCSA_WeakReference);
     }
   }
 

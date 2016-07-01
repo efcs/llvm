@@ -1333,8 +1333,6 @@ void DAGCombiner::Run(CombineLevel AtLevel) {
     DEBUG(dbgs() << " ... into: ";
           RV.getNode()->dump(&DAG));
 
-    // Transfer debug value.
-    DAG.TransferDbgValues(SDValue(N, 0), RV);
     if (N->getNumValues() == RV.getNode()->getNumValues())
       DAG.ReplaceAllUsesWith(N, RV.getNode());
     else {
@@ -3753,59 +3751,66 @@ SDValue DAGCombiner::visitOR(SDNode *N) {
               N1.getValueType().getScalarType().getSizeInBits()),
           SDLoc(N), N1.getValueType());
 
-    // fold (or (shuf A, V_0, MA), (shuf B, V_0, MB)) -> (shuf A, B, Mask1)
-    // fold (or (shuf A, V_0, MA), (shuf B, V_0, MB)) -> (shuf B, A, Mask2)
+    // fold (or (shuf A, V_0, MA), (shuf B, V_0, MB)) -> (shuf A, B, Mask)
     // Do this only if the resulting shuffle is legal.
     if (isa<ShuffleVectorSDNode>(N0) &&
         isa<ShuffleVectorSDNode>(N1) &&
         // Avoid folding a node with illegal type.
-        TLI.isTypeLegal(VT) &&
-        N0->getOperand(1) == N1->getOperand(1) &&
-        ISD::isBuildVectorAllZeros(N0.getOperand(1).getNode())) {
-      bool CanFold = true;
-      unsigned NumElts = VT.getVectorNumElements();
-      const ShuffleVectorSDNode *SV0 = cast<ShuffleVectorSDNode>(N0);
-      const ShuffleVectorSDNode *SV1 = cast<ShuffleVectorSDNode>(N1);
-      // We construct two shuffle masks:
-      // - Mask1 is a shuffle mask for a shuffle with N0 as the first operand
-      // and N1 as the second operand.
-      // - Mask2 is a shuffle mask for a shuffle with N1 as the first operand
-      // and N0 as the second operand.
-      // We do this because OR is commutable and therefore there might be
-      // two ways to fold this node into a shuffle.
-      SmallVector<int,4> Mask1;
-      SmallVector<int,4> Mask2;
+        TLI.isTypeLegal(VT)) {
+      bool ZeroN00 = ISD::isBuildVectorAllZeros(N0.getOperand(0).getNode());
+      bool ZeroN01 = ISD::isBuildVectorAllZeros(N0.getOperand(1).getNode());
+      bool ZeroN10 = ISD::isBuildVectorAllZeros(N1.getOperand(0).getNode());
+      bool ZeroN11 = ISD::isBuildVectorAllZeros(N1.getOperand(1).getNode());
+      // Ensure both shuffles have a zero input.
+      if ((ZeroN00 || ZeroN01) && (ZeroN10 || ZeroN11)) {
+        assert((!ZeroN00 || !ZeroN01) && "Both inputs zero!");
+        assert((!ZeroN10 || !ZeroN11) && "Both inputs zero!");
+        const ShuffleVectorSDNode *SV0 = cast<ShuffleVectorSDNode>(N0);
+        const ShuffleVectorSDNode *SV1 = cast<ShuffleVectorSDNode>(N1);
+        bool CanFold = true;
+        int NumElts = VT.getVectorNumElements();
+        SmallVector<int, 4> Mask(NumElts);
 
-      for (unsigned i = 0; i != NumElts && CanFold; ++i) {
-        int M0 = SV0->getMaskElt(i);
-        int M1 = SV1->getMaskElt(i);
+        for (int i = 0; i != NumElts; ++i) {
+          int M0 = SV0->getMaskElt(i);
+          int M1 = SV1->getMaskElt(i);
 
-        // Both shuffle indexes are undef. Propagate Undef.
-        if (M0 < 0 && M1 < 0) {
-          Mask1.push_back(M0);
-          Mask2.push_back(M0);
-          continue;
+          // Both shuffle indexes are undef. Propagate Undef.
+          if (M0 < 0 && M1 < 0) {
+            Mask[i] = -1;
+            continue;
+          }
+
+          // Determine if either index is pointing to a zero vector.
+          bool M0Zero = M0 >= 0 && (ZeroN00 == (M0 < NumElts));
+          bool M1Zero = M1 >= 0 && (ZeroN10 == (M1 < NumElts));
+          if (M0Zero == M1Zero) {
+            CanFold = false;
+            break;
+          }
+
+          // We have a zero and non-zero element. If the non-zero came from
+          // SV0 make the index a LHS index. If it came from SV1, make it
+          // a RHS index. We need to mod by NumElts because we don't care
+          // which operand it came from in the original shuffles.
+          Mask[i] = M1Zero ? M0 % NumElts : (M1 % NumElts) + NumElts;
         }
 
-        if (M0 < 0 || M1 < 0 ||
-            (M0 < (int)NumElts && M1 < (int)NumElts) ||
-            (M0 >= (int)NumElts && M1 >= (int)NumElts)) {
-          CanFold = false;
-          break;
+        if (CanFold) {
+          SDValue NewLHS = ZeroN00 ? N0.getOperand(1) : N0.getOperand(0);
+          SDValue NewRHS = ZeroN10 ? N1.getOperand(1) : N1.getOperand(0);
+
+          bool LegalMask = TLI.isShuffleMaskLegal(Mask, VT);
+          if (!LegalMask) {
+            std::swap(NewLHS, NewRHS);
+            ShuffleVectorSDNode::commuteMask(Mask);
+            LegalMask = TLI.isShuffleMaskLegal(Mask, VT);
+          }
+
+          if (LegalMask)
+            return DAG.getVectorShuffle(VT, SDLoc(N), NewLHS,
+                                        NewRHS, &Mask[0]);
         }
-
-        Mask1.push_back(M0 < (int)NumElts ? M0 : M1 + NumElts);
-        Mask2.push_back(M1 < (int)NumElts ? M1 : M0 + NumElts);
-      }
-
-      if (CanFold) {
-        // Fold this sequence only if the resulting shuffle is 'legal'.
-        if (TLI.isShuffleMaskLegal(Mask1, VT))
-          return DAG.getVectorShuffle(VT, SDLoc(N), N0->getOperand(0),
-                                      N1->getOperand(0), &Mask1[0]);
-        if (TLI.isShuffleMaskLegal(Mask2, VT))
-          return DAG.getVectorShuffle(VT, SDLoc(N), N1->getOperand(0),
-                                      N0->getOperand(0), &Mask2[0]);
       }
     }
   }
@@ -4692,7 +4697,7 @@ SDValue DAGCombiner::visitSRA(SDNode *N) {
         TruncVT = EVT::getVectorVT(Ctx, TruncVT, VT.getVectorNumElements());
 
       // Determine the residual right-shift amount.
-      signed ShiftAmt = N1C->getZExtValue() - N01C->getZExtValue();
+      int ShiftAmt = N1C->getZExtValue() - N01C->getZExtValue();
 
       // If the shift is not a no-op (in which case this should be just a sign
       // extend already), the truncated to type is legal, sign_extend is legal
@@ -12265,6 +12270,8 @@ SDValue DAGCombiner::visitINSERT_VECTOR_ELT(SDNode *N) {
 
 SDValue DAGCombiner::ReplaceExtractVectorEltOfLoadWithNarrowedLoad(
     SDNode *EVE, EVT InVecVT, SDValue EltNo, LoadSDNode *OriginalLoad) {
+  assert(!OriginalLoad->isVolatile());
+
   EVT ResultVT = EVE->getValueType(0);
   EVT VecEltVT = InVecVT.getVectorElementType();
   unsigned Align = OriginalLoad->getAlignment();
@@ -12459,9 +12466,12 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
       ISD::isNormalLoad(InVec.getNode()) &&
       !N->getOperand(1)->hasPredecessor(InVec.getNode())) {
     SDValue Index = N->getOperand(1);
-    if (LoadSDNode *OrigLoad = dyn_cast<LoadSDNode>(InVec))
-      return ReplaceExtractVectorEltOfLoadWithNarrowedLoad(N, VT, Index,
-                                                           OrigLoad);
+    if (LoadSDNode *OrigLoad = dyn_cast<LoadSDNode>(InVec)) {
+      if (!OrigLoad->isVolatile()) {
+        return ReplaceExtractVectorEltOfLoadWithNarrowedLoad(N, VT, Index,
+                                                             OrigLoad);
+      }
+    }
   }
 
   // Perform only after legalization to ensure build_vector / vector_shuffle
@@ -13422,21 +13432,8 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
   }
 
   // Canonicalize shuffle undef, v -> v, undef.  Commute the shuffle mask.
-  if (N0.isUndef()) {
-    SmallVector<int, 8> NewMask;
-    for (unsigned i = 0; i != NumElts; ++i) {
-      int Idx = SVN->getMaskElt(i);
-      if (Idx >= 0) {
-        if (Idx >= (int)NumElts)
-          Idx -= NumElts;
-        else
-          Idx = -1; // remove reference to lhs
-      }
-      NewMask.push_back(Idx);
-    }
-    return DAG.getVectorShuffle(VT, SDLoc(N), N1, DAG.getUNDEF(VT),
-                                &NewMask[0]);
-  }
+  if (N0.isUndef())
+    return DAG.getCommutedVectorShuffle(*SVN);
 
   // Remove references to rhs if it is undef
   if (N1.isUndef()) {

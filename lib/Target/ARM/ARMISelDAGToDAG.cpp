@@ -2820,45 +2820,6 @@ void ARMDAGToDAGISel::Select(SDNode *N) {
     if (tryV6T2BitfieldExtractOp(N, false))
       return;
 
-    // If an immediate is used in an AND node, it is possible that the immediate
-    // can be more optimally materialized when negated. If this is the case we
-    // can negate the immediate and use a BIC instead.
-    auto *N1C = dyn_cast<ConstantSDNode>(N->getOperand(1));
-    if (N1C && N1C->hasOneUse() && Subtarget->isThumb()) {
-      uint32_t Imm = (uint32_t) N1C->getZExtValue();
-
-      // In Thumb2 mode, an AND can take a 12-bit immediate. If this
-      // immediate can be negated and fit in the immediate operand of
-      // a t2BIC, don't do any manual transform here as this can be
-      // handled by the generic ISel machinery.
-      bool PreferImmediateEncoding =
-          Subtarget->hasThumb2() && !is_t2_so_imm(Imm) && is_t2_so_imm_not(Imm);
-      if (!PreferImmediateEncoding &&
-          ConstantMaterializationCost(Imm) >
-              ConstantMaterializationCost(~Imm)) {
-        // The current immediate costs more to materialize than a negated
-        // immediate, so negate the immediate and use a BIC.
-        SDValue NewImm =
-            CurDAG->getConstant(~N1C->getZExtValue(), dl, MVT::i32);
-        CurDAG->RepositionNode(N->getIterator(), NewImm.getNode());
-
-        if (!Subtarget->hasThumb2()) {
-          SDValue Ops[] = {CurDAG->getRegister(ARM::CPSR, MVT::i32),
-                           N->getOperand(0), NewImm, getAL(CurDAG, dl),
-                           CurDAG->getRegister(0, MVT::i32)};
-          ReplaceNode(N, CurDAG->getMachineNode(ARM::tBIC, dl, MVT::i32, Ops));
-          return;
-        } else {
-          SDValue Ops[] = {N->getOperand(0), NewImm, getAL(CurDAG, dl),
-                           CurDAG->getRegister(0, MVT::i32),
-                           CurDAG->getRegister(0, MVT::i32)};
-          ReplaceNode(N,
-                      CurDAG->getMachineNode(ARM::t2BICrr, dl, MVT::i32, Ops));
-          return;
-        }
-      }
-    }
-
     // (and (or x, c2), c1) and top 16-bits of c1 and c2 match, lower 16-bits
     // of c1 are 0xffff, and lower 16-bit of c2 are 0. That is, the top 16-bits
     // are entirely contributed by c2 and lower 16-bits are entirely contributed
@@ -2873,7 +2834,7 @@ void ARMDAGToDAGISel::Select(SDNode *N) {
     if (!Opc)
       break;
     SDValue N0 = N->getOperand(0), N1 = N->getOperand(1);
-    N1C = dyn_cast<ConstantSDNode>(N1);
+    ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1);
     if (!N1C)
       break;
     if (N0.getOpcode() == ISD::OR && N0.getNode()->hasOneUse()) {
@@ -2939,7 +2900,47 @@ void ARMDAGToDAGISel::Select(SDNode *N) {
       return;
     }
   }
+  case ARMISD::UMAAL: {
+    unsigned Opc = Subtarget->isThumb() ? ARM::t2UMAAL : ARM::UMAAL;
+    SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                      N->getOperand(2), N->getOperand(3),
+                      getAL(CurDAG, dl),
+                      CurDAG->getRegister(0, MVT::i32) };
+    ReplaceNode(N, CurDAG->getMachineNode(Opc, dl, MVT::i32, MVT::i32, Ops));
+    return;
+  }
   case ARMISD::UMLAL:{
+    // UMAAL is similar to UMLAL but it adds two 32-bit values to the
+    // 64-bit multiplication result.
+    if (Subtarget->hasV6Ops() && N->getOperand(2).getOpcode() == ARMISD::ADDC &&
+        N->getOperand(3).getOpcode() == ARMISD::ADDE) {
+
+      SDValue Addc = N->getOperand(2);
+      SDValue Adde = N->getOperand(3);
+
+      if (Adde.getOperand(2).getNode() == Addc.getNode()) {
+
+        ConstantSDNode *Op0 = dyn_cast<ConstantSDNode>(Adde.getOperand(0));
+        ConstantSDNode *Op1 = dyn_cast<ConstantSDNode>(Adde.getOperand(1));
+
+        if (Op0 && Op1 && Op0->getZExtValue() == 0 && Op1->getZExtValue() == 0)
+        {
+          // Select UMAAL instead: UMAAL RdLo, RdHi, Rn, Rm
+          // RdLo = one operand to be added, lower 32-bits of res
+          // RdHi = other operand to be added, upper 32-bits of res
+          // Rn = first multiply operand
+          // Rm = second multiply operand
+          SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                            Addc.getOperand(0), Addc.getOperand(1),
+                            getAL(CurDAG, dl),
+                            CurDAG->getRegister(0, MVT::i32) };
+          unsigned opc = Subtarget->isThumb() ? ARM::t2UMAAL : ARM::UMAAL;
+          CurDAG->SelectNodeTo(N, opc, MVT::i32, MVT::i32, Ops);
+          return;
+        }
+      }
+    }
+
     if (Subtarget->isThumb()) {
       SDValue Ops[] = { N->getOperand(0), N->getOperand(1), N->getOperand(2),
                         N->getOperand(3), getAL(CurDAG, dl),

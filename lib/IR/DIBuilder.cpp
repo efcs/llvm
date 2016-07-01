@@ -308,6 +308,18 @@ static ConstantAsMetadata *getConstantOrNull(Constant *C) {
   return nullptr;
 }
 
+DIDerivedType *DIBuilder::createBitFieldMemberType(
+    DIScope *Scope, StringRef Name, DIFile *File, unsigned LineNumber,
+    uint64_t SizeInBits, uint64_t AlignInBits, uint64_t OffsetInBits,
+    uint64_t StorageOffsetInBits, unsigned Flags, DIType *Ty) {
+  Flags |= DINode::FlagBitField;
+  return DIDerivedType::get(
+      VMContext, dwarf::DW_TAG_member, Name, File, LineNumber,
+      getNonCompileUnitScope(Scope), Ty, SizeInBits, AlignInBits, OffsetInBits,
+      Flags, ConstantAsMetadata::get(ConstantInt::get(
+                 IntegerType::get(VMContext, 64), StorageOffsetInBits)));
+}
+
 DIDerivedType *DIBuilder::createStaticMemberType(DIScope *Scope, StringRef Name,
                                                  DIFile *File,
                                                  unsigned LineNumber,
@@ -655,8 +667,8 @@ DISubprogram *DIBuilder::createFunction(
   auto *Node = getSubprogram(
       /* IsDistinct = */ isDefinition, VMContext,
       getNonCompileUnitScope(Context), Name, LinkageName, File, LineNo, Ty,
-      isLocalToUnit, isDefinition, ScopeLine, nullptr, 0, 0, Flags, isOptimized,
-      isDefinition ? CUNode : nullptr, TParams, Decl,
+      isLocalToUnit, isDefinition, ScopeLine, nullptr, 0, 0, 0, Flags,
+      isOptimized, isDefinition ? CUNode : nullptr, TParams, Decl,
       MDTuple::getTemporary(VMContext, None).release());
 
   if (isDefinition)
@@ -673,8 +685,8 @@ DISubprogram *DIBuilder::createTempFunctionFwdDecl(
   return DISubprogram::getTemporary(
              VMContext, getNonCompileUnitScope(Context), Name, LinkageName,
              File, LineNo, Ty, isLocalToUnit, isDefinition, ScopeLine, nullptr,
-             0, 0, Flags, isOptimized, isDefinition ? CUNode : nullptr, TParams,
-             Decl, nullptr)
+             0, 0, 0, Flags, isOptimized, isDefinition ? CUNode : nullptr,
+             TParams, Decl, nullptr)
       .release();
 }
 
@@ -682,8 +694,9 @@ DISubprogram *
 DIBuilder::createMethod(DIScope *Context, StringRef Name, StringRef LinkageName,
                         DIFile *F, unsigned LineNo, DISubroutineType *Ty,
                         bool isLocalToUnit, bool isDefinition, unsigned VK,
-                        unsigned VIndex, DIType *VTableHolder, unsigned Flags,
-                        bool isOptimized, DITemplateParameterArray TParams) {
+                        unsigned VIndex, int ThisAdjustment,
+                        DIType *VTableHolder, unsigned Flags, bool isOptimized,
+                        DITemplateParameterArray TParams) {
   assert(getNonCompileUnitScope(Context) &&
          "Methods should have both a Context and a context that isn't "
          "the compile unit.");
@@ -691,7 +704,7 @@ DIBuilder::createMethod(DIScope *Context, StringRef Name, StringRef LinkageName,
   auto *SP = getSubprogram(
       /* IsDistinct = */ isDefinition, VMContext, cast<DIScope>(Context), Name,
       LinkageName, F, LineNo, Ty, isLocalToUnit, isDefinition, LineNo,
-      VTableHolder, VK, VIndex, Flags, isOptimized,
+      VTableHolder, VK, VIndex, ThisAdjustment, Flags, isOptimized,
       isDefinition ? CUNode : nullptr, TParams, nullptr, nullptr);
 
   if (isDefinition)

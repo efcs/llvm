@@ -855,9 +855,10 @@ void MachineBlockPlacement::buildChain(
                       BlockFilter);
   BB = *std::prev(Chain.end());
   for (;;) {
-    assert(BB);
-    assert(BlockToChain[BB] == &Chain);
-    assert(*std::prev(Chain.end()) == BB);
+    assert(BB && "null block found at end of chain in loop.");
+    assert(BlockToChain[BB] == &Chain && "BlockToChainMap mis-match in loop.");
+    assert(*std::prev(Chain.end()) == BB && "BB Not found at end of chain.");
+
 
     // Look for the best viable successor if there is one to place immediately
     // after this block.
@@ -1487,6 +1488,7 @@ void MachineBlockPlacement::buildCFGChains() {
 
   // Splice the blocks into place.
   MachineFunction::iterator InsertPos = F->begin();
+  DEBUG(dbgs() << "[MBP] Function: "<< F->getName() << "\n");
   for (MachineBasicBlock *ChainBB : FunctionChain) {
     DEBUG(dbgs() << (ChainBB == *FunctionChain.begin() ? "Placing chain "
                                                        : "          ... ")

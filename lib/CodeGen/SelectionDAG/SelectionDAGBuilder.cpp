@@ -24,6 +24,7 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/VectorUtils.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/GCMetadata.h"
@@ -5481,7 +5482,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
         CallingConv::C, I.getType(),
         DAG.getExternalSymbol(TrapFuncName.data(),
                               TLI.getPointerTy(DAG.getDataLayout())),
-        std::move(Args), 0);
+        std::move(Args));
 
     std::pair<SDValue, SDValue> Result = TLI.LowerCallTo(CLI);
     DAG.setRoot(Result.second);
@@ -6763,6 +6764,8 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
     ExtraInfo |= InlineAsm::Extra_HasSideEffects;
   if (IA->isAlignStack())
     ExtraInfo |= InlineAsm::Extra_IsAlignStack;
+  if (CS.isConvergent())
+    ExtraInfo |= InlineAsm::Extra_IsConvergent;
   // Set the asm dialect.
   ExtraInfo |= IA->getDialect() * InlineAsm::Extra_AsmDialect;
 
@@ -7195,8 +7198,7 @@ void SelectionDAGBuilder::populateCallLoweringInfo(
 
   CLI.setDebugLoc(getCurSDLoc())
       .setChain(getRoot())
-      .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args),
-                 NumArgs)
+      .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args))
       .setDiscardResult(CS->use_empty())
       .setIsPatchPoint(IsPatchPoint);
 }
