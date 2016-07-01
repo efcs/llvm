@@ -51,17 +51,18 @@ class Vectorizer {
   AliasAnalysis &AA;
   DominatorTree &DT;
   ScalarEvolution &SE;
+  TargetTransformInfo &TTI;
   const DataLayout &DL;
   IRBuilder<> Builder;
   ValueListMap StoreRefs;
   ValueListMap LoadRefs;
-  unsigned VecRegSize;
 
 public:
   Vectorizer(Function &F, AliasAnalysis &AA, DominatorTree &DT,
-             ScalarEvolution &SE, unsigned VecRegSize)
-    : F(F), AA(AA), DT(DT), SE(SE), DL(F.getParent()->getDataLayout()),
-      Builder(SE.getContext()), VecRegSize(VecRegSize) {}
+             ScalarEvolution &SE, TargetTransformInfo &TTI)
+    : F(F), AA(AA), DT(DT), SE(SE), TTI(TTI),
+      DL(F.getParent()->getDataLayout()),
+      Builder(SE.getContext()) {}
 
   bool run();
 
@@ -69,6 +70,22 @@ private:
   Value *getPointerOperand(Value *I);
 
   unsigned getPointerAddressSpace(Value *I);
+
+  unsigned getAlignment(LoadInst *LI) const {
+    unsigned Align = LI->getAlignment();
+    if (Align != 0)
+      return Align;
+
+    return DL.getABITypeAlignment(LI->getType());
+  }
+
+  unsigned getAlignment(StoreInst *SI) const {
+    unsigned Align = SI->getAlignment();
+    if (Align != 0)
+      return Align;
+
+    return DL.getABITypeAlignment(SI->getValueOperand()->getType());
+  }
 
   bool isConsecutiveAccess(Value *A, Value *B);
 
@@ -116,10 +133,8 @@ private:
 class LoadStoreVectorizer : public FunctionPass {
 public:
   static char ID;
-  unsigned VecRegSize;
 
-  LoadStoreVectorizer(unsigned VecRegSize = 128) : FunctionPass(ID),
-                                                   VecRegSize(VecRegSize) {
+  LoadStoreVectorizer() : FunctionPass(ID) {
     initializeLoadStoreVectorizerPass(*PassRegistry::getPassRegistry());
   }
 
@@ -133,6 +148,7 @@ public:
     AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<ScalarEvolutionWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.setPreservesCFG();
   }
 };
@@ -144,13 +160,14 @@ INITIALIZE_PASS_DEPENDENCY(SCEVAAWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(GlobalsAAWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(LoadStoreVectorizer, DEBUG_TYPE,
                     "Vectorize load and store instructions", false, false);
 
 char LoadStoreVectorizer::ID = 0;
 
-Pass *llvm::createLoadStoreVectorizerPass(unsigned VecRegSize) {
-  return new LoadStoreVectorizer(VecRegSize);
+Pass *llvm::createLoadStoreVectorizerPass() {
+  return new LoadStoreVectorizer();
 }
 
 bool LoadStoreVectorizer::runOnFunction(Function &F) {
@@ -161,8 +178,10 @@ bool LoadStoreVectorizer::runOnFunction(Function &F) {
   AliasAnalysis &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
   DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   ScalarEvolution &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
+  TargetTransformInfo &TTI
+    = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
 
-  Vectorizer V(F, AA, DT, SE, VecRegSize);
+  Vectorizer V(F, AA, DT, SE, TTI);
   return V.run();
 }
 
@@ -267,20 +286,41 @@ bool Vectorizer::isConsecutiveAccess(Value *A, Value *B) {
   if (!isa<SExtInst>(OpA) && !isa<ZExtInst>(OpA))
     return false;
 
+  bool Signed = isa<SExtInst>(OpA);
+
   OpA = dyn_cast<Instruction>(OpA->getOperand(0));
   OpB = dyn_cast<Instruction>(OpB->getOperand(0));
   if (!OpA || !OpB || OpA->getType() != OpB->getType())
     return false;
 
   // Now we need to prove that adding 1 to OpA won't overflow.
+  bool Safe = false;
+  // First attempt: if OpB is an add with NSW/NUW, and OpB is 1 added to OpA,
+  // we're okay.
+  if (OpB->getOpcode() == Instruction::Add &&
+      isa<ConstantInt>(OpB->getOperand(1)) &&
+      cast<ConstantInt>(OpB->getOperand(1))->getSExtValue() > 0) {
+    if (Signed)
+      Safe = cast<BinaryOperator>(OpB)->hasNoSignedWrap();
+    else
+      Safe = cast<BinaryOperator>(OpB)->hasNoUnsignedWrap();
+  }
+
   unsigned BitWidth = OpA->getType()->getScalarSizeInBits();
-  APInt KnownZero = APInt(BitWidth, 0);
-  APInt KnownOne = APInt(BitWidth, 0);
-  computeKnownBits(OpA, KnownZero, KnownOne, DL, 0, nullptr, OpA, &DT);
+
+  // Second attempt:
   // If any bits are known to be zero other than the sign bit in OpA, we can
   // add 1 to it while guaranteeing no overflow of any sort.
-  KnownZero &= ~APInt::getHighBitsSet(BitWidth, 1);
-  if (KnownZero == 0)
+  if (!Safe) {
+    APInt KnownZero(BitWidth, 0);
+    APInt KnownOne(BitWidth, 0);
+    computeKnownBits(OpA, KnownZero, KnownOne, DL, 0, nullptr, OpA, &DT);
+    KnownZero &= ~APInt::getHighBitsSet(BitWidth, 1);
+    if (KnownZero != 0)
+      Safe = true;
+  }
+
+  if (!Safe)
     return false;
 
   const SCEV *OffsetSCEVA = SE.getSCEV(OpA);
@@ -397,15 +437,12 @@ bool Vectorizer::isVectorizable(ArrayRef<Value *> Chain,
 
       Instruction *M0 = cast<Instruction>(V);
       Instruction *M1 = cast<Instruction>(VV);
-      Value *Ptr0 = getPointerOperand(M0);
-      Value *Ptr1 = getPointerOperand(M1);
-      unsigned S0 =
-        DL.getTypeStoreSize(Ptr0->getType()->getPointerElementType());
-      unsigned S1 =
-        DL.getTypeStoreSize(Ptr1->getType()->getPointerElementType());
 
-      if (AA.alias(MemoryLocation(Ptr0, S0), MemoryLocation(Ptr1, S1))) {
+      if (!AA.isNoAlias(MemoryLocation::get(M0), MemoryLocation::get(M1))) {
         DEBUG(
+          Value *Ptr0 = getPointerOperand(M0);
+          Value *Ptr1 = getPointerOperand(M1);
+
           dbgs() << "LSV: Found alias.\n"
                     "        Aliasing instruction and pointer:\n"
             << *V << " aliases " << *Ptr0 << '\n'
@@ -443,6 +480,10 @@ void Vectorizer::collectInstructions(BasicBlock *BB) {
       if (TySize < 8)
         continue;
 
+      Value *Ptr = LI->getPointerOperand();
+      unsigned AS = Ptr->getType()->getPointerAddressSpace();
+      unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
+
       // No point in looking at these if they're too big to vectorize.
       if (TySize > VecRegSize / 2)
         continue;
@@ -459,8 +500,8 @@ void Vectorizer::collectInstructions(BasicBlock *BB) {
       // TODO: Target hook to filter types.
 
       // Save the load locations.
-      Value *Ptr = GetUnderlyingObject(LI->getPointerOperand(), DL);
-      LoadRefs[Ptr].push_back(LI);
+      Value *ObjPtr = GetUnderlyingObject(Ptr, DL);
+      LoadRefs[ObjPtr].push_back(LI);
 
     } else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
       if (!SI->isSimple())
@@ -476,6 +517,9 @@ void Vectorizer::collectInstructions(BasicBlock *BB) {
       if (TySize < 8)
         continue;
 
+      Value *Ptr = SI->getPointerOperand();
+      unsigned AS = Ptr->getType()->getPointerAddressSpace();
+      unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
       if (TySize > VecRegSize / 2)
         continue;
 
@@ -488,8 +532,8 @@ void Vectorizer::collectInstructions(BasicBlock *BB) {
         continue;
 
       // Save store location.
-      Value *Ptr = GetUnderlyingObject(SI->getPointerOperand(), DL);
-      StoreRefs[Ptr].push_back(SI);
+      Value *ObjPtr = GetUnderlyingObject(Ptr, DL);
+      StoreRefs[ObjPtr].push_back(SI);
     }
   }
 }
@@ -586,9 +630,17 @@ bool Vectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain) {
     StoreTy = cast<StoreInst>(V)->getValueOperand()->getType();
     if (StoreTy->isIntOrIntVectorTy())
       break;
+
+    if (StoreTy->isPtrOrPtrVectorTy()) {
+      StoreTy = Type::getIntNTy(F.getParent()->getContext(),
+                                DL.getTypeSizeInBits(StoreTy));
+      break;
+    }
   }
 
   unsigned Sz = DL.getTypeSizeInBits(StoreTy);
+  unsigned AS = S0->getPointerAddressSpace();
+  unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
   unsigned VF = VecRegSize / Sz;
   unsigned ChainSize = Chain.size();
 
@@ -633,7 +685,7 @@ bool Vectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain) {
   );
 
   // Check alignment restrictions.
-  unsigned Alignment = S0->getAlignment();
+  unsigned Alignment = getAlignment(S0);
 
   // If the store is going to be misaligned, don't vectorize it.
   // TODO: Check TLI.allowsMisalignedMemoryAccess
@@ -661,7 +713,6 @@ bool Vectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain) {
 
   // Set insert point.
   Builder.SetInsertPoint(&*Last);
-  unsigned AS = S0->getPointerAddressSpace();
 
   Value *Vec = UndefValue::get(VecTy);
 
@@ -686,7 +737,7 @@ bool Vectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain) {
       StoreInst *Store = cast<StoreInst>(Chain[I]);
       Value *Extract = Store->getValueOperand();
       if (Extract->getType() != StoreTy->getScalarType())
-        Extract = Builder.CreateBitCast(Extract, StoreTy->getScalarType());
+        Extract = Builder.CreateBitOrPointerCast(Extract, StoreTy->getScalarType());
 
       Value *Insert = Builder.CreateInsertElement(Vec, Extract,
                                                   Builder.getInt32(I));
@@ -715,9 +766,18 @@ bool Vectorizer::vectorizeLoadChain(ArrayRef<Value *> Chain) {
     LoadTy = cast<LoadInst>(V)->getType();
     if (LoadTy->isIntOrIntVectorTy())
       break;
+
+    if (LoadTy->isPtrOrPtrVectorTy()) {
+      LoadTy = Type::getIntNTy(F.getParent()->getContext(),
+                               DL.getTypeSizeInBits(LoadTy));
+      break;
+    }
+
   }
 
   unsigned Sz = DL.getTypeSizeInBits(LoadTy);
+  unsigned AS = L0->getPointerAddressSpace();
+  unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
   unsigned VF = VecRegSize / Sz;
   unsigned ChainSize = Chain.size();
 
@@ -753,7 +813,7 @@ bool Vectorizer::vectorizeLoadChain(ArrayRef<Value *> Chain) {
   }
 
   // Check alignment restrictions.
-  unsigned Alignment = L0->getAlignment();
+  unsigned Alignment = getAlignment(L0);
 
   // If the load is going to be misaligned, don't vectorize it.
   // TODO: Check TLI.allowsMisalignedMemoryAccess and remove TargetBaseAlign.
@@ -788,7 +848,6 @@ bool Vectorizer::vectorizeLoadChain(ArrayRef<Value *> Chain) {
   // Set insert point.
   Builder.SetInsertPoint(&*Last);
 
-  unsigned AS = L0->getPointerAddressSpace();
   Value *Bitcast =
     Builder.CreateBitCast(L0->getPointerOperand(), VecTy->getPointerTo(AS));
 
@@ -831,9 +890,10 @@ bool Vectorizer::vectorizeLoadChain(ArrayRef<Value *> Chain) {
       Value *V = Builder.CreateExtractElement(LI, Builder.getInt32(I));
       Instruction *Extracted = cast<Instruction>(V);
       Instruction *UI = cast<Instruction>(Chain[I]);
-      if (Extracted->getType() != UI->getType())
+      if (Extracted->getType() != UI->getType()) {
         Extracted =
-          cast<Instruction>(Builder.CreateBitCast(Extracted, UI->getType()));
+          cast<Instruction>(Builder.CreateBitOrPointerCast(Extracted, UI->getType()));
+      }
 
       // Replace the old instruction.
       UI->replaceAllUsesWith(Extracted);

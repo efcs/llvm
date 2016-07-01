@@ -158,7 +158,6 @@ namespace {
       (void) llvm::createConstantHoistingPass();
       (void) llvm::createCodeGenPreparePass();
       (void) llvm::createEarlyCSEPass();
-      (void) llvm::createGVNHoistPass();
       (void) llvm::createMergedLoadStoreMotionPass();
       (void) llvm::createGVNPass();
       (void) llvm::createMemCpyOptPass();
@@ -184,7 +183,7 @@ namespace {
       (void) llvm::createInstructionSimplifierPass();
       (void) llvm::createLoopVectorizePass();
       (void) llvm::createSLPVectorizerPass();
-      (void) llvm::createLoadStoreVectorizerPass(128);
+      (void) llvm::createLoadStoreVectorizerPass();
       (void) llvm::createBBVectorizePass();
       (void) llvm::createPartiallyInlineLibCallsPass();
       (void) llvm::createScalarizerPass();
