@@ -3535,11 +3535,8 @@ SDValue AArch64TargetLowering::LowerELFTLSDescCallSeq(SDValue SymAddr,
   SDValue Chain = DAG.getEntryNode();
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
 
-  SmallVector<SDValue, 2> Ops;
-  Ops.push_back(Chain);
-  Ops.push_back(SymAddr);
-
-  Chain = DAG.getNode(AArch64ISD::TLSDESC_CALLSEQ, DL, NodeTys, Ops);
+  Chain =
+      DAG.getNode(AArch64ISD::TLSDESC_CALLSEQ, DL, NodeTys, {Chain, SymAddr});
   SDValue Glue = Chain.getValue(1);
 
   return DAG.getCopyFromReg(Chain, DL, AArch64::X0, PtrVT, Glue);
@@ -5160,7 +5157,7 @@ SDValue AArch64TargetLowering::ReconstructShuffle(SDValue Op,
     ShuffleOps[i] = Sources[i].ShuffleVec;
 
   SDValue Shuffle = DAG.getVectorShuffle(ShuffleVT, dl, ShuffleOps[0],
-                                         ShuffleOps[1], &Mask[0]);
+                                         ShuffleOps[1], Mask);
   return DAG.getNode(ISD::BITCAST, dl, VT, Shuffle);
 }
 
@@ -8931,9 +8928,10 @@ static SDValue performPostLD1Combine(SDNode *N,
                                            LoadSDN->getMemOperand());
 
     // Update the uses.
-    SmallVector<SDValue, 2> NewResults;
-    NewResults.push_back(SDValue(LD, 0));             // The result of load
-    NewResults.push_back(SDValue(UpdN.getNode(), 2)); // Chain
+    SDValue NewResults[] = {
+        SDValue(LD, 0),            // The result of load
+        SDValue(UpdN.getNode(), 2) // Chain
+    };
     DCI.CombineTo(LD, NewResults);
     DCI.CombineTo(N, SDValue(UpdN.getNode(), 0));     // Dup/Inserted Result
     DCI.CombineTo(User, SDValue(UpdN.getNode(), 1));  // Write back register
@@ -9863,7 +9861,7 @@ static SDValue performSelectCombine(SDNode *N,
 
   // Now duplicate the comparison mask we want across all other lanes.
   SmallVector<int, 8> DUPMask(CCVT.getVectorNumElements(), 0);
-  SDValue Mask = DAG.getVectorShuffle(CCVT, DL, SetCC, SetCC, DUPMask.data());
+  SDValue Mask = DAG.getVectorShuffle(CCVT, DL, SetCC, SetCC, DUPMask);
   Mask = DAG.getNode(ISD::BITCAST, DL,
                      ResVT.changeVectorElementTypeToInteger(), Mask);
 
