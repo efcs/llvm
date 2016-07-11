@@ -82,10 +82,10 @@ public:
   uint32_t getStreamByteSize(uint32_t StreamIndex) const override;
   ArrayRef<support::ulittle32_t>
   getStreamBlockList(uint32_t StreamIndex) const override;
-  size_t getFileSize() const;
+  uint32_t getFileSize() const;
 
-  ArrayRef<uint8_t> getBlockData(uint32_t BlockIndex,
-                                 uint32_t NumBytes) const override;
+  Expected<ArrayRef<uint8_t>> getBlockData(uint32_t BlockIndex,
+                                           uint32_t NumBytes) const override;
   Error setBlockData(uint32_t BlockIndex, uint32_t Offset,
                      ArrayRef<uint8_t> Data) const override;
 
@@ -107,6 +107,8 @@ public:
     return BlockNumber * BlockSize;
   }
 
+  Expected<InfoStream &> emplacePDBInfoStream();
+
   Expected<InfoStream &> getPDBInfoStream();
   Expected<DbiStream &> getPDBDbiStream();
   Expected<TpiStream &> getPDBTpiStream();
@@ -117,8 +119,9 @@ public:
 
   Error setSuperBlock(const SuperBlock *Block);
   void setStreamSizes(ArrayRef<support::ulittle32_t> Sizes);
-  void setStreamMap(ArrayRef<support::ulittle32_t> Directory,
-                    std::vector<ArrayRef<support::ulittle32_t>> &Streams);
+  void setDirectoryBlocks(ArrayRef<support::ulittle32_t> Directory);
+  void setStreamMap(std::vector<ArrayRef<support::ulittle32_t>> &Streams);
+  Error generateSimpleStreamMap();
   Error commit();
 
 private:

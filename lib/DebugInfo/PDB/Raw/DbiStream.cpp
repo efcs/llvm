@@ -80,8 +80,8 @@ struct DbiStream::HeaderInfo {
 };
 
 template <typename ContribType>
-Error loadSectionContribs(FixedStreamArray<ContribType> &Output,
-                          StreamReader &Reader) {
+static Error loadSectionContribs(FixedStreamArray<ContribType> &Output,
+                                 StreamReader &Reader) {
   if (Reader.bytesRemaining() % sizeof(ContribType) != 0)
     return make_error<RawError>(
         raw_error_code::corrupt_file,
@@ -452,3 +452,5 @@ Expected<StringRef> DbiStream::getFileNameForIndex(uint32_t Index) const {
     return std::move(EC);
   return Name;
 }
+
+Error DbiStream::commit() { return Error::success(); }

@@ -530,9 +530,19 @@ static unsigned getConditionalMove(unsigned Opcode) {
   }
 }
 
+static unsigned getConditionalLoadImmediate(unsigned Opcode) {
+  switch (Opcode) {
+  case SystemZ::LHI:  return SystemZ::LOCHI;
+  case SystemZ::LGHI: return SystemZ::LOCGHI;
+  default:           return 0;
+  }
+}
+
 bool SystemZInstrInfo::isPredicable(MachineInstr &MI) const {
   unsigned Opcode = MI.getOpcode();
   if (STI.hasLoadStoreOnCond() && getConditionalMove(Opcode))
+    return true;
+  if (STI.hasLoadStoreOnCond2() && getConditionalLoadImmediate(Opcode))
     return true;
   if (Opcode == SystemZ::Return ||
       Opcode == SystemZ::Trap ||
@@ -595,6 +605,16 @@ bool SystemZInstrInfo::PredicateInstruction(
       return true;
     }
   }
+  if (STI.hasLoadStoreOnCond2()) {
+    if (unsigned CondOpcode = getConditionalLoadImmediate(Opcode)) {
+      MI.setDesc(get(CondOpcode));
+      MachineInstrBuilder(*MI.getParent()->getParent(), MI)
+          .addImm(CCValid)
+          .addImm(CCMask)
+          .addReg(SystemZ::CC, RegState::Implicit);
+      return true;
+    }
+  }
   if (Opcode == SystemZ::Trap) {
     MI.setDesc(get(SystemZ::CondTrap));
     MachineInstrBuilder(*MI.getParent()->getParent(), MI)
@@ -610,14 +630,14 @@ bool SystemZInstrInfo::PredicateInstruction(
     return true;
   }
   if (Opcode == SystemZ::CallJG) {
-    const GlobalValue *Global = MI.getOperand(0).getGlobal();
+    MachineOperand FirstOp = MI.getOperand(0);
     const uint32_t *RegMask = MI.getOperand(1).getRegMask();
     MI.RemoveOperand(1);
     MI.RemoveOperand(0);
     MI.setDesc(get(SystemZ::CallBRCL));
     MachineInstrBuilder(*MI.getParent()->getParent(), MI)
       .addImm(CCValid).addImm(CCMask)
-      .addGlobalAddress(Global)
+      .addOperand(FirstOp)
       .addRegMask(RegMask)
       .addReg(SystemZ::CC, RegState::Implicit);
     return true;
