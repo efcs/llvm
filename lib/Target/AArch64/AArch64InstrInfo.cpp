@@ -29,6 +29,9 @@ using namespace llvm;
 #define GET_INSTRINFO_CTOR_DTOR
 #include "AArch64GenInstrInfo.inc"
 
+static LLVM_CONSTEXPR MachineMemOperand::Flags MOSuppressPair =
+    MachineMemOperand::MOTargetFlag1;
+
 AArch64InstrInfo::AArch64InstrInfo(const AArch64Subtarget &STI)
     : AArch64GenInstrInfo(AArch64::ADJCALLSTACKDOWN, AArch64::ADJCALLSTACKUP),
       RI(STI.getTargetTriple()), Subtarget(STI) {}
@@ -90,11 +93,11 @@ static void parseCondBranch(MachineInstr *LastInst, MachineBasicBlock *&Target,
 }
 
 // Branch analysis.
-bool AArch64InstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
-                                   MachineBasicBlock *&TBB,
-                                   MachineBasicBlock *&FBB,
-                                   SmallVectorImpl<MachineOperand> &Cond,
-                                   bool AllowModify) const {
+bool AArch64InstrInfo::analyzeBranch(MachineBasicBlock &MBB,
+                                     MachineBasicBlock *&TBB,
+                                     MachineBasicBlock *&FBB,
+                                     SmallVectorImpl<MachineOperand> &Cond,
+                                     bool AllowModify) const {
   // If the block has no terminators, it just falls into the block after it.
   MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
   if (I == MBB.end())
@@ -104,7 +107,7 @@ bool AArch64InstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
     return false;
 
   // Get the last instruction in the block.
-  MachineInstr *LastInst = I;
+  MachineInstr *LastInst = &*I;
 
   // If there is only one terminator instruction, process it.
   unsigned LastOpc = LastInst->getOpcode();
@@ -122,7 +125,7 @@ bool AArch64InstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
   }
 
   // Get the instruction before it if it is a terminator.
-  MachineInstr *SecondLastInst = I;
+  MachineInstr *SecondLastInst = &*I;
   unsigned SecondLastOpc = SecondLastInst->getOpcode();
 
   // If AllowModify is true and the block ends with two or more unconditional
@@ -137,7 +140,7 @@ bool AArch64InstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
         TBB = LastInst->getOperand(0).getMBB();
         return false;
       } else {
-        SecondLastInst = I;
+        SecondLastInst = &*I;
         SecondLastOpc = SecondLastInst->getOpcode();
       }
     }
@@ -620,6 +623,16 @@ bool AArch64InstrInfo::isAsCheapAsAMove(const MachineInstr &MI) const {
     return canBeExpandedToORR(MI, 32);
   case AArch64::MOVi64imm:
     return canBeExpandedToORR(MI, 64);
+
+  // It is cheap to zero out registers if the subtarget has ZeroCycleZeroing
+  // feature.
+  case AArch64::FMOVS0:
+  case AArch64::FMOVD0:
+    return Subtarget.hasZeroCycleZeroing();
+  case TargetOpcode::COPY:
+    return (Subtarget.hasZeroCycleZeroing() &&
+            (MI.getOperand(1).getReg() == AArch64::WZR ||
+             MI.getOperand(1).getReg() == AArch64::XZR));
   }
 
   llvm_unreachable("Unknown opcode to check as cheap as a move!");
@@ -846,10 +859,9 @@ static bool areCFlagsAccessedBetweenInstrs(
 
   // From must be above To.
   assert(std::find_if(MachineBasicBlock::reverse_iterator(To),
-                   To->getParent()->rend(),
-                   [From](MachineInstr &MI) {
-                     return &MI == From;
-                   }) != To->getParent()->rend());
+                      To->getParent()->rend(), [From](MachineInstr &MI) {
+                        return MachineBasicBlock::iterator(MI) == From;
+                      }) != To->getParent()->rend());
 
   // We iterate backward starting \p To until we hit \p From.
   for (--To; To != From; --To) {
@@ -1444,26 +1456,16 @@ bool AArch64InstrInfo::isScaledAddr(const MachineInstr &MI) const {
 
 /// Check all MachineMemOperands for a hint to suppress pairing.
 bool AArch64InstrInfo::isLdStPairSuppressed(const MachineInstr &MI) const {
-  static_assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits),
-                "Too many target MO flags");
-  for (auto *MM : MI.memoperands()) {
-    if (MM->getFlags() &
-        (MOSuppressPair << MachineMemOperand::MOTargetStartBit)) {
-      return true;
-    }
-  }
-  return false;
+  return any_of(MI.memoperands(), [](MachineMemOperand *MMO) {
+    return MMO->getFlags() & MOSuppressPair;
+  });
 }
 
 /// Set a flag on the first MachineMemOperand to suppress pairing.
 void AArch64InstrInfo::suppressLdStPair(MachineInstr &MI) const {
   if (MI.memoperands_empty())
     return;
-
-  static_assert(MOSuppressPair < (1 << MachineMemOperand::MOTargetNumBits),
-                "Too many target MO flags");
-  (*MI.memoperands_begin())
-      ->setFlags(MOSuppressPair << MachineMemOperand::MOTargetStartBit);
+  (*MI.memoperands_begin())->setFlags(MOSuppressPair);
 }
 
 bool AArch64InstrInfo::isUnscaledLdSt(unsigned Opc) const {

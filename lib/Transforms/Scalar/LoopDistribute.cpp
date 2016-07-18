@@ -26,8 +26,10 @@
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/LoopAccessAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/OptimizationDiagnosticInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/Pass.h"
@@ -589,13 +591,13 @@ private:
 class LoopDistributeForLoop {
 public:
   LoopDistributeForLoop(Loop *L, Function *F, LoopInfo *LI, DominatorTree *DT,
-                        ScalarEvolution *SE)
-      : L(L), F(F), LI(LI), LAI(nullptr), DT(DT), SE(SE) {
+                        ScalarEvolution *SE, OptimizationRemarkEmitter *ORE)
+      : L(L), F(F), LI(LI), LAI(nullptr), DT(DT), SE(SE), ORE(ORE) {
     setForced();
   }
 
   /// \brief Try to distribute an inner-most loop.
-  bool processLoop(LoopAccessAnalysis *LAA) {
+  bool processLoop(LoopAccessLegacyAnalysis *LAA) {
     assert(L->empty() && "Only process inner loops.");
 
     DEBUG(dbgs() << "\nLDist: In \"" << L->getHeader()->getParent()->getName()
@@ -757,8 +759,8 @@ public:
     DEBUG(dbgs() << "Skipping; " << Message << "\n");
 
     // With Rpass-missed report that distribution failed.
-    emitOptimizationRemarkMissed(
-        Ctx, LDIST_NAME, *F, L->getStartLoc(),
+    ORE->emitOptimizationRemarkMissed(
+        LDIST_NAME, L,
         "loop not distributed: use -Rpass-analysis=loop-distribute for more "
         "info");
 
@@ -773,7 +775,7 @@ public:
     // failed.
     if (Forced)
       Ctx.diagnose(DiagnosticInfoOptimizationFailure(
-          *F, L->getStartLoc(), "loop not disributed: failed "
+          *F, L->getStartLoc(), "loop not distributed: failed "
                                 "explicitly specified loop distribution"));
 
     return false;
@@ -847,6 +849,7 @@ private:
   const LoopAccessInfo *LAI;
   DominatorTree *DT;
   ScalarEvolution *SE;
+  OptimizationRemarkEmitter *ORE;
 
   /// \brief Indicates whether distribution is forced to be enabled/disabled for
   /// the loop.
@@ -877,9 +880,10 @@ public:
       return false;
 
     auto *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    auto *LAA = &getAnalysis<LoopAccessAnalysis>();
+    auto *LAA = &getAnalysis<LoopAccessLegacyAnalysis>();
     auto *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
     auto *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
+    auto *ORE = &getAnalysis<OptimizationRemarkEmitter>();
 
     // Build up a worklist of inner-loops to vectorize. This is necessary as the
     // act of distributing a loop creates new loops and can invalidate iterators
@@ -895,7 +899,7 @@ public:
     // Now walk the identified inner loops.
     bool Changed = false;
     for (Loop *L : Worklist) {
-      LoopDistributeForLoop LDL(L, &F, LI, DT, SE);
+      LoopDistributeForLoop LDL(L, &F, LI, DT, SE, ORE);
 
       // If distribution was forced for the specific loop to be
       // enabled/disabled, follow that.  Otherwise use the global flag.
@@ -911,9 +915,10 @@ public:
     AU.addRequired<ScalarEvolutionWrapperPass>();
     AU.addRequired<LoopInfoWrapperPass>();
     AU.addPreserved<LoopInfoWrapperPass>();
-    AU.addRequired<LoopAccessAnalysis>();
+    AU.addRequired<LoopAccessLegacyAnalysis>();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
+    AU.addRequired<OptimizationRemarkEmitter>();
   }
 
   static char ID;
@@ -930,9 +935,10 @@ static const char ldist_name[] = "Loop Distribition";
 
 INITIALIZE_PASS_BEGIN(LoopDistribute, LDIST_NAME, ldist_name, false, false)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopAccessAnalysis)
+INITIALIZE_PASS_DEPENDENCY(LoopAccessLegacyAnalysis)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitter)
 INITIALIZE_PASS_END(LoopDistribute, LDIST_NAME, ldist_name, false, false)
 
 namespace llvm {

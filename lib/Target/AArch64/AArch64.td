@@ -132,6 +132,12 @@ include "AArch64InstrInfo.td"
 def AArch64InstrInfo : InstrInfo;
 
 //===----------------------------------------------------------------------===//
+// Named operands for MRS/MSR/TLBI/...
+//===----------------------------------------------------------------------===//
+
+include "AArch64SystemOperands.td"
+
+//===----------------------------------------------------------------------===//
 // AArch64 Processors supported.
 //
 include "AArch64SchedA53.td"
@@ -218,6 +224,7 @@ def ProcExynosM1 : SubtargetFeature<"exynosm1", "ARMProcFamily", "ExynosM1",
                                     FeatureFPARMv8,
                                     FeatureNEON,
                                     FeaturePerfMon,
+                                    FeaturePostRAScheduler,
                                     FeatureUseRSqrt
                                     ]>;
 
@@ -231,7 +238,8 @@ def ProcKryo    : SubtargetFeature<"kryo", "ARMProcFamily", "Kryo",
                                    FeatureNEON,
                                    FeaturePerfMon,
                                    FeaturePostRAScheduler,
-                                   FeaturePredictableSelectIsExpensive
+                                   FeaturePredictableSelectIsExpensive,
+                                   FeatureZCZeroing
                                    ]>;
 
 def ProcVulcan  : SubtargetFeature<"vulcan", "ARMProcFamily", "Vulcan",
@@ -239,6 +247,7 @@ def ProcVulcan  : SubtargetFeature<"vulcan", "ARMProcFamily", "Vulcan",
                                    FeatureCRC,
                                    FeatureCrypto,
                                    FeatureFPARMv8,
+                                   FeatureMacroOpFusion,
                                    FeatureNEON,
                                    FeaturePostRAScheduler,
                                    HasV8_1aOps]>;

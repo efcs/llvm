@@ -69,14 +69,20 @@ sys::TimeValue ArchiveMemberHeader::getLastModified() const {
 
 unsigned ArchiveMemberHeader::getUID() const {
   unsigned Ret;
-  if (StringRef(UID, sizeof(UID)).rtrim(' ').getAsInteger(10, Ret))
+  StringRef User = StringRef(UID, sizeof(UID)).rtrim(' ');
+  if (User.empty())
+    return 0;
+  if (User.getAsInteger(10, Ret))
     llvm_unreachable("UID time not a decimal number.");
   return Ret;
 }
 
 unsigned ArchiveMemberHeader::getGID() const {
   unsigned Ret;
-  if (StringRef(GID, sizeof(GID)).rtrim(' ').getAsInteger(10, Ret))
+  StringRef Group = StringRef(GID, sizeof(GID)).rtrim(' ');
+  if (Group.empty())
+    return 0;
+  if (Group.getAsInteger(10, Ret))
     llvm_unreachable("GID time not a decimal number.");
   return Ret;
 }
@@ -292,12 +298,9 @@ Archive::Archive(MemoryBufferRef Source, Error &Err)
   }
 
   // Get the special members.
-  child_iterator I = child_begin(false);
-  std::error_code ec;
-  if ((ec = I->getError())) {
-    Err = errorCodeToError(ec);
+  child_iterator I = child_begin(Err, false);
+  if (Err)
     return;
-  }
   child_iterator E = child_end();
 
   // This is at least a valid empty archive. Since an empty archive is the
@@ -309,13 +312,13 @@ Archive::Archive(MemoryBufferRef Source, Error &Err)
     Err = Error::success();
     return;
   }
-  const Child *C = &**I;
+  const Child *C = &*I;
 
   auto Increment = [&]() {
     ++I;
-    if ((Err = errorCodeToError(I->getError())))
+    if (Err)
       return true;
-    C = &**I;
+    C = &*I;
     return false;
   };
 
@@ -360,8 +363,7 @@ Archive::Archive(MemoryBufferRef Source, Error &Err)
     Format = K_BSD;
     // We know this is BSD, so getName will work since there is no string table.
     ErrorOr<StringRef> NameOrErr = C->getName();
-    ec = NameOrErr.getError();
-    if (ec) {
+    if (auto ec = NameOrErr.getError()) {
       Err = errorCodeToError(ec);
       return;
     }
@@ -459,23 +461,29 @@ Archive::Archive(MemoryBufferRef Source, Error &Err)
   Err = Error::success();
 }
 
-Archive::child_iterator Archive::child_begin(bool SkipInternal) const {
+Archive::child_iterator Archive::child_begin(Error &Err,
+                                             bool SkipInternal) const {
   if (Data.getBufferSize() == 8) // empty archive.
     return child_end();
 
   if (SkipInternal)
-    return Child(this, FirstRegularData, FirstRegularStartOfFile);
+    return child_iterator(Child(this, FirstRegularData,
+                                FirstRegularStartOfFile),
+                          &Err);
 
   const char *Loc = Data.getBufferStart() + strlen(Magic);
   std::error_code EC;
-  Child c(this, Loc, &EC);
-  if (EC)
-    return child_iterator(EC);
-  return child_iterator(c);
+  Child C(this, Loc, &EC);
+  if (EC) {
+    ErrorAsOutParameter ErrAsOutParam(Err);
+    Err = errorCodeToError(EC);
+    return child_end();
+  }
+  return child_iterator(C, &Err);
 }
 
 Archive::child_iterator Archive::child_end() const {
-  return Child(this, nullptr, nullptr);
+  return child_iterator(Child(this, nullptr, nullptr), nullptr);
 }
 
 StringRef Archive::Symbol::getName() const {
@@ -659,21 +667,20 @@ uint32_t Archive::getNumberOfSymbols() const {
   return read32le(buf);
 }
 
-Archive::child_iterator Archive::findSym(StringRef name) const {
+Expected<Optional<Archive::Child>> Archive::findSym(StringRef name) const {
   Archive::symbol_iterator bs = symbol_begin();
   Archive::symbol_iterator es = symbol_end();
 
   for (; bs != es; ++bs) {
     StringRef SymName = bs->getName();
     if (SymName == name) {
-      ErrorOr<Archive::child_iterator> ResultOrErr = bs->getMember();
-      // FIXME: Should we really eat the error?
-      if (ResultOrErr.getError())
-        return child_end();
-      return ResultOrErr.get();
+      if (auto MemberOrErr = bs->getMember())
+        return Child(*MemberOrErr);
+      else
+        return errorCodeToError(MemberOrErr.getError());
     }
   }
-  return child_end();
+  return Optional<Child>();
 }
 
 bool Archive::hasSymbolTable() const { return !SymbolTable.empty(); }

@@ -415,7 +415,7 @@ bool AArch64BranchRelaxation::fixupConditionalBranch(MachineInstr *MI) {
     // Analyze the branch so we know how to update the successor lists.
     MachineBasicBlock *TBB, *FBB;
     SmallVector<MachineOperand, 2> Cond;
-    TII->AnalyzeBranch(*MBB, TBB, FBB, Cond, false);
+    TII->analyzeBranch(*MBB, TBB, FBB, Cond, false);
 
     MachineBasicBlock *NewBB = splitBlockBeforeInstr(MI);
     // No need for the branch to the next block. We're adding an unconditional
@@ -465,11 +465,11 @@ bool AArch64BranchRelaxation::relaxBranchInstructions() {
   // end() for termination.
   for (MachineFunction::iterator I = MF->begin(); I != MF->end(); ++I) {
     MachineBasicBlock &MBB = *I;
-    MachineInstr *MI = MBB.getFirstTerminator();
-    if (isConditionalBranch(MI->getOpcode()) &&
-        !isBlockInRange(MI, getDestBlock(MI),
-                        getBranchDisplacementBits(MI->getOpcode()))) {
-      fixupConditionalBranch(MI);
+    MachineInstr &MI = *MBB.getFirstTerminator();
+    if (isConditionalBranch(MI.getOpcode()) &&
+        !isBlockInRange(&MI, getDestBlock(&MI),
+                        getBranchDisplacementBits(MI.getOpcode()))) {
+      fixupConditionalBranch(&MI);
       ++NumRelaxed;
       Changed = true;
     }
