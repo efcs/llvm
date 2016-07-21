@@ -509,12 +509,13 @@ static bool addArgumentReturnedAttrs(const SCCNodeSet &SCCNodes) {
           // Note that stripPointerCasts should look through functions with
           // returned arguments.
           Value *RetVal = Ret->getReturnValue()->stripPointerCasts();
-          if (RetVal->getType() == F->getReturnType() && isa<Argument>(RetVal)) {
-            if (!RetArg)
-              RetArg = RetVal;
-            else if (RetArg != RetVal)
-              return nullptr;
-          }
+          if (!isa<Argument>(RetVal) || RetVal->getType() != F->getReturnType())
+            return nullptr;
+
+          if (!RetArg)
+            RetArg = RetVal;
+          else if (RetArg != RetVal)
+            return nullptr;
         }
 
       return RetArg;
