@@ -720,6 +720,12 @@ SDValue SITargetLowering::LowerFormalArguments(
     CCInfo.AllocateReg(InputPtrReg);
   }
 
+  if (Info->hasDispatchID()) {
+    unsigned DispatchIDReg = Info->addDispatchID(*TRI);
+    MF.addLiveIn(DispatchIDReg, &AMDGPU::SReg_64RegClass);
+    CCInfo.AllocateReg(DispatchIDReg);
+  }
+
   if (Info->hasFlatScratchInit()) {
     unsigned FlatScratchInitReg = Info->addFlatScratchInit(*TRI);
     MF.addLiveIn(FlatScratchInitReg, &AMDGPU::SReg_64RegClass);
@@ -1091,27 +1097,10 @@ MachineBasicBlock *SITargetLowering::splitKillBlock(MachineInstr &MI,
   MachineBasicBlock *SplitBB
     = MF->CreateMachineBasicBlock(BB->getBasicBlock());
 
-  // Fix the block phi references to point to the new block for the defs in the
-  // second piece of the block.
-  for (MachineBasicBlock *Succ : BB->successors()) {
-    for (MachineInstr &MI : *Succ) {
-      if (!MI.isPHI())
-        break;
-
-      for (unsigned I = 2, E = MI.getNumOperands(); I != E; I += 2) {
-        MachineOperand &FromBB = MI.getOperand(I);
-        if (BB == FromBB.getMBB()) {
-          FromBB.setMBB(SplitBB);
-          break;
-        }
-      }
-    }
-  }
-
   MF->insert(++MachineFunction::iterator(BB), SplitBB);
   SplitBB->splice(SplitBB->begin(), BB, SplitPoint, BB->end());
 
-  SplitBB->transferSuccessors(BB);
+  SplitBB->transferSuccessorsAndUpdatePHIs(BB);
   BB->addSuccessor(SplitBB);
 
   MI.setDesc(TII->get(AMDGPU::SI_KILL_TERMINATOR));
@@ -1161,7 +1150,7 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
   // Compare the just read M0 value to all possible Idx values.
   BuildMI(LoopBB, I, DL, TII->get(AMDGPU::V_CMP_EQ_U32_e64), CondReg)
     .addReg(CurrentIdxReg)
-    .addOperand(IdxReg);
+    .addReg(IdxReg.getReg(), 0, IdxReg.getSubReg());
 
   // Move index from VCC into M0
   if (Offset == 0) {
@@ -1236,7 +1225,7 @@ static MachineBasicBlock *loadM0FromVGPR(const SIInstrInfo *TII,
   LoopBB->addSuccessor(RemainderBB);
 
   // Move the rest of the block into a new block.
-  RemainderBB->transferSuccessors(&MBB);
+  RemainderBB->transferSuccessorsAndUpdatePHIs(&MBB);
   RemainderBB->splice(RemainderBB->begin(), &MBB, I, MBB.end());
 
   MBB.addSuccessor(LoopBB);
@@ -1444,9 +1433,9 @@ MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
     MachineFunction *MF = BB->getParent();
     SIMachineFunctionInfo *MFI = MF->getInfo<SIMachineFunctionInfo>();
     DebugLoc DL = MI.getDebugLoc();
-    BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_MOVK_I32))
-        .addOperand(MI.getOperand(0))
-        .addImm(MFI->LDSSize);
+    BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_MOV_B32))
+      .addOperand(MI.getOperand(0))
+      .addImm(MFI->LDSSize);
     MI.eraseFromParent();
     return BB;
   }
@@ -1992,6 +1981,10 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       = TRI->getPreloadedValue(MF, SIRegisterInfo::KERNARG_SEGMENT_PTR);
     return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass, Reg, VT);
   }
+  case Intrinsic::amdgcn_dispatch_id: {
+    unsigned Reg = TRI->getPreloadedValue(MF, SIRegisterInfo::DISPATCH_ID);
+    return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass, Reg, VT);
+  }
   case Intrinsic::amdgcn_rcp:
     return DAG.getNode(AMDGPUISD::RCP, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq:
@@ -2112,6 +2105,9 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       VT.getStoreSize(), 4);
     return DAG.getMemIntrinsicNode(AMDGPUISD::LOAD_CONSTANT, DL,
                                    Op->getVTList(), Ops, VT, MMO);
+  }
+  case AMDGPUIntrinsic::amdgcn_fdiv_fast: {
+    return lowerFDIV_FAST(Op, DAG);
   }
   case AMDGPUIntrinsic::SI_vs_load_input:
     return DAG.getNode(AMDGPUISD::LOAD_INPUT, DL, VT,
@@ -2427,7 +2423,8 @@ SDValue SITargetLowering::LowerSELECT(SDValue Op, SelectionDAG &DAG) const {
 
 // Catch division cases where we can use shortcuts with rcp and rsq
 // instructions.
-SDValue SITargetLowering::LowerFastFDIV(SDValue Op, SelectionDAG &DAG) const {
+SDValue SITargetLowering::lowerFastUnsafeFDIV(SDValue Op,
+                                              SelectionDAG &DAG) const {
   SDLoc SL(Op);
   SDValue LHS = Op.getOperand(0);
   SDValue RHS = Op.getOperand(1);
@@ -2468,47 +2465,48 @@ SDValue SITargetLowering::LowerFastFDIV(SDValue Op, SelectionDAG &DAG) const {
   return SDValue();
 }
 
+// Faster 2.5 ULP division that does not support denormals.
+SDValue SITargetLowering::lowerFDIV_FAST(SDValue Op, SelectionDAG &DAG) const {
+  SDLoc SL(Op);
+  SDValue LHS = Op.getOperand(1);
+  SDValue RHS = Op.getOperand(2);
+
+  SDValue r1 = DAG.getNode(ISD::FABS, SL, MVT::f32, RHS);
+
+  const APFloat K0Val(BitsToFloat(0x6f800000));
+  const SDValue K0 = DAG.getConstantFP(K0Val, SL, MVT::f32);
+
+  const APFloat K1Val(BitsToFloat(0x2f800000));
+  const SDValue K1 = DAG.getConstantFP(K1Val, SL, MVT::f32);
+
+  const SDValue One = DAG.getConstantFP(1.0, SL, MVT::f32);
+
+  EVT SetCCVT =
+    getSetCCResultType(DAG.getDataLayout(), *DAG.getContext(), MVT::f32);
+
+  SDValue r2 = DAG.getSetCC(SL, SetCCVT, r1, K0, ISD::SETOGT);
+
+  SDValue r3 = DAG.getNode(ISD::SELECT, SL, MVT::f32, r2, K1, One);
+
+  // TODO: Should this propagate fast-math-flags?
+  r1 = DAG.getNode(ISD::FMUL, SL, MVT::f32, RHS, r3);
+
+  // rcp does not support denormals.
+  SDValue r0 = DAG.getNode(AMDGPUISD::RCP, SL, MVT::f32, r1);
+
+  SDValue Mul = DAG.getNode(ISD::FMUL, SL, MVT::f32, LHS, r0);
+
+  return DAG.getNode(ISD::FMUL, SL, MVT::f32, r3, Mul);
+}
+
 SDValue SITargetLowering::LowerFDIV32(SDValue Op, SelectionDAG &DAG) const {
-  if (SDValue FastLowered = LowerFastFDIV(Op, DAG))
+  if (SDValue FastLowered = lowerFastUnsafeFDIV(Op, DAG))
     return FastLowered;
 
   SDLoc SL(Op);
   SDValue LHS = Op.getOperand(0);
   SDValue RHS = Op.getOperand(1);
 
-  // faster 2.5 ulp fdiv when using -amdgpu-fast-fdiv flag
-  if (EnableAMDGPUFastFDIV) {
-    // This does not support denormals.
-    SDValue r1 = DAG.getNode(ISD::FABS, SL, MVT::f32, RHS);
-
-    const APFloat K0Val(BitsToFloat(0x6f800000));
-    const SDValue K0 = DAG.getConstantFP(K0Val, SL, MVT::f32);
-
-    const APFloat K1Val(BitsToFloat(0x2f800000));
-    const SDValue K1 = DAG.getConstantFP(K1Val, SL, MVT::f32);
-
-    const SDValue One = DAG.getConstantFP(1.0, SL, MVT::f32);
-
-    EVT SetCCVT =
-        getSetCCResultType(DAG.getDataLayout(), *DAG.getContext(), MVT::f32);
-
-    SDValue r2 = DAG.getSetCC(SL, SetCCVT, r1, K0, ISD::SETOGT);
-
-    SDValue r3 = DAG.getNode(ISD::SELECT, SL, MVT::f32, r2, K1, One);
-
-    // TODO: Should this propagate fast-math-flags?
-
-    r1 = DAG.getNode(ISD::FMUL, SL, MVT::f32, RHS, r3);
-
-    // rcp does not support denormals.
-    SDValue r0 = DAG.getNode(AMDGPUISD::RCP, SL, MVT::f32, r1);
-
-    SDValue Mul = DAG.getNode(ISD::FMUL, SL, MVT::f32, LHS, r0);
-
-    return DAG.getNode(ISD::FMUL, SL, MVT::f32, r3, Mul);
-  }
-
-  // Generates more precise fpdiv32.
   const SDValue One = DAG.getConstantFP(1.0, SL, MVT::f32);
 
   SDVTList ScaleVT = DAG.getVTList(MVT::f32, MVT::i1);
@@ -2538,7 +2536,7 @@ SDValue SITargetLowering::LowerFDIV32(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue SITargetLowering::LowerFDIV64(SDValue Op, SelectionDAG &DAG) const {
   if (DAG.getTarget().Options.UnsafeFPMath)
-    return LowerFastFDIV(Op, DAG);
+    return lowerFastUnsafeFDIV(Op, DAG);
 
   SDLoc SL(Op);
   SDValue X = Op.getOperand(0);

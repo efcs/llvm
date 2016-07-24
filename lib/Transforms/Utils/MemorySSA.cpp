@@ -236,9 +236,6 @@ checkClobberSanity(MemoryAccess *Start, MemoryAccess *ClobberAt,
     return;
   }
 
-  assert((isa<MemoryPhi>(Start) || Start != ClobberAt) &&
-         "Start can't clobber itself!");
-
   bool FoundClobber = false;
   DenseSet<MemoryAccessPair> VisitedPhis;
   SmallVector<MemoryAccessPair, 8> Worklist;
@@ -336,8 +333,7 @@ class ClobberWalker {
 
   void addCacheEntry(const MemoryAccess *What, MemoryAccess *To,
                      const MemoryLocation &Loc) const {
-// EXPENSIVE_CHECKS because most of these queries are redundant, and if What
-// and To are in the same BB, that gives us n^2 behavior.
+// EXPENSIVE_CHECKS because most of these queries are redundant.
 #ifdef EXPENSIVE_CHECKS
     assert(MSSA.dominates(To, What));
 #endif
@@ -369,7 +365,6 @@ class ClobberWalker {
   /// keep track of this information for us, and allow us O(1) lookups of this
   /// info.
   MemoryAccess *getWalkTarget(const MemoryPhi *From) {
-    assert(!MSSA.isLiveOnEntryDef(From) && "liveOnEntry has no target.");
     assert(From->getNumOperands() && "Phi with no operands?");
 
     BasicBlock *BB = From->getBlock();
@@ -623,8 +618,6 @@ class ClobberWalker {
     // Paths.
     auto MoveDominatedPathToEnd = [&](SmallVectorImpl<TerminatedPath> &Paths) {
       assert(!Paths.empty() && "Need a path to move");
-      // FIXME: This is technically n^2 (n = distance(DefPath.First,
-      // DefPath.Last)) because of local dominance checks.
       auto Dom = Paths.begin();
       for (auto I = std::next(Dom), E = Paths.end(); I != E; ++I)
         if (!MSSA.dominates(I->Clobber, Dom->Clobber))
@@ -822,22 +815,23 @@ public:
     // Fast path for the overly-common case (no crazy phi optimization
     // necessary)
     UpwardsWalkResult WalkResult = walkToPhiOrClobber(FirstDesc);
+    MemoryAccess *Result;
     if (WalkResult.IsKnownClobber) {
       cacheDefPath(FirstDesc, WalkResult.Result);
-      return WalkResult.Result;
+      Result = WalkResult.Result;
+    } else {
+      OptznResult OptRes = tryOptimizePhi(cast<MemoryPhi>(FirstDesc.Last),
+                                          Current, Q.StartingLoc);
+      verifyOptResult(OptRes);
+      cacheOptResult(OptRes);
+      resetPhiOptznState();
+      Result = OptRes.PrimaryClobber.Clobber;
     }
 
-    OptznResult OptRes =
-        tryOptimizePhi(cast<MemoryPhi>(FirstDesc.Last), Current, Q.StartingLoc);
-    verifyOptResult(OptRes);
-    cacheOptResult(OptRes);
-    resetPhiOptznState();
-
 #ifdef EXPENSIVE_CHECKS
-    checkClobberSanity(Current, OptRes.PrimaryClobber.Clobber, Q.StartingLoc,
-                       MSSA, Q, AA);
+    checkClobberSanity(Current, Result, Q.StartingLoc, MSSA, Q, AA);
 #endif
-    return OptRes.PrimaryClobber.Clobber;
+    return Result;
   }
 };
 
@@ -903,7 +897,8 @@ public:
   CachingWalker(MemorySSA *, AliasAnalysis *, DominatorTree *);
   ~CachingWalker() override;
 
-  MemoryAccess *getClobberingMemoryAccess(const Instruction *) override;
+  using MemorySSAWalker::getClobberingMemoryAccess;
+  MemoryAccess *getClobberingMemoryAccess(MemoryAccess *) override;
   MemoryAccess *getClobberingMemoryAccess(MemoryAccess *,
                                           MemoryLocation &) override;
   void invalidateInfo(MemoryAccess *) override;
@@ -1212,6 +1207,7 @@ MemoryPhi *MemorySSA::createMemoryPhi(BasicBlock *BB) {
   ValueToMemoryAccess.insert(std::make_pair(BB, Phi));
   // Phi's always are placed at the front of the block.
   Accesses->push_front(Phi);
+  BlockNumberingValid.erase(BB);
   return Phi;
 }
 
@@ -1242,7 +1238,7 @@ MemoryAccess *MemorySSA::createMemoryAccessInBB(Instruction *I,
   } else {
     Accesses->push_back(NewAccess);
   }
-
+  BlockNumberingValid.erase(BB);
   return NewAccess;
 }
 MemoryAccess *MemorySSA::createMemoryAccessBefore(Instruction *I,
@@ -1253,6 +1249,7 @@ MemoryAccess *MemorySSA::createMemoryAccessBefore(Instruction *I,
   MemoryUseOrDef *NewAccess = createDefinedAccess(I, Definition);
   auto *Accesses = getOrCreateAccessList(InsertPt->getBlock());
   Accesses->insert(AccessList::iterator(InsertPt), NewAccess);
+  BlockNumberingValid.erase(InsertPt->getBlock());
   return NewAccess;
 }
 
@@ -1264,6 +1261,7 @@ MemoryAccess *MemorySSA::createMemoryAccessAfter(Instruction *I,
   MemoryUseOrDef *NewAccess = createDefinedAccess(I, Definition);
   auto *Accesses = getOrCreateAccessList(InsertPt->getBlock());
   Accesses->insertAfter(AccessList::iterator(InsertPt), NewAccess);
+  BlockNumberingValid.erase(InsertPt->getBlock());
   return NewAccess;
 }
 
@@ -1364,6 +1362,7 @@ static MemoryAccess *onlySingleValue(MemoryPhi *MP) {
 void MemorySSA::removeFromLookups(MemoryAccess *MA) {
   assert(MA->use_empty() &&
          "Trying to remove memory access that still has uses");
+  BlockNumbering.erase(MA);
   if (MemoryUseOrDef *MUD = dyn_cast<MemoryUseOrDef>(MA))
     MUD->setDefiningAccess(nullptr);
   // Invalidate our walker's cache if necessary
@@ -1568,14 +1567,32 @@ MemoryPhi *MemorySSA::getMemoryAccess(const BasicBlock *BB) const {
   return cast_or_null<MemoryPhi>(getMemoryAccess((const Value *)BB));
 }
 
+/// Perform a local numbering on blocks so that instruction ordering can be
+/// determined in constant time.
+/// TODO: We currently just number in order.  If we numbered by N, we could
+/// allow at least N-1 sequences of insertBefore or insertAfter (and at least
+/// log2(N) sequences of mixed before and after) without needing to invalidate
+/// the numbering.
+void MemorySSA::renumberBlock(const BasicBlock *B) const {
+  // The pre-increment ensures the numbers really start at 1.
+  unsigned long CurrentNumber = 0;
+  const AccessList *AL = getBlockAccesses(B);
+  assert(AL != nullptr && "Asking to renumber an empty block");
+  for (const auto &I : *AL)
+    BlockNumbering[&I] = ++CurrentNumber;
+  BlockNumberingValid.insert(B);
+}
+
 /// \brief Determine, for two memory accesses in the same block,
 /// whether \p Dominator dominates \p Dominatee.
 /// \returns True if \p Dominator dominates \p Dominatee.
 bool MemorySSA::locallyDominates(const MemoryAccess *Dominator,
                                  const MemoryAccess *Dominatee) const {
-  assert((Dominator->getBlock() == Dominatee->getBlock()) &&
-         "Asking for local domination when accesses are in different blocks!");
 
+  const BasicBlock *DominatorBlock = Dominator->getBlock();
+
+  assert((DominatorBlock == Dominatee->getBlock()) &&
+         "Asking for local domination when accesses are in different blocks!");
   // A node dominates itself.
   if (Dominatee == Dominator)
     return true;
@@ -1590,14 +1607,15 @@ bool MemorySSA::locallyDominates(const MemoryAccess *Dominator,
   if (isLiveOnEntryDef(Dominator))
     return true;
 
-  // Get the access list for the block
-  const AccessList *AccessList = getBlockAccesses(Dominator->getBlock());
-  AccessList::const_reverse_iterator It(Dominator->getIterator());
+  if (!BlockNumberingValid.count(DominatorBlock))
+    renumberBlock(DominatorBlock);
 
-  // If we hit the beginning of the access list before we hit dominatee, we must
-  // dominate it
-  return std::none_of(It, AccessList->rend(),
-                      [&](const MemoryAccess &MA) { return &MA == Dominatee; });
+  unsigned long DominatorNum = BlockNumbering.lookup(Dominator);
+  // All numbers start with 1
+  assert(DominatorNum != 0 && "Block was not numbered properly");
+  unsigned long DominateeNum = BlockNumbering.lookup(Dominatee);
+  assert(DominateeNum != 0 && "Block was not numbered properly");
+  return DominatorNum < DominateeNum;
 }
 
 bool MemorySSA::dominates(const MemoryAccess *Dominator,
@@ -1743,8 +1761,7 @@ MemorySSAWalker::MemorySSAWalker(MemorySSA *M) : MSSA(M) {}
 
 MemorySSA::CachingWalker::CachingWalker(MemorySSA *M, AliasAnalysis *A,
                                         DominatorTree *D)
-    : MemorySSAWalker(M), Walker(*M, *A, *D, Cache),
-      AutoResetWalker(true) {}
+    : MemorySSAWalker(M), Walker(*M, *A, *D, Cache), AutoResetWalker(true) {}
 
 MemorySSA::CachingWalker::~CachingWalker() {}
 
@@ -1831,11 +1848,13 @@ MemoryAccess *MemorySSA::CachingWalker::getClobberingMemoryAccess(
 }
 
 MemoryAccess *
-MemorySSA::CachingWalker::getClobberingMemoryAccess(const Instruction *I) {
-  // There should be no way to lookup an instruction and get a phi as the
-  // access, since we only map BB's to PHI's. So, this must be a use or def.
-  auto *StartingAccess = cast<MemoryUseOrDef>(MSSA->getMemoryAccess(I));
+MemorySSA::CachingWalker::getClobberingMemoryAccess(MemoryAccess *MA) {
+  auto *StartingAccess = dyn_cast<MemoryUseOrDef>(MA);
+  // If this is a MemoryPhi, we can't do anything.
+  if (!StartingAccess)
+    return MA;
 
+  const Instruction *I = StartingAccess->getMemoryInst();
   UpwardsMemoryQuery Q(I, StartingAccess);
   // We can't sanely do anything with a fences, they conservatively
   // clobber all memory, and have no locations to get pointers from to
@@ -1869,8 +1888,7 @@ void MemorySSA::CachingWalker::verifyRemoved(MemoryAccess *MA) {
 }
 
 MemoryAccess *
-DoNothingMemorySSAWalker::getClobberingMemoryAccess(const Instruction *I) {
-  MemoryAccess *MA = MSSA->getMemoryAccess(I);
+DoNothingMemorySSAWalker::getClobberingMemoryAccess(MemoryAccess *MA) {
   if (auto *Use = dyn_cast<MemoryUseOrDef>(MA))
     return Use->getDefiningAccess();
   return MA;

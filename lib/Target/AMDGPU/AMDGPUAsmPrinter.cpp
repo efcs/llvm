@@ -95,6 +95,10 @@ AMDGPUAsmPrinter::AMDGPUAsmPrinter(TargetMachine &TM,
                                    std::unique_ptr<MCStreamer> Streamer)
     : AsmPrinter(TM, std::move(Streamer)) {}
 
+const char *AMDGPUAsmPrinter::getPassName() const  {
+  return "AMDGPU Assembly Printer";
+}
+
 void AMDGPUAsmPrinter::EmitStartOfAsmFile(Module &M) {
   if (TM.getTargetTriple().getOS() != Triple::AMDHSA)
     return;
@@ -229,7 +233,7 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     } else {
       R600MachineFunctionInfo *MFI = MF.getInfo<R600MachineFunctionInfo>();
       OutStreamer->emitRawComment(
-        Twine("SQ_PGM_RESOURCES:STACK_SIZE = " + Twine(MFI->StackSize)));
+        Twine("SQ_PGM_RESOURCES:STACK_SIZE = " + Twine(MFI->CFStackSize)));
     }
   }
 
@@ -301,7 +305,7 @@ void AMDGPUAsmPrinter::EmitProgramInfoR600(const MachineFunction &MF) {
 
   OutStreamer->EmitIntValue(RsrcReg, 4);
   OutStreamer->EmitIntValue(S_NUM_GPRS(MaxGPR + 1) |
-                           S_STACK_SIZE(MFI->StackSize), 4);
+                           S_STACK_SIZE(MFI->CFStackSize), 4);
   OutStreamer->EmitIntValue(R_02880C_DB_SHADER_CONTROL, 4);
   OutStreamer->EmitIntValue(S_02880C_KILL_ENABLE(killPixel), 4);
 
@@ -783,15 +787,19 @@ void AMDGPUAsmPrinter::emitStartOfRuntimeMetadata(const Module &M) {
   emitRuntimeMDIntValue(OutStreamer, RuntimeMD::KeyMDVersion,
                         RuntimeMD::MDVersion << 8 | RuntimeMD::MDRevision, 2);
   if (auto MD = M.getNamedMetadata("opencl.ocl.version")) {
-    emitRuntimeMDIntValue(OutStreamer, RuntimeMD::KeyLanguage,
-                          RuntimeMD::OpenCL_C, 1);
-    auto Node = MD->getOperand(0);
-    unsigned short Major = mdconst::extract<ConstantInt>(Node->getOperand(0))
-                             ->getZExtValue();
-    unsigned short Minor = mdconst::extract<ConstantInt>(Node->getOperand(1))
-                             ->getZExtValue();
-    emitRuntimeMDIntValue(OutStreamer, RuntimeMD::KeyLanguageVersion,
-                          Major * 100 + Minor * 10, 2);
+    if (MD->getNumOperands()) {
+      auto Node = MD->getOperand(0);
+      if (Node->getNumOperands() > 1) {
+        emitRuntimeMDIntValue(OutStreamer, RuntimeMD::KeyLanguage,
+                              RuntimeMD::OpenCL_C, 1);
+        uint16_t Major = mdconst::extract<ConstantInt>(Node->getOperand(0))
+                         ->getZExtValue();
+        uint16_t Minor = mdconst::extract<ConstantInt>(Node->getOperand(1))
+                         ->getZExtValue();
+        emitRuntimeMDIntValue(OutStreamer, RuntimeMD::KeyLanguageVersion,
+                              Major * 100 + Minor * 10, 2);
+      }
+    }
   }
 }
 
