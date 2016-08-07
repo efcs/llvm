@@ -64,7 +64,14 @@ private:
   // do not appear in that map.
   SmallSetVector<const Constant *, 8> Constants;
 
+  // N.b. it's not completely obvious that this will be sufficient for every
+  // LLVM IR construct (with "invoke" being the obvious candidate to mess up our
+  // lives.
   DenseMap<const BasicBlock *, MachineBasicBlock *> BBToMBB;
+
+  // List of stubbed PHI instructions, for values and basic blocks to be filled
+  // in once all MachineBasicBlocks have been created.
+  SmallVector<std::pair<const PHINode *, MachineInstr *>, 4> PendingPHIs;
 
   /// Methods for translating form LLVM IR to MachineInstr.
   /// \see ::translate for general information on the translate methods.
@@ -93,23 +100,49 @@ private:
   /// \return true if the translation succeeded.
   bool translate(const Instruction &Inst);
 
-  /// Translate alloca instruction (i.e. one of constant size and in the first
-  /// basic block).
+  /// Translate an LLVM bitcast into generic IR. Either a COPY or a G_BITCAST is
+  /// emitted.
+  bool translateBitCast(const CastInst &CI);
+
+  /// Translate an LLVM load instruction into generic IR.
+  bool translateLoad(const LoadInst &LI);
+
+  /// Translate an LLVM store instruction into generic IR.
+  bool translateStore(const StoreInst &SI);
+
+  /// Translate call instruction.
+  /// \pre \p Inst is a branch instruction.
+  bool translateCall(const CallInst &Inst);
+
+  /// Translate one of LLVM's cast instructions into MachineInstrs, with the
+  /// given generic Opcode.
+  bool translateCast(unsigned Opcode, const CastInst &CI);
+
+  /// Translate static alloca instruction (i.e. one  of constant size and in the
+  /// first basic block).
   bool translateStaticAlloca(const AllocaInst &Inst);
+
+  /// Translate a phi instruction.
+  bool translatePhi(const PHINode &PI);
+
+  /// Add remaining operands onto phis we've translated. Executed after all
+  /// MachineBasicBlocks for the function have been created.
+  void finishPendingPhis();
 
   /// Translate \p Inst into a binary operation \p Opcode.
   /// \pre \p Inst is a binary operation.
-  bool translateBinaryOp(unsigned Opcode, const Instruction &Inst);
+  bool translateBinaryOp(unsigned Opcode, const BinaryOperator &Inst);
 
   /// Translate branch (br) instruction.
   /// \pre \p Inst is a branch instruction.
-  bool translateBr(const Instruction &Inst);
+  bool translateBr(const BranchInst &Inst);
+
 
   /// Translate return (ret) instruction.
   /// The target needs to implement CallLowering::lowerReturn for
   /// this to succeed.
   /// \pre \p Inst is a return instruction.
-  bool translateReturn(const Instruction &Inst);
+  bool translateReturn(const ReturnInst &Inst);
   /// @}
 
   // Builder for machine instruction a la IRBuilder.
@@ -133,9 +166,15 @@ private:
   /// If such VReg does not exist, it is created.
   unsigned getOrCreateVReg(const Value &Val);
 
+  /// Get the alignment of the given memory operation instruction. This will
+  /// either be the explicitly specified value or the ABI-required alignment for
+  /// the type being accessed (according to the Module's DataLayout).
+  unsigned getMemOpAlignment(const Instruction &I);
+
   /// Get the MachineBasicBlock that represents \p BB.
   /// If such basic block does not exist, it is created.
   MachineBasicBlock &getOrCreateBB(const BasicBlock &BB);
+
 
 public:
   // Ctor, nothing fancy.

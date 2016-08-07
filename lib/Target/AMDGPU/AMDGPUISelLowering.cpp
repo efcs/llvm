@@ -55,14 +55,6 @@ EVT AMDGPUTargetLowering::getEquivalentMemType(LLVMContext &Ctx, EVT VT) {
   return EVT::getVectorVT(Ctx, MVT::i32, StoreSize / 32);
 }
 
-EVT AMDGPUTargetLowering::getEquivalentBitType(LLVMContext &Ctx, EVT VT) {
-  unsigned StoreSize = VT.getStoreSizeInBits();
-  if (StoreSize <= 32)
-    return EVT::getIntegerVT(Ctx, StoreSize);
-
-  return EVT::getVectorVT(Ctx, MVT::i32, StoreSize / 32);
-}
-
 AMDGPUTargetLowering::AMDGPUTargetLowering(const TargetMachine &TM,
                                            const AMDGPUSubtarget &STI)
     : TargetLowering(TM), Subtarget(&STI) {
@@ -454,8 +446,6 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(const TargetMachine &TM,
   setSelectIsExpensive(false);
   PredictableSelectIsExpensive = false;
 
-  setFsqrtIsCheap(true);
-
   // We want to find all load dependencies for long chains of stores to enable
   // merging into very wide vectors. The problem is with vectors with > 4
   // elements. MergeConsecutiveStores will attempt to merge these because x8/x16
@@ -771,24 +761,8 @@ SDValue AMDGPUTargetLowering::LowerGlobalAddress(AMDGPUMachineFunction* MFI,
     if (hasDefinedInitializer(GV))
       break;
 
-    unsigned Offset;
-    if (MFI->LocalMemoryObjects.count(GV) == 0) {
-      unsigned Align = GV->getAlignment();
-      if (Align == 0)
-        Align = DL.getABITypeAlignment(GV->getValueType());
-
-      /// TODO: We should sort these to minimize wasted space due to alignment
-      /// padding. Currently the padding is decided by the first encountered use
-      /// during lowering.
-      Offset = MFI->LDSSize = alignTo(MFI->LDSSize, Align);
-      MFI->LocalMemoryObjects[GV] = Offset;
-      MFI->LDSSize += DL.getTypeAllocSize(GV->getValueType());
-    } else {
-      Offset = MFI->LocalMemoryObjects[GV];
-    }
-
-    return DAG.getConstant(Offset, SDLoc(Op),
-                           getPointerTy(DL, AMDGPUAS::LOCAL_ADDRESS));
+    unsigned Offset = MFI->allocateLDSGlobal(DL, *GV);
+    return DAG.getConstant(Offset, SDLoc(Op), Op.getValueType());
   }
   }
 
@@ -1896,13 +1870,12 @@ SDValue AMDGPUTargetLowering::LowerUINT_TO_FP(SDValue Op,
          "operation should be legal");
 
   EVT DestVT = Op.getValueType();
-  if (DestVT == MVT::f64)
-    return LowerINT_TO_FP64(Op, DAG, false);
 
   if (DestVT == MVT::f32)
     return LowerINT_TO_FP32(Op, DAG, false);
 
-  return SDValue();
+  assert(DestVT == MVT::f64);
+  return LowerINT_TO_FP64(Op, DAG, false);
 }
 
 SDValue AMDGPUTargetLowering::LowerSINT_TO_FP(SDValue Op,
@@ -1914,10 +1887,8 @@ SDValue AMDGPUTargetLowering::LowerSINT_TO_FP(SDValue Op,
   if (DestVT == MVT::f32)
     return LowerINT_TO_FP32(Op, DAG, true);
 
-  if (DestVT == MVT::f64)
-    return LowerINT_TO_FP64(Op, DAG, true);
-
-  return SDValue();
+  assert(DestVT == MVT::f64);
+  return LowerINT_TO_FP64(Op, DAG, true);
 }
 
 SDValue AMDGPUTargetLowering::LowerFP64_TO_INT(SDValue Op, SelectionDAG &DAG,
@@ -1975,8 +1946,7 @@ SDValue AMDGPUTargetLowering::LowerSIGN_EXTEND_INREG(SDValue Op,
   MVT VT = Op.getSimpleValueType();
   MVT ScalarVT = VT.getScalarType();
 
-  if (!VT.isVector())
-    return SDValue();
+  assert(VT.isVector());
 
   SDValue Src = Op.getOperand(0);
   SDLoc DL(Op);
@@ -2661,7 +2631,7 @@ SDValue AMDGPUTargetLowering::CreateLiveInRegister(SelectionDAG &DAG,
 
 uint32_t AMDGPUTargetLowering::getImplicitParameterOffset(
     const AMDGPUMachineFunction *MFI, const ImplicitParameter Param) const {
-  uint64_t ArgOffset = MFI->ABIArgOffset;
+  uint64_t ArgOffset = MFI->getABIArgOffset();
   switch (Param) {
   case GRID_DIM:
     return ArgOffset;
@@ -2686,6 +2656,7 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(RETURN)
   NODE_NAME_CASE(DWORDADDR)
   NODE_NAME_CASE(FRACT)
+  NODE_NAME_CASE(SETCC)
   NODE_NAME_CASE(CLAMP)
   NODE_NAME_CASE(COS_HW)
   NODE_NAME_CASE(SIN_HW)
@@ -2707,7 +2678,9 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(TRIG_PREOP)
   NODE_NAME_CASE(RCP)
   NODE_NAME_CASE(RSQ)
+  NODE_NAME_CASE(RCP_LEGACY)
   NODE_NAME_CASE(RSQ_LEGACY)
+  NODE_NAME_CASE(FMUL_LEGACY)
   NODE_NAME_CASE(RSQ_CLAMP)
   NODE_NAME_CASE(LDEXP)
   NODE_NAME_CASE(FP_CLASS)

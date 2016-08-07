@@ -524,8 +524,7 @@ define <4 x float> @test_4f32_fmadd_load(<4 x float>* %a0, <4 x float> %a1, <4 x
 ;
 ; AVX512-LABEL: test_4f32_fmadd_load:
 ; AVX512:       # BB#0:
-; AVX512-NEXT:    vmovaps (%rdi), %xmm2
-; AVX512-NEXT:    vfmadd213ps %xmm1, %xmm2, %xmm0
+; AVX512-NEXT:    vfmadd132ps (%rdi), %xmm1, %xmm0
 ; AVX512-NEXT:    retq
   %x = load <4 x float>, <4 x float>* %a0
   %y = fmul <4 x float> %x, %a1
@@ -546,8 +545,7 @@ define <2 x double> @test_2f64_fmsub_load(<2 x double>* %a0, <2 x double> %a1, <
 ;
 ; AVX512-LABEL: test_2f64_fmsub_load:
 ; AVX512:       # BB#0:
-; AVX512-NEXT:    vmovapd (%rdi), %xmm2
-; AVX512-NEXT:    vfmsub213pd %xmm1, %xmm2, %xmm0
+; AVX512-NEXT:    vfmsub132pd (%rdi), %xmm1, %xmm0
 ; AVX512-NEXT:    retq
   %x = load <2 x double>, <2 x double>* %a0
   %y = fmul <2 x double> %x, %a1
@@ -1133,7 +1131,7 @@ define <4 x float> @test_v4f32_fneg_fmul(<4 x float> %x, <4 x float> %y) #0 {
 ;
 ; AVX512-LABEL: test_v4f32_fneg_fmul:
 ; AVX512:       # BB#0:
-; AVX512-NEXT:    vpxord %xmm2, %xmm2, %xmm2
+; AVX512-NEXT:    vxorps %xmm2, %xmm2, %xmm2
 ; AVX512-NEXT:    vfnmsub213ps %xmm2, %xmm1, %xmm0
 ; AVX512-NEXT:    retq
   %m = fmul nsz <4 x float> %x, %y
@@ -1156,7 +1154,7 @@ define <4 x double> @test_v4f64_fneg_fmul(<4 x double> %x, <4 x double> %y) #0 {
 ;
 ; AVX512-LABEL: test_v4f64_fneg_fmul:
 ; AVX512:       # BB#0:
-; AVX512-NEXT:    vpxord %ymm2, %ymm2, %ymm2
+; AVX512-NEXT:    vxorpd %ymm2, %ymm2, %ymm2
 ; AVX512-NEXT:    vfnmsub213pd %ymm2, %ymm1, %ymm0
 ; AVX512-NEXT:    retq
   %m = fmul nsz <4 x double> %x, %y

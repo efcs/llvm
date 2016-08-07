@@ -69,7 +69,8 @@ static Value *SimplifyCmpInst(unsigned, Value *, Value *, const Query &,
                               unsigned);
 static Value *SimplifyOrInst(Value *, Value *, const Query &, unsigned);
 static Value *SimplifyXorInst(Value *, Value *, const Query &, unsigned);
-static Value *SimplifyTruncInst(Value *, Type *, const Query &, unsigned);
+static Value *SimplifyCastInst(unsigned, Value *, Type *,
+                               const Query &, unsigned);
 
 /// For a boolean type, or a vector of boolean type, return false, or
 /// a vector with every element false, as appropriate for the type.
@@ -747,7 +748,8 @@ static Value *SimplifySubInst(Value *Op0, Value *Op1, bool isNSW, bool isNUW,
       // See if "V === X - Y" simplifies.
       if (Value *V = SimplifyBinOp(Instruction::Sub, X, Y, Q, MaxRecurse-1))
         // It does!  Now see if "trunc V" simplifies.
-        if (Value *W = SimplifyTruncInst(V, Op0->getType(), Q, MaxRecurse-1))
+        if (Value *W = SimplifyCastInst(Instruction::Trunc, V, Op0->getType(),
+                                        Q, MaxRecurse - 1))
           // It does, return the simplified "trunc V".
           return W;
 
@@ -3092,6 +3094,16 @@ static Value *SimplifyICmpInst(unsigned Predicate, Value *LHS, Value *RHS,
   if (LHS->getType()->isPointerTy())
     if (auto *C = computePointerICmp(Q.DL, Q.TLI, Q.DT, Pred, Q.CxtI, LHS, RHS))
       return C;
+  if (auto *CLHS = dyn_cast<PtrToIntOperator>(LHS))
+    if (auto *CRHS = dyn_cast<PtrToIntOperator>(RHS))
+      if (Q.DL.getTypeSizeInBits(CLHS->getPointerOperandType()) ==
+              Q.DL.getTypeSizeInBits(CLHS->getType()) &&
+          Q.DL.getTypeSizeInBits(CRHS->getPointerOperandType()) ==
+              Q.DL.getTypeSizeInBits(CRHS->getType()))
+        if (auto *C = computePointerICmp(Q.DL, Q.TLI, Q.DT, Pred, Q.CxtI,
+                                         CLHS->getPointerOperand(),
+                                         CRHS->getPointerOperand()))
+          return C;
 
   if (GetElementPtrInst *GLHS = dyn_cast<GetElementPtrInst>(LHS)) {
     if (GEPOperator *GRHS = dyn_cast<GEPOperator>(RHS)) {
@@ -3119,17 +3131,16 @@ static Value *SimplifyICmpInst(unsigned Predicate, Value *LHS, Value *RHS,
   // If a bit is known to be zero for A and known to be one for B,
   // then A and B cannot be equal.
   if (ICmpInst::isEquality(Pred)) {
-    if (ConstantInt *CI = dyn_cast<ConstantInt>(RHS)) {
-      uint32_t BitWidth = CI->getBitWidth();
+    const APInt *RHSVal;
+    if (match(RHS, m_APInt(RHSVal))) {
+      unsigned BitWidth = RHSVal->getBitWidth();
       APInt LHSKnownZero(BitWidth, 0);
       APInt LHSKnownOne(BitWidth, 0);
       computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, Q.DL, /*Depth=*/0, Q.AC,
                        Q.CxtI, Q.DT);
-      const APInt &RHSVal = CI->getValue();
-      if (((LHSKnownZero & RHSVal) != 0) || ((LHSKnownOne & ~RHSVal) != 0))
-        return Pred == ICmpInst::ICMP_EQ
-                   ? ConstantInt::getFalse(CI->getContext())
-                   : ConstantInt::getTrue(CI->getContext());
+      if (((LHSKnownZero & *RHSVal) != 0) || ((LHSKnownOne & ~(*RHSVal)) != 0))
+        return Pred == ICmpInst::ICMP_EQ ? ConstantInt::getFalse(ITy)
+                                         : ConstantInt::getTrue(ITy);
     }
   }
 
@@ -3634,6 +3645,26 @@ static Value *SimplifyGEPInst(Type *SrcTy, ArrayRef<Value *> Ops,
     }
   }
 
+  // gep (gep V, C), (sub 0, V) -> C
+  if (Q.DL.getTypeAllocSize(LastType) == 1 &&
+      all_of(Ops.slice(1).drop_back(1),
+             [](Value *Idx) { return match(Idx, m_Zero()); })) {
+    unsigned PtrWidth =
+        Q.DL.getPointerSizeInBits(Ops[0]->getType()->getPointerAddressSpace());
+    if (Q.DL.getTypeSizeInBits(Ops.back()->getType()) == PtrWidth) {
+      APInt BasePtrOffset(PtrWidth, 0);
+      Value *StrippedBasePtr =
+          Ops[0]->stripAndAccumulateInBoundsConstantOffsets(Q.DL,
+                                                            BasePtrOffset);
+
+      if (match(Ops.back(),
+                m_Sub(m_Zero(), m_PtrToInt(m_Specific(StrippedBasePtr))))) {
+        auto *CI = ConstantInt::get(GEPTy->getContext(), BasePtrOffset);
+        return ConstantExpr::getIntToPtr(CI, GEPTy);
+      }
+    }
+  }
+
   // Check to see if this is constant foldable.
   for (unsigned i = 0, e = Ops.size(); i != e; ++i)
     if (!isa<Constant>(Ops[i]))
@@ -3789,19 +3820,47 @@ static Value *SimplifyPHINode(PHINode *PN, const Query &Q) {
   return CommonValue;
 }
 
-static Value *SimplifyTruncInst(Value *Op, Type *Ty, const Query &Q, unsigned) {
-  if (Constant *C = dyn_cast<Constant>(Op))
-    return ConstantFoldCastOperand(Instruction::Trunc, C, Ty, Q.DL);
+static Value *SimplifyCastInst(unsigned CastOpc, Value *Op,
+                               Type *Ty, const Query &Q, unsigned MaxRecurse) {
+  if (auto *C = dyn_cast<Constant>(Op))
+    return ConstantFoldCastOperand(CastOpc, C, Ty, Q.DL);
+
+  if (auto *CI = dyn_cast<CastInst>(Op)) {
+    auto *Src = CI->getOperand(0);
+    Type *SrcTy = Src->getType();
+    Type *MidTy = CI->getType();
+    Type *DstTy = Ty;
+    if (Src->getType() == Ty) {
+      auto FirstOp = static_cast<Instruction::CastOps>(CI->getOpcode());
+      auto SecondOp = static_cast<Instruction::CastOps>(CastOpc);
+      Type *SrcIntPtrTy =
+          SrcTy->isPtrOrPtrVectorTy() ? Q.DL.getIntPtrType(SrcTy) : nullptr;
+      Type *MidIntPtrTy =
+          MidTy->isPtrOrPtrVectorTy() ? Q.DL.getIntPtrType(MidTy) : nullptr;
+      Type *DstIntPtrTy =
+          DstTy->isPtrOrPtrVectorTy() ? Q.DL.getIntPtrType(DstTy) : nullptr;
+      if (CastInst::isEliminableCastPair(FirstOp, SecondOp, SrcTy, MidTy, DstTy,
+                                         SrcIntPtrTy, MidIntPtrTy,
+                                         DstIntPtrTy) == Instruction::BitCast)
+        return Src;
+    }
+  }
+
+  // bitcast x -> x
+  if (CastOpc == Instruction::BitCast)
+    if (Op->getType() == Ty)
+      return Op;
 
   return nullptr;
 }
 
-Value *llvm::SimplifyTruncInst(Value *Op, Type *Ty, const DataLayout &DL,
-                               const TargetLibraryInfo *TLI,
-                               const DominatorTree *DT, AssumptionCache *AC,
-                               const Instruction *CxtI) {
-  return ::SimplifyTruncInst(Op, Ty, Query(DL, TLI, DT, AC, CxtI),
-                             RecursionLimit);
+Value *llvm::SimplifyCastInst(unsigned CastOpc, Value *Op, Type *Ty,
+                              const DataLayout &DL,
+                              const TargetLibraryInfo *TLI,
+                              const DominatorTree *DT, AssumptionCache *AC,
+                              const Instruction *CxtI) {
+  return ::SimplifyCastInst(CastOpc, Op, Ty, Query(DL, TLI, DT, AC, CxtI),
+                            RecursionLimit);
 }
 
 //=== Helper functions for higher up the class hierarchy.
@@ -4270,9 +4329,11 @@ Value *llvm::SimplifyInstruction(Instruction *I, const DataLayout &DL,
                           TLI, DT, AC, I);
     break;
   }
-  case Instruction::Trunc:
-    Result =
-        SimplifyTruncInst(I->getOperand(0), I->getType(), DL, TLI, DT, AC, I);
+#define HANDLE_CAST_INST(num, opc, clas) case Instruction::opc:
+#include "llvm/IR/Instruction.def"
+#undef HANDLE_CAST_INST
+    Result = SimplifyCastInst(I->getOpcode(), I->getOperand(0), I->getType(),
+                              DL, TLI, DT, AC, I);
     break;
   }
 
@@ -4324,7 +4385,8 @@ static bool replaceAndRecursivelySimplifyImpl(Instruction *I, Value *SimpleV,
 
     // Gracefully handle edge cases where the instruction is not wired into any
     // parent block.
-    if (I->getParent())
+    if (I->getParent() && !I->isEHPad() && !isa<TerminatorInst>(I) &&
+        !I->mayHaveSideEffects())
       I->eraseFromParent();
   } else {
     Worklist.insert(I);
@@ -4352,7 +4414,8 @@ static bool replaceAndRecursivelySimplifyImpl(Instruction *I, Value *SimpleV,
 
     // Gracefully handle edge cases where the instruction is not wired into any
     // parent block.
-    if (I->getParent())
+    if (I->getParent() && !I->isEHPad() && !isa<TerminatorInst>(I) &&
+        !I->mayHaveSideEffects())
       I->eraseFromParent();
   }
   return Simplified;

@@ -34,6 +34,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -41,11 +42,16 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
 #include <deque>
+#include <sstream>
 #include <string>
 #include <vector>
 using namespace llvm;
 
 MCAsmParserSemaCallback::~MCAsmParserSemaCallback() {}
+
+static cl::opt<unsigned> AsmMacroMaxNestingDepth(
+     "asm-macro-max-nesting-depth", cl::init(20), cl::Hidden,
+     cl::desc("The maximum nesting depth allowed for assembly macros."));
 
 namespace {
 /// \brief Helper types for tracking macro definitions.
@@ -256,9 +262,23 @@ public:
     return false;
   }
 
+  bool parseEOL(const Twine &ErrMsg) {
+    if (getTok().getKind() == AsmToken::Hash) {
+      StringRef CommentStr = parseStringToEndOfStatement();
+      Lexer.Lex();
+      Lexer.UnLex(AsmToken(AsmToken::EndOfStatement, CommentStr));
+    }
+    if (getTok().getKind() != AsmToken::EndOfStatement)
+      return TokError(ErrMsg);
+    Lex();
+    return false;
+  }
+
   /// parseToken - If current token has the specified kind, eat it and
   /// return success.  Otherwise, emit the specified error and return failure.
   bool parseToken(AsmToken::TokenKind T, const Twine &ErrMsg) {
+    if (T == AsmToken::EndOfStatement)
+      return parseEOL(ErrMsg);
     if (getTok().getKind() != T)
       return TokError(ErrMsg);
     Lex();
@@ -736,6 +756,8 @@ bool AsmParser::Run(bool NoInitialTextSection, bool NoFinalize) {
     assert(HadError && "Parse statement returned an error, but none emitted!");
     eatToEndOfStatement();
   }
+
+  getTargetParser().flushPendingInstructions(getStreamer());
 
   if (TheCondState.TheCond != StartingCondState.TheCond ||
       TheCondState.Ignore != StartingCondState.Ignore)
@@ -1401,6 +1423,16 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     Lex();
     return false;
   }
+  if (Lexer.is(AsmToken::Hash)) {
+    // Seeing a hash here means that it was an end-of-line comment in
+    // an asm syntax where hash's are not comment and the previous
+    // statement parser did not check the end of statement. Relex as
+    // EndOfStatement.
+    StringRef CommentStr = parseStringToEndOfStatement();
+    Lexer.Lex();
+    Lexer.UnLex(AsmToken(AsmToken::EndOfStatement, CommentStr));
+    return false;
+  }
   // Statements always start with an identifier.
   AsmToken ID = getTok();
   SMLoc IDLoc = ID.getLoc();
@@ -1534,6 +1566,16 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     if (!Sym->isUndefined() || Sym->isVariable())
       return Error(IDLoc, "invalid symbol redefinition");
 
+    // End of Labels should be treated as end of line for lexing
+    // purposes but that information is not available to the Lexer who
+    // does not understand Labels. This may cause us to see a Hash
+    // here instead of a preprocessor line comment.
+    if (getTok().is(AsmToken::Hash)) {
+      StringRef CommentStr = parseStringToEndOfStatement();
+      Lexer.Lex();
+      Lexer.UnLex(AsmToken(AsmToken::EndOfStatement, CommentStr));
+    }
+
     // Consume any end of statement token, if present, to avoid spurious
     // AddBlankLine calls().
     if (getTok().is(AsmToken::EndOfStatement)) {
@@ -1589,6 +1631,8 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     //    all the directives that behave in a target and platform independent
     //    manner, or at least have a default behavior that's shared between
     //    all targets and platforms.
+
+    getTargetParser().flushPendingInstructions(getStreamer());
 
     // First query the target-specific parser. It will return 'true' if it
     // isn't interested in this directive.
@@ -2359,10 +2403,17 @@ void AsmParser::defineMacro(StringRef Name, MCAsmMacro Macro) {
 void AsmParser::undefineMacro(StringRef Name) { MacroMap.erase(Name); }
 
 bool AsmParser::handleMacroEntry(const MCAsmMacro *M, SMLoc NameLoc) {
-  // Arbitrarily limit macro nesting depth, to match 'as'. We can eliminate
-  // this, although we should protect against infinite loops.
-  if (ActiveMacros.size() == 20)
-    return TokError("macros cannot be nested more than 20 levels deep");
+  // Arbitrarily limit macro nesting depth (default matches 'as'). We can
+  // eliminate this, although we should protect against infinite loops.
+  unsigned MaxNestingDepth = AsmMacroMaxNestingDepth;
+  if (ActiveMacros.size() == MaxNestingDepth) {
+    std::ostringstream MaxNestingDepthError;
+    MaxNestingDepthError << "macros cannot be nested more than "
+                         << MaxNestingDepth << " levels deep."
+                         << " Use -asm-macro-max-nesting-depth to increase "
+                            "this limit.";
+    return TokError(MaxNestingDepthError.str());
+  }
 
   MCAsmMacroArguments A;
   if (parseMacroArguments(M, A))

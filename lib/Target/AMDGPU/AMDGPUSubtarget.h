@@ -328,14 +328,14 @@ public:
   short getTexVTXClauseSize() const {
     return TexVTXClauseSize;
   }
-
-  unsigned getStackEntrySize() const;
 };
 
 class SISubtarget final : public AMDGPUSubtarget {
 public:
   enum {
-    FIXED_SGPR_COUNT_FOR_INIT_BUG = 80
+    // The closed Vulkan driver sets 96, which limits the wave count to 8 but
+    // doesn't spill SGPRs as much as when 80 is set.
+    FIXED_SGPR_COUNT_FOR_INIT_BUG = 96
   };
 
 private:
@@ -377,10 +377,6 @@ public:
                            unsigned NumRegionInstrs) const override;
 
   bool isVGPRSpillingEnabled(const Function& F) const;
-
-  unsigned getAmdKernelCodeChipID() const;
-
-  AMDGPU::IsaVersion getIsaVersion() const;
 
   unsigned getMaxNumUserSGPRs() const {
     return 16;

@@ -27,7 +27,7 @@ namespace llvm {
 class AArch64Subtarget;
 class AArch64TargetMachine;
 
-class AArch64InstrInfo : public AArch64GenInstrInfo {
+class AArch64InstrInfo final : public AArch64GenInstrInfo {
   const AArch64RegisterInfo RI;
   const AArch64Subtarget &Subtarget;
 
@@ -39,7 +39,7 @@ public:
   /// always be able to get register info as well (through this method).
   const AArch64RegisterInfo &getRegisterInfo() const { return RI; }
 
-  unsigned GetInstSizeInBytes(const MachineInstr &MI) const;
+  unsigned getInstSizeInBytes(const MachineInstr &MI) const override;
 
   bool isAsCheapAsAMove(const MachineInstr &MI) const override;
 
@@ -140,6 +140,12 @@ public:
                         ArrayRef<unsigned> Ops,
                         MachineBasicBlock::iterator InsertPt, int FrameIndex,
                         LiveIntervals *LIS = nullptr) const override;
+
+  /// \returns true if a branch from an instruction with opcode \p BranchOpc
+  /// located at \p BrOffset bytes is capable of jumping to a position at \p
+  /// DestOffset.
+  bool isBranchInRange(unsigned BranchOpc, uint64_t BrOffset,
+                       uint64_t DestOffset) const;
 
   bool analyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
                      MachineBasicBlock *&FBB,

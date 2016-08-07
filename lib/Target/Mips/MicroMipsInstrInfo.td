@@ -471,6 +471,18 @@ class JumpRegCMM16<string opstr, RegisterOperand RO> :
   let isIndirectBranch = 1;
 }
 
+let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, hasDelaySlot = 1,
+    hasExtraSrcRegAllocReq = 1, isCTI = 1, Defs = [AT] in {
+  class TailCall_MM<Instruction JumpInst> :
+    PseudoSE<(outs), (ins calltarget:$target), [], II_J>,
+    PseudoInstExpansion<(JumpInst jmptarget_mm:$target)>;
+
+  class TailCallReg_MM<RegisterOperand RO, Instruction JRInst,
+                       RegisterOperand ResRO = RO> :
+    PseudoSE<(outs), (ins RO:$rs), [(MipsTailCall RO:$rs)], II_JR>,
+    PseudoInstExpansion<(JRInst ResRO:$rs)>;
+}
+
 // Break16 and Sdbbp16
 class BrkSdbbp16MM<string opstr> :
   MicroMipsInst16<(outs), (ins uimm4:$code_),
@@ -661,6 +673,14 @@ let DecoderNamespace = "MicroMips" in {
                  ISA_MICROMIPS32_NOT_MIPS32R6;
   def LWM16_MM : LoadMultMM16<"lwm16">, LWM_FM_MM16<0x4>,
                  ISA_MICROMIPS32_NOT_MIPS32R6;
+  let AdditionalPredicates = [InMicroMips] in {
+    def CFC2_MM : InstSE<(outs GPR32Opnd:$rt), (ins COP2Opnd:$impl),
+                         "cfc2\t$rt, $impl", [], II_CFC2, FrmFR, "cfc2">,
+                  POOL32A_CFTC2_FM_MM<0b1100110100>;
+    def CTC2_MM : InstSE<(outs COP2Opnd:$impl), (ins GPR32Opnd:$rt),
+                         "ctc2\t$rt, $impl", [], II_CTC2, FrmFR, "ctc2">,
+                  POOL32A_CFTC2_FM_MM<0b1101110100>;
+  }
 }
 
 class WaitMM<string opstr> :
@@ -969,6 +989,12 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   def PREFX_MM : PrefetchIndexed<"prefx">, POOL32F_PREFX_FM_MM<0x15, 0x1A0>;
 }
 
+let AdditionalPredicates = [InMicroMips] in {
+  def TAILCALL_MM : TailCall_MM<J_MM>, ISA_MIPS1_NOT_32R6_64R6;
+  def TAILCALLREG_MM : TailCallReg_MM<GPR32Opnd, JR_MM>,
+                       ISA_MIPS1_NOT_32R6_64R6;
+}
+
 let DecoderNamespace = "MicroMips" in {
   def RDHWR_MM : MMRel, R6MMR6Rel, ReadHardware<GPR32Opnd, HWRegsOpnd>,
                  RDHWR_FM_MM, ISA_MICROMIPS32_NOT_MIPS32R6;
@@ -980,6 +1006,12 @@ let DecoderNamespace = "MicroMips" in {
 //===----------------------------------------------------------------------===//
 // MicroMips arbitrary patterns that map to one or more instructions
 //===----------------------------------------------------------------------===//
+
+def : MipsPat<(i32 immLi16:$imm),
+              (LI16_MM immLi16:$imm)>;
+
+let AdditionalPredicates = [InMicroMips] in
+defm :  MaterializeImms<i32, ZERO, ADDiu_MM, LUi_MM, ORi_MM>;
 
 let Predicates = [InMicroMips] in {
   def : MipsPat<(i32 immLi16:$imm),
@@ -1089,6 +1121,18 @@ let Predicates = [InMicroMips] in {
                       (TLTU_MM GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
   def : MipsInstAlias<"tne $rs, $rt",
                       (TNE_MM GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
+  def : MipsInstAlias<
+          "sgt $rd, $rs, $rt",
+          (SLT_MM GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgt $rs, $rt",
+          (SLT_MM GPR32Opnd:$rs, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgtu $rd, $rs, $rt",
+          (SLTu_MM GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgtu $rs, $rt",
+          (SLTu_MM GPR32Opnd:$rs, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
   def : MipsInstAlias<"slt $rs, $rt, $imm",
                       (SLTi_MM GPR32Opnd:$rs, GPR32Opnd:$rt,
                                simm32_relaxed:$imm), 0>;

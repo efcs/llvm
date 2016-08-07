@@ -1052,10 +1052,22 @@ def immZExt16  : PatLeaf<(imm), [{
 }], LO16>;
 
 // Immediate can be loaded with LUi (32-bit int with lower 16-bit cleared).
-def immLow16Zero : PatLeaf<(imm), [{
+def immSExt32Low16Zero : PatLeaf<(imm), [{
   int64_t Val = N->getSExtValue();
   return isInt<32>(Val) && !(Val & 0xffff);
 }]>;
+
+// Zero-extended 32-bit unsigned int with lower 16-bit cleared.
+def immZExt32Low16Zero : PatLeaf<(imm), [{
+  uint64_t Val = N->getZExtValue();
+  return isUInt<32>(Val) && !(Val & 0xffff);
+}]>;
+
+// Note immediate fits as a 32 bit signed extended on target immediate.
+def immSExt32  : PatLeaf<(imm), [{ return isInt<32>(N->getSExtValue()); }]>;
+
+// Note immediate fits as a 32 bit zero extended on target immediate.
+def immZExt32  : PatLeaf<(imm), [{ return isUInt<32>(N->getZExtValue()); }]>;
 
 // shamt field must fit in 5 bits.
 def immZExt5 : ImmLeaf<i32, [{return Imm == (Imm & 0x1f);}]>;
@@ -1086,7 +1098,13 @@ def addrRegImm :
 def addrDefault :
   ComplexPattern<iPTR, 2, "selectAddrDefault", [frameindex]>;
 
-def addrimm10 : ComplexPattern<iPTR, 2, "selectIntAddrMSA", [frameindex]>;
+def addrimm10 : ComplexPattern<iPTR, 2, "selectIntAddrSImm10", [frameindex]>;
+def addrimm10lsl1 : ComplexPattern<iPTR, 2, "selectIntAddrSImm10Lsl1",
+                                   [frameindex]>;
+def addrimm10lsl2 : ComplexPattern<iPTR, 2, "selectIntAddrSImm10Lsl2",
+                                   [frameindex]>;
+def addrimm10lsl3 : ComplexPattern<iPTR, 2, "selectIntAddrSImm10Lsl3",
+                                   [frameindex]>;
 
 //===----------------------------------------------------------------------===//
 // Instructions specific format
@@ -1900,8 +1918,11 @@ def BLTZAL : MMRel, BGEZAL_FT<"bltzal", brtarget, GPR32Opnd>, BGEZAL_FM<0x10>,
 def BLTZALL : MMRel, BGEZAL_FT<"bltzall", brtarget, GPR32Opnd, 0>,
               BGEZAL_FM<0x12>, ISA_MIPS2_NOT_32R6_64R6;
 def BAL_BR : BAL_BR_Pseudo<BGEZAL>;
-def TAILCALL : TailCall<J>;
-def TAILCALL_R : TailCallReg<GPR32Opnd, JR>;
+
+let AdditionalPredicates = [NotInMicroMips] in {
+def TAILCALL : TailCall<J>, ISA_MIPS1_NOT_32R6_64R6;
+def TAILCALLREG : TailCallReg<GPR32Opnd, JR>, ISA_MIPS1_NOT_32R6_64R6, GPR_32;
+}
 
 // Indirect branches are matched as PseudoIndirectBranch/PseudoIndirectBranch64
 // then are expanded to JR, JR64, JALR, or JALR64 depending on the ISA.
@@ -2221,11 +2242,25 @@ def : MipsInstAlias<"jalr $rs", (JALR RA, GPR32Opnd:$rs), 0>;
 def : MipsInstAlias<"jalr.hb $rs", (JALR_HB RA, GPR32Opnd:$rs), 1>, ISA_MIPS32;
 def : MipsInstAlias<"neg $rt, $rs",
                     (SUB GPR32Opnd:$rt, ZERO, GPR32Opnd:$rs), 1>;
-def : MipsInstAlias<"negu $rt",
-                    (SUBu GPR32Opnd:$rt, ZERO, GPR32Opnd:$rt), 0>;
+def : MipsInstAlias<"neg $rt",
+                    (SUB GPR32Opnd:$rt, ZERO, GPR32Opnd:$rt), 1>;
 def : MipsInstAlias<"negu $rt, $rs",
                     (SUBu GPR32Opnd:$rt, ZERO, GPR32Opnd:$rs), 1>;
+def : MipsInstAlias<"negu $rt",
+                    (SUBu GPR32Opnd:$rt, ZERO, GPR32Opnd:$rt), 1>;
 let AdditionalPredicates = [NotInMicroMips] in {
+  def : MipsInstAlias<
+          "sgt $rd, $rs, $rt",
+          (SLT GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgt $rs, $rt",
+          (SLT GPR32Opnd:$rs, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgtu $rd, $rs, $rt",
+          (SLTu GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<
+          "sgtu $$rs, $rt",
+          (SLTu GPR32Opnd:$rs, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
   def : MipsInstAlias<
           "slt $rs, $rt, $imm",
           (SLTi GPR32Opnd:$rs, GPR32Opnd:$rt, simm32_relaxed:$imm), 0>;
@@ -2312,6 +2347,12 @@ let AdditionalPredicates = [NotInMicroMips] in {
                       (SRAV GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
   def : MipsInstAlias<"srl $rd, $rt, $rs",
                       (SRLV GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
+  def : MipsInstAlias<"sll $rd, $rt",
+                      (SLLV GPR32Opnd:$rd, GPR32Opnd:$rd, GPR32Opnd:$rt), 0>;
+  def : MipsInstAlias<"sra $rd, $rt",
+                      (SRAV GPR32Opnd:$rd, GPR32Opnd:$rd, GPR32Opnd:$rt), 0>;
+  def : MipsInstAlias<"srl $rd, $rt",
+                      (SRLV GPR32Opnd:$rd, GPR32Opnd:$rd, GPR32Opnd:$rt), 0>;
 }
 def : MipsInstAlias<"sdbbp", (SDBBP 0)>, ISA_MIPS32_NOT_32R6_64R6;
 def : MipsInstAlias<"sync",
@@ -2454,19 +2495,24 @@ class LoadRegImmPat<Instruction LoadInst, ValueType ValTy, PatFrag Node> :
 class StoreRegImmPat<Instruction StoreInst, ValueType ValTy> :
   MipsPat<(store ValTy:$v, addrRegImm:$a), (StoreInst ValTy:$v, addrRegImm:$a)>;
 
+// Materialize constants.
+multiclass MaterializeImms<ValueType VT, Register ZEROReg,
+                           Instruction ADDiuOp, Instruction LUiOp,
+                           Instruction ORiOp> {
+
 // Small immediates
-let AdditionalPredicates = [NotInMicroMips] in {
-def : MipsPat<(i32 immSExt16:$in),
-              (ADDiu ZERO, imm:$in)>;
-def : MipsPat<(i32 immZExt16:$in),
-              (ORi ZERO, imm:$in)>;
-}
-def : MipsPat<(i32 immLow16Zero:$in),
-              (LUi (HI16 imm:$in))>;
+def : MipsPat<(VT immSExt16:$imm), (ADDiuOp ZEROReg, imm:$imm)>;
+def : MipsPat<(VT immZExt16:$imm), (ORiOp ZEROReg, imm:$imm)>;
+
+// Bits 32-16 set, sign/zero extended.
+def : MipsPat<(VT immSExt32Low16Zero:$imm), (LUiOp (HI16 imm:$imm))>;
 
 // Arbitrary immediates
-def : MipsPat<(i32 imm:$imm),
-          (ORi (LUi (HI16 imm:$imm)), (LO16 imm:$imm))>;
+def : MipsPat<(VT immSExt32:$imm), (ORiOp (LUiOp (HI16 imm:$imm)), (LO16 imm:$imm))>;
+}
+
+let AdditionalPredicates = [NotInMicroMips] in
+  defm : MaterializeImms<i32, ZERO, ADDiu, LUi, ORi>;
 
 // Carry MipsPatterns
 let AdditionalPredicates = [NotInMicroMips] in {
