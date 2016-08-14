@@ -99,11 +99,11 @@ Value *coro::LowererBase::makeSubFnCall(Value *Arg, int Index,
 static bool isCoroutineIntrinsicName(StringRef Name) {
   // NOTE: Must be sorted!
   static const char *const CoroIntrinsics[] = {
-      "llvm.coro.alloc",   "llvm.coro.begin", "llvm.coro.destroy",
-      "llvm.coro.done",    "llvm.coro.end",   "llvm.coro.frame",
-      "llvm.coro.free",    "llvm.coro.param", "llvm.coro.promise",
-      "llvm.coro.resume",  "llvm.coro.save",  "llvm.coro.size",
-      "llvm.coro.suspend",
+      "llvm.coro.alloc",   "llvm.coro.begin",   "llvm.coro.destroy",
+      "llvm.coro.done",    "llvm.coro.end",     "llvm.coro.frame",
+      "llvm.coro.free",    "llvm.coro.id",      "llvm.coro.param",
+      "llvm.coro.promise", "llvm.coro.resume",  "llvm.coro.save",
+      "llvm.coro.size",    "llvm.coro.suspend",
   };
   return Intrinsic::lookupLLVMIntrinsicByName(CoroIntrinsics, Name) != -1;
 }
