@@ -23,19 +23,11 @@
 #include "R600MachineScheduler.h"
 #include "SIISelLowering.h"
 #include "SIInstrInfo.h"
-
-#include "llvm/Analysis/Passes.h"
+#include "SIMachineScheduler.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
-#include "llvm/CodeGen/MachineFunctionAnalysis.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
-#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/MC/MCAsmInfo.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/TargetRegistry.h"
-#include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
@@ -97,6 +89,10 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
 
 static ScheduleDAGInstrs *createR600MachineScheduler(MachineSchedContext *C) {
   return new ScheduleDAGMILive(C, make_unique<R600SchedStrategy>());
+}
+
+static ScheduleDAGInstrs *createSIMachineScheduler(MachineSchedContext *C) {
+  return new SIScheduleDAGMI(C);
 }
 
 static MachineSchedRegistry
@@ -315,7 +311,9 @@ public:
   bool addInstSelector() override;
 #ifdef LLVM_BUILD_GLOBAL_ISEL
   bool addIRTranslator() override;
+  bool addLegalizeMachineIR() override;
   bool addRegBankSelect() override;
+  bool addGlobalInstructionSelect() override;
 #endif
   void addFastRegAlloc(FunctionPass *RegAllocPass) override;
   void addOptimizedRegAlloc(FunctionPass *RegAllocPass) override;
@@ -520,7 +518,15 @@ bool GCNPassConfig::addIRTranslator() {
   return false;
 }
 
+bool GCNPassConfig::addLegalizeMachineIR() {
+  return false;
+}
+
 bool GCNPassConfig::addRegBankSelect() {
+  return false;
+}
+
+bool GCNPassConfig::addGlobalInstructionSelect() {
   return false;
 }
 #endif

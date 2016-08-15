@@ -24,19 +24,6 @@
 namespace llvm {
 namespace cflaa {
 
-// We use UnknownOffset to represent pointer offsets that cannot be determined
-// at compile time. Note that MemoryLocation::UnknownSize cannot be used here
-// because we require a signed value.
-static LLVM_CONSTEXPR int64_t UnknownOffset =
-    std::numeric_limits<int64_t>::max();
-
-inline int64_t addOffset(int64_t LHS, int64_t RHS) {
-  if (LHS == UnknownOffset || RHS == UnknownOffset)
-    return UnknownOffset;
-  // FIXME: Do we need to guard against integer overflow here?
-  return LHS + RHS;
-}
-
 /// \brief The Program Expression Graph (PEG) of CFL analysis
 /// CFLGraph is auxiliary data structure used by CFL-based alias analysis to
 /// describe flow-insensitive pointer-related behaviors. Given an LLVM function,
@@ -347,7 +334,8 @@ template <typename CFLAA> class CFLGraphBuilder {
       // For now, we'll handle this like a landingpad instruction (by placing
       // the
       // result in its own group, and having that group alias externals).
-      addNode(&Inst, getAttrUnknown());
+      if (Inst.getType()->isPointerTy())
+        addNode(&Inst, getAttrUnknown());
     }
 
     static bool isFunctionExternal(Function *Fn) {
@@ -470,7 +458,8 @@ template <typename CFLAA> class CFLGraphBuilder {
       // Exceptions come from "nowhere", from our analysis' perspective.
       // So we place the instruction its own group, noting that said group may
       // alias externals
-      addNode(&Inst, getAttrUnknown());
+      if (Inst.getType()->isPointerTy())
+        addNode(&Inst, getAttrUnknown());
     }
 
     void visitInsertValueInst(InsertValueInst &Inst) {

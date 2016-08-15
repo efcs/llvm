@@ -603,10 +603,30 @@ define <8 x i64> @orq_broadcast(<8 x i64> %a) nounwind {
 }
 
 define <16 x i32> @andd512fold(<16 x i32> %y, <16 x i32>* %x) {
-; CHECK-LABEL: andd512fold:
-; CHECK:       ## BB#0: ## %entry
-; CHECK-NEXT:    vpandd (%rdi), %zmm0, %zmm0
-; CHECK-NEXT:    retq
+; AVX512F-LABEL: andd512fold:
+; AVX512F:       ## BB#0: ## %entry
+; AVX512F-NEXT:    vpandd (%rdi), %zmm0, %zmm0
+; AVX512F-NEXT:    retq
+;
+; AVX512VL-LABEL: andd512fold:
+; AVX512VL:       ## BB#0: ## %entry
+; AVX512VL-NEXT:    vpandd (%rdi), %zmm0, %zmm0
+; AVX512VL-NEXT:    retq
+;
+; AVX512BW-LABEL: andd512fold:
+; AVX512BW:       ## BB#0: ## %entry
+; AVX512BW-NEXT:    vpandd (%rdi), %zmm0, %zmm0
+; AVX512BW-NEXT:    retq
+;
+; AVX512DQ-LABEL: andd512fold:
+; AVX512DQ:       ## BB#0: ## %entry
+; AVX512DQ-NEXT:    vandps (%rdi), %zmm0, %zmm0
+; AVX512DQ-NEXT:    retq
+;
+; SKX-LABEL: andd512fold:
+; SKX:       ## BB#0: ## %entry
+; SKX-NEXT:    vandps (%rdi), %zmm0, %zmm0
+; SKX-NEXT:    retq
 entry:
   %a = load <16 x i32>, <16 x i32>* %x, align 4
   %b = and <16 x i32> %y, %a
@@ -891,7 +911,7 @@ define <8 x double> @test_mask_broadcast_vaddpd(<8 x double> %dst, <8 x double> 
 ; CHECK-NEXT:    vpxord %zmm0, %zmm0, %zmm0
 ; CHECK-NEXT:    vpcmpneqq %zmm0, %zmm2, %k1
 ; CHECK-NEXT:    vaddpd (%rdi){1to8}, %zmm1, %zmm1 {%k1}
-; CHECK-NEXT:    vmovaps %zmm1, %zmm0
+; CHECK-NEXT:    vmovapd %zmm1, %zmm0
 ; CHECK-NEXT:    retq
                                       double* %j, <8 x i64> %mask1) nounwind {
   %mask = icmp ne <8 x i64> %mask1, zeroinitializer
@@ -979,12 +999,12 @@ define <8 x double> @fabs_v8f64(<8 x double> %p)
 ;
 ; AVX512DQ-LABEL: fabs_v8f64:
 ; AVX512DQ:       ## BB#0:
-; AVX512DQ-NEXT:    vandpd {{.*}}(%rip), %zmm0, %zmm0
+; AVX512DQ-NEXT:    vandps {{.*}}(%rip), %zmm0, %zmm0
 ; AVX512DQ-NEXT:    retq
 ;
 ; SKX-LABEL: fabs_v8f64:
 ; SKX:       ## BB#0:
-; SKX-NEXT:    vandpd {{.*}}(%rip), %zmm0, %zmm0
+; SKX-NEXT:    vandps {{.*}}(%rip), %zmm0, %zmm0
 ; SKX-NEXT:    retq
 {
   %t = call <8 x double> @llvm.fabs.v8f64(<8 x double> %p)

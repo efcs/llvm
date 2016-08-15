@@ -13,18 +13,57 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/OptimizationDiagnosticInfo.h"
+#include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/LazyBlockFrequencyInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/LLVMContext.h"
 
 using namespace llvm;
+
+OptimizationRemarkEmitter::OptimizationRemarkEmitter(Function *F)
+    : F(F), BFI(nullptr) {
+  if (!F->getContext().getDiagnosticHotnessRequested())
+    return;
+
+  // First create a dominator tree.
+  DominatorTree DT;
+  DT.recalculate(*F);
+
+  // Generate LoopInfo from it.
+  LoopInfo LI;
+  LI.analyze(DT);
+
+  // Then compute BranchProbabilityInfo.
+  BranchProbabilityInfo BPI;
+  BPI.calculate(*F, LI);
+
+  // Finally compute BFI.
+  OwnedBFI = llvm::make_unique<BlockFrequencyInfo>(*F, BPI, LI);
+  BFI = OwnedBFI.get();
+}
 
 Optional<uint64_t> OptimizationRemarkEmitter::computeHotness(const Value *V) {
   if (!BFI)
     return None;
 
   return BFI->getBlockProfileCount(cast<BasicBlock>(V));
+}
+
+void OptimizationRemarkEmitter::emitOptimizationRemark(const char *PassName,
+                                                       const DebugLoc &DLoc,
+                                                       const Value *V,
+                                                       const Twine &Msg) {
+  LLVMContext &Ctx = F->getContext();
+  Ctx.diagnose(DiagnosticInfoOptimizationRemark(PassName, *F, DLoc, Msg,
+                                                computeHotness(V)));
+}
+
+void OptimizationRemarkEmitter::emitOptimizationRemark(const char *PassName,
+                                                       Loop *L,
+                                                       const Twine &Msg) {
+  emitOptimizationRemark(PassName, L->getStartLoc(), L->getHeader(), Msg);
 }
 
 void OptimizationRemarkEmitter::emitOptimizationRemarkMissed(
@@ -55,14 +94,16 @@ void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysis(
 }
 
 void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysisFPCommute(
-    const char *PassName, const DebugLoc &DLoc, Value *V, const Twine &Msg) {
+    const char *PassName, const DebugLoc &DLoc, const Value *V,
+    const Twine &Msg) {
   LLVMContext &Ctx = F->getContext();
   Ctx.diagnose(DiagnosticInfoOptimizationRemarkAnalysisFPCommute(
       PassName, *F, DLoc, Msg, computeHotness(V)));
 }
 
 void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysisAliasing(
-    const char *PassName, const DebugLoc &DLoc, Value *V, const Twine &Msg) {
+    const char *PassName, const DebugLoc &DLoc, const Value *V,
+    const Twine &Msg) {
   LLVMContext &Ctx = F->getContext();
   Ctx.diagnose(DiagnosticInfoOptimizationRemarkAnalysisAliasing(
       PassName, *F, DLoc, Msg, computeHotness(V)));
@@ -102,7 +143,7 @@ char OptimizationRemarkEmitterAnalysis::PassID;
 
 OptimizationRemarkEmitter
 OptimizationRemarkEmitterAnalysis::run(Function &F,
-                                       AnalysisManager<Function> &AM) {
+                                       FunctionAnalysisManager &AM) {
   BlockFrequencyInfo *BFI;
 
   if (F.getContext().getDiagnosticHotnessRequested())

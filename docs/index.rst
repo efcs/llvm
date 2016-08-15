@@ -266,6 +266,7 @@ For API clients and LLVM developers.
    TypeMetadata
    FaultMaps
    MIRLangRef
+   Coroutines
 
 :doc:`WritingAnLLVMPass`
    Information on how to write LLVM transformations and analyses.
@@ -377,6 +378,9 @@ For API clients and LLVM developers.
 
 :doc:`CompileCudaWithLLVM`
   LLVM support for CUDA.
+
+:doc:`Coroutines`
+  LLVM support for coroutines.
 
 Development Process Documentation
 =================================
@@ -498,13 +502,13 @@ can be better.
    :hidden:
 
    CodeOfConduct
-   Proposals/GitHub
+   Proposals/GitHubSubMod
 
 :doc:`CodeOfConduct`
    Proposal to adopt a code of conduct on the LLVM social spaces (lists, events,
    IRC, etc).
 
-:doc:`Proposals/GitHub`
+:doc:`Proposals/GitHubSubMod`
    Proposal to move from SVN/Git to GitHub.
 
 

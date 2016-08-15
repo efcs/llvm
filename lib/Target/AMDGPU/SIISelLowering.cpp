@@ -31,6 +31,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
 
@@ -360,6 +361,7 @@ bool SITargetLowering::isLegalAddressingMode(const DataLayout &DL,
   case AMDGPUAS::CONSTANT_ADDRESS: {
     // If the offset isn't a multiple of 4, it probably isn't going to be
     // correctly aligned.
+    // FIXME: Can we get the real alignment here?
     if (AM.BaseOffs % 4 != 0)
       return isLegalMUBUFAddressingMode(AM);
 
@@ -438,8 +440,12 @@ bool SITargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
 
   // TODO: I think v3i32 should allow unaligned accesses on CI with DS_READ_B96,
   // which isn't a simple VT.
-  if (!VT.isSimple() || VT == MVT::Other)
+  // Until MVT is extended to handle this, simply check for the size and
+  // rely on the condition below: allow accesses if the size is a multiple of 4.
+  if (VT == MVT::Other || (VT != MVT::Other && VT.getSizeInBits() > 1024 &&
+                           VT.getStoreSize() > 16)) {
     return false;
+  }
 
   if (AddrSpace == AMDGPUAS::LOCAL_ADDRESS ||
       AddrSpace == AMDGPUAS::REGION_ADDRESS) {
@@ -534,8 +540,8 @@ SITargetLowering::getPreferredVectorAction(EVT VT) const {
 
 bool SITargetLowering::shouldConvertConstantLoadToIntImm(const APInt &Imm,
                                                          Type *Ty) const {
-  const SIInstrInfo *TII = getSubtarget()->getInstrInfo();
-  return TII->isInlineConstant(Imm);
+  // FIXME: Could be smarter if called for vector constants.
+  return true;
 }
 
 bool SITargetLowering::isTypeDesirableForOp(unsigned Op, EVT VT) const {
@@ -720,6 +726,12 @@ SDValue SITargetLowering::LowerFormalArguments(
     CCInfo.AllocateReg(InputPtrReg);
   }
 
+  if (Info->hasDispatchID()) {
+    unsigned DispatchIDReg = Info->addDispatchID(*TRI);
+    MF.addLiveIn(DispatchIDReg, &AMDGPU::SReg_64RegClass);
+    CCInfo.AllocateReg(DispatchIDReg);
+  }
+
   if (Info->hasFlatScratchInit()) {
     unsigned FlatScratchInitReg = Info->addFlatScratchInit(*TRI);
     MF.addLiveIn(FlatScratchInitReg, &AMDGPU::SReg_64RegClass);
@@ -764,7 +776,7 @@ SDValue SITargetLowering::LowerFormalArguments(
       }
 
       InVals.push_back(Arg);
-      Info->ABIArgOffset = Offset + MemVT.getStoreSize();
+      Info->setABIArgOffset(Offset + MemVT.getStoreSize());
       continue;
     }
     assert(VA.isRegLoc() && "Parameter must be in a register!");
@@ -857,7 +869,7 @@ SDValue SITargetLowering::LowerFormalArguments(
 
   // Now that we've figured out where the scratch register inputs are, see if
   // should reserve the arguments and use them directly.
-  bool HasStackObjects = MF.getFrameInfo()->hasStackObjects();
+  bool HasStackObjects = MF.getFrameInfo().hasStackObjects();
   // Record that we know we have non-spill stack objects so we don't need to
   // check all stack objects later.
   if (HasStackObjects)
@@ -1091,27 +1103,10 @@ MachineBasicBlock *SITargetLowering::splitKillBlock(MachineInstr &MI,
   MachineBasicBlock *SplitBB
     = MF->CreateMachineBasicBlock(BB->getBasicBlock());
 
-  // Fix the block phi references to point to the new block for the defs in the
-  // second piece of the block.
-  for (MachineBasicBlock *Succ : BB->successors()) {
-    for (MachineInstr &MI : *Succ) {
-      if (!MI.isPHI())
-        break;
-
-      for (unsigned I = 2, E = MI.getNumOperands(); I != E; I += 2) {
-        MachineOperand &FromBB = MI.getOperand(I);
-        if (BB == FromBB.getMBB()) {
-          FromBB.setMBB(SplitBB);
-          break;
-        }
-      }
-    }
-  }
-
   MF->insert(++MachineFunction::iterator(BB), SplitBB);
   SplitBB->splice(SplitBB->begin(), BB, SplitPoint, BB->end());
 
-  SplitBB->transferSuccessors(BB);
+  SplitBB->transferSuccessorsAndUpdatePHIs(BB);
   BB->addSuccessor(SplitBB);
 
   MI.setDesc(TII->get(AMDGPU::SI_KILL_TERMINATOR));
@@ -1161,7 +1156,7 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
   // Compare the just read M0 value to all possible Idx values.
   BuildMI(LoopBB, I, DL, TII->get(AMDGPU::V_CMP_EQ_U32_e64), CondReg)
     .addReg(CurrentIdxReg)
-    .addOperand(IdxReg);
+    .addReg(IdxReg.getReg(), 0, IdxReg.getSubReg());
 
   // Move index from VCC into M0
   if (Offset == 0) {
@@ -1236,7 +1231,7 @@ static MachineBasicBlock *loadM0FromVGPR(const SIInstrInfo *TII,
   LoopBB->addSuccessor(RemainderBB);
 
   // Move the rest of the block into a new block.
-  RemainderBB->transferSuccessors(&MBB);
+  RemainderBB->transferSuccessorsAndUpdatePHIs(&MBB);
   RemainderBB->splice(RemainderBB->begin(), &MBB, I, MBB.end());
 
   MBB.addSuccessor(LoopBB);
@@ -1444,9 +1439,9 @@ MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
     MachineFunction *MF = BB->getParent();
     SIMachineFunctionInfo *MFI = MF->getInfo<SIMachineFunctionInfo>();
     DebugLoc DL = MI.getDebugLoc();
-    BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_MOVK_I32))
-        .addOperand(MI.getOperand(0))
-        .addImm(MFI->LDSSize);
+    BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_MOV_B32))
+      .addOperand(MI.getOperand(0))
+      .addImm(MFI->getLDSSize());
     MI.eraseFromParent();
     return BB;
   }
@@ -1655,10 +1650,10 @@ void SITargetLowering::createDebuggerPrologueStackObjects(
   // For each dimension:
   for (unsigned i = 0; i < 3; ++i) {
     // Create fixed stack object for work group ID.
-    ObjectIdx = MF.getFrameInfo()->CreateFixedObject(4, i * 4, true);
+    ObjectIdx = MF.getFrameInfo().CreateFixedObject(4, i * 4, true);
     Info->setDebuggerWorkGroupIDStackObjectIndex(i, ObjectIdx);
     // Create fixed stack object for work item ID.
-    ObjectIdx = MF.getFrameInfo()->CreateFixedObject(4, i * 4 + 16, true);
+    ObjectIdx = MF.getFrameInfo().CreateFixedObject(4, i * 4 + 16, true);
     Info->setDebuggerWorkItemIDStackObjectIndex(i, ObjectIdx);
   }
 }
@@ -1992,6 +1987,10 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       = TRI->getPreloadedValue(MF, SIRegisterInfo::KERNARG_SEGMENT_PTR);
     return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass, Reg, VT);
   }
+  case Intrinsic::amdgcn_dispatch_id: {
+    unsigned Reg = TRI->getPreloadedValue(MF, SIRegisterInfo::DISPATCH_ID);
+    return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass, Reg, VT);
+  }
   case Intrinsic::amdgcn_rcp:
     return DAG.getNode(AMDGPUISD::RCP, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq:
@@ -2002,6 +2001,11 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       return emitRemovedIntrinsicError(DAG, DL, VT);
 
     return DAG.getNode(AMDGPUISD::RSQ_LEGACY, DL, VT, Op.getOperand(1));
+  }
+  case Intrinsic::amdgcn_rcp_legacy: {
+    if (Subtarget->getGeneration() >= SISubtarget::VOLCANIC_ISLANDS)
+      return emitRemovedIntrinsicError(DAG, DL, VT);
+    return DAG.getNode(AMDGPUISD::RCP_LEGACY, DL, VT, Op.getOperand(1));
   }
   case Intrinsic::amdgcn_rsq_clamp: {
     if (Subtarget->getGeneration() < SISubtarget::VOLCANIC_ISLANDS)
@@ -2071,11 +2075,6 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
 
     return lowerImplicitZextParam(DAG, Op, MVT::i16,
                                   SI::KernelInputOffsets::LOCAL_SIZE_Z);
-  case Intrinsic::amdgcn_read_workdim:
-  case AMDGPUIntrinsic::AMDGPU_read_workdim: // Legacy name.
-    // Really only 2 bits.
-    return lowerImplicitZextParam(DAG, Op, MVT::i8,
-                                  getImplicitParameterOffset(MFI, GRID_DIM));
   case Intrinsic::amdgcn_workgroup_id_x:
   case Intrinsic::r600_read_tgid_x:
     return CreateLiveInRegister(DAG, &AMDGPU::SReg_32RegClass,
@@ -2220,6 +2219,37 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getNode(AMDGPUISD::DIV_SCALE, DL, Op->getVTList(), Src0,
                        Denominator, Numerator);
   }
+  case Intrinsic::amdgcn_icmp: {
+    const auto *CD = dyn_cast<ConstantSDNode>(Op.getOperand(3));
+    int CondCode = CD->getSExtValue();
+
+    if (CondCode < ICmpInst::Predicate::FIRST_ICMP_PREDICATE ||
+	       CondCode >= ICmpInst::Predicate::BAD_ICMP_PREDICATE)
+      return DAG.getUNDEF(VT);
+
+    ICmpInst::Predicate IcInput =
+	   static_cast<ICmpInst::Predicate>(CondCode);
+    ISD::CondCode CCOpcode = getICmpCondCode(IcInput);
+    return DAG.getNode(AMDGPUISD::SETCC, DL, VT, Op.getOperand(1),
+                       Op.getOperand(2), DAG.getCondCode(CCOpcode));
+  }
+  case Intrinsic::amdgcn_fcmp: {
+    const auto *CD = dyn_cast<ConstantSDNode>(Op.getOperand(3));
+    int CondCode = CD->getSExtValue();
+
+    if (CondCode <= FCmpInst::Predicate::FCMP_FALSE ||
+	       CondCode >= FCmpInst::Predicate::FCMP_TRUE)
+      return DAG.getUNDEF(VT);
+
+    FCmpInst::Predicate IcInput =
+	   static_cast<FCmpInst::Predicate>(CondCode);
+    ISD::CondCode CCOpcode = getFCmpCondCode(IcInput);
+    return DAG.getNode(AMDGPUISD::SETCC, DL, VT, Op.getOperand(1),
+                       Op.getOperand(2), DAG.getCondCode(CCOpcode));
+  }
+  case Intrinsic::amdgcn_fmul_legacy:
+    return DAG.getNode(AMDGPUISD::FMUL_LEGACY, DL, VT,
+                       Op.getOperand(1), Op.getOperand(2));
   case Intrinsic::amdgcn_sffbh:
   case AMDGPUIntrinsic::AMDGPU_flbit_i32: // Legacy name.
     return DAG.getNode(AMDGPUISD::FFBH_I32, DL, VT, Op.getOperand(1));
@@ -2439,22 +2469,31 @@ SDValue SITargetLowering::lowerFastUnsafeFDIV(SDValue Op,
   bool Unsafe = DAG.getTarget().Options.UnsafeFPMath;
 
   if (const ConstantFPSDNode *CLHS = dyn_cast<ConstantFPSDNode>(LHS)) {
-    if ((Unsafe || (VT == MVT::f32 && !Subtarget->hasFP32Denormals())) &&
-        CLHS->isExactlyValue(1.0)) {
-      // v_rcp_f32 and v_rsq_f32 do not support denormals, and according to
-      // the CI documentation has a worst case error of 1 ulp.
-      // OpenCL requires <= 2.5 ulp for 1.0 / x, so it should always be OK to
-      // use it as long as we aren't trying to use denormals.
+    if ((Unsafe || (VT == MVT::f32 && !Subtarget->hasFP32Denormals()))) {
 
-      // 1.0 / sqrt(x) -> rsq(x)
-      //
-      // XXX - Is UnsafeFPMath sufficient to do this for f64? The maximum ULP
-      // error seems really high at 2^29 ULP.
-      if (RHS.getOpcode() == ISD::FSQRT)
-        return DAG.getNode(AMDGPUISD::RSQ, SL, VT, RHS.getOperand(0));
+      if (CLHS->isExactlyValue(1.0)) {
+        // v_rcp_f32 and v_rsq_f32 do not support denormals, and according to
+        // the CI documentation has a worst case error of 1 ulp.
+        // OpenCL requires <= 2.5 ulp for 1.0 / x, so it should always be OK to
+        // use it as long as we aren't trying to use denormals.
 
-      // 1.0 / x -> rcp(x)
-      return DAG.getNode(AMDGPUISD::RCP, SL, VT, RHS);
+        // 1.0 / sqrt(x) -> rsq(x)
+        //
+        // XXX - Is UnsafeFPMath sufficient to do this for f64? The maximum ULP
+        // error seems really high at 2^29 ULP.
+        if (RHS.getOpcode() == ISD::FSQRT)
+          return DAG.getNode(AMDGPUISD::RSQ, SL, VT, RHS.getOperand(0));
+
+        // 1.0 / x -> rcp(x)
+        return DAG.getNode(AMDGPUISD::RCP, SL, VT, RHS);
+      }
+
+      // Same as for 1.0, but expand the sign out of the constant.
+      if (CLHS->isExactlyValue(-1.0)) {
+        // -1.0 / x -> rcp (fneg x)
+        SDValue FNegRHS = DAG.getNode(ISD::FNEG, SL, VT, RHS);
+        return DAG.getNode(AMDGPUISD::RCP, SL, VT, FNegRHS);
+      }
     }
   }
 
@@ -3368,6 +3407,7 @@ SDValue SITargetLowering::PerformDAGCombine(SDNode *N,
   case AMDGPUISD::FRACT:
   case AMDGPUISD::RCP:
   case AMDGPUISD::RSQ:
+  case AMDGPUISD::RCP_LEGACY:
   case AMDGPUISD::RSQ_LEGACY:
   case AMDGPUISD::RSQ_CLAMP:
   case AMDGPUISD::LDEXP: {
@@ -3378,34 +3418,6 @@ SDValue SITargetLowering::PerformDAGCombine(SDNode *N,
   }
   }
   return AMDGPUTargetLowering::PerformDAGCombine(N, DCI);
-}
-
-/// \brief Analyze the possible immediate value Op
-///
-/// Returns -1 if it isn't an immediate, 0 if it's and inline immediate
-/// and the immediate value if it's a literal immediate
-int32_t SITargetLowering::analyzeImmediate(const SDNode *N) const {
-  const SIInstrInfo *TII = getSubtarget()->getInstrInfo();
-
-  if (const ConstantSDNode *Node = dyn_cast<ConstantSDNode>(N)) {
-    if (TII->isInlineConstant(Node->getAPIntValue()))
-      return 0;
-
-    uint64_t Val = Node->getZExtValue();
-    return isUInt<32>(Val) ? Val : -1;
-  }
-
-  if (const ConstantFPSDNode *Node = dyn_cast<ConstantFPSDNode>(N)) {
-    if (TII->isInlineConstant(Node->getValueAPF().bitcastToAPInt()))
-      return 0;
-
-    if (Node->getValueType(0) == MVT::f32)
-      return FloatToBits(Node->getValueAPF().convertToFloat());
-
-    return -1;
-  }
-
-  return -1;
 }
 
 /// \brief Helper function for adjustWritemask

@@ -448,8 +448,7 @@ void Formula::deleteBaseReg(const SCEV *&S) {
 
 /// Test if this formula references the given register.
 bool Formula::referencesReg(const SCEV *S) const {
-  return S == ScaledReg ||
-         std::find(BaseRegs.begin(), BaseRegs.end(), S) != BaseRegs.end();
+  return S == ScaledReg || is_contained(BaseRegs, S);
 }
 
 /// Test whether this formula uses registers which are used by uses other than
@@ -2070,10 +2069,30 @@ void
 LSRInstance::OptimizeLoopTermCond() {
   SmallPtrSet<Instruction *, 4> PostIncs;
 
+  // We need a different set of heuristics for rotated and non-rotated loops.
+  // If a loop is rotated then the latch is also the backedge, so inserting
+  // post-inc expressions just before the latch is ideal. To reduce live ranges
+  // it also makes sense to rewrite terminating conditions to use post-inc
+  // expressions.
+  //
+  // If the loop is not rotated then the latch is not a backedge; the latch
+  // check is done in the loop head. Adding post-inc expressions before the
+  // latch will cause overlapping live-ranges of pre-inc and post-inc expressions
+  // in the loop body. In this case we do *not* want to use post-inc expressions
+  // in the latch check, and we want to insert post-inc expressions before
+  // the backedge.
   BasicBlock *LatchBlock = L->getLoopLatch();
   SmallVector<BasicBlock*, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
+  if (llvm::all_of(ExitingBlocks, [&LatchBlock](const BasicBlock *BB) {
+        return LatchBlock != BB;
+      })) {
+    // The backedge doesn't exit the loop; treat this as a head-tested loop.
+    IVIncInsertPos = LatchBlock->getTerminator();
+    return;
+  }
 
+  // Otherwise treat this as a rotated loop.
   for (BasicBlock *ExitingBlock : ExitingBlocks) {
 
     // Get the terminating condition for the loop if possible.  If we
@@ -2800,8 +2819,7 @@ void LSRInstance::FinalizeChain(IVChain &Chain) {
 
   for (const IVInc &Inc : Chain) {
     DEBUG(dbgs() << "        Inc: " << Inc.UserInst << "\n");
-    auto UseI = std::find(Inc.UserInst->op_begin(), Inc.UserInst->op_end(),
-                          Inc.IVOperand);
+    auto UseI = find(Inc.UserInst->operands(), Inc.IVOperand);
     assert(UseI != Inc.UserInst->op_end() && "cannot find IV operand");
     IVIncSet.insert(UseI);
   }
@@ -2934,8 +2952,8 @@ void LSRInstance::CollectFixupsAndInitialFormulae() {
   for (const IVStrideUse &U : IU) {
     Instruction *UserInst = U.getUser();
     // Skip IV users that are part of profitable IV Chains.
-    User::op_iterator UseI = std::find(UserInst->op_begin(), UserInst->op_end(),
-                                       U.getOperandValToReplace());
+    User::op_iterator UseI =
+        find(UserInst->operands(), U.getOperandValToReplace());
     assert(UseI != UserInst->op_end() && "cannot find IV operand");
     if (IVIncSet.count(UseI))
       continue;
@@ -4231,8 +4249,7 @@ void LSRInstance::SolveRecurse(SmallVectorImpl<const Formula *> &Solution,
     int NumReqRegsToFind = std::min(F.getNumRegs(), ReqRegs.size());
     for (const SCEV *Reg : ReqRegs) {
       if ((F.ScaledReg && F.ScaledReg == Reg) ||
-          std::find(F.BaseRegs.begin(), F.BaseRegs.end(), Reg) !=
-          F.BaseRegs.end()) {
+          is_contained(F.BaseRegs, Reg)) {
         --NumReqRegsToFind;
         if (NumReqRegsToFind == 0)
           break;
@@ -4444,6 +4461,7 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
   // Determine an input position which will be dominated by the operands and
   // which will dominate the result.
   IP = AdjustInsertPositionForExpand(IP, LF, LU, Rewriter);
+  Rewriter.setInsertPoint(&*IP);
 
   // Inform the Rewriter if we have a post-increment use, so that it can
   // perform an advantageous expansion.
@@ -4475,7 +4493,7 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
                                  LF.UserInst, LF.OperandValToReplace,
                                  Loops, SE, DT);
 
-    Ops.push_back(SE.getUnknown(Rewriter.expandCodeFor(Reg, nullptr, &*IP)));
+    Ops.push_back(SE.getUnknown(Rewriter.expandCodeFor(Reg, nullptr)));
   }
 
   // Expand the ScaledReg portion.
@@ -4493,14 +4511,14 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
       // Expand ScaleReg as if it was part of the base regs.
       if (F.Scale == 1)
         Ops.push_back(
-            SE.getUnknown(Rewriter.expandCodeFor(ScaledS, nullptr, &*IP)));
+            SE.getUnknown(Rewriter.expandCodeFor(ScaledS, nullptr)));
       else {
         // An interesting way of "folding" with an icmp is to use a negated
         // scale, which we'll implement by inserting it into the other operand
         // of the icmp.
         assert(F.Scale == -1 &&
                "The only scale supported by ICmpZero uses is -1!");
-        ICmpScaledV = Rewriter.expandCodeFor(ScaledS, nullptr, &*IP);
+        ICmpScaledV = Rewriter.expandCodeFor(ScaledS, nullptr);
       }
     } else {
       // Otherwise just expand the scaled register and an explicit scale,
@@ -4510,11 +4528,11 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
       // Unless the addressing mode will not be folded.
       if (!Ops.empty() && LU.Kind == LSRUse::Address &&
           isAMCompletelyFolded(TTI, LU, F)) {
-        Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty, &*IP);
+        Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty);
         Ops.clear();
         Ops.push_back(SE.getUnknown(FullV));
       }
-      ScaledS = SE.getUnknown(Rewriter.expandCodeFor(ScaledS, nullptr, &*IP));
+      ScaledS = SE.getUnknown(Rewriter.expandCodeFor(ScaledS, nullptr));
       if (F.Scale != 1)
         ScaledS =
             SE.getMulExpr(ScaledS, SE.getConstant(ScaledS->getType(), F.Scale));
@@ -4526,7 +4544,7 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
   if (F.BaseGV) {
     // Flush the operand list to suppress SCEVExpander hoisting.
     if (!Ops.empty()) {
-      Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty, &*IP);
+      Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty);
       Ops.clear();
       Ops.push_back(SE.getUnknown(FullV));
     }
@@ -4536,7 +4554,7 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
   // Flush the operand list to suppress SCEVExpander hoisting of both folded and
   // unfolded offsets. LSR assumes they both live next to their uses.
   if (!Ops.empty()) {
-    Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty, &*IP);
+    Value *FullV = Rewriter.expandCodeFor(SE.getAddExpr(Ops), Ty);
     Ops.clear();
     Ops.push_back(SE.getUnknown(FullV));
   }
@@ -4572,7 +4590,7 @@ Value *LSRInstance::Expand(const LSRFixup &LF,
   const SCEV *FullS = Ops.empty() ?
                       SE.getConstant(IntTy, 0) :
                       SE.getAddExpr(Ops);
-  Value *FullV = Rewriter.expandCodeFor(FullS, Ty, &*IP);
+  Value *FullV = Rewriter.expandCodeFor(FullS, Ty);
 
   // We're done expanding now, so reset the rewriter.
   Rewriter.clearPostInc();
@@ -5023,7 +5041,7 @@ bool LoopStrengthReduce::runOnLoop(Loop *L, LPPassManager & /*LPM*/) {
 }
 
 PreservedAnalyses LoopStrengthReducePass::run(Loop &L,
-                                              AnalysisManager<Loop> &AM) {
+                                              LoopAnalysisManager &AM) {
   const auto &FAM =
       AM.getResult<FunctionAnalysisManagerLoopProxy>(L).getManager();
   Function *F = L.getHeader()->getParent();

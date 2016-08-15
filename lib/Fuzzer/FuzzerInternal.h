@@ -19,6 +19,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdlib>
+#include <memory>
 #include <random>
 #include <string.h>
 #include <string>
@@ -254,10 +255,12 @@ public:
   size_t Mutate_CustomCrossOver(uint8_t *Data, size_t Size, size_t MaxSize);
   /// Mutates data by shuffling bytes.
   size_t Mutate_ShuffleBytes(uint8_t *Data, size_t Size, size_t MaxSize);
-  /// Mutates data by erasing a byte.
-  size_t Mutate_EraseByte(uint8_t *Data, size_t Size, size_t MaxSize);
+  /// Mutates data by erasing bytes.
+  size_t Mutate_EraseBytes(uint8_t *Data, size_t Size, size_t MaxSize);
   /// Mutates data by inserting a byte.
   size_t Mutate_InsertByte(uint8_t *Data, size_t Size, size_t MaxSize);
+  /// Mutates data by inserting several repeated bytes.
+  size_t Mutate_InsertRepeatedBytes(uint8_t *Data, size_t Size, size_t MaxSize);
   /// Mutates data by chanding one byte.
   size_t Mutate_ChangeByte(uint8_t *Data, size_t Size, size_t MaxSize);
   /// Mutates data by chanding one bit.
@@ -334,6 +337,8 @@ private:
   std::vector<Mutator> DefaultMutators;
 };
 
+class CoverageController;
+
 class Fuzzer {
 public:
 
@@ -346,17 +351,16 @@ public:
       CallerCalleeCoverage = 0;
       PcMapBits = 0;
       CounterBitmapBits = 0;
-      PcBufferLen = 0;
       CounterBitmap.clear();
       PCMap.Reset();
+      PcBufferPos = 0;
     }
 
     std::string DebugString() const;
 
     size_t BlockCoverage;
     size_t CallerCalleeCoverage;
-
-    size_t PcBufferLen;
+    size_t PcBufferPos;
     // Precalculated number of bits in CounterBitmap.
     size_t CounterBitmapBits;
     std::vector<uint8_t> CounterBitmap;
@@ -366,6 +370,7 @@ public:
   };
 
   Fuzzer(UserCallback CB, MutationDispatcher &MD, FuzzingOptions Options);
+  ~Fuzzer();
   void AddToCorpus(const Unit &U) {
     Corpus.push_back(U);
     UpdateCorpusDistribution();
@@ -481,6 +486,7 @@ private:
 
   // Maximum recorded coverage.
   Coverage MaxCoverage;
+  std::unique_ptr<CoverageController> CController;
 
   // Need to know our own thread.
   static thread_local bool IsMyThread;

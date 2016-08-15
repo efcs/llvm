@@ -25,11 +25,12 @@
 using namespace llvm;
 
 MachineLegalizer::MachineLegalizer() : TablesInitialized(false) {
-  DefaultActions[TargetOpcode::G_ADD] = NarrowScalar;
-}
+  // FIXME: these two can be legalized to the fundamental load/store Jakob
+  // proposed. Once loads & stores are supported.
+  DefaultActions[TargetOpcode::G_ANYEXTEND] = Legal;
+  DefaultActions[TargetOpcode::G_TRUNC] = Legal;
 
-bool MachineLegalizer::legalizeInstr(MachineInstr &MI) const {
-  llvm_unreachable("Unimplemented functionality");
+  DefaultActions[TargetOpcode::G_ADD] = NarrowScalar;
 }
 
 void MachineLegalizer::computeTables() {
@@ -55,6 +56,11 @@ MachineLegalizer::getAction(unsigned Opcode, LLT Ty) const {
   assert(TablesInitialized && "backend forgot to call computeTables");
   // These *have* to be implemented for now, they're the fundamental basis of
   // how everything else is transformed.
+
+  // FIXME: the long-term plan calls for expansion in terms of load/store (if
+  // they're not legal).
+  if (Opcode == TargetOpcode::G_SEQUENCE || Opcode == TargetOpcode::G_EXTRACT)
+    return std::make_pair(Legal, Ty);
 
   auto ActionIt = Actions.find(std::make_pair(Opcode, Ty));
   if (ActionIt != Actions.end())
@@ -93,11 +99,11 @@ MachineLegalizer::getAction(unsigned Opcode, LLT Ty) const {
 }
 
 std::pair<MachineLegalizer::LegalizeAction, LLT>
-MachineLegalizer::getAction(MachineInstr &MI) const {
+MachineLegalizer::getAction(const MachineInstr &MI) const {
   return getAction(MI.getOpcode(), MI.getType());
 }
 
-bool MachineLegalizer::isLegal(MachineInstr &MI) const {
+bool MachineLegalizer::isLegal(const MachineInstr &MI) const {
   return getAction(MI).first == Legal;
 }
 

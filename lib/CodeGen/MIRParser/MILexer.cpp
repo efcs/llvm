@@ -174,14 +174,18 @@ static Cursor lexName(Cursor C, MIToken &Token, MIToken::TokenKind Type,
 }
 
 static Cursor maybeLexIntegerOrScalarType(Cursor C, MIToken &Token) {
-  if ((C.peek() != 'i' && C.peek() != 's') || !isdigit(C.peek(1)))
+  if ((C.peek() != 'i' && C.peek() != 's' && C.peek() != 'p') ||
+      !isdigit(C.peek(1)))
     return None;
   char Kind = C.peek();
   auto Range = C;
-  C.advance(); // Skip 'i'
+  C.advance(); // Skip 'i', 's', or 'p'
   while (isdigit(C.peek()))
     C.advance();
-  Token.reset(Kind == 'i' ? MIToken::IntegerType : MIToken::ScalarType,
+
+  Token.reset(Kind == 'i'
+                  ? MIToken::IntegerType
+                  : (Kind == 's' ? MIToken::ScalarType : MIToken::PointerType),
               Range.upto(C));
   return C;
 }
@@ -201,12 +205,13 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
       .Case("tied-def", MIToken::kw_tied_def)
       .Case("frame-setup", MIToken::kw_frame_setup)
       .Case("debug-location", MIToken::kw_debug_location)
-      .Case(".cfi_same_value", MIToken::kw_cfi_same_value)
-      .Case(".cfi_offset", MIToken::kw_cfi_offset)
-      .Case(".cfi_def_cfa_register", MIToken::kw_cfi_def_cfa_register)
-      .Case(".cfi_def_cfa_offset", MIToken::kw_cfi_def_cfa_offset)
-      .Case(".cfi_def_cfa", MIToken::kw_cfi_def_cfa)
+      .Case("same_value", MIToken::kw_cfi_same_value)
+      .Case("offset", MIToken::kw_cfi_offset)
+      .Case("def_cfa_register", MIToken::kw_cfi_def_cfa_register)
+      .Case("def_cfa_offset", MIToken::kw_cfi_def_cfa_offset)
+      .Case("def_cfa", MIToken::kw_cfi_def_cfa)
       .Case("blockaddress", MIToken::kw_blockaddress)
+      .Case("intrinsic", MIToken::kw_intrinsic)
       .Case("target-index", MIToken::kw_target_index)
       .Case("half", MIToken::kw_half)
       .Case("float", MIToken::kw_float)
@@ -233,7 +238,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
 }
 
 static Cursor maybeLexIdentifier(Cursor C, MIToken &Token) {
-  if (!isalpha(C.peek()) && C.peek() != '_' && C.peek() != '.')
+  if (!isalpha(C.peek()) && C.peek() != '_')
     return None;
   auto Range = C;
   while (isIdentifierChar(C.peek()))
@@ -368,6 +373,11 @@ static Cursor lexVirtualRegister(Cursor C, MIToken &Token) {
   return C;
 }
 
+/// Returns true for a character allowed in a register name.
+static bool isRegisterChar(char C) {
+  return isIdentifierChar(C) && C != '.';
+}
+
 static Cursor maybeLexRegister(Cursor C, MIToken &Token) {
   if (C.peek() != '%')
     return None;
@@ -375,7 +385,7 @@ static Cursor maybeLexRegister(Cursor C, MIToken &Token) {
     return lexVirtualRegister(C, Token);
   auto Range = C;
   C.advance(); // Skip '%'
-  while (isIdentifierChar(C.peek()))
+  while (isRegisterChar(C.peek()))
     C.advance();
   Token.reset(MIToken::NamedRegister, Range.upto(C))
       .setStringValue(Range.upto(C).drop_front(1)); // Drop the '%'
@@ -487,6 +497,8 @@ static MIToken::TokenKind symbolToken(char C) {
   switch (C) {
   case ',':
     return MIToken::comma;
+  case '.':
+    return MIToken::dot;
   case '=':
     return MIToken::equal;
   case ':':

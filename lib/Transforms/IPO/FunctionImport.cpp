@@ -130,6 +130,10 @@ static bool eligibleForImport(const ModuleSummaryIndex &Index,
     // FIXME: we may be able to import it by copying it without promotion.
     return false;
 
+  // Don't import functions that are not viable to inline.
+  if (Summary.isNotViableToInline())
+    return false;
+
   // Check references (and potential calls) in the same module. If the current
   // value references a global that can't be externally referenced it is not
   // eligible for import.
@@ -489,6 +493,15 @@ void llvm::thinLTOResolveWeakForLinkerModule(
     DEBUG(dbgs() << "ODR fixing up linkage for `" << GV.getName() << "` from "
                  << GV.getLinkage() << " to " << NewLinkage << "\n");
     GV.setLinkage(NewLinkage);
+    // Remove functions converted to available_externally from comdats,
+    // as this is a declaration for the linker, and will be dropped eventually.
+    // It is illegal for comdats to contain declarations.
+    auto *GO = dyn_cast_or_null<GlobalObject>(&GV);
+    if (GO && GO->isDeclarationForLinker() && GO->hasComdat()) {
+      assert(GO->hasAvailableExternallyLinkage() &&
+             "Expected comdat on definition (possibly available external)");
+      GO->setComdat(nullptr);
+    }
   };
 
   // Process functions and global now
@@ -785,7 +798,7 @@ public:
 } // anonymous namespace
 
 PreservedAnalyses FunctionImportPass::run(Module &M,
-                                          AnalysisManager<Module> &AM) {
+                                          ModuleAnalysisManager &AM) {
   if (!doImportingForModule(M, Index))
     return PreservedAnalyses::all();
 
