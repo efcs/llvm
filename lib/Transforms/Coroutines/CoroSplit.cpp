@@ -361,13 +361,117 @@ static void postSplitCleanup(Function &F) {
   FPM.doFinalization();
 }
 
+static void handleNoSuspendCoroutine(CoroBeginInst *CoroBegin, Type *FrameTy) {
+  auto *CoroId = CoroBegin->getId();
+  auto AllocInst = CoroId->getCoroAlloc();
+  coro::replaceCoroFree(CoroId, /*Elide=*/AllocInst != nullptr);
+  if (AllocInst) {
+    IRBuilder<> Builder(AllocInst);
+    // FIXME: Need to handle overaligned members
+    auto Frame = Builder.CreateAlloca(FrameTy);
+    auto vFrame = Builder.CreateBitCast(Frame, Builder.getInt8PtrTy());
+    AllocInst->replaceAllUsesWith(Builder.getFalse());
+    AllocInst->eraseFromParent();
+    CoroBegin->replaceAllUsesWith(vFrame);
+  }
+  else
+    CoroBegin->replaceAllUsesWith(CoroBegin->getMem());
+
+  CoroBegin->eraseFromParent();
+}
+
+// look for a very simple pattern
+//    coro.save
+//    no other calls
+//    resume or destroy call
+//    coro.suspend
+
+static bool simplifySuspendPoint(CoroSuspendInst *Suspend) {
+  auto* Save = Suspend->getCoroSave();
+  auto* BB = Suspend->getParent();
+  if (BB != Save->getParent())
+    return false;
+
+  CallSite SingleCallSite;
+
+  // check that we have only one CallSite
+  for (Instruction *I = Save->getNextNode(); I != Suspend;
+       I = I->getNextNode()) {
+    if (isa<CoroFrameInst>(I))
+      continue;
+    if (isa<CoroSubFnInst>(I))
+      continue;
+    if (CallSite CS = CallSite(I)) {
+      if (SingleCallSite)
+        return false;
+      else
+        SingleCallSite = CS;
+    }
+  }
+  auto *CallInstr = SingleCallSite.getInstruction();
+  if (!CallInstr)
+    return false;
+
+  auto *Callee = SingleCallSite.getCalledValue();
+
+  if (isa<Function>(Callee))
+    return false;
+
+  Callee = Callee->stripPointerCasts();
+  auto *SubFn = dyn_cast<CoroSubFnInst>(Callee);
+  if (!SubFn)
+    return false;
+
+  Suspend->replaceAllUsesWith(SubFn->getRawIndex());
+  Suspend->eraseFromParent();
+  Save->eraseFromParent();
+
+  SubFn->replaceAllUsesWith(
+      ConstantPointerNull::get(cast<PointerType>(SubFn->getType())));
+  SubFn->eraseFromParent();
+
+  CallInstr->eraseFromParent();
+
+  return true;
+}
+
+// Remove suspend points that are simplified.
+static void simplifySuspendPoints(coro::Shape &Shape) {
+  auto &S = Shape.CoroSuspends;
+  size_t I = 0, N = S.size();
+  if (N == 0)
+    return;
+  for (;;) {
+    if (simplifySuspendPoint(S[I])) {
+      if (--N == I)
+        break;
+      std::swap(S[I], S[N]);
+      continue;
+    }
+    if (++I == N)
+      break;
+  }
+  S.resize(N);
+}
+
 static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
   coro::Shape Shape(F);
   if (!Shape.CoroBegin)
     return;
 
+  simplifySuspendPoints(Shape);
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
+
+  // If there is no suspend points, no split required, just remove
+  // the allocation and deallocation blocks, they are not needed.
+  if (Shape.CoroSuspends.empty()) {
+    handleNoSuspendCoroutine(Shape.CoroBegin, Shape.FrameTy);
+    removeCoroEnds(Shape);
+    postSplitCleanup(F);
+    coro::updateCallGraph(F, {}, CG, SCC);
+    return;
+  }
 
   auto *ResumeEntry = createResumeEntryBlock(F, Shape);
   auto ResumeClone = createClone(F, ".resume", Shape, ResumeEntry, 0);
