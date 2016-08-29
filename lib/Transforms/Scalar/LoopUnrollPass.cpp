@@ -431,15 +431,15 @@ analyzeLoopUnrollCost(const Loop *L, unsigned TripCount, DominatorTree &DT,
         if (IsFree)
           continue;
 
-        // If the instruction might have a side-effect recursively account for
-        // the cost of it and all the instructions leading up to it.
-        if (I.mayHaveSideEffects())
-          AddCostRecursively(I, Iteration);
-
         // Can't properly model a cost of a call.
         // FIXME: With a proper cost model we should be able to do it.
         if(isa<CallInst>(&I))
           return None;
+
+        // If the instruction might have a side-effect recursively account for
+        // the cost of it and all the instructions leading up to it.
+        if (I.mayHaveSideEffects())
+          AddCostRecursively(I, Iteration);
 
         // If unrolled body turns out to be too big, bail out.
         if (UnrolledCost > MaxUnrolledLoopSize) {
@@ -948,6 +948,10 @@ static bool tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
       L, TTI, ProvidedThreshold, ProvidedCount, ProvidedAllowPartial,
       ProvidedRuntime);
 
+  // Exit early if unrolling is disabled.
+  if (UP.Threshold == 0 && (!UP.Partial || UP.PartialThreshold == 0))
+    return false;
+
   // If the loop contains a convergent operation, the prelude we'd add
   // to do the first few instructions before we hit the unrolled loop
   // is unsafe -- it adds a control-flow dependency to the convergent
@@ -1014,7 +1018,10 @@ public:
     const TargetTransformInfo &TTI =
         getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-    auto &ORE = getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE();
+    // For the old PM, we can't use OptimizationRemarkEmitter as an analysis
+    // pass.  Function analyses need to be preserved across loop transformations
+    // but ORE cannot be preserved (see comment before the pass definition).
+    OptimizationRemarkEmitter ORE(&F);
     bool PreserveLCSSA = mustPreserveAnalysisID(LCSSAID);
 
     return tryToUnrollLoop(L, DT, LI, SE, TTI, AC, ORE, PreserveLCSSA,

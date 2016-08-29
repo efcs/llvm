@@ -427,7 +427,7 @@ SDValue DAGTypeLegalizer::PromoteIntRes_FP_TO_XINT(SDNode *N) {
   // Assert that the converted value fits in the original type.  If it doesn't
   // (eg: because the value being converted is too big), then the result of the
   // original operation was undefined anyway, so the assert is still correct.
-  return DAG.getNode(N->getOpcode() == ISD::FP_TO_UINT ?
+  return DAG.getNode(NewOpc == ISD::FP_TO_UINT ?
                      ISD::AssertZext : ISD::AssertSext, dl, NVT, Res,
                      DAG.getValueType(N->getValueType(0).getScalarType()));
 }
@@ -1235,7 +1235,15 @@ SDValue DAGTypeLegalizer::PromoteIntOp_MGATHER(MaskedGatherSDNode *N,
     NewOps[OpNo] = PromoteTargetBoolean(N->getOperand(OpNo), DataVT);
   } else
     NewOps[OpNo] = GetPromotedInteger(N->getOperand(OpNo));
-  return SDValue(DAG.UpdateNodeOperands(N, NewOps), 0);
+
+  SDValue Res = SDValue(DAG.UpdateNodeOperands(N, NewOps), 0);
+  // updated in place.
+  if (Res.getNode() == N)
+    return Res;
+
+  ReplaceValueWith(SDValue(N, 0), Res.getValue(0));
+  ReplaceValueWith(SDValue(N, 1), Res.getValue(1));
+  return SDValue();
 }
 
 SDValue DAGTypeLegalizer::PromoteIntOp_MSCATTER(MaskedScatterSDNode *N,
@@ -1776,7 +1784,7 @@ void DAGTypeLegalizer::ExpandIntRes_ADDSUB(SDNode *N,
     switch (BoolType) {
     case TargetLoweringBase::UndefinedBooleanContent:
       OVF = DAG.getNode(ISD::AND, dl, NVT, DAG.getConstant(1, dl, NVT), OVF);
-      // Fallthrough
+      LLVM_FALLTHROUGH;
     case TargetLoweringBase::ZeroOrOneBooleanContent:
       Hi = DAG.getNode(N->getOpcode(), dl, NVT, Hi, OVF);
       break;

@@ -377,8 +377,8 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     SmallVector<char, 128> OutputBuffer;
     {
       raw_svector_ostream OS(OutputBuffer);
-      ModuleSummaryIndexBuilder IndexBuilder(&TheModule);
-      WriteBitcodeToFile(&TheModule, OS, true, &IndexBuilder.getIndex());
+      auto Index = buildModuleSummaryIndex(TheModule);
+      WriteBitcodeToFile(&TheModule, OS, true, &Index);
     }
     return make_unique<ObjectMemoryBuffer>(std::move(OutputBuffer));
   }
@@ -578,7 +578,7 @@ void ThinLTOCodeGenerator::gatherImportedSummariesForModule(
                            ExportLists);
 
   llvm::gatherImportedSummariesForModule(ModulePath, ModuleToDefinedGVSummaries,
-                                         ImportLists,
+                                         ImportLists[ModulePath],
                                          ModuleToSummariesForIndex);
 }
 
@@ -601,7 +601,7 @@ void ThinLTOCodeGenerator::emitImports(StringRef ModulePath,
                            ExportLists);
 
   std::error_code EC;
-  if ((EC = EmitImportsFiles(ModulePath, OutputName, ImportLists)))
+  if ((EC = EmitImportsFiles(ModulePath, OutputName, ImportLists[ModulePath])))
     report_fatal_error(Twine("Failed to open ") + OutputName +
                        " to save imports lists\n");
 }

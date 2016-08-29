@@ -2648,8 +2648,7 @@ void SwingSchedulerDAG::generateExistingPhis(
       // references another Phi, and the other Phi is scheduled in an
       // earlier stage. We can try to reuse an existing Phi up until the last
       // stage of the current Phi.
-      if (LoopDefIsPhi && VRMap[CurStageNum].count(LoopVal) &&
-          LoopValStage >= (int)(CurStageNum - LastStageNum)) {
+      if (LoopDefIsPhi && (int)PrologStage >= StageScheduled) {
         int LVNumStages = Schedule.getStagesForPhi(LoopVal);
         int StageDiff = (StageScheduled - LoopValStage);
         LVNumStages -= StageDiff;
@@ -3083,20 +3082,18 @@ void SwingSchedulerDAG::updateMemOperands(MachineInstr &NewMI,
     return;
   MachineInstr::mmo_iterator NewMemRefs = MF.allocateMemRefsArray(NumRefs);
   unsigned Refs = 0;
-  for (MachineInstr::mmo_iterator I = NewMI.memoperands_begin(),
-                                  E = NewMI.memoperands_end();
-       I != E; ++I) {
-    if ((*I)->isVolatile() || (*I)->isInvariant() || (!(*I)->getValue())) {
-      NewMemRefs[Refs++] = *I;
+  for (MachineMemOperand *MMO : NewMI.memoperands()) {
+    if (MMO->isVolatile() || MMO->isInvariant() || (!MMO->getValue())) {
+      NewMemRefs[Refs++] = MMO;
       continue;
     }
     unsigned Delta;
     if (computeDelta(OldMI, Delta)) {
       int64_t AdjOffset = Delta * Num;
       NewMemRefs[Refs++] =
-          MF.getMachineMemOperand(*I, AdjOffset, (*I)->getSize());
+          MF.getMachineMemOperand(MMO, AdjOffset, MMO->getSize());
     } else
-      NewMemRefs[Refs++] = MF.getMachineMemOperand(*I, 0, UINT64_MAX);
+      NewMemRefs[Refs++] = MF.getMachineMemOperand(MMO, 0, UINT64_MAX);
   }
   NewMI.setMemRefs(NewMemRefs, NewMemRefs + NumRefs);
 }

@@ -197,7 +197,7 @@ namespace {
 
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
     const char *getPassName() const override {
@@ -684,7 +684,7 @@ initializeFunctionInfo(const std::vector<MachineInstr*> &CPEMIs) {
         case ARM::Bcc:
           isCond = true;
           UOpc = ARM::B;
-          // Fallthrough
+          LLVM_FALLTHROUGH;
         case ARM::B:
           Bits = 24;
           Scale = 4;

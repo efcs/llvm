@@ -198,6 +198,7 @@ R600TargetLowering::R600TargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::EXTRACT_VECTOR_ELT);
   setTargetDAGCombine(ISD::SELECT_CC);
   setTargetDAGCombine(ISD::INSERT_VECTOR_ELT);
+  setTargetDAGCombine(ISD::LOAD);
 }
 
 const R600Subtarget *R600TargetLowering::getSubtarget() const {
@@ -586,9 +587,10 @@ void R600TargetLowering::ReplaceNodeResults(SDNode *N,
       Results.push_back(lowerFP_TO_UINT(N->getOperand(0), DAG));
       return;
     }
-    // Fall-through. Since we don't care about out of bounds values
-    // we can use FP_TO_SINT for uints too. The DAGLegalizer code for uint
-    // considers some extra cases which are not necessary here.
+    // Since we don't care about out of bounds values we can use FP_TO_SINT for
+    // uints too. The DAGLegalizer code for uint considers some extra cases
+    // which are not necessary here.
+    LLVM_FALLTHROUGH;
   case ISD::FP_TO_SINT: {
     if (N->getValueType(0) == MVT::i1) {
       Results.push_back(lowerFP_TO_SINT(N->getOperand(0), DAG));
@@ -1114,9 +1116,6 @@ SDValue R600TargetLowering::lowerPrivateTruncStore(StoreSDNode *Store,
 }
 
 SDValue R600TargetLowering::LowerSTORE(SDValue Op, SelectionDAG &DAG) const {
-  if (SDValue Result = AMDGPUTargetLowering::MergeVectorStore(Op, DAG))
-    return Result;
-
   StoreSDNode *StoreNode = cast<StoreSDNode>(Op);
   unsigned AS = StoreNode->getAddressSpace();
   SDValue Value = StoreNode->getValue();

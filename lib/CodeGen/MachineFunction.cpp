@@ -54,42 +54,29 @@ static cl::opt<unsigned>
 
 void MachineFunctionInitializer::anchor() {}
 
-void MachineFunctionProperties::print(raw_ostream &ROS, bool OnlySet) const {
-  // Leave this function even in NDEBUG as an out-of-line anchor.
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-  bool NeedsComma = false;
-  for (BitVector::size_type i = 0; i < Properties.size(); ++i) {
-    bool HasProperty = Properties[i];
-    if (OnlySet && !HasProperty)
-      continue;
-    if (NeedsComma)
-      ROS << ", ";
-    else
-      NeedsComma = true;
-    switch(static_cast<Property>(i)) {
-      case Property::IsSSA:
-        ROS << (HasProperty ? "SSA" : "Post SSA");
-        break;
-      case Property::TracksLiveness:
-        ROS << (HasProperty ? "" : "not ") << "tracking liveness";
-        break;
-      case Property::AllVRegsAllocated:
-        ROS << (HasProperty ? "AllVRegsAllocated" : "HasVRegs");
-        break;
-      case Property::Legalized:
-        ROS << (HasProperty ? "" : "not ") << "legalized";
-        break;
-      case Property::RegBankSelected:
-        ROS << (HasProperty ? "" : "not ") << "RegBank-selected";
-        break;
-      case Property::Selected:
-        ROS << (HasProperty ? "" : "not ") << "selected";
-        break;
-      default:
-        break;
-    }
+static const char *getPropertyName(MachineFunctionProperties::Property Prop) {
+  typedef MachineFunctionProperties::Property P;
+  switch(Prop) {
+  case P::FailedISel: return "FailedISel";
+  case P::IsSSA: return "IsSSA";
+  case P::Legalized: return "Legalized";
+  case P::NoPHIs: return "NoPHIs";
+  case P::NoVRegs: return "NoVRegs";
+  case P::RegBankSelected: return "RegBankSelected";
+  case P::Selected: return "Selected";
+  case P::TracksLiveness: return "TracksLiveness";
   }
-#endif
+  llvm_unreachable("Invalid machine function property");
+}
+
+void MachineFunctionProperties::print(raw_ostream &OS) const {
+  const char *Separator = "";
+  for (BitVector::size_type I = 0; I < Properties.size(); ++I) {
+    if (!Properties[I])
+      continue;
+    OS << Separator << getPropertyName(static_cast<Property>(I));
+    Separator = ", ";
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -114,6 +101,11 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : Fn(F), Target(TM), STI(TM.getSubtargetImpl(*F)), Ctx(mmi.getContext()),
       MMI(mmi) {
+  FunctionNumber = FunctionNum;
+  init();
+}
+
+void MachineFunction::init() {
   // Assume the function starts in SSA form with correct liveness.
   Properties.set(MachineFunctionProperties::Property::IsSSA);
   Properties.set(MachineFunctionProperties::Property::TracksLiveness);
@@ -126,11 +118,11 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
   // We can realign the stack if the target supports it and the user hasn't
   // explicitly asked us not to.
   bool CanRealignSP = STI->getFrameLowering()->isStackRealignable() &&
-                      !F->hasFnAttribute("no-realign-stack");
+                      !Fn->hasFnAttribute("no-realign-stack");
   FrameInfo = new (Allocator) MachineFrameInfo(
       getFnStackAlignment(STI, Fn), /*StackRealignable=*/CanRealignSP,
       /*ForceRealign=*/CanRealignSP &&
-          F->hasFnAttribute(Attribute::StackAlignment));
+          Fn->hasFnAttribute(Attribute::StackAlignment));
 
   if (Fn->hasFnAttribute(Attribute::StackAlignment))
     FrameInfo->ensureMaxAlignment(Fn->getFnStackAlignment());
@@ -147,15 +139,14 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
   if (AlignAllFunctions)
     Alignment = AlignAllFunctions;
 
-  FunctionNumber = FunctionNum;
   JumpTableInfo = nullptr;
 
   if (isFuncletEHPersonality(classifyEHPersonality(
-          F->hasPersonalityFn() ? F->getPersonalityFn() : nullptr))) {
+          Fn->hasPersonalityFn() ? Fn->getPersonalityFn() : nullptr))) {
     WinEHInfo = new (Allocator) WinEHFuncInfo();
   }
 
-  assert(TM.isCompatibleDataLayout(getDataLayout()) &&
+  assert(Target.isCompatibleDataLayout(getDataLayout()) &&
          "Can't create a MachineFunction using a Module with a "
          "Target-incompatible DataLayout attached\n");
 
@@ -163,6 +154,11 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
 }
 
 MachineFunction::~MachineFunction() {
+  clear();
+}
+
+void MachineFunction::clear() {
+  Properties.reset();
   // Don't call destructors on MachineInstr and MachineOperand. All of their
   // memory comes from the BumpPtrAllocator which is about to be purged.
   //
@@ -420,9 +416,7 @@ StringRef MachineFunction::getName() const {
 
 void MachineFunction::print(raw_ostream &OS, const SlotIndexes *Indexes) const {
   OS << "# Machine code for function " << getName() << ": ";
-  OS << "Properties: <";
   getProperties().print(OS);
-  OS << ">\n";
 
   // Print Frame Information
   FrameInfo->print(*this, OS);
