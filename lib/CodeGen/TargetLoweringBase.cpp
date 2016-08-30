@@ -955,15 +955,11 @@ EVT TargetLoweringBase::getShiftAmountTy(EVT LHSTy,
   return getScalarShiftAmountTy(DL, LHSTy);
 }
 
-/// canOpTrap - Returns true if the operation can trap for the value type.
-/// VT must be a legal type.
 bool TargetLoweringBase::canOpTrap(unsigned Op, EVT VT) const {
   assert(isTypeLegal(VT));
   switch (Op) {
   default:
     return false;
-  case ISD::FDIV:
-  case ISD::FREM:
   case ISD::SDIV:
   case ISD::UDIV:
   case ISD::SREM:
@@ -1817,9 +1813,7 @@ Value *TargetLoweringBase::getIRStackGuard(IRBuilder<> &IRB) const {
   if (getTargetMachine().getTargetTriple().isOSOpenBSD()) {
     Module &M = *IRB.GetInsertBlock()->getParent()->getParent();
     PointerType *PtrTy = Type::getInt8PtrTy(M.getContext());
-    auto Guard = cast<GlobalValue>(M.getOrInsertGlobal("__guard_local", PtrTy));
-    Guard->setVisibility(GlobalValue::HiddenVisibility);
-    return Guard;
+    return M.getOrInsertGlobal("__guard_local", PtrTy);
   }
   return nullptr;
 }

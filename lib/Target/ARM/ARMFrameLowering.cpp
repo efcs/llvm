@@ -57,16 +57,14 @@ bool ARMFrameLowering::noFramePointerElim(const MachineFunction &MF) const {
 /// or if frame pointer elimination is disabled.
 bool ARMFrameLowering::hasFP(const MachineFunction &MF) const {
   const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  // iOS requires FP not to be clobbered for backtracing purpose.
-  if (STI.isTargetIOS() || STI.isTargetWatchOS())
+  // ABI-required frame pointer.
+  if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
 
-  const MachineFrameInfo &MFI = MF.getFrameInfo();
-  // Always eliminate non-leaf frame pointers.
-  return ((MF.getTarget().Options.DisableFramePointerElim(MF) &&
-           MFI.hasCalls()) ||
-          RegInfo->needsStackRealignment(MF) ||
+  // Frame pointer required for use within this function.
+  return (RegInfo->needsStackRealignment(MF) ||
           MFI.hasVarSizedObjects() ||
           MFI.isFrameAddressTaken());
 }
@@ -352,11 +350,11 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
     case ARM::R10:
     case ARM::R11:
     case ARM::R12:
-      if (STI.splitFramePushPop()) {
+      if (STI.splitFramePushPop(MF)) {
         GPRCS2Size += 4;
         break;
       }
-      // fallthrough
+      LLVM_FALLTHROUGH;
     case ARM::R0:
     case ARM::R1:
     case ARM::R2:
@@ -413,7 +411,8 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
   // .cfi_offset operations will reflect that.
   if (DPRGapSize) {
     assert(DPRGapSize == 4 && "unexpected alignment requirements for DPRs");
-    if (tryFoldSPUpdateIntoPushPop(STI, MF, &*LastPush, DPRGapSize))
+    if (LastPush != MBB.end() &&
+        tryFoldSPUpdateIntoPushPop(STI, MF, &*LastPush, DPRGapSize))
       DefCFAOffsetCandidates.addExtraBytes(LastPush, DPRGapSize);
     else {
       emitSPUpdate(isARM, MBB, MBBI, dl, TII, -DPRGapSize,
@@ -556,9 +555,9 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
       case ARM::R10:
       case ARM::R11:
       case ARM::R12:
-        if (STI.splitFramePushPop())
+        if (STI.splitFramePushPop(MF))
           break;
-        // fallthrough
+        LLVM_FALLTHROUGH;
       case ARM::R0:
       case ARM::R1:
       case ARM::R2:
@@ -589,7 +588,7 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
       case ARM::R10:
       case ARM::R11:
       case ARM::R12:
-        if (STI.splitFramePushPop()) {
+        if (STI.splitFramePushPop(MF)) {
           unsigned DwarfReg =  MRI->getDwarfRegNum(Reg, true);
           unsigned Offset = MFI.getObjectOffset(FI);
           unsigned CFIIndex = MMI.addFrameInst(
@@ -775,11 +774,11 @@ void ARMFrameLowering::emitEpilogue(MachineFunction &MF,
       emitSPUpdate(isARM, MBB, MBBI, dl, TII, NumBytes);
 
     // Increment past our save areas.
-    if (AFI->getDPRCalleeSavedAreaSize()) {
+    if (MBBI != MBB.end() && AFI->getDPRCalleeSavedAreaSize()) {
       MBBI++;
       // Since vpop register list cannot have gaps, there may be multiple vpop
       // instructions in the epilogue.
-      while (MBBI->getOpcode() == ARM::VLDMDIA_UPD)
+      while (MBBI != MBB.end() && MBBI->getOpcode() == ARM::VLDMDIA_UPD)
         MBBI++;
     }
     if (AFI->getDPRCalleeSavedGapSize()) {
@@ -901,7 +900,7 @@ void ARMFrameLowering::emitPushInst(MachineBasicBlock &MBB,
     unsigned LastReg = 0;
     for (; i != 0; --i) {
       unsigned Reg = CSI[i-1].getReg();
-      if (!(Func)(Reg, STI.splitFramePushPop())) continue;
+      if (!(Func)(Reg, STI.splitFramePushPop(MF))) continue;
 
       // D-registers in the aligned area DPRCS2 are NOT spilled here.
       if (Reg >= ARM::D8 && Reg < ARM::D8 + NumAlignedDPRCS2Regs)
@@ -982,7 +981,7 @@ void ARMFrameLowering::emitPopInst(MachineBasicBlock &MBB,
     bool DeleteRet = false;
     for (; i != 0; --i) {
       unsigned Reg = CSI[i-1].getReg();
-      if (!(Func)(Reg, STI.splitFramePushPop())) continue;
+      if (!(Func)(Reg, STI.splitFramePushPop(MF))) continue;
 
       // The aligned reloads from area DPRCS2 are not inserted here.
       if (Reg >= ARM::D8 && Reg < ARM::D8 + NumAlignedDPRCS2Regs)
@@ -1546,7 +1545,7 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
     if (Spilled) {
       NumGPRSpills++;
 
-      if (!STI.splitFramePushPop()) {
+      if (!STI.splitFramePushPop(MF)) {
         if (Reg == ARM::LR)
           LRSpilled = true;
         CS1Spilled = true;
@@ -1557,7 +1556,7 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
       switch (Reg) {
       case ARM::LR:
         LRSpilled = true;
-        // Fallthrough
+        LLVM_FALLTHROUGH;
       case ARM::R0: case ARM::R1:
       case ARM::R2: case ARM::R3:
       case ARM::R4: case ARM::R5:
@@ -1568,7 +1567,7 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
         break;
       }
     } else {
-      if (!STI.splitFramePushPop()) {
+      if (!STI.splitFramePushPop(MF)) {
         UnspilledCS1GPRs.push_back(Reg);
         continue;
       }
@@ -1633,6 +1632,23 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
   if (BigStack || !CanEliminateFrame || RegInfo->cannotEliminateFrame(MF)) {
     AFI->setHasStackFrame(true);
 
+    if (hasFP(MF)) {
+      SavedRegs.set(FramePtr);
+      // If the frame pointer is required by the ABI, also spill LR so that we
+      // emit a complete frame record.
+      if (MF.getTarget().Options.DisableFramePointerElim(MF) && !LRSpilled) {
+        SavedRegs.set(ARM::LR);
+        LRSpilled = true;
+        NumGPRSpills++;
+      }
+      auto FPPos = find(UnspilledCS1GPRs, FramePtr);
+      if (FPPos != UnspilledCS1GPRs.end())
+        UnspilledCS1GPRs.erase(FPPos);
+      NumGPRSpills++;
+      if (FramePtr == ARM::R7)
+        CS1Spilled = true;
+    }
+
     // If LR is not spilled, but at least one of R4, R5, R6, and R7 is spilled.
     // Spill LR as well so we can fold BX_RET to the registers restore (LDM).
     if (!LRSpilled && CS1Spilled) {
@@ -1645,14 +1661,6 @@ void ARMFrameLowering::determineCalleeSaves(MachineFunction &MF,
 
       ForceLRSpill = false;
       ExtraCSSpill = true;
-    }
-
-    if (hasFP(MF)) {
-      SavedRegs.set(FramePtr);
-      auto FPPos = find(UnspilledCS1GPRs, FramePtr);
-      if (FPPos != UnspilledCS1GPRs.end())
-        UnspilledCS1GPRs.erase(FPPos);
-      NumGPRSpills++;
     }
 
     // If stack and double are 8-byte aligned and we are spilling an odd number

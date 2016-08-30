@@ -64,13 +64,9 @@ template <class GraphT,
               llvm::SmallPtrSet<typename GraphTraits<GraphT>::NodeRef, 8>,
           bool ExtStorage = false, class GT = GraphTraits<GraphT>>
 class df_iterator
-    : public std::iterator<std::forward_iterator_tag, typename GT::NodeRef,
-                           ptrdiff_t, typename GT::NodeRef,
-                           typename GT::NodeRef>,
+    : public std::iterator<std::forward_iterator_tag, typename GT::NodeRef>,
       public df_iterator_storage<SetType, ExtStorage> {
-  typedef std::iterator<std::forward_iterator_tag, typename GT::NodeRef,
-                        ptrdiff_t, typename GT::NodeRef, typename GT::NodeRef>
-      super;
+  typedef std::iterator<std::forward_iterator_tag, typename GT::NodeRef> super;
 
   typedef typename GT::NodeRef NodeRef;
   typedef typename GT::ChildIteratorType ChildItTy;
@@ -111,7 +107,11 @@ private:
       if (!Opt)
         Opt.emplace(GT::child_begin(Node));
 
-      for (NodeRef Next : make_range(*Opt, GT::child_end(Node))) {
+      // Notice that we directly mutate *Opt here, so that
+      // VisitStack.back().second actually gets updated as the iterator
+      // increases.
+      while (*Opt != GT::child_end(Node)) {
+        NodeRef Next = *(*Opt)++;
         // Has our next sibling been visited?
         if (this->Visited.insert(Next).second) {
           // No, do it now.
@@ -145,7 +145,7 @@ public:
   }
   bool operator!=(const df_iterator &x) const { return !(*this == x); }
 
-  NodeRef operator*() const { return VisitStack.back().first; }
+  const NodeRef &operator*() const { return VisitStack.back().first; }
 
   // This is a nonstandard operator-> that dereferences the pointer an extra
   // time... so that you can actually call methods ON the Node, because

@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/LTO/Caching.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetSelect.h"
@@ -31,7 +32,19 @@ static cl::opt<std::string> OutputFilename("o", cl::Required,
                                            cl::desc("Output filename"),
                                            cl::value_desc("filename"));
 
+static cl::opt<std::string> CacheDir("cache-dir", cl::desc("Cache Directory"),
+                                     cl::value_desc("directory"));
+
 static cl::opt<bool> SaveTemps("save-temps", cl::desc("Save temporary files"));
+
+static cl::opt<bool>
+    ThinLTODistributedIndexes("thinlto-distributed-indexes", cl::init(false),
+                              cl::desc("Write out individual index and "
+                                       "import files for the "
+                                       "distributed backend case"));
+
+static cl::opt<int> Threads("-thinlto-threads",
+                            cl::init(thread::hardware_concurrency()));
 
 static cl::list<std::string> SymbolResolutions(
     "r",
@@ -72,6 +85,22 @@ template <typename T> static T check(ErrorOr<T> E, std::string Msg) {
     return std::move(*E);
   check(E.getError(), Msg);
   return T();
+}
+
+namespace {
+// Define the LTOOutput handling
+class LTOOutput : public lto::NativeObjectOutput {
+  std::string Path;
+
+public:
+  LTOOutput(std::string Path) : Path(std::move(Path)) {}
+  std::unique_ptr<raw_pwrite_stream> getStream() override {
+    std::error_code EC;
+    auto S = llvm::make_unique<raw_fd_ostream>(Path, EC, sys::fs::F_None);
+    check(EC, Path);
+    return std::move(S);
+  }
+};
 }
 
 int main(int argc, char **argv) {
@@ -116,9 +145,15 @@ int main(int argc, char **argv) {
   };
 
   if (SaveTemps)
-    check(Conf.addSaveTemps(OutputFilename), "Config::addSaveTemps failed");
+    check(Conf.addSaveTemps(OutputFilename + "."),
+          "Config::addSaveTemps failed");
 
-  LTO Lto(std::move(Conf));
+  ThinBackend Backend;
+  if (ThinLTODistributedIndexes)
+    Backend = createWriteIndexesThinBackend("", "", true, "");
+  else
+    Backend = createInProcessThinBackend(Threads);
+  LTO Lto(std::move(Conf), std::move(Backend));
 
   bool HasErrors = false;
   for (std::string F : InputFilenames) {
@@ -156,13 +191,23 @@ int main(int argc, char **argv) {
   if (HasErrors)
     return 1;
 
-  auto AddStream = [&](size_t Task) {
+  auto AddOutput =
+      [&](size_t Task) -> std::unique_ptr<lto::NativeObjectOutput> {
     std::string Path = OutputFilename + "." + utostr(Task);
-    std::error_code EC;
-    auto S = llvm::make_unique<raw_fd_ostream>(Path, EC, sys::fs::F_None);
-    check(EC, Path);
-    return S;
+    if (CacheDir.empty())
+      return llvm::make_unique<LTOOutput>(std::move(Path));
+
+    return llvm::make_unique<CacheObjectOutput>(
+        CacheDir, [Path](std::string EntryPath) {
+          // Load the entry from the cache now.
+          auto ReloadedBufferOrErr = MemoryBuffer::getFile(EntryPath);
+          if (auto EC = ReloadedBufferOrErr.getError())
+            report_fatal_error(Twine("Can't reload cached file '") + EntryPath +
+                               "': " + EC.message() + "\n");
+
+          *LTOOutput(Path).getStream() << (*ReloadedBufferOrErr)->getBuffer();
+        });
   };
 
-  check(Lto.run(AddStream), "LTO::run failed");
+  check(Lto.run(AddOutput), "LTO::run failed");
 }
