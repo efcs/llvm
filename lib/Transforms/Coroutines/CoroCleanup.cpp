@@ -109,7 +109,7 @@ struct CoroCleanup : FunctionPass {
   // in the module.
   bool doInitialization(Module &M) override {
     if (coro::declaresIntrinsics(M, {"llvm.coro.alloc", "llvm.coro.begin",
-                                     "llvm.coro.subfn", "llvm.coro.free",
+                                     "llvm.coro.subfn.addr", "llvm.coro.free",
                                      "llvm.coro.id"}))
       L = llvm::make_unique<Lowerer>(M);
     return false;
