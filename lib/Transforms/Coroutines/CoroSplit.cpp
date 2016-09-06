@@ -386,7 +386,8 @@ static void handleNoSuspendCoroutine(CoroBeginInst *CoroBegin, Type *FrameTy) {
 //    resume or destroy call
 //    coro.suspend
 
-static bool simplifySuspendPoint(CoroSuspendInst *Suspend) {
+static bool simplifySuspendPoint(CoroSuspendInst *Suspend,
+                                 CoroBeginInst *CoroBegin) {
   auto* Save = Suspend->getCoroSave();
   auto* BB = Suspend->getParent();
   if (BB != Save->getParent())
@@ -422,6 +423,10 @@ static bool simplifySuspendPoint(CoroSuspendInst *Suspend) {
   if (!SubFn)
     return false;
 
+  // Does not refer to the current coroutine, we cannot do anything with it.
+  if (SubFn->getFrame() != CoroBegin)
+    return false;
+
   Suspend->replaceAllUsesWith(SubFn->getRawIndex());
   Suspend->eraseFromParent();
   Save->eraseFromParent();
@@ -442,7 +447,7 @@ static void simplifySuspendPoints(coro::Shape &Shape) {
   if (N == 0)
     return;
   for (;;) {
-    if (simplifySuspendPoint(S[I])) {
+    if (simplifySuspendPoint(S[I], Shape.CoroBegin)) {
       if (--N == I)
         break;
       std::swap(S[I], S[N]);
