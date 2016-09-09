@@ -361,20 +361,21 @@ static void postSplitCleanup(Function &F) {
   FPM.doFinalization();
 }
 
+// Coroutine has no suspend points. Remove heap allocation for the coroutine
+// frame if possible.
 static void handleNoSuspendCoroutine(CoroBeginInst *CoroBegin, Type *FrameTy) {
   auto *CoroId = CoroBegin->getId();
-  auto AllocInst = CoroId->getCoroAlloc();
+  auto *AllocInst = CoroId->getCoroAlloc();
   coro::replaceCoroFree(CoroId, /*Elide=*/AllocInst != nullptr);
   if (AllocInst) {
     IRBuilder<> Builder(AllocInst);
-    // FIXME: Need to handle overaligned members
-    auto Frame = Builder.CreateAlloca(FrameTy);
-    auto vFrame = Builder.CreateBitCast(Frame, Builder.getInt8PtrTy());
+    // FIXME: Need to handle overaligned members.
+    auto *Frame = Builder.CreateAlloca(FrameTy);
+    auto *vFrame = Builder.CreateBitCast(Frame, Builder.getInt8PtrTy());
     AllocInst->replaceAllUsesWith(Builder.getFalse());
     AllocInst->eraseFromParent();
     CoroBegin->replaceAllUsesWith(vFrame);
-  }
-  else
+  } else
     CoroBegin->replaceAllUsesWith(CoroBegin->getMem());
 
   CoroBegin->eraseFromParent();
@@ -385,17 +386,20 @@ static void handleNoSuspendCoroutine(CoroBeginInst *CoroBegin, Type *FrameTy) {
 //    no other calls
 //    resume or destroy call
 //    coro.suspend
-
+//
+// If there are other calls between coro.save and coro.suspend, they can
+// potentially resume or destroy the coroutine, so it is unsafe to eliminate a
+// suspend point.
 static bool simplifySuspendPoint(CoroSuspendInst *Suspend,
                                  CoroBeginInst *CoroBegin) {
-  auto* Save = Suspend->getCoroSave();
-  auto* BB = Suspend->getParent();
+  auto *Save = Suspend->getCoroSave();
+  auto *BB = Suspend->getParent();
   if (BB != Save->getParent())
     return false;
 
   CallSite SingleCallSite;
 
-  // check that we have only one CallSite
+  // Check that we have only one CallSite.
   for (Instruction *I = Save->getNextNode(); I != Suspend;
        I = I->getNextNode()) {
     if (isa<CoroFrameInst>(I))
@@ -418,6 +422,7 @@ static bool simplifySuspendPoint(CoroSuspendInst *Suspend,
   if (isa<Function>(Callee))
     return false;
 
+  // See if the callsite is for resumption or destruction of the coroutine.
   Callee = Callee->stripPointerCasts();
   auto *SubFn = dyn_cast<CoroSubFnInst>(Callee);
   if (!SubFn)
@@ -427,15 +432,17 @@ static bool simplifySuspendPoint(CoroSuspendInst *Suspend,
   if (SubFn->getFrame() != CoroBegin)
     return false;
 
+  // Replace llvm.coro.suspend with the value that results in resumption over
+  // the resume or cleanup path.
   Suspend->replaceAllUsesWith(SubFn->getRawIndex());
   Suspend->eraseFromParent();
   Save->eraseFromParent();
 
-  SubFn->replaceAllUsesWith(
-      ConstantPointerNull::get(cast<PointerType>(SubFn->getType())));
-  SubFn->eraseFromParent();
-
+  // No longer need a call to coro.resume or coro.destroy.
   CallInstr->eraseFromParent();
+
+  if (SubFn->user_empty())
+    SubFn->eraseFromParent();
 
   return true;
 }
@@ -468,7 +475,7 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
 
-  // If there is no suspend points, no split required, just remove
+  // If there are no suspend points, no split required, just remove
   // the allocation and deallocation blocks, they are not needed.
   if (Shape.CoroSuspends.empty()) {
     handleNoSuspendCoroutine(Shape.CoroBegin, Shape.FrameTy);
