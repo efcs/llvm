@@ -424,10 +424,16 @@ static Instruction *insertSpills(SpillInfo &Spills, coro::Shape &Shape) {
         // right after the coroutine frame pointer instruction, i.e. bitcase of
         // coro.begin from i8* to %f.frame*. For all other values, the spill is
         // placed immediately after the definition.
-        Builder.SetInsertPoint(
-            isa<Argument>(CurrentValue)
-                ? FramePtr->getNextNode()
-                : dyn_cast<Instruction>(E.def())->getNextNode());
+
+        Instruction* InsertPt = nullptr;
+        if (isa<Argument>(E.def()))
+          InsertPt = FramePtr->getNextNode();
+        else if (auto *PN = dyn_cast<PHINode>(E.def()))
+          InsertPt = PN->getParent()->getFirstNonPHI();
+        else
+          InsertPt = cast<Instruction>(E.def())->getNextNode();
+
+        Builder.SetInsertPoint(InsertPt);
 
         auto *G = Builder.CreateConstInBoundsGEP2_32(
             FrameTy, FramePtr, 0, Index,
@@ -648,6 +654,8 @@ static void splitAround(Instruction *I, const Twine &Name) {
 }
 
 void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
+  DEBUG(dbgs() << "---- build coroutine frame for " << F.getName() << " -----\n");
+
   // Lower coro.dbg.declare to coro.dbg.value, since we are going to rewrite
   // access to local variables.
   LowerDbgDeclare(F);
@@ -679,20 +687,26 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
   IRBuilder<> Builder(F.getContext());
   SpillInfo Spills;
 
-  // See if there are materializable instructions across suspend points.
-  for (Instruction &I : instructions(F))
-    if (materializable(I))
-      for (User *U : I.users())
-        if (Checker.isDefinitionAcrossSuspend(I, U))
-          Spills.emplace_back(&I, U);
+  for (;;) {
+    // See if there are materializable instructions across suspend points.
+    for (Instruction &I : instructions(F))
+      if (materializable(I))
+        for (User *U : I.users())
+          if (Checker.isDefinitionAcrossSuspend(I, U))
+            Spills.emplace_back(&I, U);
 
-  // Rewrite materializable instructions to be materialized at the use point.
-  std::sort(Spills.begin(), Spills.end());
-  DEBUG(dump("Materializations", Spills));
-  rewriteMaterializableInstructions(Builder, Spills);
+    if (Spills.empty())
+      break;
+
+    // Rewrite materializable instructions to be materialized at the use point.
+    std::sort(Spills.begin(), Spills.end());
+    DEBUG(dump("Materializations", Spills));
+    rewriteMaterializableInstructions(Builder, Spills);
+
+    Spills.clear();
+  }
 
   // Collect the spills for arguments and other not-materializable values.
-  Spills.clear();
   for (Argument &A : F.getArgumentList())
     for (User *U : A.users())
       if (Checker.isDefinitionAcrossSuspend(A, U))
