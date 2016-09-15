@@ -22,6 +22,7 @@
 #include "CoroInternal.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Verifier.h"
@@ -348,6 +349,18 @@ static void setCoroInfo(Function &F, CoroBeginInst *CoroBegin,
   CoroBegin->getId()->setInfo(BC);
 }
 
+static void removeLifetimeIntrinsics(Function& F) {
+  for (auto IB = inst_begin(F), IE = inst_end(F); IB != IE;) {
+    auto *II = dyn_cast<IntrinsicInst>(&*IB++);
+    if (!II)
+      continue;
+
+    if (II->getIntrinsicID() == Intrinsic::lifetime_start ||
+      II->getIntrinsicID() == Intrinsic::lifetime_end)
+      II->eraseFromParent();
+  }
+}
+
 static void postSplitCleanup(Function &F) {
   removeUnreachableBlocks(F);
   llvm::legacy::FunctionPassManager FPM(F.getParent());
@@ -474,6 +487,7 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
     return;
 
   simplifySuspendPoints(Shape);
+  removeLifetimeIntrinsics(F);
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
 
