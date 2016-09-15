@@ -117,6 +117,7 @@ bool Lowerer::lowerEarlyIntrinsics(Function &F) {
   bool Changed = false;
   CoroIdInst *CoroId = nullptr;
   SmallVector<CoroFreeInst *, 4> CoroFrees;
+  SmallVector<CoroAllocInst *, 1> CoroAllocs;
   for (auto IB = inst_begin(F), IE = inst_end(F); IB != IE;) {
     Instruction &I = *IB++;
     if (auto CS = CallSite(&I)) {
@@ -125,6 +126,9 @@ bool Lowerer::lowerEarlyIntrinsics(Function &F) {
         continue;
       case Intrinsic::coro_free:
         CoroFrees.push_back(cast<CoroFreeInst>(&I));
+        break;
+      case Intrinsic::coro_alloc:
+        CoroAllocs.push_back(cast<CoroAllocInst>(&I));
         break;
       case Intrinsic::coro_suspend:
         // Make sure that final suspend point is not duplicated as CoroSplit
@@ -166,12 +170,15 @@ bool Lowerer::lowerEarlyIntrinsics(Function &F) {
       Changed = true;
     }
   }
-  // Make sure that all CoroFree reference the coro.id intrinsic.
+  // Make sure that all CoroAlloc and CoroFree reference the coro.id intrinsic.
   // Token type is not exposed through coroutine C/C++ builtins to plain C, so
   // we allow specifying none and fixing it up here.
-  if (CoroId)
+  if (CoroId) {
     for (CoroFreeInst *CF : CoroFrees)
       CF->setArgOperand(0, CoroId);
+    for (CoroAllocInst *CA: CoroAllocs)
+      CA->setArgOperand(0, CoroId);
+  }
   return Changed;
 }
 
@@ -190,10 +197,10 @@ struct CoroEarly : public FunctionPass {
   // This pass has work to do only if we find intrinsics we are going to lower
   // in the module.
   bool doInitialization(Module &M) override {
-    if (coro::declaresIntrinsics(M, {"llvm.coro.id", "llvm.coro.destroy",
-                                     "llvm.coro.done", "llvm.coro.end",
-                                     "llvm.coro.free", "llvm.coro.promise",
-                                     "llvm.coro.resume", "llvm.coro.suspend"}))
+    if (coro::declaresIntrinsics(
+            M, {"llvm.coro.id", "llvm.coro.destroy", "llvm.coro.done",
+                "llvm.coro.begin", "llvm.coro.end", "llvm.coro.free",
+                "llvm.coro.promise", "llvm.coro.resume", "llvm.coro.suspend"}))
       L = llvm::make_unique<Lowerer>(M);
     return false;
   }
