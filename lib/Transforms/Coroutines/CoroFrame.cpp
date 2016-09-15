@@ -665,17 +665,15 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
     Shape.CoroBegin->getId()->clearPromise();
   }
 
-  // Make sure that all coro.save, coro.suspend and the fallthrough coro.end
+  // Make sure that all coro.save, coro.suspend and coro.ends
   // intrinsics are in their own blocks to simplify the logic of building up
   // SuspendCrossing data.
   for (CoroSuspendInst *CSI : Shape.CoroSuspends) {
     splitAround(CSI->getCoroSave(), "CoroSave");
     splitAround(CSI, "CoroSuspend");
   }
-
-  // Put fallthrough CoroEnd into its own block. Note: Shape::buildFrom places
-  // the fallthrough coro.end as the first element of CoroEnds array.
-  splitAround(Shape.CoroEnds.front(), "CoroEnd");
+  for (CoroEndInst *CE : Shape.CoroEnds)
+    splitAround(CE, "CoroEnd");
 
   // Transforms multi-edge PHI Nodes, so that any value feeding into a PHI will
   // never has its definition separated from the PHI by the suspend point.
