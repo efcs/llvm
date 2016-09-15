@@ -1001,10 +1001,6 @@ static unsigned enforceKnownAlignment(Value *V, unsigned Align,
   return Align;
 }
 
-/// getOrEnforceKnownAlignment - If the specified pointer has an alignment that
-/// we can determine, return it, otherwise return 0.  If PrefAlign is specified,
-/// and it is more than the alignment of the ultimate object, see if we can
-/// increase the alignment of the ultimate object, making this check succeed.
 unsigned llvm::getOrEnforceKnownAlignment(Value *V, unsigned PrefAlign,
                                           const DataLayout &DL,
                                           const Instruction *CxtI,
@@ -1679,8 +1675,7 @@ unsigned llvm::replaceDominatedUsesWith(Value *From, Value *To,
 
 unsigned llvm::replaceDominatedUsesWith(Value *From, Value *To,
                                         DominatorTree &DT,
-                                        const BasicBlock *BB,
-                                        bool IncludeSelf) {
+                                        const BasicBlock *BB) {
   assert(From->getType() == To->getType());
 
   unsigned Count = 0;
@@ -1688,8 +1683,7 @@ unsigned llvm::replaceDominatedUsesWith(Value *From, Value *To,
        UI != UE;) {
     Use &U = *UI++;
     auto *I = cast<Instruction>(U.getUser());
-    if ((IncludeSelf && BB == I->getParent()) ||
-        DT.properlyDominates(BB, I->getParent())) {
+    if (DT.properlyDominates(BB, I->getParent())) {
       U.set(To);
       DEBUG(dbgs() << "Replace dominated use of '" << From->getName() << "' as "
                    << *To << " in " << *U << "\n");

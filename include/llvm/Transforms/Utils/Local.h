@@ -161,10 +161,15 @@ AllocaInst *DemoteRegToStack(Instruction &X,
 /// deleted and it returns the pointer to the alloca inserted.
 AllocaInst *DemotePHIToStack(PHINode *P, Instruction *AllocaPoint = nullptr);
 
-/// If the specified pointer has an alignment that we can determine, return it,
-/// otherwise return 0. If PrefAlign is specified, and it is more than the
-/// alignment of the ultimate object, see if we can increase the alignment of
-/// the ultimate object, making this check succeed.
+/// Try to ensure that the alignment of \p V is at least \p PrefAlign bytes. If
+/// the owning object can be modified and has an alignment less than \p
+/// PrefAlign, it will be increased and \p PrefAlign returned. If the alignment
+/// cannot be increased, the known alignment of the value is returned.
+///
+/// It is not always possible to modify the alignment of the underlying object,
+/// so if alignment is important, a more reliable approach is to simply align
+/// all global variables and allocation instructions to their preferred
+/// alignment from the beginning.
 unsigned getOrEnforceKnownAlignment(Value *V, unsigned PrefAlign,
                                     const DataLayout &DL,
                                     const Instruction *CxtI = nullptr,
@@ -326,12 +331,10 @@ void combineMetadataForCSE(Instruction *K, const Instruction *J);
 /// the given edge.  Returns the number of replacements made.
 unsigned replaceDominatedUsesWith(Value *From, Value *To, DominatorTree &DT,
                                   const BasicBlockEdge &Edge);
-
 /// Replace each use of 'From' with 'To' if that use is dominated by
-/// the end of 'BB'. Returns the number of replacements made.
-/// Replace use of 'From' with 'To' in 'BB' if 'IncludeSelf' is true.
+/// the end of the given BasicBlock. Returns the number of replacements made.
 unsigned replaceDominatedUsesWith(Value *From, Value *To, DominatorTree &DT,
-                                  const BasicBlock *BB, bool IncludeSelf);
+                                  const BasicBlock *BB);
 
 
 /// Return true if the CallSite CS calls a gc leaf function.

@@ -257,8 +257,6 @@ class BitcodeReader : public GVMaterializer {
   std::vector<std::pair<Function*, unsigned> > FunctionPrologues;
   std::vector<std::pair<Function*, unsigned> > FunctionPersonalityFns;
 
-  SmallVector<Instruction*, 64> InstsWithTBAATag;
-
   bool HasSeenOldLoopTags = false;
 
   /// The set of attributes by index.  Index zero in the file is for null, and
@@ -2414,13 +2412,14 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
         return error("Invalid record");
 
       IsDistinct = Record[0];
+      DINode::DIFlags Flags = static_cast<DINode::DIFlags>(Record[10]);
       MetadataList.assignValue(
-          GET_OR_DISTINCT(
-              DIDerivedType,
-              (Context, Record[1], getMDString(Record[2]),
-               getMDOrNull(Record[3]), Record[4], getDITypeRefOrNull(Record[5]),
-               getDITypeRefOrNull(Record[6]), Record[7], Record[8], Record[9],
-               Record[10], getDITypeRefOrNull(Record[11]))),
+          GET_OR_DISTINCT(DIDerivedType,
+                          (Context, Record[1], getMDString(Record[2]),
+                           getMDOrNull(Record[3]), Record[4],
+                           getDITypeRefOrNull(Record[5]),
+                           getDITypeRefOrNull(Record[6]), Record[7], Record[8],
+                           Record[9], Flags, getDITypeRefOrNull(Record[11]))),
           NextMetadataNo++);
       break;
     }
@@ -2441,7 +2440,7 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
       uint64_t SizeInBits = Record[7];
       uint64_t AlignInBits = Record[8];
       uint64_t OffsetInBits = Record[9];
-      unsigned Flags = Record[10];
+      DINode::DIFlags Flags = static_cast<DINode::DIFlags>(Record[10]);
       Metadata *Elements = getMDOrNull(Record[11]);
       unsigned RuntimeLang = Record[12];
       Metadata *VTableHolder = getDITypeRefOrNull(Record[13]);
@@ -2474,12 +2473,13 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
       unsigned CC = (Record.size() > 3) ? Record[3] : 0;
 
       IsDistinct = Record[0] & 0x1;
+      DINode::DIFlags Flags = static_cast<DINode::DIFlags>(Record[1]);
       Metadata *Types = getMDOrNull(Record[2]);
       if (LLVM_UNLIKELY(IsOldTypeRefArray))
         Types = MetadataList.upgradeTypeRefArray(Types);
 
       MetadataList.assignValue(
-          GET_OR_DISTINCT(DISubroutineType, (Context, Record[1], CC, Types)),
+          GET_OR_DISTINCT(DISubroutineType, (Context, Flags, CC, Types)),
           NextMetadataNo++);
       break;
     }
@@ -2551,20 +2551,21 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
       bool HasThisAdj = Record.size() >= 20;
       DISubprogram *SP = GET_OR_DISTINCT(
           DISubprogram, (Context,
-                         getDITypeRefOrNull(Record[1]),    // scope
-                         getMDString(Record[2]),           // name
-                         getMDString(Record[3]),           // linkageName
-                         getMDOrNull(Record[4]),           // file
-                         Record[5],                        // line
-                         getMDOrNull(Record[6]),           // type
-                         Record[7],                        // isLocal
-                         Record[8],                        // isDefinition
-                         Record[9],                        // scopeLine
-                         getDITypeRefOrNull(Record[10]),   // containingType
-                         Record[11],                       // virtuality
-                         Record[12],                       // virtualIndex
-                         HasThisAdj ? Record[19] : 0,      // thisAdjustment
-                         Record[13],                       // flags
+                         getDITypeRefOrNull(Record[1]),  // scope
+                         getMDString(Record[2]),         // name
+                         getMDString(Record[3]),         // linkageName
+                         getMDOrNull(Record[4]),         // file
+                         Record[5],                      // line
+                         getMDOrNull(Record[6]),         // type
+                         Record[7],                      // isLocal
+                         Record[8],                      // isDefinition
+                         Record[9],                      // scopeLine
+                         getDITypeRefOrNull(Record[10]), // containingType
+                         Record[11],                     // virtuality
+                         Record[12],                     // virtualIndex
+                         HasThisAdj ? Record[19] : 0,    // thisAdjustment
+                         static_cast<DINode::DIFlags>(Record[13] // flags
+                                                      ),
                          Record[14],                       // isOptimized
                          HasUnit ? CUorFn : nullptr,       // unit
                          getMDOrNull(Record[15 + Offset]), // templateParams
@@ -2676,14 +2677,35 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
         return error("Invalid record");
 
       IsDistinct = Record[0];
-      MetadataList.assignValue(
-          GET_OR_DISTINCT(DIGlobalVariable,
-                          (Context, getMDOrNull(Record[1]),
-                           getMDString(Record[2]), getMDString(Record[3]),
-                           getMDOrNull(Record[4]), Record[5],
-                           getDITypeRefOrNull(Record[6]), Record[7], Record[8],
-                           getMDOrNull(Record[9]), getMDOrNull(Record[10]))),
-          NextMetadataNo++);
+
+      // Upgrade old metadata, which stored a global variable reference or a
+      // ConstantInt here.
+      Metadata *Expr = getMDOrNull(Record[9]);
+      GlobalVariable *Attach = nullptr;
+      if (auto *CMD = dyn_cast_or_null<ConstantAsMetadata>(Expr)) {
+        if (auto *GV = dyn_cast<GlobalVariable>(CMD->getValue())) {
+          Attach = GV;
+          Expr = nullptr;
+        } else if (auto *CI = dyn_cast<ConstantInt>(CMD->getValue())) {
+          Expr = DIExpression::get(Context,
+                                   {dwarf::DW_OP_constu, CI->getZExtValue(),
+                                    dwarf::DW_OP_stack_value});
+        } else {
+          Expr = nullptr;
+        }
+      }
+
+      DIGlobalVariable *DGV = GET_OR_DISTINCT(
+          DIGlobalVariable,
+          (Context, getMDOrNull(Record[1]), getMDString(Record[2]),
+           getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
+           getDITypeRefOrNull(Record[6]), Record[7], Record[8], Expr,
+           getMDOrNull(Record[10])));
+      MetadataList.assignValue(DGV, NextMetadataNo++);
+
+      if (Attach)
+        Attach->addDebugInfo(DGV);
+
       break;
     }
     case bitc::METADATA_LOCAL_VAR: {
@@ -2695,13 +2717,14 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
       // DW_TAG_arg_variable.
       IsDistinct = Record[0];
       bool HasTag = Record.size() > 8;
+      DINode::DIFlags Flags = static_cast<DINode::DIFlags>(Record[7 + HasTag]);
       MetadataList.assignValue(
           GET_OR_DISTINCT(DILocalVariable,
                           (Context, getMDOrNull(Record[1 + HasTag]),
                            getMDString(Record[2 + HasTag]),
                            getMDOrNull(Record[3 + HasTag]), Record[4 + HasTag],
                            getDITypeRefOrNull(Record[5 + HasTag]),
-                           Record[6 + HasTag], Record[7 + HasTag])),
+                           Record[6 + HasTag], Flags)),
           NextMetadataNo++);
       break;
     }
@@ -4400,11 +4423,11 @@ std::error_code BitcodeReader::parseMetadataAttachment(Function &F) {
         if (HasSeenOldLoopTags && I->second == LLVMContext::MD_loop)
           MD = upgradeInstructionLoopAttachment(*MD);
 
-        Inst->setMetadata(I->second, MD);
         if (I->second == LLVMContext::MD_tbaa) {
-          InstsWithTBAATag.push_back(Inst);
-          continue;
+          assert(!MD->isTemporary() && "should load MDs before attachments");
+          MD = UpgradeTBAANode(*MD);
         }
+        Inst->setMetadata(I->second, MD);
       }
       break;
     }
@@ -5816,11 +5839,6 @@ std::error_code BitcodeReader::materializeModule() {
   // promised above).
   if (!BasicBlockFwdRefs.empty())
     return error("Never resolved function from blockaddress");
-
-  // Upgrading intrinsic calls before TBAA can cause TBAA metadata to be lost,
-  // to prevent this instructions with TBAA tags should be upgraded first.
-  for (unsigned I = 0, E = InstsWithTBAATag.size(); I < E; I++)
-    UpgradeInstWithTBAATag(InstsWithTBAATag[I]);
 
   // Upgrade any intrinsic calls that slipped through (should not happen!) and
   // delete the old functions to clean up. We can't do this unless the entire

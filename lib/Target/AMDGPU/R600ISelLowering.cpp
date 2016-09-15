@@ -1564,8 +1564,9 @@ SDValue R600TargetLowering::LowerFormalArguments(
     SDValue Arg = DAG.getLoad(
         ISD::UNINDEXED, Ext, VT, DL, Chain,
         DAG.getConstant(Offset, DL, MVT::i32), DAG.getUNDEF(MVT::i32), PtrInfo,
-        MemVT, /* Alignment = */ 4,
-        MachineMemOperand::MONonTemporal | MachineMemOperand::MOInvariant);
+        MemVT, /* Alignment = */ 4, MachineMemOperand::MONonTemporal |
+                                        MachineMemOperand::MODereferenceable |
+                                        MachineMemOperand::MOInvariant);
 
     // 4 is the preferred alignment for the CONSTANT memory space.
     InVals.push_back(Arg);
@@ -1820,7 +1821,9 @@ SDValue R600TargetLowering::PerformDAGCombine(SDNode *N,
       }
     }
     if (Arg.getOpcode() == ISD::BITCAST &&
-        Arg.getOperand(0).getOpcode() == ISD::BUILD_VECTOR) {
+        Arg.getOperand(0).getOpcode() == ISD::BUILD_VECTOR &&
+        (Arg.getOperand(0).getValueType().getVectorNumElements() ==
+         Arg.getValueType().getVectorNumElements())) {
       if (ConstantSDNode *Const = dyn_cast<ConstantSDNode>(N->getOperand(1))) {
         unsigned Element = Const->getZExtValue();
         return DAG.getNode(ISD::BITCAST, DL, N->getVTList(),
