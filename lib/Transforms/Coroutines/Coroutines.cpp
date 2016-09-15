@@ -17,6 +17,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
@@ -55,6 +56,7 @@ static void addCoroutineSCCPasses(const PassManagerBuilder &Builder,
 static void addCoroutineOptimizerLastPasses(const PassManagerBuilder &Builder,
                                             legacy::PassManagerBase &PM) {
   PM.add(createCoroCleanupPass());
+  PM.add(createCFGSimplificationPass());
 }
 
 void llvm::addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder) {
