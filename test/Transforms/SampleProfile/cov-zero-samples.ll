@@ -1,6 +1,7 @@
-; RUN: opt < %s -sample-profile -sample-profile-file=%S/Inputs/cov-zero-samples.prof -sample-profile-check-record-coverage=100 -pass-remarks=sample-profile -o /dev/null 2>&1 | FileCheck %s
+; RUN: opt < %s -instcombine -sample-profile -sample-profile-file=%S/Inputs/cov-zero-samples.prof -sample-profile-check-record-coverage=100 -pass-remarks=sample-profile -o /dev/null 2>&1 | FileCheck %s
+; RUN: opt < %s -passes="function(instcombine),sample-profile" -sample-profile-file=%S/Inputs/cov-zero-samples.prof -sample-profile-check-record-coverage=100 -pass-remarks=sample-profile -o /dev/null 2>&1 | FileCheck %s
 ;
-; CHECK: remark: cov-zero-samples.cc:9:25: Applied 404065 samples from profile (offset: 2.1)
+; CHECK: remark: cov-zero-samples.cc:9:29: Applied 404065 samples from profile (offset: 2.1)
 ; CHECK: remark: cov-zero-samples.cc:10:9: Applied 443089 samples from profile (offset: 3)
 ; CHECK: remark: cov-zero-samples.cc:10:36: Applied 0 samples from profile (offset: 3.1)
 ; CHECK: remark: cov-zero-samples.cc:11:12: Applied 404066 samples from profile (offset: 4)
@@ -12,7 +13,7 @@
 ; Coverage for this profile should be 100%
 ; CHECK-NOT: warning: cov-zero-samples.cc:1:
 
-@N = global i64 8000000000, align 8
+@N = global i64 8000000000, align 8, !dbg !12
 @.str = private unnamed_addr constant [11 x i8] c"sum is %d\0A\00", align 1
 
 ; Function Attrs: nounwind uwtable
@@ -86,19 +87,18 @@ declare i32 @printf(i8*, ...)
 !llvm.module.flags = !{!15, !16}
 !llvm.ident = !{!17}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.8.0 (trunk 253667) (llvm/trunk 253670)", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3, globals: !11)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.8.0 (trunk 253667) (llvm/trunk 253670)", isOptimized: false, runtimeVersion: 0, emissionKind: NoDebug, enums: !2, globals: !11)
 !1 = !DIFile(filename: "cov-zero-samples.cc", directory: ".")
 !2 = !{}
-!3 = !{!4, !8}
-!4 = distinct !DISubprogram(name: "never_called", linkageName: "_Z12never_calledi", scope: !1, file: !1, line: 5, type: !5, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: false, variables: !2)
+!4 = distinct !DISubprogram(name: "never_called", linkageName: "_Z12never_calledi", scope: !1, file: !1, line: 5, type: !5, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
 !5 = !DISubroutineType(types: !6)
 !6 = !{!7, !7}
 !7 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
-!8 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 7, type: !9, isLocal: false, isDefinition: true, scopeLine: 7, flags: DIFlagPrototyped, isOptimized: false, variables: !2)
+!8 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 7, type: !9, isLocal: false, isDefinition: true, scopeLine: 7, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
 !9 = !DISubroutineType(types: !10)
 !10 = !{!7}
 !11 = !{!12}
-!12 = !DIGlobalVariable(name: "N", scope: !0, file: !1, line: 3, type: !13, isLocal: false, isDefinition: true, variable: i64* @N)
+!12 = !DIGlobalVariable(name: "N", scope: !0, file: !1, line: 3, type: !13, isLocal: false, isDefinition: true)
 !13 = !DIDerivedType(tag: DW_TAG_volatile_type, baseType: !14)
 !14 = !DIBasicType(name: "long long int", size: 64, align: 64, encoding: DW_ATE_signed)
 !15 = !{i32 2, !"Dwarf Version", i32 4}

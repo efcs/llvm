@@ -21,12 +21,16 @@
 
 using namespace llvm;
 
+static cl::opt<bool> EnableSubRegLiveness("enable-subreg-liveness", cl::Hidden,
+  cl::init(true), cl::desc("Enable subregister liveness tracking."));
+
 // Pin the vtable to this file.
 void MachineRegisterInfo::Delegate::anchor() {}
 
-MachineRegisterInfo::MachineRegisterInfo(const MachineFunction *MF)
-  : MF(MF), TheDelegate(nullptr), IsSSA(true), TracksLiveness(true),
-    TracksSubRegLiveness(false) {
+MachineRegisterInfo::MachineRegisterInfo(MachineFunction *MF)
+    : MF(MF), TheDelegate(nullptr),
+      TracksSubRegLiveness(MF->getSubtarget().enableSubRegLiveness() &&
+                           EnableSubRegLiveness) {
   unsigned NumRegs = getTargetRegisterInfo()->getNumRegs();
   VRegInfo.reserve(256);
   RegAllocHints.reserve(256);
@@ -40,6 +44,11 @@ void
 MachineRegisterInfo::setRegClass(unsigned Reg, const TargetRegisterClass *RC) {
   assert(RC && RC->isAllocatable() && "Invalid RC for virtual register");
   VRegInfo[Reg].first = RC;
+}
+
+void MachineRegisterInfo::setRegBank(unsigned Reg,
+                                     const RegisterBank &RegBank) {
+  VRegInfo[Reg].first = &RegBank;
 }
 
 const TargetRegisterClass *
@@ -101,6 +110,47 @@ MachineRegisterInfo::createVirtualRegister(const TargetRegisterClass *RegClass){
   if (TheDelegate)
     TheDelegate->MRI_NoteNewVirtualRegister(Reg);
   return Reg;
+}
+
+LLT MachineRegisterInfo::getType(unsigned VReg) const {
+  VRegToTypeMap::const_iterator TypeIt = getVRegToType().find(VReg);
+  return TypeIt != getVRegToType().end() ? TypeIt->second : LLT{};
+}
+
+void MachineRegisterInfo::setType(unsigned VReg, LLT Ty) {
+  // Check that VReg doesn't have a class.
+  assert(!getRegClassOrRegBank(VReg).is<const TargetRegisterClass *>() &&
+         "Can't set the size of a non-generic virtual register");
+  getVRegToType()[VReg] = Ty;
+}
+
+unsigned
+MachineRegisterInfo::createGenericVirtualRegister(LLT Ty) {
+  // New virtual register number.
+  unsigned Reg = TargetRegisterInfo::index2VirtReg(getNumVirtRegs());
+  VRegInfo.grow(Reg);
+  // FIXME: Should we use a dummy register bank?
+  VRegInfo[Reg].first = static_cast<RegisterBank *>(nullptr);
+  getVRegToType()[Reg] = Ty;
+  RegAllocHints.grow(Reg);
+  if (TheDelegate)
+    TheDelegate->MRI_NoteNewVirtualRegister(Reg);
+  return Reg;
+}
+
+void MachineRegisterInfo::clearVirtRegTypes() {
+#ifndef NDEBUG
+  // Verify that the size of the now-constrained vreg is unchanged.
+  for (auto &VRegToType : getVRegToType()) {
+    auto *RC = getRegClass(VRegToType.first);
+    if (VRegToType.second.isValid() &&
+        VRegToType.second.getSizeInBits() > (RC->getSize() * 8))
+      llvm_unreachable(
+          "Virtual register has explicit size different from its class size");
+  }
+#endif
+
+  getVRegToType().clear();
 }
 
 /// clearVirtRegs - Remove all virtual registers (after physreg assignment).
@@ -471,13 +521,14 @@ static bool isNoReturnDef(const MachineOperand &MO) {
            !Called->hasFnAttribute(Attribute::NoUnwind));
 }
 
-bool MachineRegisterInfo::isPhysRegModified(unsigned PhysReg) const {
+bool MachineRegisterInfo::isPhysRegModified(unsigned PhysReg,
+                                            bool SkipNoReturnDef) const {
   if (UsedPhysRegMask.test(PhysReg))
     return true;
   const TargetRegisterInfo *TRI = getTargetRegisterInfo();
   for (MCRegAliasIterator AI(PhysReg, TRI, true); AI.isValid(); ++AI) {
     for (const MachineOperand &MO : make_range(def_begin(*AI), def_end())) {
-      if (isNoReturnDef(MO))
+      if (!SkipNoReturnDef && isNoReturnDef(MO))
         continue;
       return true;
     }

@@ -23,10 +23,13 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
-#include <sys/stat.h>
+#include <cstdio>
+#include <iterator>
 #include <system_error>
+#include <sys/stat.h>
 
 // <fcntl.h> may provide O_BINARY.
 #if defined(HAVE_FCNTL_H)
@@ -141,7 +144,7 @@ raw_ostream &raw_ostream::operator<<(unsigned long long N) {
     return this->operator<<(static_cast<unsigned long>(N));
 
   char NumberBuffer[20];
-  char *EndPtr = NumberBuffer+sizeof(NumberBuffer);
+  char *EndPtr = std::end(NumberBuffer);
   char *CurPtr = EndPtr;
 
   while (N) {
@@ -166,13 +169,13 @@ raw_ostream &raw_ostream::write_hex(unsigned long long N) {
   if (N == 0)
     return *this << '0';
 
-  char NumberBuffer[20];
-  char *EndPtr = NumberBuffer+sizeof(NumberBuffer);
+  char NumberBuffer[16];
+  char *EndPtr = std::end(NumberBuffer);
   char *CurPtr = EndPtr;
 
   while (N) {
-    uintptr_t x = N % 16;
-    *--CurPtr = (x < 10 ? '0' + x : 'a' + x - 10);
+    unsigned char x = static_cast<unsigned char>(N) % 16;
+    *--CurPtr = hexdigit(x, /*LowerCase*/true);
     N /= 16;
   }
 
@@ -181,9 +184,7 @@ raw_ostream &raw_ostream::write_hex(unsigned long long N) {
 
 raw_ostream &raw_ostream::write_escaped(StringRef Str,
                                         bool UseHexEscapes) {
-  for (unsigned i = 0, e = Str.size(); i != e; ++i) {
-    unsigned char c = Str[i];
-
+  for (unsigned char c : Str) {
     switch (c) {
     case '\\':
       *this << '\\' << '\\';
@@ -232,7 +233,7 @@ raw_ostream &raw_ostream::operator<<(double N) {
   // On MSVCRT and compatible, output of %e is incompatible to Posix
   // by default. Number of exponent digits should be at least 2. "%+03d"
   // FIXME: Implement our formatter to here or Support/Format.h!
-#if __cplusplus >= 201103L && defined(__MINGW32__)
+#if defined(__MINGW32__)
   // FIXME: It should be generic to C++11.
   if (N == 0.0 && std::signbit(N))
     return *this << "-0.000000e+00";
@@ -267,8 +268,6 @@ raw_ostream &raw_ostream::operator<<(double N) {
 #endif
   return this->operator<<(format("%e", N));
 }
-
-
 
 void raw_ostream::flush_nonempty() {
   assert(OutBufCur > OutBufStart && "Invalid call to flush_nonempty.");
@@ -346,10 +345,10 @@ void raw_ostream::copy_to_buffer(const char *Ptr, size_t Size) {
   // Handle short strings specially, memcpy isn't very good at very short
   // strings.
   switch (Size) {
-  case 4: OutBufCur[3] = Ptr[3]; // FALL THROUGH
-  case 3: OutBufCur[2] = Ptr[2]; // FALL THROUGH
-  case 2: OutBufCur[1] = Ptr[1]; // FALL THROUGH
-  case 1: OutBufCur[0] = Ptr[0]; // FALL THROUGH
+  case 4: OutBufCur[3] = Ptr[3]; LLVM_FALLTHROUGH;
+  case 3: OutBufCur[2] = Ptr[2]; LLVM_FALLTHROUGH;
+  case 2: OutBufCur[1] = Ptr[1]; LLVM_FALLTHROUGH;
+  case 1: OutBufCur[0] = Ptr[0]; LLVM_FALLTHROUGH;
   case 0: break;
   default:
     memcpy(OutBufCur, Ptr, Size);
@@ -384,7 +383,7 @@ raw_ostream &raw_ostream::operator<<(const format_object_base &Fmt) {
   // space.  Iterate until we win.
   SmallVector<char, 128> V;
 
-  while (1) {
+  while (true) {
     V.resize(NextBufferSize);
 
     // Try formatting into the SmallVector.
@@ -422,11 +421,10 @@ raw_ostream &raw_ostream::operator<<(const FormattedNumber &FN) {
       NumberBuffer[1] = '0';
     char *EndPtr = NumberBuffer+Width;
     char *CurPtr = EndPtr;
-    const char A = FN.Upper ? 'A' : 'a';
     unsigned long long N = FN.HexValue;
     while (N) {
-      uintptr_t x = N % 16;
-      *--CurPtr = (x < 10 ? '0' + x : A + x - 10);
+      unsigned char x = static_cast<unsigned char>(N) % 16;
+      *--CurPtr = hexdigit(x, !FN.Upper);
       N /= 16;
     }
 
@@ -458,7 +456,6 @@ raw_ostream &raw_ostream::operator<<(const FormattedNumber &FN) {
   }
 }
 
-
 /// indent - Insert 'NumSpaces' spaces.
 raw_ostream &raw_ostream::indent(unsigned NumSpaces) {
   static const char Spaces[] = "                                "
@@ -477,7 +474,6 @@ raw_ostream &raw_ostream::indent(unsigned NumSpaces) {
   }
   return *this;
 }
-
 
 //===----------------------------------------------------------------------===//
 //  Formatted Output
@@ -566,7 +562,6 @@ raw_fd_ostream::~raw_fd_ostream() {
     report_fatal_error("IO failure on output stream.", /*GenCrashDiag=*/false);
 }
 
-
 void raw_fd_ostream::write_impl(const char *Ptr, size_t Size) {
   assert(FD >= 0 && "File already closed.");
   pos += Size;
@@ -626,6 +621,7 @@ void raw_fd_ostream::close() {
 }
 
 uint64_t raw_fd_ostream::seek(uint64_t off) {
+  assert(SupportsSeeking && "Stream does not support seeking!");
   flush();
   pos = ::lseek(FD, off, SEEK_SET);
   if (pos == (uint64_t)-1)
@@ -718,9 +714,10 @@ bool raw_fd_ostream::has_colors() const {
 /// outs() - This returns a reference to a raw_ostream for standard output.
 /// Use it like: outs() << "foo" << "bar";
 raw_ostream &llvm::outs() {
-  // Set buffer settings to model stdout behavior.
-  // Delete the file descriptor when the program exits, forcing error
-  // detection. If you don't want this behavior, don't use outs().
+  // Set buffer settings to model stdout behavior.  Delete the file descriptor
+  // when the program exits, forcing error detection.  This means that if you
+  // ever call outs(), you can't open another raw_fd_ostream on stdout, as we'll
+  // close stdout twice and print an error the second time.
   std::error_code EC;
   static raw_fd_ostream S("-", EC, sys::fs::F_None);
   assert(!EC);
@@ -740,7 +737,6 @@ raw_ostream &llvm::nulls() {
   static raw_null_ostream S;
   return S;
 }
-
 
 //===----------------------------------------------------------------------===//
 //  raw_string_ostream

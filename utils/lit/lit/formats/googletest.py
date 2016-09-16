@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 import os
+import subprocess
 import sys
 
 import lit.Test
@@ -34,13 +35,21 @@ class GoogleTest(TestFormat):
             if kIsWindows:
               lines = lines.replace('\r', '')
             lines = lines.split('\n')
-        except:
-            litConfig.error("unable to discover google-tests in %r" % path)
+        except Exception as exc:
+            out = exc.output if isinstance(exc, subprocess.CalledProcessError) else ''
+            litConfig.warning("unable to discover google-tests in %r: %s. Process output: %s"
+                              % (path, sys.exc_info()[1], out))
             raise StopIteration
 
         nested_tests = []
         for ln in lines:
             if not ln.strip():
+                continue
+
+            if 'Running main() from gtest_main.cc' in ln:
+                # Upstream googletest prints this to stdout prior to running
+                # tests. LLVM removed that print statement in r61540, but we
+                # handle it here in case upstream googletest is being used.
                 continue
 
             prefix = ''
@@ -129,4 +138,3 @@ class GoogleTest(TestFormat):
             return lit.Test.UNRESOLVED, msg
 
         return lit.Test.PASS,''
-

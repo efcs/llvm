@@ -1,5 +1,5 @@
+; RUN: llc < %s -march=amdgcn -verify-machineinstrs | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 ; RUN: llc < %s -march=r600 -mcpu=redwood | FileCheck --check-prefix=R600 --check-prefix=FUNC %s
-; RUN: llc < %s -march=amdgcn -mcpu=SI -verify-machineinstrs | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 
 declare i32 @llvm.r600.read.tidig.x() nounwind readnone
 
@@ -379,7 +379,7 @@ define void @v3i8_eq(<3 x i8> addrspace(1)* %out, <3 x i8> addrspace(1)* %ptra, 
 ; Make sure we don't try to emit i1 setcc ops
 ; FUNC-LABEL: setcc-i1
 ; SI: s_and_b32 [[AND:s[0-9]+]], s{{[0-9]+}}, 1
-; SI: v_cmp_eq_i32_e64 s[0:1], 0, [[AND]]
+; SI: s_cmp_eq_i32 [[AND]], 0
 define void @setcc-i1(i32 %in) {
   %and = and i32 %in, 1
   %cmp = icmp eq i32 %and, 0
@@ -391,8 +391,8 @@ endif:
 }
 
 ; FUNC-LABEL: setcc-i1-and-xor
-; SI-DAG: v_cmp_le_f32_e64 [[A:s\[[0-9]+:[0-9]+\]]], 0, s{{[0-9]+}}
-; SI-DAG: v_cmp_ge_f32_e64 [[B:s\[[0-9]+:[0-9]+\]]], 1.0, s{{[0-9]+}}
+; SI-DAG: v_cmp_ge_f32_e64 [[A:s\[[0-9]+:[0-9]+\]]], s{{[0-9]+}}, 0{{$}}
+; SI-DAG: v_cmp_le_f32_e64 [[B:s\[[0-9]+:[0-9]+\]]], s{{[0-9]+}}, 1.0
 ; SI: s_and_b64 s[2:3], [[A]], [[B]]
 define void @setcc-i1-and-xor(i32 addrspace(1)* %out, float %cond) #0 {
 bb0:

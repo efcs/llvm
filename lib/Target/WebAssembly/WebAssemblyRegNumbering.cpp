@@ -61,7 +61,6 @@ bool WebAssemblyRegNumbering::runOnMachineFunction(MachineFunction &MF) {
 
   WebAssemblyFunctionInfo &MFI = *MF.getInfo<WebAssemblyFunctionInfo>();
   MachineRegisterInfo &MRI = MF.getRegInfo();
-  const MachineFrameInfo &FrameInfo = *MF.getFrameInfo();
 
   MFI.initWARegs();
 
@@ -74,10 +73,16 @@ bool WebAssemblyRegNumbering::runOnMachineFunction(MachineFunction &MF) {
     case WebAssembly::ARGUMENT_I64:
     case WebAssembly::ARGUMENT_F32:
     case WebAssembly::ARGUMENT_F64:
+    case WebAssembly::ARGUMENT_v16i8:
+    case WebAssembly::ARGUMENT_v8i16:
+    case WebAssembly::ARGUMENT_v4i32:
+    case WebAssembly::ARGUMENT_v4f32: {
+      int64_t Imm = MI.getOperand(1).getImm();
       DEBUG(dbgs() << "Arg VReg " << MI.getOperand(0).getReg() << " -> WAReg "
-                   << MI.getOperand(1).getImm() << "\n");
-      MFI.setWAReg(MI.getOperand(0).getReg(), MI.getOperand(1).getImm());
+                   << Imm << "\n");
+      MFI.setWAReg(MI.getOperand(0).getReg(), Imm);
       break;
+    }
     default:
       break;
     }
@@ -92,6 +97,9 @@ bool WebAssemblyRegNumbering::runOnMachineFunction(MachineFunction &MF) {
   unsigned CurReg = MFI.getParams().size();
   for (unsigned VRegIdx = 0; VRegIdx < NumVRegs; ++VRegIdx) {
     unsigned VReg = TargetRegisterInfo::index2VirtReg(VRegIdx);
+    // Skip unused registers.
+    if (MRI.use_empty(VReg))
+      continue;
     // Handle stackified registers.
     if (MFI.isVRegStackified(VReg)) {
       DEBUG(dbgs() << "VReg " << VReg << " -> WAReg "
@@ -99,18 +107,10 @@ bool WebAssemblyRegNumbering::runOnMachineFunction(MachineFunction &MF) {
       MFI.setWAReg(VReg, INT32_MIN | NumStackRegs++);
       continue;
     }
-    // Skip unused registers.
-    if (MRI.use_empty(VReg))
-      continue;
     if (MFI.getWAReg(VReg) == WebAssemblyFunctionInfo::UnusedReg) {
       DEBUG(dbgs() << "VReg " << VReg << " -> WAReg " << CurReg << "\n");
       MFI.setWAReg(VReg, CurReg++);
     }
-  }
-  // Allocate locals for used physical registers
-  if (FrameInfo.getStackSize() > 0) {
-    DEBUG(dbgs() << "PReg SP " << CurReg << "\n");
-    MFI.addPReg(WebAssembly::SP32, CurReg++);
   }
 
   return true;

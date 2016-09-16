@@ -15,7 +15,6 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AliasSetTracker.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/CodeMetrics.h"
@@ -45,6 +44,10 @@ using namespace llvm;
 
 #define DEBUG_TYPE "loop-interchange"
 
+static cl::opt<int> LoopInterchangeCostThreshold(
+    "loop-interchange-threshold", cl::init(0), cl::Hidden,
+    cl::desc("Interchange if you gain more than this number"));
+
 namespace {
 
 typedef SmallVector<Loop *, 8> LoopVector;
@@ -72,15 +75,9 @@ void printDepMatrix(CharMatrix &DepMatrix) {
 #endif
 
 static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
-                                     Loop *L, DependenceAnalysis *DA) {
+                                     Loop *L, DependenceInfo *DI) {
   typedef SmallVector<Value *, 16> ValueVector;
   ValueVector MemInstr;
-
-  if (Level > MaxLoopNestDepth) {
-    DEBUG(dbgs() << "Cannot handle loops of depth greater than "
-                 << MaxLoopNestDepth << "\n");
-    return false;
-  }
 
   // For each block.
   for (Loop::block_iterator BB = L->block_begin(), BE = L->block_end();
@@ -88,18 +85,17 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
     // Scan the BB and collect legal loads and stores.
     for (BasicBlock::iterator I = (*BB)->begin(), E = (*BB)->end(); I != E;
          ++I) {
-      Instruction *Ins = dyn_cast<Instruction>(I);
-      if (!Ins)
+      if (!isa<Instruction>(I))
         return false;
-      LoadInst *Ld = dyn_cast<LoadInst>(I);
-      StoreInst *St = dyn_cast<StoreInst>(I);
-      if (!St && !Ld)
-        continue;
-      if (Ld && !Ld->isSimple())
-        return false;
-      if (St && !St->isSimple())
-        return false;
-      MemInstr.push_back(&*I);
+      if (LoadInst *Ld = dyn_cast<LoadInst>(I)) {
+        if (!Ld->isSimple())
+          return false;
+        MemInstr.push_back(&*I);
+      } else if (StoreInst *St = dyn_cast<StoreInst>(I)) {
+        if (!St->isSimple())
+          return false;
+        MemInstr.push_back(&*I);
+      }
     }
   }
 
@@ -111,23 +107,23 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
   for (I = MemInstr.begin(), IE = MemInstr.end(); I != IE; ++I) {
     for (J = I, JE = MemInstr.end(); J != JE; ++J) {
       std::vector<char> Dep;
-      Instruction *Src = dyn_cast<Instruction>(*I);
-      Instruction *Des = dyn_cast<Instruction>(*J);
-      if (Src == Des)
+      Instruction *Src = cast<Instruction>(*I);
+      Instruction *Dst = cast<Instruction>(*J);
+      if (Src == Dst)
         continue;
-      if (isa<LoadInst>(Src) && isa<LoadInst>(Des))
+      if (isa<LoadInst>(Src) && isa<LoadInst>(Dst))
         continue;
-      if (auto D = DA->depends(Src, Des, true)) {
-        DEBUG(dbgs() << "Found Dependency between Src=" << Src << " Des=" << Des
-                     << "\n");
+      if (auto D = DI->depends(Src, Dst, true)) {
+        DEBUG(dbgs() << "Found Dependency between Src and Dst\n"
+                     << " Src:" << *Src << "\n Dst:" << *Dst << '\n');
         if (D->isFlow()) {
           // TODO: Handle Flow dependence.Check if it is sufficient to populate
           // the Dependence Matrix with the direction reversed.
-          DEBUG(dbgs() << "Flow dependence not handled");
+          DEBUG(dbgs() << "Flow dependence not handled\n");
           return false;
         }
         if (D->isAnti()) {
-          DEBUG(dbgs() << "Found Anti dependence \n");
+          DEBUG(dbgs() << "Found Anti dependence\n");
           unsigned Levels = D->getLevels();
           char Direction;
           for (unsigned II = 1; II <= Levels; ++II) {
@@ -184,8 +180,8 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
 
 // A loop is moved from index 'from' to an index 'to'. Update the Dependence
 // matrix by exchanging the two columns.
-static void interChangeDepedencies(CharMatrix &DepMatrix, unsigned FromIndx,
-                                   unsigned ToIndx) {
+static void interChangeDependencies(CharMatrix &DepMatrix, unsigned FromIndx,
+                                    unsigned ToIndx) {
   unsigned numRows = DepMatrix.size();
   for (unsigned i = 0; i < numRows; ++i) {
     char TmpVal = DepMatrix[i][ToIndx];
@@ -256,9 +252,8 @@ static bool validDepInterchange(CharMatrix &DepMatrix, unsigned Row,
 
 // Checks if it is legal to interchange 2 loops.
 // [Theorem] A permutation of the loops in a perfect nest is legal if and only
-// if
-// the direction matrix, after the same permutation is applied to its columns,
-// has no ">" direction as the leftmost non-"=" direction in any row.
+// if the direction matrix, after the same permutation is applied to its
+// columns, has no ">" direction as the leftmost non-"=" direction in any row.
 static bool isLegalToInterChangeLoops(CharMatrix &DepMatrix,
                                       unsigned InnerLoopId,
                                       unsigned OuterLoopId) {
@@ -270,8 +265,7 @@ static bool isLegalToInterChangeLoops(CharMatrix &DepMatrix,
     char OuterDep = DepMatrix[Row][OuterLoopId];
     if (InnerDep == '*' || OuterDep == '*')
       return false;
-    else if (!validDepInterchange(DepMatrix, Row, OuterLoopId, InnerDep,
-                                  OuterDep))
+    if (!validDepInterchange(DepMatrix, Row, OuterLoopId, InnerDep, OuterDep))
       return false;
   }
   return true;
@@ -279,7 +273,9 @@ static bool isLegalToInterChangeLoops(CharMatrix &DepMatrix,
 
 static void populateWorklist(Loop &L, SmallVector<LoopVector, 8> &V) {
 
-  DEBUG(dbgs() << "Calling populateWorklist called\n");
+  DEBUG(dbgs() << "Calling populateWorklist on Func: "
+               << L.getHeader()->getParent()->getName() << " Loop: %"
+               << L.getHeader()->getName() << '\n');
   LoopVector LoopList;
   Loop *CurrentLoop = &L;
   const std::vector<Loop *> *Vec = &CurrentLoop->getSubLoops();
@@ -404,12 +400,9 @@ public:
 
 private:
   void splitInnerLoopLatch(Instruction *);
-  void splitOuterLoopLatch();
   void splitInnerLoopHeader();
   bool adjustLoopLinks();
   void adjustLoopPreheaders();
-  void adjustOuterLoopPreheader();
-  void adjustInnerLoopPreheader();
   bool adjustLoopBranches();
   void updateIncomingBlock(BasicBlock *CurrBlock, BasicBlock *OldPred,
                            BasicBlock *NewPred);
@@ -430,11 +423,11 @@ struct LoopInterchange : public FunctionPass {
   static char ID;
   ScalarEvolution *SE;
   LoopInfo *LI;
-  DependenceAnalysis *DA;
+  DependenceInfo *DI;
   DominatorTree *DT;
   bool PreserveLCSSA;
   LoopInterchange()
-      : FunctionPass(ID), SE(nullptr), LI(nullptr), DA(nullptr), DT(nullptr) {
+      : FunctionPass(ID), SE(nullptr), LI(nullptr), DI(nullptr), DT(nullptr) {
     initializeLoopInterchangePass(*PassRegistry::getPassRegistry());
   }
 
@@ -443,15 +436,18 @@ struct LoopInterchange : public FunctionPass {
     AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<LoopInfoWrapperPass>();
-    AU.addRequired<DependenceAnalysis>();
+    AU.addRequired<DependenceAnalysisWrapperPass>();
     AU.addRequiredID(LoopSimplifyID);
     AU.addRequiredID(LCSSAID);
   }
 
   bool runOnFunction(Function &F) override {
+    if (skipFunction(F))
+      return false;
+
     SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
     LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    DA = &getAnalysis<DependenceAnalysis>();
+    DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
     auto *DTWP = getAnalysisIfAvailable<DominatorTreeWrapperPass>();
     DT = DTWP ? &DTWP->getDomTree() : nullptr;
     PreserveLCSSA = mustPreserveAnalysisID(LCSSAID);
@@ -472,8 +468,7 @@ struct LoopInterchange : public FunctionPass {
   }
 
   bool isComputableLoopNest(LoopVector LoopList) {
-    for (auto I = LoopList.begin(), E = LoopList.end(); I != E; ++I) {
-      Loop *L = *I;
+    for (Loop *L : LoopList) {
       const SCEV *ExitCountOuter = SE->getBackedgeTakenCount(L);
       if (ExitCountOuter == SE->getCouldNotCompute()) {
         DEBUG(dbgs() << "Couldn't compute Backedge count\n");
@@ -491,7 +486,7 @@ struct LoopInterchange : public FunctionPass {
     return true;
   }
 
-  unsigned selectLoopForInterchange(LoopVector LoopList) {
+  unsigned selectLoopForInterchange(const LoopVector &LoopList) {
     // TODO: Add a better heuristic to select the loop to be interchanged based
     // on the dependence matrix. Currently we select the innermost loop.
     return LoopList.size() - 1;
@@ -500,27 +495,32 @@ struct LoopInterchange : public FunctionPass {
   bool processLoopList(LoopVector LoopList, Function &F) {
 
     bool Changed = false;
-    CharMatrix DependencyMatrix;
-    if (LoopList.size() < 2) {
+    unsigned LoopNestDepth = LoopList.size();
+    if (LoopNestDepth < 2) {
       DEBUG(dbgs() << "Loop doesn't contain minimum nesting level.\n");
       return false;
     }
-    if (!isComputableLoopNest(LoopList)) {
-      DEBUG(dbgs() << "Not vaild loop candidate for interchange\n");
+    if (LoopNestDepth > MaxLoopNestDepth) {
+      DEBUG(dbgs() << "Cannot handle loops of depth greater than "
+                   << MaxLoopNestDepth << "\n");
       return false;
     }
+    if (!isComputableLoopNest(LoopList)) {
+      DEBUG(dbgs() << "Not valid loop candidate for interchange\n");
+      return false;
+    }
+
+    DEBUG(dbgs() << "Processing LoopList of size = " << LoopNestDepth << "\n");
+
+    CharMatrix DependencyMatrix;
     Loop *OuterMostLoop = *(LoopList.begin());
-
-    DEBUG(dbgs() << "Processing LoopList of size = " << LoopList.size()
-                 << "\n");
-
-    if (!populateDependencyMatrix(DependencyMatrix, LoopList.size(),
-                                  OuterMostLoop, DA)) {
+    if (!populateDependencyMatrix(DependencyMatrix, LoopNestDepth,
+                                  OuterMostLoop, DI)) {
       DEBUG(dbgs() << "Populating Dependency matrix failed\n");
       return false;
     }
 #ifdef DUMP_DEP_MATRICIES
-    DEBUG(dbgs() << "Dependence before inter change \n");
+    DEBUG(dbgs() << "Dependence before interchange\n");
     printDepMatrix(DependencyMatrix);
 #endif
 
@@ -558,10 +558,10 @@ struct LoopInterchange : public FunctionPass {
       std::swap(LoopList[i - 1], LoopList[i]);
 
       // Update the DependencyMatrix
-      interChangeDepedencies(DependencyMatrix, i, i - 1);
+      interChangeDependencies(DependencyMatrix, i, i - 1);
       DT->recalculate(F);
 #ifdef DUMP_DEP_MATRICIES
-      DEBUG(dbgs() << "Dependence after inter change \n");
+      DEBUG(dbgs() << "Dependence after interchange\n");
       printDepMatrix(DependencyMatrix);
 #endif
       Changed |= Interchanged;
@@ -573,7 +573,7 @@ struct LoopInterchange : public FunctionPass {
                    unsigned OuterLoopId, BasicBlock *LoopNestExit,
                    std::vector<std::vector<char>> &DependencyMatrix) {
 
-    DEBUG(dbgs() << "Processing Innder Loop Id = " << InnerLoopId
+    DEBUG(dbgs() << "Processing Inner Loop Id = " << InnerLoopId
                  << " and OuterLoopId = " << OuterLoopId << "\n");
     Loop *InnerLoop = LoopList[InnerLoopId];
     Loop *OuterLoop = LoopList[OuterLoopId];
@@ -601,8 +601,8 @@ struct LoopInterchange : public FunctionPass {
 
 } // end of namespace
 bool LoopInterchangeLegality::areAllUsesReductions(Instruction *Ins, Loop *L) {
-  return !std::any_of(Ins->user_begin(), Ins->user_end(), [=](User *U) -> bool {
-    PHINode *UserIns = dyn_cast<PHINode>(U);
+  return none_of(Ins->users(), [=](User *U) -> bool {
+    auto *UserIns = dyn_cast<PHINode>(U);
     RecurrenceDescriptor RD;
     return !UserIns || !RecurrenceDescriptor::isReductionPHI(UserIns, L, RD);
   });
@@ -705,7 +705,7 @@ bool LoopInterchangeLegality::findInductionAndReductions(
     RecurrenceDescriptor RD;
     InductionDescriptor ID;
     PHINode *PHI = cast<PHINode>(I);
-    if (InductionDescriptor::isInductionPHI(PHI, SE, ID))
+    if (InductionDescriptor::isInductionPHI(PHI, L, SE, ID))
       Inductions.push_back(PHI);
     else if (RecurrenceDescriptor::isReductionPHI(PHI, L, RD))
       Reductions.push_back(PHI);
@@ -813,7 +813,6 @@ bool LoopInterchangeLegality::currentLimitations() {
   //      A[j+1][i+2] = A[j][i]+k;
   //  }
   // }
-  bool FoundInduction = false;
   Instruction *InnerIndexVarInc = nullptr;
   if (InnerInductionVar->getIncomingBlock(0) == InnerLoopPreHeader)
     InnerIndexVarInc =
@@ -829,17 +828,17 @@ bool LoopInterchangeLegality::currentLimitations() {
   // we do not have any instruction between the induction variable and branch
   // instruction.
 
-  for (auto I = InnerLoopLatch->rbegin(), E = InnerLoopLatch->rend();
-       I != E && !FoundInduction; ++I) {
-    if (isa<BranchInst>(*I) || isa<CmpInst>(*I) || isa<TruncInst>(*I))
+  bool FoundInduction = false;
+  for (const Instruction &I : reverse(*InnerLoopLatch)) {
+    if (isa<BranchInst>(I) || isa<CmpInst>(I) || isa<TruncInst>(I))
       continue;
-    const Instruction &Ins = *I;
     // We found an instruction. If this is not induction variable then it is not
     // safe to split this loop latch.
-    if (!Ins.isIdenticalTo(InnerIndexVarInc))
+    if (!I.isIdenticalTo(InnerIndexVarInc))
       return true;
-    else
-      FoundInduction = true;
+
+    FoundInduction = true;
+    break;
   }
   // The loop latch ended and we didn't find the induction variable return as
   // current limitation.
@@ -855,8 +854,8 @@ bool LoopInterchangeLegality::canInterchangeLoops(unsigned InnerLoopId,
 
   if (!isLegalToInterChangeLoops(DepMatrix, InnerLoopId, OuterLoopId)) {
     DEBUG(dbgs() << "Failed interchange InnerLoopId = " << InnerLoopId
-                 << "and OuterLoopId = " << OuterLoopId
-                 << "due to dependence\n");
+                 << " and OuterLoopId = " << OuterLoopId
+                 << " due to dependence\n");
     return false;
   }
 
@@ -903,8 +902,7 @@ int LoopInterchangeProfitability::getInstrOrderCost() {
   BadOrder = GoodOrder = 0;
   for (auto BI = InnerLoop->block_begin(), BE = InnerLoop->block_end();
        BI != BE; ++BI) {
-    for (auto I = (*BI)->begin(), E = (*BI)->end(); I != E; ++I) {
-      const Instruction &Ins = *I;
+    for (Instruction &Ins : **BI) {
       if (const GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&Ins)) {
         unsigned NumOp = GEP->getNumOperands();
         bool FoundInnerInduction = false;
@@ -950,9 +948,9 @@ int LoopInterchangeProfitability::getInstrOrderCost() {
   return GoodOrder - BadOrder;
 }
 
-static bool isProfitabileForVectorization(unsigned InnerLoopId,
-                                          unsigned OuterLoopId,
-                                          CharMatrix &DepMatrix) {
+static bool isProfitableForVectorization(unsigned InnerLoopId,
+                                         unsigned OuterLoopId,
+                                         CharMatrix &DepMatrix) {
   // TODO: Improve this heuristic to catch more cases.
   // If the inner loop is loop independent or doesn't carry any dependency it is
   // profitable to move this to outer position.
@@ -981,16 +979,15 @@ bool LoopInterchangeProfitability::isProfitable(unsigned InnerLoopId,
   // This is rough cost estimation algorithm. It counts the good and bad order
   // of induction variables in the instruction and allows reordering if number
   // of bad orders is more than good.
-  int Cost = 0;
-  Cost += getInstrOrderCost();
+  int Cost = getInstrOrderCost();
   DEBUG(dbgs() << "Cost = " << Cost << "\n");
-  if (Cost < 0)
+  if (Cost < -LoopInterchangeCostThreshold)
     return true;
 
   // It is not profitable as per current cache profitability model. But check if
   // we can move this loop outside to improve parallelism.
   bool ImprovesPar =
-      isProfitabileForVectorization(InnerLoopId, OuterLoopId, DepMatrix);
+      isProfitableForVectorization(InnerLoopId, OuterLoopId, DepMatrix);
   return ImprovesPar;
 }
 
@@ -1073,13 +1070,6 @@ void LoopInterchangeTransform::splitInnerLoopLatch(Instruction *Inc) {
   InnerLoopLatch = SplitBlock(InnerLoopLatchPred, Inc, DT, LI);
 }
 
-void LoopInterchangeTransform::splitOuterLoopLatch() {
-  BasicBlock *OuterLoopLatch = OuterLoop->getLoopLatch();
-  BasicBlock *OuterLatchLcssaPhiBlock = OuterLoopLatch;
-  OuterLoopLatch = SplitBlock(OuterLatchLcssaPhiBlock,
-                              OuterLoopLatch->getFirstNonPHI(), DT, LI);
-}
-
 void LoopInterchangeTransform::splitInnerLoopHeader() {
 
   // Split the inner loop header out. Here make sure that the reduction PHI's
@@ -1102,8 +1092,7 @@ void LoopInterchangeTransform::splitInnerLoopHeader() {
       PHI->replaceAllUsesWith(V);
       PHIVec.push_back((PHI));
     }
-    for (auto I = PHIVec.begin(), E = PHIVec.end(); I != E; ++I) {
-      PHINode *P = *I;
+    for (PHINode *P : PHIVec) {
       P->eraseFromParent();
     }
   } else {
@@ -1122,20 +1111,6 @@ static void moveBBContents(BasicBlock *FromBB, Instruction *InsertBefore) {
 
   ToList.splice(InsertBefore->getIterator(), FromList, FromList.begin(),
                 FromBB->getTerminator()->getIterator());
-}
-
-void LoopInterchangeTransform::adjustOuterLoopPreheader() {
-  BasicBlock *OuterLoopPreHeader = OuterLoop->getLoopPreheader();
-  BasicBlock *InnerPreHeader = InnerLoop->getLoopPreheader();
-
-  moveBBContents(OuterLoopPreHeader, InnerPreHeader->getTerminator());
-}
-
-void LoopInterchangeTransform::adjustInnerLoopPreheader() {
-  BasicBlock *InnerLoopPreHeader = InnerLoop->getLoopPreheader();
-  BasicBlock *OuterHeader = OuterLoop->getHeader();
-
-  moveBBContents(InnerLoopPreHeader, OuterHeader->getTerminator());
 }
 
 void LoopInterchangeTransform::updateIncomingBlock(BasicBlock *CurrBlock,
@@ -1234,8 +1209,7 @@ bool LoopInterchangeTransform::adjustLoopBranches() {
     PHINode *LcssaPhi = cast<PHINode>(I);
     LcssaVec.push_back(LcssaPhi);
   }
-  for (auto I = LcssaVec.begin(), E = LcssaVec.end(); I != E; ++I) {
-    PHINode *P = *I;
+  for (PHINode *P : LcssaVec) {
     Value *Incoming = P->getIncomingValueForBlock(InnerLoopLatch);
     P->replaceAllUsesWith(Incoming);
     P->eraseFromParent();
@@ -1294,11 +1268,11 @@ char LoopInterchange::ID = 0;
 INITIALIZE_PASS_BEGIN(LoopInterchange, "loop-interchange",
                       "Interchanges loops for cache reuse", false, false)
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(DependenceAnalysis)
+INITIALIZE_PASS_DEPENDENCY(DependenceAnalysisWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
-INITIALIZE_PASS_DEPENDENCY(LCSSA)
+INITIALIZE_PASS_DEPENDENCY(LCSSAWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 
 INITIALIZE_PASS_END(LoopInterchange, "loop-interchange",

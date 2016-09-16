@@ -48,17 +48,17 @@ target triple = "aarch64_be--linux-gnu"
 
 %struct.bitfield = type <{ i8, [3 x i8], i64 }>
 
-@b = common global %struct.bitfield zeroinitializer, align 4
+@b = common global %struct.bitfield zeroinitializer, align 4, !dbg !4
 
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!13, !14, !15}
 !llvm.ident = !{!16}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.7.0 (trunk 240548) (llvm/trunk 240554)", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, retainedTypes: !2, subprograms: !2, globals: !3, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.7.0 (trunk 240548) (llvm/trunk 240554)", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, retainedTypes: !2, globals: !3, imports: !2)
 !1 = !DIFile(filename: "bitfields.c", directory: "/")
 !2 = !{}
 !3 = !{!4}
-!4 = !DIGlobalVariable(name: "b", scope: !0, file: !5, line: 8, type: !6, isLocal: false, isDefinition: true, variable: %struct.bitfield* @b)
+!4 = !DIGlobalVariable(name: "b", scope: !0, file: !5, line: 8, type: !6, isLocal: false, isDefinition: true)
 !5 = !DIFile(filename: "bitfields.c", directory: "/")
 !6 = !DICompositeType(tag: DW_TAG_structure_type, name: "bitfield", file: !5, line: 1, size: 96, align: 32, elements: !7)
 !7 = !{!8, !10, !11, !12}

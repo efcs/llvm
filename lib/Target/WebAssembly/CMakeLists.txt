@@ -14,21 +14,26 @@ add_llvm_target(WebAssemblyCodeGen
   WebAssemblyAsmPrinter.cpp
   WebAssemblyCFGStackify.cpp
   WebAssemblyFastISel.cpp
+  WebAssemblyFixIrreducibleControlFlow.cpp
   WebAssemblyFrameLowering.cpp
   WebAssemblyISelDAGToDAG.cpp
   WebAssemblyISelLowering.cpp
   WebAssemblyInstrInfo.cpp
   WebAssemblyLowerBrUnless.cpp
+  WebAssemblyLowerEmscriptenEHSjLj.cpp
   WebAssemblyMachineFunctionInfo.cpp
   WebAssemblyMCInstLower.cpp
+  WebAssemblyOptimizeLiveIntervals.cpp
   WebAssemblyOptimizeReturned.cpp
   WebAssemblyPeephole.cpp
-  WebAssemblyPEI.cpp
+  WebAssemblyPrepareForLiveIntervals.cpp
   WebAssemblyRegisterInfo.cpp
   WebAssemblyRegColoring.cpp
   WebAssemblyRegNumbering.cpp
   WebAssemblyRegStackify.cpp
+  WebAssemblyReplacePhysRegs.cpp
   WebAssemblySelectionDAGInfo.cpp
+  WebAssemblySetP2AlignOperands.cpp
   WebAssemblyStoreResults.cpp
   WebAssemblySubtarget.cpp
   WebAssemblyTargetMachine.cpp

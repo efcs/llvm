@@ -32,39 +32,6 @@
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
-// EmittingAsmStreamer Implementation
-//===----------------------------------------------------------------------===//
-unsigned EmittingAsmStreamer::emitULEB128(uint64_t Value, const char *Desc,
-                                          unsigned PadTo) {
-  AP->EmitULEB128(Value, Desc, PadTo);
-  return 0;
-}
-
-unsigned EmittingAsmStreamer::emitInt8(unsigned char Value) {
-  AP->EmitInt8(Value);
-  return 0;
-}
-
-unsigned EmittingAsmStreamer::emitBytes(StringRef Data) {
-  AP->OutStreamer->EmitBytes(Data);
-  return 0;
-}
-
-//===----------------------------------------------------------------------===//
-// SizeReporterAsmStreamer Implementation
-//===----------------------------------------------------------------------===//
-unsigned SizeReporterAsmStreamer::emitULEB128(uint64_t Value, const char *Desc,
-                                              unsigned PadTo) {
-  return getULEB128Size(Value);
-}
-
-unsigned SizeReporterAsmStreamer::emitInt8(unsigned char Value) { return 1; }
-
-unsigned SizeReporterAsmStreamer::emitBytes(StringRef Data) {
-  return Data.size();
-}
-
-//===----------------------------------------------------------------------===//
 // DIEAbbrevData Implementation
 //===----------------------------------------------------------------------===//
 
@@ -280,17 +247,17 @@ void DIEInteger::EmitValue(const AsmPrinter *Asm, dwarf::Form Form) const {
     // FIXME: Is there a better way to do this?
     Asm->OutStreamer->AddBlankLine();
     return;
-  case dwarf::DW_FORM_flag:  // Fall thru
-  case dwarf::DW_FORM_ref1:  // Fall thru
+  case dwarf::DW_FORM_flag:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref1:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data1: Size = 1; break;
-  case dwarf::DW_FORM_ref2:  // Fall thru
+  case dwarf::DW_FORM_ref2:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data2: Size = 2; break;
-  case dwarf::DW_FORM_sec_offset: // Fall thru
-  case dwarf::DW_FORM_strp: // Fall thru
-  case dwarf::DW_FORM_ref4:  // Fall thru
+  case dwarf::DW_FORM_sec_offset: LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_strp:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref4:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data4: Size = 4; break;
-  case dwarf::DW_FORM_ref8:  // Fall thru
-  case dwarf::DW_FORM_ref_sig8:  // Fall thru
+  case dwarf::DW_FORM_ref8:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref_sig8:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data8: Size = 8; break;
   case dwarf::DW_FORM_GNU_str_index: Asm->EmitULEB128(Integer); return;
   case dwarf::DW_FORM_GNU_addr_index: Asm->EmitULEB128(Integer); return;
@@ -312,17 +279,17 @@ void DIEInteger::EmitValue(const AsmPrinter *Asm, dwarf::Form Form) const {
 unsigned DIEInteger::SizeOf(const AsmPrinter *AP, dwarf::Form Form) const {
   switch (Form) {
   case dwarf::DW_FORM_flag_present: return 0;
-  case dwarf::DW_FORM_flag:  // Fall thru
-  case dwarf::DW_FORM_ref1:  // Fall thru
+  case dwarf::DW_FORM_flag:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref1:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data1: return sizeof(int8_t);
-  case dwarf::DW_FORM_ref2:  // Fall thru
+  case dwarf::DW_FORM_ref2:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data2: return sizeof(int16_t);
-  case dwarf::DW_FORM_sec_offset: // Fall thru
-  case dwarf::DW_FORM_strp: // Fall thru
-  case dwarf::DW_FORM_ref4:  // Fall thru
+  case dwarf::DW_FORM_sec_offset: LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_strp:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref4:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data4: return sizeof(int32_t);
-  case dwarf::DW_FORM_ref8:  // Fall thru
-  case dwarf::DW_FORM_ref_sig8:  // Fall thru
+  case dwarf::DW_FORM_ref8:  LLVM_FALLTHROUGH;
+  case dwarf::DW_FORM_ref_sig8:  LLVM_FALLTHROUGH;
   case dwarf::DW_FORM_data8: return sizeof(int64_t);
   case dwarf::DW_FORM_GNU_str_index: return getULEB128Size(Integer);
   case dwarf::DW_FORM_GNU_addr_index: return getULEB128Size(Integer);
@@ -509,20 +476,6 @@ unsigned DIEEntry::getRefAddrSize(const AsmPrinter *AP) {
 LLVM_DUMP_METHOD
 void DIEEntry::print(raw_ostream &O) const {
   O << format("Die: 0x%lx", (long)(intptr_t)&Entry);
-}
-
-//===----------------------------------------------------------------------===//
-// DIETypeSignature Implementation
-//===----------------------------------------------------------------------===//
-void DIETypeSignature::EmitValue(const AsmPrinter *Asm,
-                                 dwarf::Form Form) const {
-  assert(Form == dwarf::DW_FORM_ref_sig8);
-  Asm->OutStreamer->EmitIntValue(Unit->getTypeSignature(), 8);
-}
-
-LLVM_DUMP_METHOD
-void DIETypeSignature::print(raw_ostream &O) const {
-  O << format("Type Unit: 0x%lx", Unit->getTypeSignature());
 }
 
 //===----------------------------------------------------------------------===//

@@ -91,7 +91,7 @@ int llvm::getNextAvailablePluginDiagnosticKind() {
   return ++PluginKindID;
 }
 
-const char *DiagnosticInfo::AlwaysPrint = "";
+const char *DiagnosticInfoOptimizationRemarkAnalysis::AlwaysPrint = "";
 
 DiagnosticInfoInlineAsm::DiagnosticInfoInlineAsm(const Instruction &I,
                                                  const Twine &MsgStr,
@@ -112,14 +112,23 @@ void DiagnosticInfoInlineAsm::print(DiagnosticPrinter &DP) const {
     DP << " at line " << getLocCookie();
 }
 
-void DiagnosticInfoStackSize::print(DiagnosticPrinter &DP) const {
-  DP << "stack size limit exceeded (" << getStackSize() << ") in "
-     << getFunction();
+void DiagnosticInfoResourceLimit::print(DiagnosticPrinter &DP) const {
+  DP << getResourceName() << " limit";
+
+  if (getResourceLimit() != 0)
+    DP << " of " << getResourceLimit();
+
+  DP << " exceeded (" <<  getResourceSize() << ") in " << getFunction();
 }
 
 void DiagnosticInfoDebugMetadataVersion::print(DiagnosticPrinter &DP) const {
   DP << "ignoring debug info with an invalid version (" << getMetadataVersion()
      << ") in " << getModule();
+}
+
+void DiagnosticInfoIgnoringInvalidDebugMetadata::print(
+    DiagnosticPrinter &DP) const {
+  DP << "ignoring invalid debug info in " << getModule().getModuleIdentifier();
 }
 
 void DiagnosticInfoSampleProfile::print(DiagnosticPrinter &DP) const {
@@ -138,11 +147,11 @@ void DiagnosticInfoPGOProfile::print(DiagnosticPrinter &DP) const {
   DP << getMsg();
 }
 
-bool DiagnosticInfoOptimizationBase::isLocationAvailable() const {
+bool DiagnosticInfoWithDebugLocBase::isLocationAvailable() const {
   return getDebugLoc();
 }
 
-void DiagnosticInfoOptimizationBase::getLocation(StringRef *Filename,
+void DiagnosticInfoWithDebugLocBase::getLocation(StringRef *Filename,
                                                  unsigned *Line,
                                                  unsigned *Column) const {
   DILocation *L = getDebugLoc();
@@ -152,7 +161,7 @@ void DiagnosticInfoOptimizationBase::getLocation(StringRef *Filename,
   *Column = L->getColumn();
 }
 
-const std::string DiagnosticInfoOptimizationBase::getLocationStr() const {
+const std::string DiagnosticInfoWithDebugLocBase::getLocationStr() const {
   StringRef Filename("<unknown>");
   unsigned Line = 0;
   unsigned Column = 0;
@@ -163,6 +172,8 @@ const std::string DiagnosticInfoOptimizationBase::getLocationStr() const {
 
 void DiagnosticInfoOptimizationBase::print(DiagnosticPrinter &DP) const {
   DP << getLocationStr() << ": " << getMsg();
+  if (Hotness)
+    DP << " (hotness: " << *Hotness << ")";
 }
 
 bool DiagnosticInfoOptimizationRemark::isEnabled() const {
@@ -176,7 +187,7 @@ bool DiagnosticInfoOptimizationRemarkMissed::isEnabled() const {
 }
 
 bool DiagnosticInfoOptimizationRemarkAnalysis::isEnabled() const {
-  return getPassName() == DiagnosticInfo::AlwaysPrint ||
+  return shouldAlwaysPrint() ||
          (PassRemarksAnalysisOptLoc.Pattern &&
           PassRemarksAnalysisOptLoc.Pattern->match(getPassName()));
 }
@@ -230,6 +241,16 @@ bool DiagnosticInfoOptimizationFailure::isEnabled() const {
   return getSeverity() == DS_Warning;
 }
 
+void DiagnosticInfoUnsupported::print(DiagnosticPrinter &DP) const {
+  std::string Str;
+  raw_string_ostream OS(Str);
+
+  OS << getLocationStr() << ": in function " << getFunction().getName() << ' '
+     << *getFunction().getFunctionType() << ": " << Msg << '\n';
+  OS.flush();
+  DP << Str;
+}
+
 void llvm::emitLoopVectorizeWarning(LLVMContext &Ctx, const Function &Fn,
                                     const DebugLoc &DLoc, const Twine &Msg) {
   Ctx.diagnose(DiagnosticInfoOptimizationFailure(
@@ -240,4 +261,8 @@ void llvm::emitLoopInterleaveWarning(LLVMContext &Ctx, const Function &Fn,
                                      const DebugLoc &DLoc, const Twine &Msg) {
   Ctx.diagnose(DiagnosticInfoOptimizationFailure(
       Fn, DLoc, Twine("loop not interleaved: " + Msg)));
+}
+
+void DiagnosticInfoISelFallback::print(DiagnosticPrinter &DP) const {
+  DP << "Instruction selection used fallback path for " << getFunction();
 }
