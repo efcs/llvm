@@ -399,13 +399,13 @@ static void handleNoSuspendCoroutine(CoroBeginInst *CoroBegin, Type *FrameTy) {
     IRBuilder<> Builder(AllocInst);
     // FIXME: Need to handle overaligned members.
     auto *Frame = Builder.CreateAlloca(FrameTy);
-    auto *vFrame = Builder.CreateBitCast(Frame, Builder.getInt8PtrTy());
+    auto *VFrame = Builder.CreateBitCast(Frame, Builder.getInt8PtrTy());
     AllocInst->replaceAllUsesWith(Builder.getFalse());
     AllocInst->eraseFromParent();
-    CoroBegin->replaceAllUsesWith(vFrame);
-  } else
+    CoroBegin->replaceAllUsesWith(VFrame);
+  } else {
     CoroBegin->replaceAllUsesWith(CoroBegin->getMem());
-
+  }
   CoroBegin->eraseFromParent();
 }
 
@@ -445,13 +445,9 @@ static bool simplifySuspendPoint(CoroSuspendInst *Suspend,
   if (!CallInstr)
     return false;
 
-  auto *Callee = SingleCallSite.getCalledValue();
-
-  if (isa<Function>(Callee))
-    return false;
+  auto *Callee = SingleCallSite.getCalledValue()->stripPointerCasts();
 
   // See if the callsite is for resumption or destruction of the coroutine.
-  Callee = Callee->stripPointerCasts();
   auto *SubFn = dyn_cast<CoroSubFnInst>(Callee);
   if (!SubFn)
     return false;
@@ -503,6 +499,16 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
   removeLifetimeIntrinsics(F);
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
+
+  // If there are no suspend points, no split required, just remove
+  // the allocation and deallocation blocks, they are not needed.
+  if (Shape.CoroSuspends.empty()) {
+    handleNoSuspendCoroutine(Shape.CoroBegin, Shape.FrameTy);
+    removeCoroEnds(Shape);
+    postSplitCleanup(F);
+    coro::updateCallGraph(F, {}, CG, SCC);
+    return;
+  }
 
   // If there are no suspend points, no split required, just remove
   // the allocation and deallocation blocks, they are not needed.
