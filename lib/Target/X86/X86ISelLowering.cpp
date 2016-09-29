@@ -12863,10 +12863,6 @@ static SDValue LowerSCALAR_TO_VECTOR(SDValue Op, SelectionDAG &DAG) {
     return insert128BitVector(DAG.getUNDEF(OpVT), Op, 0, DAG, dl);
   }
 
-  if (OpVT == MVT::v1i64 &&
-      Op.getOperand(0).getValueType() == MVT::i64)
-    return DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, MVT::v1i64, Op.getOperand(0));
-
   SDValue AnyExt = DAG.getNode(ISD::ANY_EXTEND, dl, MVT::i32, Op.getOperand(0));
   assert(OpVT.is128BitVector() && "Expected an SSE type!");
   return DAG.getBitcast(
@@ -14674,16 +14670,11 @@ static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
   SDValue MagMask = DAG.getConstantFP(
       APFloat(Sem, ~APInt::getSignBit(SizeInBits)), dl, LogicVT);
 
-  // FIXME: This check shouldn't be necessary. Logic instructions with constant
-  // operands should be folded!
+  // TODO: If we had general constant folding for FP logic ops, this check
+  // wouldn't be necessary.
   SDValue MagBits;
   if (ConstantFPSDNode *Op0CN = dyn_cast<ConstantFPSDNode>(Mag)) {
     APFloat APF = Op0CN->getValueAPF();
-    // If the magnitude is a positive zero, the sign bit alone is enough.
-    if (APF.isPosZero())
-      return IsF128 ? SignBit :
-          DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, VT, SignBit,
-                      DAG.getIntPtrConstant(0, dl));
     APF.clearSign();
     MagBits = DAG.getConstantFP(APF, dl, LogicVT);
   } else {
@@ -18822,11 +18813,11 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
       return DAG.getStore(Chain, dl, DataToCompress, Addr,
                           MemIntr->getMemOperand());
 
-    SDValue Compressed =
-      getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, DataToCompress),
-                           Mask, DAG.getUNDEF(VT), Subtarget, DAG);
-    return DAG.getStore(Chain, dl, Compressed, Addr,
-                        MemIntr->getMemOperand());
+    MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
+    SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
+
+    return DAG.getMaskedStore(Chain, dl, DataToCompress, Addr, VMask, VT,
+                              MemIntr->getMemOperand(), false, true);
   }
   case TRUNCATE_TO_MEM_VI8:
   case TRUNCATE_TO_MEM_VI16:
@@ -27146,7 +27137,7 @@ static SDValue combineSelectOfTwoConstants(SDNode *N, SelectionDAG &DAG) {
       return Cond;
     }
   }
-  
+
   return SDValue();
 }
 
@@ -30499,24 +30490,73 @@ static SDValue combineXor(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
+
+static bool isNullFPScalarOrVectorConst(SDValue V) {
+  return isNullFPConstant(V) || ISD::isBuildVectorAllZeros(V.getNode());
+}
+
+/// If a value is a scalar FP zero or a vector FP zero (potentially including
+/// undefined elements), return a zero constant that may be used to fold away
+/// that value. In the case of a vector, the returned constant will not contain
+/// undefined elements even if the input parameter does. This makes it suitable
+/// to be used as a replacement operand with operations (eg, bitwise-and) where
+/// an undef should not propagate.
+static SDValue getNullFPConstForNullVal(SDValue V, SelectionDAG &DAG,
+                                        const X86Subtarget &Subtarget) {
+  if (!isNullFPScalarOrVectorConst(V))
+    return SDValue();
+
+  if (V.getValueType().isVector())
+    return getZeroVector(V.getSimpleValueType(), Subtarget, DAG, SDLoc(V));
+
+  return V;
+}
+
+/// Do target-specific dag combines on X86ISD::FAND nodes.
+static SDValue combineFAnd(SDNode *N, SelectionDAG &DAG,
+                           const X86Subtarget &Subtarget) {
+  // FAND(0.0, x) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(0), DAG, Subtarget))
+    return V;
+
+  // FAND(x, 0.0) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(1), DAG, Subtarget))
+    return V;
+
+  return lowerX86FPLogicOp(N, DAG, Subtarget);
+}
+
+/// Do target-specific dag combines on X86ISD::FANDN nodes.
+static SDValue combineFAndn(SDNode *N, SelectionDAG &DAG,
+                            const X86Subtarget &Subtarget) {
+  // FANDN(0.0, x) -> x
+  if (isNullFPScalarOrVectorConst(N->getOperand(0)))
+    return N->getOperand(1);
+
+  // FANDN(x, 0.0) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(1), DAG, Subtarget))
+    return V;
+
+  return lowerX86FPLogicOp(N, DAG, Subtarget);
+}
+
 /// Do target-specific dag combines on X86ISD::FOR and X86ISD::FXOR nodes.
 static SDValue combineFOr(SDNode *N, SelectionDAG &DAG,
                           const X86Subtarget &Subtarget) {
   assert(N->getOpcode() == X86ISD::FOR || N->getOpcode() == X86ISD::FXOR);
 
   // F[X]OR(0.0, x) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
+  if (isNullFPScalarOrVectorConst(N->getOperand(0)))
+    return N->getOperand(1);
 
   // F[X]OR(x, 0.0) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(0);
+  if (isNullFPScalarOrVectorConst(N->getOperand(1)))
+    return N->getOperand(0);
 
   if (isFNEG(N))
     if (SDValue NewVal = combineFneg(N, DAG, Subtarget))
       return NewVal;
+
   return lowerX86FPLogicOp(N, DAG, Subtarget);
 }
 
@@ -30595,38 +30635,6 @@ static SDValue combineFMinNumFMaxNum(SDNode *N, SelectionDAG &DAG,
   // are NaN, the NaN value of Op1 is the result.
   auto SelectOpcode = VT.isVector() ? ISD::VSELECT : ISD::SELECT;
   return DAG.getNode(SelectOpcode, DL, VT, IsOp0Nan, Op1, MinOrMax);
-}
-
-/// Do target-specific dag combines on X86ISD::FAND nodes.
-static SDValue combineFAnd(SDNode *N, SelectionDAG &DAG,
-                           const X86Subtarget &Subtarget) {
-  // FAND(0.0, x) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(0);
-
-  // FAND(x, 0.0) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  return lowerX86FPLogicOp(N, DAG, Subtarget);
-}
-
-/// Do target-specific dag combines on X86ISD::FANDN nodes
-static SDValue combineFAndn(SDNode *N, SelectionDAG &DAG,
-                            const X86Subtarget &Subtarget) {
-  // FANDN(0.0, x) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  // FANDN(x, 0.0) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  return lowerX86FPLogicOp(N, DAG, Subtarget);
 }
 
 static SDValue combineBT(SDNode *N, SelectionDAG &DAG,
@@ -31663,14 +31671,14 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::FSUB:           return combineFaddFsub(N, DAG, Subtarget);
   case ISD::FNEG:           return combineFneg(N, DAG, Subtarget);
   case ISD::TRUNCATE:       return combineTruncate(N, DAG, Subtarget);
+  case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
+  case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
   case X86ISD::FXOR:
   case X86ISD::FOR:         return combineFOr(N, DAG, Subtarget);
   case X86ISD::FMIN:
   case X86ISD::FMAX:        return combineFMinFMax(N, DAG);
   case ISD::FMINNUM:
   case ISD::FMAXNUM:        return combineFMinNumFMaxNum(N, DAG, Subtarget);
-  case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
-  case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
   case X86ISD::BT:          return combineBT(N, DAG, DCI);
   case ISD::ANY_EXTEND:
   case ISD::ZERO_EXTEND:    return combineZext(N, DAG, DCI, Subtarget);
