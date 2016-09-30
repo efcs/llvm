@@ -313,3 +313,24 @@ INVALID-VERS-SMALL: macho-invalid-vers-small': truncated or malformed object (lo
 
 RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-vers-more-than-one 2>&1 | FileCheck -check-prefix INVALID-VERS-MORE-THAN-ONE %s
 INVALID-VERS-MORE-THAN-ONE: macho-invalid-vers-more-than-one': truncated or malformed object (more than one LC_VERSION_MIN_MACOSX, LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_TVOS or LC_VERSION_MIN_WATCHOS command)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-rpath-small 2>&1 | FileCheck -check-prefix INVALID-RPATH-SMALL %s
+INVALID-RPATH-SMALL: macho-invalid-rpath-small': truncated or malformed object (load command 0 LC_RPATH cmdsize too small)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-rpath-name_offset-toobig 2>&1 | FileCheck -check-prefix INVALID-RPATH-NAME_OFFSET-TOOBIG %s
+INVALID-RPATH-NAME_OFFSET-TOOBIG: macho-invalid-rpath-name_offset-toobig': truncated or malformed object (load command 0 LC_RPATH path.offset field extends past the end of the load command)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-rpath-name_toobig 2>&1 | FileCheck -check-prefix INVALID-RPATH-NAME_TOOBIG %s
+INVALID-RPATH-NAME_TOOBIG: macho-invalid-rpath-name_toobig': truncated or malformed object (load command 0 LC_RPATH library name extends past the end of the load command)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-source-bad-size 2>&1 | FileCheck -check-prefix INVALID-SOURCE-BAD-SIZE %s
+INVALID-SOURCE-BAD-SIZE: macho-invalid-source-bad-size': truncated or malformed object (LC_SOURCE_VERSION command 0 has incorrect cmdsize)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-source-more-than-one 2>&1 | FileCheck -check-prefix INVALID-SOURCE-MORE-THAN-ONE %s
+INVALID-SOURCE-MORE-THAN-ONE: macho-invalid-source-more-than-one': truncated or malformed object (more than one LC_SOURCE_VERSION command)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-entry-bad-size 2>&1 | FileCheck -check-prefix INVALID-ENTRY-BAD-SIZE %s
+INVALID-ENTRY-BAD-SIZE: macho-invalid-entry-bad-size': truncated or malformed object (LC_MAIN command 0 has incorrect cmdsize)
+
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho-invalid-entry-more-than-one 2>&1 | FileCheck -check-prefix INVALID-ENTRY-MORE-THAN-ONE %s
+INVALID-ENTRY-MORE-THAN-ONE: macho-invalid-entry-more-than-one': truncated or malformed object (more than one LC_MAIN command)
