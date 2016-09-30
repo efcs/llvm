@@ -40,6 +40,7 @@ struct FuzzingOptions {
   std::string OutputCorpus;
   std::string ArtifactPrefix = "./";
   std::string ExactArtifactPath;
+  std::string ExitOnSrcPos;
   bool SaveArtifacts = true;
   bool PrintNEW = true; // Print a status line when new units are found;
   bool OutputCSV = false;
@@ -48,7 +49,6 @@ struct FuzzingOptions {
   bool PrintCorpusStats = false;
   bool PrintCoverage = false;
   bool DetectLeaks = true;
-  bool PruneCorpus = true;
 };
 
 }  // namespace fuzzer
