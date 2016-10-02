@@ -3543,6 +3543,28 @@ MachineInstr *X86InstrInfo::commuteInstructionImpl(MachineInstr &MI, bool NewMI,
     return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
                                                    OpIdx1, OpIdx2);
   }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr:{
+    // On SSE41 or later we can commute a MOVSS/MOVSD to a BLENDPS/BLENDPD.
+    if (!Subtarget.hasSSE41())
+      return nullptr;
+
+    unsigned Mask, Opc;
+    switch (MI.getOpcode()) {
+    default: llvm_unreachable("Unreachable!");
+    case X86::MOVSDrr:  Opc = X86::BLENDPDrri;  Mask = 0x02; break;
+    case X86::MOVSSrr:  Opc = X86::BLENDPSrri;  Mask = 0x0E; break;
+    case X86::VMOVSDrr: Opc = X86::VBLENDPDrri; Mask = 0x02; break;
+    case X86::VMOVSSrr: Opc = X86::VBLENDPSrri; Mask = 0x0E; break;
+    }
+    auto &WorkingMI = cloneIfNew(MI);
+    WorkingMI.setDesc(get(Opc));
+    WorkingMI.addOperand(MachineOperand::CreateImm(Mask));
+    return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
+                                                   OpIdx1, OpIdx2);
+  }
   case X86::PCLMULQDQrr:
   case X86::VPCLMULQDQrr:{
     // SRC1 64bits = Imm[0] ? SRC1[127:64] : SRC1[63:0]
@@ -3915,6 +3937,14 @@ bool X86InstrInfo::findCommutedOpIndices(MachineInstr &MI, unsigned &SrcOpIdx1,
     }
     return false;
   }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr: {
+    if (Subtarget.hasSSE41())
+      return TargetInstrInfo::findCommutedOpIndices(MI, SrcOpIdx1, SrcOpIdx2);
+    return false;
+  }
   case X86::VPTERNLOGDZrri:      case X86::VPTERNLOGDZrmi:
   case X86::VPTERNLOGDZ128rri:   case X86::VPTERNLOGDZ128rmi:
   case X86::VPTERNLOGDZ256rri:   case X86::VPTERNLOGDZ256rmi:
@@ -4240,9 +4270,9 @@ bool X86InstrInfo::canMakeTailCallConditional(
     return false;
   }
 
-  if (Subtarget.isTargetWin64()) {
+  const MachineFunction *MF = TailCall.getParent()->getParent();
+  if (Subtarget.isTargetWin64() && MF->hasWinCFI()) {
     // Conditional tail calls confuse the Win64 unwinder.
-    // TODO: Allow them for "leaf" functions; PR30337.
     return false;
   }
 
@@ -4252,8 +4282,7 @@ bool X86InstrInfo::canMakeTailCallConditional(
     return false;
   }
 
-  const X86MachineFunctionInfo *X86FI =
-      TailCall.getParent()->getParent()->getInfo<X86MachineFunctionInfo>();
+  const X86MachineFunctionInfo *X86FI = MF->getInfo<X86MachineFunctionInfo>();
   if (X86FI->getTCReturnAddrDelta() != 0 ||
       TailCall.getOperand(1).getImm() != 0) {
     // A conditional tail call cannot do any stack adjustment.
@@ -8714,7 +8743,7 @@ namespace {
       return true;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "X86 PIC Global Base Reg Initialization";
     }
 
@@ -8828,7 +8857,7 @@ namespace {
       return Copy;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "Local Dynamic TLS Access Clean-up";
     }
 
