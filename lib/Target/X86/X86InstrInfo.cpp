@@ -2620,6 +2620,7 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   switch (MI.getOpcode()) {
   default: break;
   case X86::MOV8rm:
+  case X86::MOV8rm_NOREX:
   case X86::MOV16rm:
   case X86::MOV32rm:
   case X86::MOV64rm:
@@ -2629,6 +2630,7 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::MOVAPSrm:
   case X86::MOVUPSrm:
   case X86::MOVAPDrm:
+  case X86::MOVUPDrm:
   case X86::MOVDQArm:
   case X86::MOVDQUrm:
   case X86::VMOVSSrm:
@@ -2636,11 +2638,13 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::VMOVAPSrm:
   case X86::VMOVUPSrm:
   case X86::VMOVAPDrm:
+  case X86::VMOVUPDrm:
   case X86::VMOVDQArm:
   case X86::VMOVDQUrm:
   case X86::VMOVAPSYrm:
   case X86::VMOVUPSYrm:
   case X86::VMOVAPDYrm:
+  case X86::VMOVUPDYrm:
   case X86::VMOVDQAYrm:
   case X86::VMOVDQUYrm:
   case X86::MMX_MOVD64rm:
@@ -2674,6 +2678,9 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::VMOVDQU8Z128rm:
   case X86::VMOVDQU8Z256rm:
   case X86::VMOVDQU8Zrm:
+  case X86::VMOVUPDZ128rm:
+  case X86::VMOVUPDZ256rm:
+  case X86::VMOVUPDZrm:
   case X86::VMOVUPSZ128rm:
   case X86::VMOVUPSZ256rm:
   case X86::VMOVUPSZ128rm_NOVLX:
@@ -3543,6 +3550,28 @@ MachineInstr *X86InstrInfo::commuteInstructionImpl(MachineInstr &MI, bool NewMI,
     return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
                                                    OpIdx1, OpIdx2);
   }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr:{
+    // On SSE41 or later we can commute a MOVSS/MOVSD to a BLENDPS/BLENDPD.
+    if (!Subtarget.hasSSE41())
+      return nullptr;
+
+    unsigned Mask, Opc;
+    switch (MI.getOpcode()) {
+    default: llvm_unreachable("Unreachable!");
+    case X86::MOVSDrr:  Opc = X86::BLENDPDrri;  Mask = 0x02; break;
+    case X86::MOVSSrr:  Opc = X86::BLENDPSrri;  Mask = 0x0E; break;
+    case X86::VMOVSDrr: Opc = X86::VBLENDPDrri; Mask = 0x02; break;
+    case X86::VMOVSSrr: Opc = X86::VBLENDPSrri; Mask = 0x0E; break;
+    }
+    auto &WorkingMI = cloneIfNew(MI);
+    WorkingMI.setDesc(get(Opc));
+    WorkingMI.addOperand(MachineOperand::CreateImm(Mask));
+    return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
+                                                   OpIdx1, OpIdx2);
+  }
   case X86::PCLMULQDQrr:
   case X86::VPCLMULQDQrr:{
     // SRC1 64bits = Imm[0] ? SRC1[127:64] : SRC1[63:0]
@@ -3913,6 +3942,14 @@ bool X86InstrInfo::findCommutedOpIndices(MachineInstr &MI, unsigned &SrcOpIdx1,
       // Assign them to the returned operand indices here.
       return fixCommutedOpIndices(SrcOpIdx1, SrcOpIdx2, 1, 2);
     }
+    return false;
+  }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr: {
+    if (Subtarget.hasSSE41())
+      return TargetInstrInfo::findCommutedOpIndices(MI, SrcOpIdx1, SrcOpIdx2);
     return false;
   }
   case X86::VPTERNLOGDZrri:      case X86::VPTERNLOGDZrmi:
@@ -8713,7 +8750,7 @@ namespace {
       return true;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "X86 PIC Global Base Reg Initialization";
     }
 
@@ -8827,7 +8864,7 @@ namespace {
       return Copy;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "Local Dynamic TLS Access Clean-up";
     }
 

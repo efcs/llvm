@@ -69,7 +69,6 @@ static const uint64_t kDefaultShadowOffset32 = 1ULL << 29;
 static const uint64_t kDefaultShadowOffset64 = 1ULL << 44;
 static const uint64_t kDynamicShadowSentinel = ~(uint64_t)0;
 static const uint64_t kIOSShadowOffset32 = 1ULL << 30;
-static const uint64_t kIOSShadowOffset64 = 0x120200000;
 static const uint64_t kIOSSimShadowOffset32 = 1ULL << 30;
 static const uint64_t kIOSSimShadowOffset64 = kDefaultShadowOffset64;
 static const uint64_t kSmallX86_64ShadowOffset = 0x7FFF8000;  // < 2G.
@@ -434,7 +433,9 @@ static ShadowMapping getShadowMapping(Triple &TargetTriple, int LongSize,
       Mapping.Offset = kMIPS64_ShadowOffset64;
     else if (IsIOS)
       // If we're targeting iOS and x86, the binary is built for iOS simulator.
-      Mapping.Offset = IsX86_64 ? kIOSSimShadowOffset64 : kIOSShadowOffset64;
+      // We are using dynamic shadow offset on the 64-bit devices.
+      Mapping.Offset =
+        IsX86_64 ? kIOSSimShadowOffset64 : kDynamicShadowSentinel;
     else if (IsAArch64)
       Mapping.Offset = kAArch64_ShadowOffset64;
     else
@@ -482,7 +483,7 @@ struct AddressSanitizer : public FunctionPass {
         LocalDynamicShadow(nullptr) {
     initializeAddressSanitizerPass(*PassRegistry::getPassRegistry());
   }
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "AddressSanitizerFunctionPass";
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -593,9 +594,9 @@ class AddressSanitizerModule : public ModulePass {
         Recover(Recover || ClRecover) {}
   bool runOnModule(Module &M) override;
   static char ID;  // Pass identification, replacement for typeid
-  const char *getPassName() const override { return "AddressSanitizerModule"; }
+  StringRef getPassName() const override { return "AddressSanitizerModule"; }
 
- private:
+private:
   void initializeCallbacks(Module &M);
 
   bool InstrumentGlobals(IRBuilder<> &IRB, Module &M);
@@ -1626,6 +1627,10 @@ bool AddressSanitizerModule::InstrumentGlobals(IRBuilder<> &IRB, Module &M) {
     // variable to the metadata struct.
     StructType *LivenessTy = StructType::get(IntptrTy, IntptrTy, nullptr);
 
+    // Keep the list of "Liveness" GV created to be added to llvm.compiler.used
+    SmallVector<Constant *, 16> LivenessGlobals;
+    LivenessGlobals.reserve(n);
+
     for (size_t i = 0; i < n; i++) {
       GlobalVariable *Metadata = new GlobalVariable(
           M, GlobalStructTy, false, GlobalVariable::InternalLinkage,
@@ -1637,10 +1642,38 @@ bool AddressSanitizerModule::InstrumentGlobals(IRBuilder<> &IRB, Module &M) {
           Initializers[i]->getAggregateElement(0u),
           ConstantExpr::getPointerCast(Metadata, IntptrTy),
           nullptr);
+
+      // Recover the name of the variable this global is pointing to
+      StringRef GVName =
+          Initializers[i]->getAggregateElement(0u)->getOperand(0)->getName();
+
       GlobalVariable *Liveness = new GlobalVariable(
-          M, LivenessTy, false, GlobalVariable::InternalLinkage,
-          LivenessBinder, "");
+          M, LivenessTy, false, GlobalVariable::InternalLinkage, LivenessBinder,
+          Twine("__asan_binder_") + GVName);
       Liveness->setSection("__DATA,__asan_liveness,regular,live_support");
+      LivenessGlobals.push_back(
+          ConstantExpr::getBitCast(Liveness, IRB.getInt8PtrTy()));
+    }
+
+    if (!LivenessGlobals.empty()) {
+      // Update llvm.compiler.used, adding the new liveness globals. This is
+      // needed so that during LTO these variables stay alive. The alternative
+      // would be to have the linker handling the LTO symbols, but libLTO
+      // current
+      // API does not expose access to the section for each symbol.
+      if (GlobalVariable *LLVMUsed =
+              M.getGlobalVariable("llvm.compiler.used")) {
+        ConstantArray *Inits = cast<ConstantArray>(LLVMUsed->getInitializer());
+        for (auto &V : Inits->operands())
+          LivenessGlobals.push_back(cast<Constant>(&V));
+        LLVMUsed->eraseFromParent();
+      }
+      llvm::ArrayType *ATy =
+          llvm::ArrayType::get(IRB.getInt8PtrTy(), LivenessGlobals.size());
+      auto *LLVMUsed = new llvm::GlobalVariable(
+          M, ATy, false, llvm::GlobalValue::AppendingLinkage,
+          llvm::ConstantArray::get(ATy, LivenessGlobals), "llvm.compiler.used");
+      LLVMUsed->setSection("llvm.metadata");
     }
   } else {
     // On all other platfoms, we just emit an array of global metadata
