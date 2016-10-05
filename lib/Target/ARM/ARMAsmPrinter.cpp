@@ -97,6 +97,13 @@ void ARMAsmPrinter::EmitXXStructor(const DataLayout &DL, const Constant *CV) {
   OutStreamer->EmitValue(E, Size);
 }
 
+void ARMAsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
+  if (PromotedGlobals.count(GV))
+    // The global was promoted into a constant pool. It should not be emitted.
+    return;
+  AsmPrinter::EmitGlobalVariable(GV);
+}
+
 /// runOnMachineFunction - This uses the EmitInstruction()
 /// method to print assembly for each instruction.
 ///
@@ -109,6 +116,12 @@ bool ARMAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   const Function* F = MF.getFunction();
   const TargetMachine& TM = MF.getTarget();
 
+  // Collect all globals that had their storage promoted to a constant pool.
+  // Functions are emitted before variables, so this accumulates promoted
+  // globals from all functions in PromotedGlobals.
+  for (auto *GV : AFI->getGlobalsPromotedToConstantPool())
+    PromotedGlobals.insert(GV);
+  
   // Calculate this function's optimization goal.
   unsigned OptimizationGoal;
   if (F->hasFnAttribute(Attribute::OptimizeNone))
@@ -768,12 +781,12 @@ void ARMAsmPrinter::emitAttributes() {
   // Set FP Denormals.
   if (haveAllFunctionsAttribute(*MMI->getModule(), "denormal-fp-math",
                                 "preserve-sign") ||
-      TM.Options.FPDenormalType == FPDenormal::PreserveSign)
+      TM.Options.FPDenormalMode == FPDenormal::PreserveSign)
     ATS.emitAttribute(ARMBuildAttrs::ABI_FP_denormal,
                       ARMBuildAttrs::PreserveFPSign);
   else if (haveAllFunctionsAttribute(*MMI->getModule(), "denormal-fp-math",
                                      "positive-zero") ||
-           TM.Options.FPDenormalType == FPDenormal::PositiveZero)
+           TM.Options.FPDenormalMode == FPDenormal::PositiveZero)
     ATS.emitAttribute(ARMBuildAttrs::ABI_FP_denormal,
                       ARMBuildAttrs::PositiveZero);
   else if (!TM.Options.UnsafeFPMath)
@@ -926,7 +939,7 @@ void ARMAsmPrinter::emitAttributes() {
 
 //===----------------------------------------------------------------------===//
 
-static MCSymbol *getPICLabel(const char *Prefix, unsigned FunctionNumber,
+static MCSymbol *getPICLabel(StringRef Prefix, unsigned FunctionNumber,
                              unsigned LabelId, MCContext &Ctx) {
 
   MCSymbol *Label = Ctx.getOrCreateSymbol(Twine(Prefix)
@@ -1001,6 +1014,26 @@ EmitMachineConstantPoolValue(MachineConstantPoolValue *MCPV) {
   int Size = DL.getTypeAllocSize(MCPV->getType());
 
   ARMConstantPoolValue *ACPV = static_cast<ARMConstantPoolValue*>(MCPV);
+
+  if (ACPV->isPromotedGlobal()) {
+    // This constant pool entry is actually a global whose storage has been
+    // promoted into the constant pool. This global may be referenced still
+    // by debug information, and due to the way AsmPrinter is set up, the debug
+    // info is immutable by the time we decide to promote globals to constant
+    // pools. Because of this, we need to ensure we emit a symbol for the global
+    // with private linkage (the default) so debug info can refer to it.
+    //
+    // However, if this global is promoted into several functions we must ensure
+    // we don't try and emit duplicate symbols!
+    auto *ACPC = cast<ARMConstantPoolConstant>(ACPV);
+    auto *GV = ACPC->getPromotedGlobal();
+    if (!EmittedPromotedGlobalLabels.count(GV)) {
+      MCSymbol *GVSym = getSymbol(GV);
+      OutStreamer->EmitLabel(GVSym);
+      EmittedPromotedGlobalLabels.insert(GV);
+    }
+    return EmitGlobalConstant(DL, ACPC->getPromotedGlobalInit());
+  }
 
   MCSymbol *MCSym;
   if (ACPV->isLSDA()) {

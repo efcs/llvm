@@ -191,6 +191,13 @@
 //   imply that the use in (3) may indeed be reached by some prior def.
 //   Adding Undef flag to the def in (1) prevents that. The Undef flag
 //   may be applied to both defs and uses.
+// - Dead: applies only to defs. The value coming out of a "dead" def is
+//   assumed to be unused, even if the def appears to be reaching other defs
+//   or uses. The motivation for this flag comes from dead defs on function
+//   calls: there is no way to determine if such a def is dead without
+//   analyzing the target's ABI. Hence the graph should contain this info,
+//   as it is unavailable otherwise. On the other hand, a def without any
+//   uses on a typical instruction is not the intended target for this flag.
 //
 // *** Shadow references
 //
@@ -217,6 +224,7 @@
 #ifndef RDF_GRAPH_H
 #define RDF_GRAPH_H
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -228,6 +236,11 @@
 #include <set>
 #include <unordered_map>
 #include <vector>
+
+// RDF uses uint32_t to refer to registers. This is to ensure that the type
+// size remains specific. In other places, registers are often stored using
+// unsigned.
+static_assert(sizeof(uint32_t) == sizeof(unsigned), "Those should be equal");
 
 namespace llvm {
   class MachineBasicBlock;
@@ -261,14 +274,15 @@ namespace rdf {
       Block         = 0x0005 << 2,  // 101
       Func          = 0x0006 << 2,  // 110
 
-      // Flags: 6 bits for now
-      FlagMask      = 0x003F << 5,
-      Shadow        = 0x0001 << 5,  // 000001, Has extra reaching defs.
-      Clobbering    = 0x0002 << 5,  // 000010, Produces unspecified values.
-      PhiRef        = 0x0004 << 5,  // 000100, Member of PhiNode.
-      Preserving    = 0x0008 << 5,  // 001000, Def can keep original bits.
-      Fixed         = 0x0010 << 5,  // 010000, Fixed register.
-      Undef         = 0x0020 << 5,  // 100000, Has no pre-existing value.
+      // Flags: 7 bits for now
+      FlagMask      = 0x007F << 5,
+      Shadow        = 0x0001 << 5,  // 0000001, Has extra reaching defs.
+      Clobbering    = 0x0002 << 5,  // 0000010, Produces unspecified values.
+      PhiRef        = 0x0004 << 5,  // 0000100, Member of PhiNode.
+      Preserving    = 0x0008 << 5,  // 0001000, Def can keep original bits.
+      Fixed         = 0x0010 << 5,  // 0010000, Fixed register.
+      Undef         = 0x0020 << 5,  // 0100000, Has no pre-existing value.
+      Dead          = 0x0040 << 5,  // 1000000, Does not define a value.
     };
 
     static uint16_t type(uint16_t T)  { return T & TypeMask; }
@@ -413,32 +427,6 @@ namespace rdf {
   };
   typedef std::set<RegisterRef> RegisterSet;
 
-  struct RegisterAliasInfo {
-    RegisterAliasInfo(const TargetRegisterInfo &tri) : TRI(tri) {}
-    virtual ~RegisterAliasInfo() {}
-
-    virtual std::vector<RegisterRef> getAliasSet(RegisterRef RR) const;
-    virtual bool alias(RegisterRef RA, RegisterRef RB,
-                       const DataFlowGraph &DFG) const;
-    virtual bool covers(RegisterRef RA, RegisterRef RB,
-                        const DataFlowGraph &DFG) const;
-    virtual bool covers(const RegisterSet &RRs, RegisterRef RR,
-                        const DataFlowGraph &DFG) const;
-
-    const TargetRegisterInfo &TRI;
-
-  protected:
-    LaneBitmask getLaneMask(RegisterRef RR, const DataFlowGraph &DFG) const;
-
-    struct CommonRegister {
-      CommonRegister(unsigned RegA, LaneBitmask LA,
-                     unsigned RegB, LaneBitmask LB,
-                     const TargetRegisterInfo &TRI);
-      unsigned SuperReg;
-      LaneBitmask MaskA, MaskB;
-    };
-  };
-
   struct TargetOperandInfo {
     TargetOperandInfo(const TargetInstrInfo &tii) : TII(tii) {}
     virtual ~TargetOperandInfo() {}
@@ -455,7 +443,7 @@ namespace rdf {
   // as invalid and is never allocated.
   template <typename T, unsigned N = 32>
   struct IndexedSet {
-    IndexedSet() : Map(N) {}
+    IndexedSet() : Map() { Map.reserve(N); }
     const T get(uint32_t Idx) const {
       // Index Idx corresponds to Map[Idx-1].
       assert(Idx != 0 && !Map.empty() && Idx-1 < Map.size());
@@ -465,13 +453,62 @@ namespace rdf {
       // Linear search.
       auto F = find(Map, Val);
       if (F != Map.end())
-        return *F;
+        return F - Map.begin();
       Map.push_back(Val);
       return Map.size();  // Return actual_index + 1.
     }
 
   private:
     std::vector<T> Map;
+  };
+
+  struct LaneMaskIndex : private IndexedSet<LaneBitmask> {
+    LaneBitmask getLaneMaskForIndex(uint32_t K) const {
+      return K == 0 ? ~LaneBitmask(0) : get(K);
+    }
+    uint32_t getIndexForLaneMask(LaneBitmask LM) {
+      assert(LM != LaneBitmask(0));
+      return LM == ~LaneBitmask(0) ? 0 : insert(LM);
+    }
+  };
+
+  struct RegisterAggr {
+    typedef std::pair<uint32_t,LaneBitmask> ValueType;
+
+    RegisterAggr(const LaneMaskIndex &m, const TargetRegisterInfo &tri)
+        : Masks(), ExpAliasUnits(tri.getNumRegUnits()), CheckUnits(false),
+          LMI(m), TRI(tri) {}
+    RegisterAggr(const RegisterAggr &RG)
+        : Masks(RG.Masks), ExpAliasUnits(RG.ExpAliasUnits),
+          CheckUnits(RG.CheckUnits), LMI(RG.LMI), TRI(RG.TRI) {}
+
+    bool empty() const { return Masks.empty(); }
+    bool hasAliasOf(RegisterRef RR) const;
+    bool hasCoverOf(RegisterRef RR) const;
+    static bool isCoverOf(RegisterRef RefA, RegisterRef RefB,
+                     const LaneMaskIndex &LMI, const TargetRegisterInfo &TRI) {
+      return RegisterAggr(LMI, TRI).insert(RefA).hasCoverOf(RefB);
+    }
+
+    RegisterAggr &insert(RegisterRef RR);
+    RegisterAggr &insert(const RegisterAggr &RG);
+    RegisterAggr &clear(RegisterRef RR);
+
+    void print(raw_ostream &OS) const;
+
+  private:
+    typedef std::unordered_map<ValueType::first_type,
+                               ValueType::second_type> MapType;
+    MapType Masks;
+    BitVector ExpAliasUnits; // Register units for explicit aliases.
+    bool CheckUnits;
+    const LaneMaskIndex &LMI;
+    const TargetRegisterInfo &TRI;
+
+    uint32_t getLargestSuperReg(uint32_t Reg) const;
+    void setMaskRaw(uint32_t Reg, LaneBitmask LM);
+    LaneBitmask composeMaskForReg(uint32_t Reg, LaneBitmask LM,
+                                  uint32_t SuperR) const;
   };
 
 
@@ -661,8 +698,7 @@ namespace rdf {
   struct DataFlowGraph {
     DataFlowGraph(MachineFunction &mf, const TargetInstrInfo &tii,
         const TargetRegisterInfo &tri, const MachineDominatorTree &mdt,
-        const MachineDominanceFrontier &mdf, const RegisterAliasInfo &rai,
-        const TargetOperandInfo &toi);
+        const MachineDominanceFrontier &mdf, const TargetOperandInfo &toi);
 
     NodeBase *ptr(NodeId N) const;
     template <typename T> T ptr(NodeId N) const {
@@ -674,34 +710,14 @@ namespace rdf {
       return { ptr<T>(N), N };
     }
 
-    NodeAddr<FuncNode*> getFunc() const {
-      return Func;
-    }
-    MachineFunction &getMF() const {
-      return MF;
-    }
-    const TargetInstrInfo &getTII() const {
-      return TII;
-    }
-    const TargetRegisterInfo &getTRI() const {
-      return TRI;
-    }
-    const MachineDominatorTree &getDT() const {
-      return MDT;
-    }
-    const MachineDominanceFrontier &getDF() const {
-      return MDF;
-    }
-    const RegisterAliasInfo &getRAI() const {
-      return RAI;
-    }
-
-    LaneBitmask getLaneMaskForIndex(uint32_t K) const {
-      return LMMap.get(K);
-    }
-    uint32_t getIndexForLaneMask(LaneBitmask LM) {
-      return LMMap.insert(LM);
-    }
+    NodeAddr<FuncNode*> getFunc() const { return Func; }
+    MachineFunction &getMF() const { return MF; }
+    LaneMaskIndex &getLMI() { return LMI; }
+    const LaneMaskIndex &getLMI() const { return LMI; }
+    const TargetInstrInfo &getTII() const { return TII; }
+    const TargetRegisterInfo &getTRI() const { return TRI; }
+    const MachineDominatorTree &getDT() const { return MDT; }
+    const MachineDominanceFrontier &getDF() const { return MDF; }
 
     struct DefStack {
       DefStack() = default;
@@ -751,14 +767,9 @@ namespace rdf {
       StorageType Stack;
     };
 
-    struct RegisterRefHasher {
-      unsigned operator() (RegisterRef RR) const {
-        return RR.Reg | (RR.Sub << 24);
-      }
-    };
     // Make this std::unordered_map for speed of accessing elements.
-    typedef std::unordered_map<RegisterRef,DefStack,RegisterRefHasher>
-          DefStackMap;
+    // Map: Register (physical or virtual) -> DefStack
+    typedef std::unordered_map<uint32_t,DefStack> DefStackMap;
 
     void build(unsigned Options = BuildOptions::None);
     void pushDefs(NodeAddr<InstrNode*> IA, DefStackMap &DM);
@@ -818,8 +829,14 @@ namespace rdf {
       return (Flags & NodeAttrs::Preserving) && !(Flags & NodeAttrs::Undef);
     }
 
+    // Register aliasing.
+    bool alias(RegisterRef RA, RegisterRef RB) const;
+
   private:
     void reset();
+
+    RegisterSet getAliasSet(uint32_t Reg) const;
+    RegisterSet getLandingPadLiveIns() const;
 
     NodeAddr<NodeBase*> newNode(uint16_t Attrs);
     NodeAddr<NodeBase*> cloneNode(const NodeAddr<NodeBase*> B);
@@ -876,14 +893,13 @@ namespace rdf {
     // Local map:  MachineBasicBlock -> NodeAddr<BlockNode*>
     std::map<MachineBasicBlock*,NodeAddr<BlockNode*>> BlockNodes;
     // Lane mask map.
-    IndexedSet<LaneBitmask> LMMap;
+    LaneMaskIndex LMI;
 
     MachineFunction &MF;
     const TargetInstrInfo &TII;
     const TargetRegisterInfo &TRI;
     const MachineDominatorTree &MDT;
     const MachineDominanceFrontier &MDF;
-    const RegisterAliasInfo &RAI;
     const TargetOperandInfo &TOI;
   };  // struct DataFlowGraph
 

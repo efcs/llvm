@@ -44,6 +44,10 @@ static cl::opt<bool> JumpIsExpensiveOverride(
     cl::desc("Do not create extra branches to split comparison logic."),
     cl::Hidden);
 
+static cl::opt<unsigned> MaximumJumpTableSize
+  ("max-jump-table", cl::init(0), cl::Hidden,
+   cl::desc("Set maximum number of jump table entries; zero for no limit."));
+
 // Although this default value is arbitrary, it is not random. It is assumed
 // that a condition that evaluates the same way by a higher percentage than this
 // is best represented as control flow. Therefore, the default value N should be
@@ -834,6 +838,7 @@ TargetLoweringBase::TargetLoweringBase(const TargetMachine &tm) : TM(tm) {
   InitLibcallNames(LibcallRoutineNames, TM.getTargetTriple());
   InitCmpLibcallCCs(CmpLibcallCCs);
   InitLibcallCallingConvs(LibcallCallingConvs);
+  ReciprocalEstimates.set("all", false, 0);
 }
 
 void TargetLoweringBase::initActions() {
@@ -1481,6 +1486,22 @@ MVT::SimpleValueType TargetLoweringBase::getCmpLibcallReturnType() const {
   return MVT::i32; // return the default value
 }
 
+TargetRecip
+TargetLoweringBase::getTargetRecipForFunc(MachineFunction &MF) const {
+  const Function *F = MF.getFunction();
+  StringRef RecipAttrName = "reciprocal-estimates";
+  if (!F->hasFnAttribute(RecipAttrName))
+    return ReciprocalEstimates;
+
+  // Make a copy of the target's default reciprocal codegen settings.
+  TargetRecip Recips = ReciprocalEstimates;
+
+  // Override any settings that are customized for this function.
+  StringRef RecipString = F->getFnAttribute(RecipAttrName).getValueAsString();
+  Recips.set(RecipString);
+  return Recips;
+}
+
 /// getVectorTypeBreakdown - Vector types are broken down into some number of
 /// legal first class types.  For example, MVT::v8f32 maps to 2 MVT::v4f32
 /// with Altivec or SSE1, or 8 promoted MVT::f64 values with the X86 FP stack.
@@ -1830,4 +1851,12 @@ Value *TargetLoweringBase::getSDagStackGuard(const Module &M) const {
 
 Value *TargetLoweringBase::getSSPStackGuardCheck(const Module &M) const {
   return nullptr;
+}
+
+unsigned TargetLoweringBase::getMaximumJumpTableSize() const {
+  return MaximumJumpTableSize;
+}
+
+void TargetLoweringBase::setMaximumJumpTableSize(unsigned Val) {
+  MaximumJumpTableSize = Val;
 }
