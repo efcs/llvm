@@ -79,8 +79,6 @@ void Fuzzer::PrepareCounters(Fuzzer::Coverage *C) {
 bool Fuzzer::RecordMaxCoverage(Fuzzer::Coverage *C) {
   bool Res = false;
 
-  TPC.FinalizeTrace();
-
   uint64_t NewBlockCoverage = EF->__sanitizer_get_total_unique_coverage();
   if (NewBlockCoverage > C->BlockCoverage) {
     Res = true;
@@ -106,12 +104,6 @@ bool Fuzzer::RecordMaxCoverage(Fuzzer::Coverage *C) {
       C->CounterBitmapBits += CounterDelta;
     }
   }
-
-  if (TPC.UpdateCounterMap(&C->TPCMap))
-    Res = true;
-
-  if (TPC.UpdateValueProfileMap(&C->VPMap))
-    Res = true;
 
   return Res;
 }
@@ -317,10 +309,20 @@ void Fuzzer::PrintStats(const char *Where, const char *End, size_t Units) {
     Printf(" bits: %zd", MaxCoverage.TPCMap.GetNumBitsSinceLastMerge());
   if (MaxCoverage.CallerCalleeCoverage)
     Printf(" indir: %zd", MaxCoverage.CallerCalleeCoverage);
-  if (size_t N = Corpus.size())
-    Printf(" units: %zd", N);
+  if (size_t N = Corpus.size()) {
+    Printf(" corpus: %zd", Corpus.NumActiveUnits());
+    if (size_t N = Corpus.SizeInBytes()) {
+      if (N < (1<<14))
+        Printf("/%zdb", N);
+      else if (N < (1 << 24))
+        Printf("/%zdKb", N >> 10);
+      else
+        Printf("/%zdMb", N >> 20);
+    }
+  }
   if (Units)
     Printf(" units: %zd", Units);
+
   Printf(" exec/s: %zd", ExecPerSec);
   Printf("%s", End);
 }
@@ -351,6 +353,16 @@ void Fuzzer::SetMaxInputLen(size_t MaxInputLen) {
 void Fuzzer::SetMaxMutationLen(size_t MaxMutationLen) {
   assert(MaxMutationLen && MaxMutationLen <= MaxInputLen);
   this->MaxMutationLen = MaxMutationLen;
+}
+
+void Fuzzer::CheckExitOnItem() {
+  if (!Options.ExitOnItem.empty()) {
+    if (Corpus.HasUnit(Options.ExitOnItem)) {
+      Printf("INFO: found item with checksum '%s', exiting.\n",
+             Options.ExitOnItem.c_str());
+      _Exit(0);
+    }
+  }
 }
 
 void Fuzzer::CheckExitOnSrcPos() {
@@ -401,6 +413,10 @@ void Fuzzer::ShuffleAndMinimize(UnitVector *InitialCorpus) {
   if (Options.ShuffleAtStartUp)
     ShuffleCorpus(InitialCorpus);
 
+  // Test the callback with empty input and never try it again.
+  uint8_t dummy;
+  ExecuteCallback(&dummy, 0);
+
   for (const auto &U : *InitialCorpus) {
     if (RunOne(U)) {
       Corpus.AddToCorpus(U);
@@ -422,7 +438,22 @@ bool Fuzzer::RunOne(const uint8_t *Data, size_t Size) {
   TotalNumberOfRuns++;
 
   ExecuteCallback(Data, Size);
-  bool Res = RecordMaxCoverage(&MaxCoverage);
+  bool Res = false;
+
+  if (TPC.FinalizeTrace(Size))
+    if (Options.Shrink)
+      Res = true;
+
+  if (!Res) {
+    if (TPC.UpdateCounterMap(&MaxCoverage.TPCMap))
+      Res = true;
+
+    if (TPC.UpdateValueProfileMap(&MaxCoverage.VPMap))
+      Res = true;
+  }
+
+  if (RecordMaxCoverage(&MaxCoverage))
+    Res = true;
 
   CheckExitOnSrcPos();
   auto TimeOfUnit =
@@ -453,7 +484,6 @@ void Fuzzer::ExecuteCallback(const uint8_t *Data, size_t Size) {
   memcpy(DataCopy, Data, Size);
   if (CurrentUnitData && CurrentUnitData != Data)
     memcpy(CurrentUnitData, Data, Size);
-  AssignTaintLabels(DataCopy, Size);
   CurrentUnitSize = Size;
   AllocTracer.Start();
   UnitStartTime = system_clock::now();
@@ -667,6 +697,7 @@ void Fuzzer::MutateAndTestOne() {
     if (RunOne(CurrentUnitData, Size)) {
       Corpus.AddToCorpus({CurrentUnitData, CurrentUnitData + Size});
       ReportNewCoverage(&II, {CurrentUnitData, CurrentUnitData + Size});
+      CheckExitOnItem();
     }
     StopTraceRecording();
     TryDetectingAMemoryLeak(CurrentUnitData, Size,

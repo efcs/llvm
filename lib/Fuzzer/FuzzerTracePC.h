@@ -35,7 +35,7 @@ class TracePC {
   bool UpdateValueProfileMap(ValueBitMap *MaxValueProfileMap) {
     return UseValueProfile && MaxValueProfileMap->MergeFrom(ValueProfileMap);
   }
-  void FinalizeTrace();
+  bool FinalizeTrace(size_t InputSize);
 
   size_t GetNewPCIDs(uintptr_t **NewPCIDsPtr) {
     *NewPCIDsPtr = NewPCIDs;
@@ -61,6 +61,11 @@ class TracePC {
   void PrintCoverage();
 
   bool HasFeature(size_t Idx) { return CounterMap.Get(Idx); }
+
+  void AddValueForMemcmp(void *caller_pc, const void *s1, const void *s2,
+                         size_t n);
+  void AddValueForStrcmp(void *caller_pc, const char *s1, const char *s2,
+                         size_t n);
 
 private:
   bool UseCounters = false;
@@ -90,6 +95,7 @@ private:
 
   ValueBitMap CounterMap;
   ValueBitMap ValueProfileMap;
+  uint32_t InputSizesPerFeature[kFeatureSetSize];
 };
 
 extern TracePC TPC;

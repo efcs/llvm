@@ -114,9 +114,7 @@ public:
   bool doInitialization(Module &M) override;
   bool runOnFunction(Function &F) override;
 
-  const char *getPassName() const override {
-    return "AMDGPU IR optimizations";
-  }
+  StringRef getPassName() const override { return "AMDGPU IR optimizations"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<DivergenceAnalysis>();
@@ -174,8 +172,8 @@ bool AMDGPUCodeGenPrepare::isI32Ty(const Type *T) const {
 }
 
 bool AMDGPUCodeGenPrepare::isSigned(const BinaryOperator &I) const {
-  return I.getOpcode() == Instruction::SDiv ||
-      I.getOpcode() == Instruction::SRem;
+  return I.getOpcode() == Instruction::AShr ||
+      I.getOpcode() == Instruction::SDiv || I.getOpcode() == Instruction::SRem;
 }
 
 bool AMDGPUCodeGenPrepare::isSigned(const SelectInst &I) const {
