@@ -130,9 +130,9 @@ public:
     assert(V.DebugLocListIndex == ~0U && !V.MInsn && "not an MMI entry");
     if (V.Var != Var) {
       Var->dump();
-      IA->dump();
+      if (IA) IA->dump();
       V.Var->dump();
-      V.IA->dump();
+      if (V.IA) V.IA->dump();
     }
     assert(V.Var == Var && "conflicting variable");
     assert(V.IA == IA && "conflicting inlined-at location");
