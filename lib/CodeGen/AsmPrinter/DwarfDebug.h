@@ -128,8 +128,10 @@ public:
   void addMMIEntry(const DbgVariable &V) {
     assert(DebugLocListIndex == ~0U && !MInsn && "not an MMI entry");
     assert(V.DebugLocListIndex == ~0U && !V.MInsn && "not an MMI entry");
-    if (V.Var == Var)
+    if (V.Var != Var) {
       Var->dump();
+      V.Var->dump();
+    }
     assert(V.Var == Var && "conflicting variable");
     assert(V.IA == IA && "conflicting inlined-at location");
 
