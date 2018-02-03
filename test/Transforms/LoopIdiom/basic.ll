@@ -636,13 +636,9 @@ exit:
   ret void
 }
 
-
-
-; Memmove tests
-
+; Memmove formation tests
 
 declare void @eat(i8 signext)
-
 
 define void @test_memmove_formation(i8* nocapture %dest, i8* nocapture readonly %source, i64 %size) nounwind ssp {
 entry:
