@@ -169,66 +169,6 @@ for.end:                                          ; preds = %for.body, %entry
 ; CHECK: ret void
 }
 
-define void @test6a(i32* %begin, i32* %end, i32* nocapture %dest) {
-bb:
-  %cmp1 = icmp eq i32* %begin, %end
-  br i1 %cmp1, label %for.end, label %for.body
-
-for.body:
-  %dest.i = phi i32* [ %dest.next, %for.body ], [ %dest, %bb ]
-  %begin.i = phi i32* [ %begin.next, %for.body ], [ %begin, %bb ]
-  %data = load i32, i32* %begin.i, align 4
-  store i32 %data, i32* %dest.i, align 4
-  %begin.next = getelementptr inbounds i32, i32* %begin.i, i64 1
-  %dest.next = getelementptr inbounds i32, i32* %dest.i, i64 1
-  %cmp2 = icmp eq i32* %begin.next, %end
-  br i1 %cmp2, label %for.end, label %for.body
-
-for.end:
-  ret void
-}
-
-@arr = global [5 x i32] [i32 11, i32 22, i32 33, i32 44, i32 55], align 16
-
-
-; Function Attrs: noinline nounwind optnone
-define void @test6b(i32 %Size) #0 {
-entry:
-  %Size.addr = alloca i32, align 4
-  %i = alloca i32, align 4
-  store i32 %Size, i32* %Size.addr, align 4
-  store i32 0, i32* %i, align 4
-  br label %for.cond
-
-for.cond:                                         ; preds = %for.inc, %entry
-  %0 = load i32, i32* %i, align 4
-  %1 = load i32, i32* %Size.addr, align 4
-  %cmp = icmp slt i32 %0, %1
-  br i1 %cmp, label %for.body, label %for.end
-
-for.body:                                         ; preds = %for.cond
-  %2 = load i32, i32* %i, align 4
-  %add = add nsw i32 %2, 1
-  %idxprom = sext i32 %add to i64
-  %arrayidx = getelementptr inbounds [5 x i32], [5 x i32]* @arr, i64 0, i64 %idxprom
-  %3 = load i32, i32* %arrayidx, align 4
-  %4 = load i32, i32* %i, align 4
-  %idxprom1 = sext i32 %4 to i64
-  %arrayidx2 = getelementptr inbounds [5 x i32], [5 x i32]* @arr, i64 0, i64 %idxprom1
-  store i32 %3, i32* %arrayidx2, align 4
-  br label %for.inc
-
-for.inc:                                          ; preds = %for.body
-  %5 = load i32, i32* %i, align 4
-  %inc = add nsw i32 %5, 1
-  store i32 %inc, i32* %i, align 4
-  br label %for.cond
-
-for.end:                                          ; preds = %for.cond
-  ret void
-}
-
-
 
 ; This is a loop that was rotated but where the blocks weren't merged.  This
 ; shouldn't perturb us.
@@ -695,6 +635,128 @@ loop.exit:
 exit:
   ret void
 }
+
+
+
+; Memmove tests
+
+
+declare void @eat(i8 signext)
+
+
+define void @test_memmove_formation(i8* nocapture %dest, i8* nocapture readonly %source, i64 %size) nounwind ssp {
+entry:
+  %cmp8 = icmp sgt i64 %size, 0
+  br i1 %cmp8, label %for.body.preheader, label %for.end
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %indvars.iv = phi i64 [ %indvars.iv.next, %for.body ], [ 0, %for.body.preheader ]
+  %arrayidx = getelementptr inbounds i8, i8* %source, i64 %indvars.iv
+  %0 = load i8, i8* %arrayidx, align 1
+  %arrayidx3 = getelementptr inbounds i8, i8* %dest, i64 %indvars.iv
+  store i8 %0, i8* %arrayidx3, align 1
+  %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+  %exitcond = icmp eq i64 %indvars.iv.next, %size
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:                                 ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_formation(
+; CHECK: @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %dest, i8* align 1 %source, i64 %size, i1 false)
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+define void @test_memmove_two(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %0 = load i8, i8* %begin.i, align 1
+  store i8 %0, i8* %dest.i, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_two(
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %out, i8* align 1 %begin
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+
+; test memmove is not performed since the source array is accessed during the loop.
+define void @copy_access_source(i8* readonly %begin, i8* readonly %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %add.ptr = getelementptr inbounds i8, i8* %end, i64 -1
+  %cmp7 = icmp eq i8* %begin, %end
+  br i1 %cmp7, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %0 = load i8, i8* %begin.i, align 1
+  store i8 %0, i8* %dest.i, align 1
+  %1 = load i8, i8* %add.ptr, align 1
+  tail call void @eat(i8 signext %1)
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @copy_access_source
+; CHECK-NOT: llvm.memmove
+; CHECK-NOT: llvm.memcpy
+; CHECK: ret void
+}
+
+; test memmove is not performed since the destination array is accessed during the loop.
+define void @copy_access_dest(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %add.ptr = getelementptr inbounds i8, i8* %out, i64 1
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %0 = load i8, i8* %add.ptr, align 1
+  tail call void @eat(i8 signext %0) #3
+  %1 = load i8, i8* %begin.i, align 1
+  store i8 %1, i8* %dest.i, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @copy_access_dest
+; CHECK-NOT: llvm.memmove
+; CHECK-NOT: llvm.memcpy
+; CHECK: ret void
+}
+
 
 ; Validate that "memset_pattern" has the proper attributes.
 ; CHECK: declare void @memset_pattern16(i8* nocapture, i8* nocapture readonly, i64) [[ATTRS:#[0-9]+]]

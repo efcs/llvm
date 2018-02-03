@@ -1002,10 +1002,10 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
 
   SmallPtrSet<Instruction *, 1> Stores;
   Stores.insert(SI);
-  bool PerformMemmove = mayLoopAccessLocation(
-      StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
   bool StoreIsModified = mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
+  bool PerformMemmove = mayLoopAccessLocation(
+      StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
 
   if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
     Expander.clear();
