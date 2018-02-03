@@ -62,9 +62,10 @@ for.end:                                          ; preds = %for.body
 
 define i32 @test14() nounwind {
 ; CHECK-LABEL: @test14(
+; CHECK-NEXT: entry:
+; CHECK-NEXT: call void @llvm.memmove.p2i8.p2i8.i16
 ; CHECK: for.body:
-; CHECK: load i32
-; CHECK: store i32
+; CHECK-NOT: store
 ; CHECK: br i1 %cmp
 
 entry:
