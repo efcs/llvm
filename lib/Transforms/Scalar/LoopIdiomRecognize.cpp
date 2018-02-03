@@ -139,8 +139,7 @@ private:
 
   StoreListMap StoreRefsForMemset;
   StoreListMap StoreRefsForMemsetPattern;
-  StoreList StoreRefsForMemcpy;
-  StoreList StoreRefsForMemmove;
+  StoreList StoreRefsForMemcpyOrMemmove;
   bool HasMemset;
   bool HasMemsetPattern;
   bool HasMemcpy;
@@ -151,9 +150,8 @@ private:
     None = 0,
     Memset,
     MemsetPattern,
-    Memcpy,
+    MemcpyOrMemmove,
     UnorderedAtomicMemcpy,
-    Memmove,
     DontUse // Dummy retval never to be used. Allows catching errors in retval
             // handling.
   };
@@ -482,12 +480,12 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
     if (StoreEv->getOperand(1) != LoadEv->getOperand(1))
       return LegalStoreKind::None;
 
-    if (!HasMemcpy)
-      return LegalStoreKind::None;
-    // Success.  This store can be converted into a memcpy.
-    UnorderedAtomic = UnorderedAtomic || LI->isAtomic();
-    return UnorderedAtomic ? LegalStoreKind::UnorderedAtomicMemcpy
-                           : LegalStoreKind::Memcpy;
+    if (UnorderedAtomic || LI->isAtomic())
+      return HasMemcpy ? LegalStoreKind::UnorderedAtomicMemcpy
+                       : LegalStoreKind::None;
+
+    // Success.  This store can be converted into a memcpy or memmove.
+    return LegalStoreKind::MemcpyOrMemmove;
   }
   // This store can't be transformed into a memset/memcpy.
   return LegalStoreKind::None;
@@ -496,8 +494,7 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
 void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
   StoreRefsForMemset.clear();
   StoreRefsForMemsetPattern.clear();
-  StoreRefsForMemcpy.clear();
-  StoreRefsForMemmove.clear();
+  StoreRefsForMemcpyOrMemmove.clear();
   for (Instruction &I : *BB) {
     StoreInst *SI = dyn_cast<StoreInst>(&I);
     if (!SI)
@@ -518,9 +515,9 @@ void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
       Value *Ptr = GetUnderlyingObject(SI->getPointerOperand(), *DL);
       StoreRefsForMemsetPattern[Ptr].push_back(SI);
     } break;
-    case LegalStoreKind::Memcpy:
+    case LegalStoreKind::MemcpyOrMemmove:
     case LegalStoreKind::UnorderedAtomicMemcpy:
-      StoreRefsForMemcpy.push_back(SI);
+      StoreRefsForMemcpyOrMemmove.push_back(SI);
       break;
     default:
       assert(false && "unhandled return value");
@@ -556,7 +553,7 @@ bool LoopIdiomRecognize::runOnLoopBlock(
     MadeChange |= processLoopStores(SL.second, BECount, false);
 
   // Optimize the store into a memcpy, if it feeds an similarly strided load.
-  for (auto &SI : StoreRefsForMemcpy)
+  for (auto &SI : StoreRefsForMemcpyOrMemmove)
     MadeChange |= processLoopStoreOfLoopLoad(SI, BECount);
 
   for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E;) {
