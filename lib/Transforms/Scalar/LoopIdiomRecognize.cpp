@@ -449,7 +449,7 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
     return LegalStoreKind::MemsetPattern;
   }
 
-  // Otherwise, see if the store can be turned into a memcpy.
+  // Otherwise, see if the store can be turned into a memcpy or memmove.
   if (HasMemcpy || HasMemmove) {
     // Check to see if the stride matches the size of the store.  If so, then we
     // know that every byte is touched in the loop.
@@ -954,8 +954,8 @@ bool LoopIdiomRecognize::processLoopStridedStore(
 }
 
 /// If the stored value is a strided load in the same loop with the same stride
-/// this may be transformable into a memcpy.  This kicks in for stuff like
-/// for (i) A[i] = B[i];
+/// this may be transformable into a memcpy or memmove.  This kicks in for
+/// stuff like for (i) A[i] = B[i];
 bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
                                                     const SCEV *BECount) {
   assert(SI->isUnordered() && "Expected only non-volatile non-ordered stores.");
@@ -996,7 +996,8 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // would be unsafe to do if there is anything else in the loop that may read
   // or write the memory region we're storing to.  This includes the load that
   // feeds the stores.  Check for an alias by generating the base address and
-  // checking everything.
+  // checking everything.  If the access is only a load, then perform a memmove
+  // instead of a memcpy.
   Value *StoreBasePtr = Expander.expandCodeFor(
       StrStart, Builder.getInt8PtrTy(StrAS), Preheader->getTerminator());
 
@@ -1021,8 +1022,8 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   if (NegStride)
     LdStart = getStartForNegStride(LdStart, BECount, IntPtrTy, StoreSize, SE);
 
-  // For a memcpy, we have to make sure that the input array is not being
-  // mutated by the loop.
+  // For a memcpy or memmove, we have to make sure that the input array is not
+  // being mutated by the loop.
   Value *LoadBasePtr = Expander.expandCodeFor(
       LdStart, Builder.getInt8PtrTy(LdAS), Preheader->getTerminator());
 
@@ -1049,7 +1050,7 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   unsigned Align = std::min(SI->getAlignment(), LI->getAlignment());
   CallInst *NewCall = nullptr;
   // Check whether to generate an unordered atomic memcpy:
-  //  If the load or store are atomic, then they must neccessarily be unordered
+  //  If the load or store are atomic, then they must necessarily be unordered
   //  by previous checks.
   bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
   assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
@@ -1088,8 +1089,8 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
                << "    from load ptr=" << *LoadEv << " at: " << *LI << "\n"
                << "    from store ptr=" << *StoreEv << " at: " << *SI << "\n");
 
-  // Okay, the memcpy has been formed.  Zap the original store and anything that
-  // feeds into it.
+  // Okay, the memcpy or memmove has been formed.  Zap the original store and
+  // anything that feeds into it.
   deleteDeadInstruction(SI);
   if (PerformMemmove)
     ++NumMemMove;
