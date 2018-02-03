@@ -1002,12 +1002,12 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
 
   SmallPtrSet<Instruction *, 1> Stores;
   Stores.insert(SI);
-  bool StoreIsReferenced = mayLoopAccessLocation(
+  bool PerformMemmove = mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
   bool StoreIsModified = mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
 
-  if (StoreIsModified || (StoreIsReferenced && !HasMemmove)) {
+  if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
     Expander.clear();
     // If we generated new code for the base pointer, clean up.
     RecursivelyDeleteTriviallyDeadInstructions(StoreBasePtr, TLI);
@@ -1052,7 +1052,6 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   //  If the load or store are atomic, then they must neccessarily be unordered
   //  by previous checks.
   bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
-  bool PerformMemmove = StoreIsReferenced;
   assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
          "cannot memmove atomic load or store");
 
