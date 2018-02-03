@@ -1053,6 +1053,9 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   //  by previous checks.
   bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
   bool PerformMemmove = StoreIsReferenced;
+  assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
+         "cannot memmove atomic load or store");
+
   if (PerformMemmove)
     NewCall = Builder.CreateMemmove(StoreBasePtr, Align, LoadBasePtr, Align,
                                     NumBytes);
