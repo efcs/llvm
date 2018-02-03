@@ -172,22 +172,19 @@ for.end:                                          ; preds = %for.body, %entry
 define void @test6a(i32* %begin, i32* %end, i32* nocapture %dest) {
 bb:
   %cmp1 = icmp eq i32* %begin, %end
-  br i1 %cmp1, label %exit, label %loop
+  br i1 %cmp1, label %for.end, label %for.body
 
-loop:
-  %dest.i = phi i32* [ %dest.next, %loop ], [ %dest, %bb ]
-  %begin.i = phi i32* [ %begin.next, %loop ], [ %begin, %bb ]
+for.body:
+  %dest.i = phi i32* [ %dest.next, %for.body ], [ %dest, %bb ]
+  %begin.i = phi i32* [ %begin.next, %for.body ], [ %begin, %bb ]
   %data = load i32, i32* %begin.i, align 4
   store i32 %data, i32* %dest.i, align 4
   %begin.next = getelementptr inbounds i32, i32* %begin.i, i64 1
   %dest.next = getelementptr inbounds i32, i32* %dest.i, i64 1
   %cmp2 = icmp eq i32* %begin.next, %end
-  br i1 %cmp2, label %loop.exit, label %loop
+  br i1 %cmp2, label %for.end, label %for.body
 
-loop.exit:
-  br label %exit
-
-exit:
+for.end:
   ret void
 }
 
@@ -444,9 +441,10 @@ for.end:                                          ; preds = %for.inc
   %tmp8 = load i32, i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i32 0, i64 6), align 4
   ret i32 %tmp8
 ; CHECK-LABEL: @test14(
+; CHECK-NEXT: entry:
+; CHECK-NEXT: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 5) to i8*), i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 4) to i8*), i64 8, i1 false)
 ; CHECK: for.body:
-; CHECK: load i32
-; CHECK: store i32
+; CHECK-NOT: store
 ; CHECK: br i1 %cmp
 
 }
@@ -454,8 +452,8 @@ for.end:                                          ; preds = %for.inc
 define void @PR14241(i32* %s, i64 %size) {
 ; Ensure that we don't form a memcpy for strided loops. Briefly, when we taught
 ; LoopIdiom about memmove and strided loops, this got miscompiled into a memcpy
-; instead of a memmove. If we get the memmove transform back, this will catch
-; regressions.
+; instead of a memmove. We now have the memmove transform back. Ensure this
+; still doesn't generate a memcpy to catch regressions.
 ;
 ; CHECK-LABEL: @PR14241(
 
@@ -464,10 +462,12 @@ entry:
   %end.ptr = getelementptr inbounds i32, i32* %s, i64 %end.idx
   br label %while.body
 ; CHECK-NOT: memcpy
-;
-; FIXME: When we regain the ability to form a memmove here, this test should be
-; reversed and turned into a positive assertion.
-; CHECK-NOT: memmove
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 4 %s1, i8* align 4 %scevgep2, i64 %4, i1 false)
+; CHECK-NEXT: br label %while.body
+; CHECK-NOT: memcpy
+; CHECK: while.body:
+; CHECK-NOT: store
+; CHECK: exit:
 
 while.body:
   %phi.ptr = phi i32* [ %s, %entry ], [ %next.ptr, %while.body ]
