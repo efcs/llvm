@@ -1051,10 +1051,12 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // Check whether to generate an unordered atomic memcpy:
   //  If the load or store are atomic, then they must neccessarily be unordered
   //  by previous checks.
-  if (StoreIsReferenced)
+  bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
+  bool PerformMemmove = StoreIsReferenced;
+  if (PerformMemmove)
     NewCall = Builder.CreateMemmove(StoreBasePtr, Align, LoadBasePtr, Align,
                                     NumBytes);
-  else if (!SI->isAtomic() && !LI->isAtomic())
+  else if (!IsAtomicLoadOrStore)
     NewCall = Builder.CreateMemCpy(StoreBasePtr, LoadBasePtr, NumBytes, Align);
   else {
     // We cannot allow unaligned ops for unordered load/store, so reject
@@ -1078,14 +1080,19 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   }
   NewCall->setDebugLoc(SI->getDebugLoc());
 
-  DEBUG(dbgs() << "  Formed memcpy: " << *NewCall << "\n"
+
+  DEBUG(dbgs() << "  Formed " << (PerformMemmove ? "memmove: " : "memcpy: ")
+               << *NewCall << "\n"
                << "    from load ptr=" << *LoadEv << " at: " << *LI << "\n"
                << "    from store ptr=" << *StoreEv << " at: " << *SI << "\n");
 
   // Okay, the memcpy has been formed.  Zap the original store and anything that
   // feeds into it.
   deleteDeadInstruction(SI);
-  ++NumMemCpy;
+  if (PerformMemmove)
+    ++NumMemMove;
+  else
+    ++NumMemCpy;
   return true;
 }
 
