@@ -519,11 +519,12 @@ void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
       Value *Ptr = GetUnderlyingObject(SI->getPointerOperand(), *DL);
       StoreRefsForMemsetPattern[Ptr].push_back(SI);
     } break;
-    case LegalStoreKind::Memcpy:
-      StoreRefsForMemmove.push_back(SI);
     case LegalStoreKind::UnorderedAtomicMemcpy:
     case LegalStoreKind::Memmove:
       StoreRefsForMemcpy.push_back(SI);
+      break;
+    case LegalStoreKind::Memcpy:
+      StoreRefsForMemmove.push_back(SI);
       break;
     default:
       assert(false && "unhandled return value");
@@ -565,6 +566,7 @@ bool LoopIdiomRecognize::runOnLoopBlock(
   // Optimize the store into a memcpy, if it feeds an similarly strided load.
   for (auto &SI : StoreRefsForMemmove)
     MadeChange |= processLoopStoreOfLoopLoad(SI, BECount);
+    
 
   // FIXME(EricWF)
   // for (auto &SI : StoreRefsForMemmove)

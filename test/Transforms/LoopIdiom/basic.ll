@@ -172,14 +172,11 @@ for.end:                                          ; preds = %for.body, %entry
 define void @test6a(i32* %begin, i32* %end, i32* nocapture %dest) {
 bb:
   %cmp1 = icmp eq i32* %begin, %end
-  br i1 %cmp1, label %exit, label %loop.ph
-
-loop.ph:
-  br label %loop
+  br i1 %cmp1, label %exit, label %loop
 
 loop:
-  %dest.i = phi i32* [ %dest.next, %loop ], [ %dest, %loop.ph ]
-  %begin.i = phi i32* [ %begin.next, %loop ], [ %begin, %loop.ph ]
+  %dest.i = phi i32* [ %dest.next, %loop ], [ %dest, %bb ]
+  %begin.i = phi i32* [ %begin.next, %loop ], [ %begin, %bb ]
   %data = load i32, i32* %begin.i, align 4
   store i32 %data, i32* %dest.i, align 4
   %begin.next = getelementptr inbounds i32, i32* %begin.i, i64 1
