@@ -169,6 +169,72 @@ for.end:                                          ; preds = %for.body, %entry
 ; CHECK: ret void
 }
 
+define void @test6a(i32* %begin, i32* %end, i32* nocapture %dest) {
+bb:
+  %cmp1 = icmp eq i32* %begin, %end
+  br i1 %cmp1, label %exit, label %loop.ph
+
+loop.ph:
+  br label %loop
+
+loop:
+  %dest.i = phi i32* [ %dest.next, %loop ], [ %dest, %loop.ph ]
+  %begin.i = phi i32* [ %begin.next, %loop ], [ %begin, %loop.ph ]
+  %data = load i32, i32* %begin.i, align 4
+  store i32 %data, i32* %dest.i, align 4
+  %begin.next = getelementptr inbounds i32, i32* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i32, i32* %dest.i, i64 1
+  %cmp2 = icmp eq i32* %begin.next, %end
+  br i1 %cmp2, label %loop.exit, label %loop
+
+loop.exit:
+  br label %exit
+
+exit:
+  ret void
+}
+
+@arr = global [5 x i32] [i32 11, i32 22, i32 33, i32 44, i32 55], align 16
+
+
+; Function Attrs: noinline nounwind optnone
+define void @test6b(i32 %Size) #0 {
+entry:
+  %Size.addr = alloca i32, align 4
+  %i = alloca i32, align 4
+  store i32 %Size, i32* %Size.addr, align 4
+  store i32 0, i32* %i, align 4
+  br label %for.cond
+
+for.cond:                                         ; preds = %for.inc, %entry
+  %0 = load i32, i32* %i, align 4
+  %1 = load i32, i32* %Size.addr, align 4
+  %cmp = icmp slt i32 %0, %1
+  br i1 %cmp, label %for.body, label %for.end
+
+for.body:                                         ; preds = %for.cond
+  %2 = load i32, i32* %i, align 4
+  %add = add nsw i32 %2, 1
+  %idxprom = sext i32 %add to i64
+  %arrayidx = getelementptr inbounds [5 x i32], [5 x i32]* @arr, i64 0, i64 %idxprom
+  %3 = load i32, i32* %arrayidx, align 4
+  %4 = load i32, i32* %i, align 4
+  %idxprom1 = sext i32 %4 to i64
+  %arrayidx2 = getelementptr inbounds [5 x i32], [5 x i32]* @arr, i64 0, i64 %idxprom1
+  store i32 %3, i32* %arrayidx2, align 4
+  br label %for.inc
+
+for.inc:                                          ; preds = %for.body
+  %5 = load i32, i32* %i, align 4
+  %inc = add nsw i32 %5, 1
+  store i32 %inc, i32* %i, align 4
+  br label %for.cond
+
+for.end:                                          ; preds = %for.cond
+  ret void
+}
+
+
 
 ; This is a loop that was rotated but where the blocks weren't merged.  This
 ; shouldn't perturb us.

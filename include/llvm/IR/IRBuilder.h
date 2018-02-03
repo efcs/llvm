@@ -457,6 +457,29 @@ public:
                         TBAAStructTag, ScopeTag, NoAliasTag);
   }
 
+  /// \brief Create and insert a memmove between the specified pointers.
+  ///
+  /// If the pointers aren't i8*, they will be converted.  If a TBAA tag is
+  /// specified, it will be added to the instruction. Likewise with alias.scope
+  /// and noalias tags.
+  CallInst *CreateMemmove(Value *Dst, unsigned DstAlign, Value *Src,
+                          unsigned SrcAlign, uint64_t Size,
+                          bool isVolatile = false, MDNode *TBAATag = nullptr,
+                          MDNode *TBAAStructTag = nullptr,
+                          MDNode *ScopeTag = nullptr,
+                          MDNode *NoAliasTag = nullptr) {
+    return CreateMemmove(Dst, DstAlign, Src, SrcAlign, getInt64(Size),
+                         isVolatile, TBAATag, TBAAStructTag, ScopeTag,
+                         NoAliasTag);
+  }
+
+  CallInst *CreateMemmove(Value *Dst, unsigned DstAlign, Value *Src,
+                          unsigned SrcAlign, Value *Size,
+                          bool isVolatile = false, MDNode *TBAATag = nullptr,
+                          MDNode *TBAAStructTag = nullptr,
+                          MDNode *ScopeTag = nullptr,
+                          MDNode *NoAliasTag = nullptr);
+
   /// \brief Create and insert an element unordered-atomic memcpy between the
   /// specified pointers.
   ///
