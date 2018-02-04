@@ -692,6 +692,30 @@ for.end:                                          ; preds = %for.body, %entry
 ; CHECK: ret void
 }
 
+define void @test_memmove_three(i8* nocapture %arr)  nounwind ssp {
+entry:
+  br label %for.body
+
+for.body:                                         ; preds = %for.body, %entry
+  %indvars.iv = phi i64 [ 0, %entry ], [ %indvars.iv.next, %for.body ]
+  %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+  %arrayidx = getelementptr inbounds i8, i8* %arr, i64 %indvars.iv.next
+  %0 = load i8, i8* %arrayidx, align 1
+  %arrayidx2 = getelementptr inbounds i8, i8* %arr, i64 %indvars.iv
+  store i8 %0, i8* %arrayidx2, align 1
+  %exitcond = icmp eq i64 %indvars.iv.next, 1023
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:                                 ; preds = %for.body
+  ret void
+
+; CHECK-LABEL: @test_memmove_three
+; CHECK: %[[SOURCE:.*]] = getelementptr i8, i8* %arr, i64 1
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %arr, i8* align 1 %[[SOURCE]], i64 1023, i1 false)
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
 
 ; test memmove is not performed since the source array is accessed during the loop.
 define void @copy_access_source(i8* readonly %begin, i8* readonly %end, i8* nocapture %out) nounwind ssp {
@@ -755,5 +779,10 @@ for.end:                                          ; preds = %for.body, %entry
 
 
 ; Validate that "memset_pattern" has the proper attributes.
-; CHECK: declare void @memset_pattern16(i8* nocapture, i8* nocapture readonly, i64) [[ATTRS:#[0-9]+]]
-; CHECK: [[ATTRS]] = { argmemonly }
+; CHECK-DIAG: declare void @memset_pattern16(i8* nocapture, i8* nocapture readonly, i64) [[MEMSET_ATTRS:#[0-9]+]]
+; CHECK-DIAG: [[MEMSET_ATTRS]] = { argmemonly }
+
+; Validate that "memmove" has the proper attributes
+; CHECK-DIAG: declare void @llvm.memmove.p0i8.p0i8.i64(i8* nocapture, i8* nocapture readonly, i64, i1) [[MEMMOVE_ATTRS:#[0-9]+]]
+; CHECK-DIAG: [[MEMMOVE_ATTRS]] = { argmeonly nounwind }
+
