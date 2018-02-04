@@ -107,68 +107,31 @@ CreateMemSet(Value *Ptr, Value *Val, Value *Size, unsigned Align,
   return CI;
 }
 
-CallInst *IRBuilderBase::
-CreateMemCpy(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
-             Value *Size, bool isVolatile, MDNode *TBAATag,
-             MDNode *TBAAStructTag, MDNode *ScopeTag, MDNode *NoAliasTag) {
-  assert((DstAlign == 0 || isPowerOf2_32(DstAlign)) && "Must be 0 or a power of 2");
-  assert((SrcAlign == 0 || isPowerOf2_32(SrcAlign)) && "Must be 0 or a power of 2");
+CallInst *IRBuilderBase::CreateMemCpyOrMemMove(
+    Intrinsic::ID ID, Value *Dst, unsigned DstAlign, Value *Src,
+    unsigned SrcAlign, Value *Size, bool isVolatile, MDNode *TBAATag,
+    MDNode *TBAAStructTag, MDNode *ScopeTag, MDNode *NoAliasTag) {
+  assert((ID == Intrinsic::memcpy || ID == Intrinsic::memmove) &&
+         "invalid intrinsic ID");
+  assert((DstAlign == 0 || isPowerOf2_32(DstAlign)) &&
+         "Must be 0 or a power of 2");
+  assert((SrcAlign == 0 || isPowerOf2_32(SrcAlign)) &&
+         "Must be 0 or a power of 2");
   Dst = getCastedInt8PtrValue(Dst);
   Src = getCastedInt8PtrValue(Src);
 
   Value *Ops[] = {Dst, Src, Size, getInt1(isVolatile)};
-  Type *Tys[] = { Dst->getType(), Src->getType(), Size->getType() };
-  Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memcpy, Tys);
-  
-  CallInst *CI = createCallHelper(TheFn, Ops, this);
-
-  auto* MCI = cast<MemCpyInst>(CI);
-  if (DstAlign > 0)
-    MCI->setDestAlignment(DstAlign);
-  if (SrcAlign > 0)
-    MCI->setSourceAlignment(SrcAlign);
-
-  // Set the TBAA info if present.
-  if (TBAATag)
-    CI->setMetadata(LLVMContext::MD_tbaa, TBAATag);
-
-  // Set the TBAA Struct info if present.
-  if (TBAAStructTag)
-    CI->setMetadata(LLVMContext::MD_tbaa_struct, TBAAStructTag);
- 
-  if (ScopeTag)
-    CI->setMetadata(LLVMContext::MD_alias_scope, ScopeTag);
- 
-  if (NoAliasTag)
-    CI->setMetadata(LLVMContext::MD_noalias, NoAliasTag);
-
-  return CI;  
-}
-
-CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemCpy(
-    Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign, Value *Size,
-    uint32_t ElementSize, MDNode *TBAATag, MDNode *TBAAStructTag,
-    MDNode *ScopeTag, MDNode *NoAliasTag) {
-  assert(DstAlign >= ElementSize &&
-         "Pointer alignment must be at least element size");
-  assert(SrcAlign >= ElementSize &&
-         "Pointer alignment must be at least element size");
-  Dst = getCastedInt8PtrValue(Dst);
-  Src = getCastedInt8PtrValue(Src);
-
-  Value *Ops[] = {Dst, Src, Size, getInt32(ElementSize)};
   Type *Tys[] = {Dst->getType(), Src->getType(), Size->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(
-      M, Intrinsic::memcpy_element_unordered_atomic, Tys);
+  Value *TheFn = Intrinsic::getDeclaration(M, ID, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
-  // Set the alignment of the pointer args.
-  auto *AMCI = cast<AtomicMemCpyInst>(CI);
-  AMCI->setDestAlignment(DstAlign);
-  AMCI->setSourceAlignment(SrcAlign);
+  auto *MTI = cast<MemTransferInst>(CI);
+  if (DstAlign > 0)
+    MTI->setDestAlignment(DstAlign);
+  if (SrcAlign > 0)
+    MTI->setSourceAlignment(SrcAlign);
 
   // Set the TBAA info if present.
   if (TBAATag)
@@ -187,39 +150,47 @@ CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemCpy(
   return CI;
 }
 
-CallInst *IRBuilderBase::
-CreateMemMove(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
-              Value *Size, bool isVolatile, MDNode *TBAATag, MDNode *ScopeTag,
-              MDNode *NoAliasTag) {
-  assert((DstAlign == 0 || isPowerOf2_32(DstAlign)) && "Must be 0 or a power of 2");
-  assert((SrcAlign == 0 || isPowerOf2_32(SrcAlign)) && "Must be 0 or a power of 2");
+CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemCpyOrMemMove(
+    Intrinsic::ID ID, Value *Dst, unsigned DstAlign, Value *Src,
+    unsigned SrcAlign, Value *Size, uint32_t ElementSize, MDNode *TBAATag,
+    MDNode *TBAAStructTag, MDNode *ScopeTag, MDNode *NoAliasTag) {
+  assert((ID == Intrinsic::memcpy_element_unordered_atomic ||
+          ID == Intrinsic::memmove_element_unordered_atomic) &&
+         "invalid intrinsic ID");
+  assert(DstAlign >= ElementSize &&
+         "Pointer alignment must be at least element size");
+  assert(SrcAlign >= ElementSize &&
+         "Pointer alignment must be at least element size");
   Dst = getCastedInt8PtrValue(Dst);
   Src = getCastedInt8PtrValue(Src);
 
-  Value *Ops[] = {Dst, Src, Size, getInt1(isVolatile)};
-  Type *Tys[] = { Dst->getType(), Src->getType(), Size->getType() };
+  Value *Ops[] = {Dst, Src, Size, getInt32(ElementSize)};
+  Type *Tys[] = {Dst->getType(), Src->getType(), Size->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memmove, Tys);
-  
+  Value *TheFn = Intrinsic::getDeclaration(M, ID, Tys);
+
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
-  auto *MMI = cast<MemMoveInst>(CI);
-  if (DstAlign > 0)
-    MMI->setDestAlignment(DstAlign);
-  if (SrcAlign > 0)
-    MMI->setSourceAlignment(SrcAlign);
+  // Set the alignment of the pointer args.
+  auto *AMTI = cast<AtomicMemTransferInst>(CI);
+  AMTI->setDestAlignment(DstAlign);
+  AMTI->setSourceAlignment(SrcAlign);
 
   // Set the TBAA info if present.
   if (TBAATag)
     CI->setMetadata(LLVMContext::MD_tbaa, TBAATag);
- 
+
+  // Set the TBAA Struct info if present.
+  if (TBAAStructTag)
+    CI->setMetadata(LLVMContext::MD_tbaa_struct, TBAAStructTag);
+
   if (ScopeTag)
     CI->setMetadata(LLVMContext::MD_alias_scope, ScopeTag);
- 
+
   if (NoAliasTag)
     CI->setMetadata(LLVMContext::MD_noalias, NoAliasTag);
- 
-  return CI;  
+
+  return CI;
 }
 
 static CallInst *getReductionIntrinsic(IRBuilderBase *Builder, Intrinsic::ID ID,

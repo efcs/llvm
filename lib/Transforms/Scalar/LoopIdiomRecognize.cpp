@@ -151,7 +151,7 @@ private:
     Memset,
     MemsetPattern,
     MemcpyOrMemmove,
-    UnorderedAtomicMemcpy,
+    UnorderedAtomicMemcpyOrMemmove,
     DontUse // Dummy retval never to be used. Allows catching errors in retval
             // handling.
   };
@@ -480,12 +480,10 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
     if (StoreEv->getOperand(1) != LoadEv->getOperand(1))
       return LegalStoreKind::None;
 
-    if (UnorderedAtomic || LI->isAtomic())
-      return HasMemcpy ? LegalStoreKind::UnorderedAtomicMemcpy
-                       : LegalStoreKind::None;
-
     // Success.  This store can be converted into a memcpy or memmove.
-    return LegalStoreKind::MemcpyOrMemmove;
+    return (UnorderedAtomic || LI->isAtomic())
+               ? LegalStoreKind::UnorderedAtomicMemcpyOrMemmove
+               : LegalStoreKind::MemcpyOrMemmove;
   }
   // This store can't be transformed into a memset/memcpy.
   return LegalStoreKind::None;
@@ -516,7 +514,7 @@ void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
       StoreRefsForMemsetPattern[Ptr].push_back(SI);
     } break;
     case LegalStoreKind::MemcpyOrMemmove:
-    case LegalStoreKind::UnorderedAtomicMemcpy:
+    case LegalStoreKind::UnorderedAtomicMemcpyOrMemmove:
       StoreRefsForMemcpyOrMemmove.push_back(SI);
       break;
     default:
@@ -1052,19 +1050,7 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // Check whether to generate an unordered atomic memcpy:
   //  If the load or store are atomic, then they must necessarily be unordered
   //  by previous checks.
-  bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
-
-  // FIXME: We should build an atomic memmove lowering like we have for
-  // memcpy.
-  assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
-         "cannot memmove atomic load or store");
-
-  if (PerformMemmove)
-    NewCall = Builder.CreateMemMove(StoreBasePtr, Align, LoadBasePtr, Align,
-                                    NumBytes);
-  else if (!IsAtomicLoadOrStore)
-    NewCall = Builder.CreateMemCpy(StoreBasePtr, LoadBasePtr, NumBytes, Align);
-  else {
+  if (SI->isAtomic() || LI->isAtomic()) {
     // We cannot allow unaligned ops for unordered load/store, so reject
     // anything where the alignment isn't at least the element size.
     if (Align < StoreSize)
@@ -1080,10 +1066,20 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
     // Create the call.
     // Note that unordered atomic loads/stores are *required* by the spec to
     // have an alignment but non-atomic loads/stores may not.
-    NewCall = Builder.CreateElementUnorderedAtomicMemCpy(
-        StoreBasePtr, SI->getAlignment(), LoadBasePtr, LI->getAlignment(),
-        NumBytes, StoreSize);
-  }
+    if (PerformMemmove)
+      NewCall = Builder.CreateElementUnorderedAtomicMemMove(
+          StoreBasePtr, SI->getAlignment(), LoadBasePtr, LI->getAlignment(),
+          NumBytes, StoreSize);
+    else
+      NewCall = Builder.CreateElementUnorderedAtomicMemCpy(
+          StoreBasePtr, SI->getAlignment(), LoadBasePtr, LI->getAlignment(),
+          NumBytes, StoreSize);
+  } else if (PerformMemmove)
+    NewCall = Builder.CreateMemMove(StoreBasePtr, Align, LoadBasePtr, Align,
+                                    NumBytes);
+  else
+    NewCall = Builder.CreateMemCpy(StoreBasePtr, LoadBasePtr, NumBytes, Align);
+
   NewCall->setDebugLoc(SI->getDebugLoc());
 
 

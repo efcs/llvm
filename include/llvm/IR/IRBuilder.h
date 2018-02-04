@@ -436,7 +436,11 @@ public:
                          bool isVolatile = false, MDNode *TBAATag = nullptr,
                          MDNode *TBAAStructTag = nullptr,
                          MDNode *ScopeTag = nullptr,
-                         MDNode *NoAliasTag = nullptr);
+                         MDNode *NoAliasTag = nullptr) {
+    return CreateMemCpyOrMemMove(Intrinsic::memcpy, Dst, DstAlign, Src,
+                                 SrcAlign, Size, isVolatile, TBAATag,
+                                 TBAAStructTag, ScopeTag, NoAliasTag);
+  }
 
   // TODO: Old API. Remove this when no longer used.
   CallInst *CreateMemCpy(Value *Dst, Value *Src, uint64_t Size, unsigned Align,
@@ -479,7 +483,12 @@ public:
       Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign, Value *Size,
       uint32_t ElementSize, MDNode *TBAATag = nullptr,
       MDNode *TBAAStructTag = nullptr, MDNode *ScopeTag = nullptr,
-      MDNode *NoAliasTag = nullptr);
+      MDNode *NoAliasTag = nullptr) {
+    return CreateElementUnorderedAtomicMemCpyOrMemMove(
+        Intrinsic::memcpy_element_unordered_atomic, Dst, DstAlign, Src,
+        SrcAlign, Size, ElementSize, TBAATag, TBAAStructTag, ScopeTag,
+        NoAliasTag);
+  }
 
   /// \brief Create and insert a memmove between the specified
   /// pointers.
@@ -495,10 +504,16 @@ public:
                          TBAATag, ScopeTag, NoAliasTag);
   }
 
-  CallInst *CreateMemMove(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
-                          Value *Size, bool isVolatile = false, MDNode *TBAATag = nullptr,
+  CallInst *CreateMemMove(Value *Dst, unsigned DstAlign, Value *Src,
+                          unsigned SrcAlign, Value *Size,
+                          bool isVolatile = false, MDNode *TBAATag = nullptr,
                           MDNode *ScopeTag = nullptr,
-                          MDNode *NoAliasTag = nullptr);
+                          MDNode *NoAliasTag = nullptr) {
+    return CreateMemCpyOrMemMove(Intrinsic::memmove, Dst, DstAlign, Src,
+                                 SrcAlign, Size, isVolatile, TBAATag,
+                                 /*TBAAStructTag*/ nullptr, ScopeTag,
+                                 NoAliasTag);
+  }
 
   // TODO: Old API. Remove this when no longer used.
   CallInst *CreateMemMove(Value *Dst, Value *Src, uint64_t Size, unsigned Align,
@@ -515,6 +530,34 @@ public:
                           MDNode *NoAliasTag = nullptr) {
     return CreateMemMove(Dst, Align, Src, Align, Size, isVolatile, TBAATag,
                          ScopeTag, NoAliasTag);
+  }
+
+  /// \brief Create and insert an element unordered-atomic memmove between the
+  /// specified pointers.
+  ///
+  /// DstAlign/SrcAlign are the alignments of the Dst/Src pointers,
+  /// respectively.
+  ///
+  /// If the pointers aren't i8*, they will be converted.  If a TBAA tag is
+  /// specified, it will be added to the instruction. Likewise with alias.scope
+  /// and noalias tags.
+  CallInst *CreateElementUnorderedAtomicMemMove(
+      Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
+      uint64_t Size, uint32_t ElementSize, MDNode *TBAATag = nullptr,
+      MDNode *ScopeTag = nullptr, MDNode *NoAliasTag = nullptr) {
+    return CreateElementUnorderedAtomicMemMove(Dst, DstAlign, Src, SrcAlign,
+                                               getInt64(Size), ElementSize,
+                                               TBAATag, ScopeTag, NoAliasTag);
+  }
+
+  CallInst *CreateElementUnorderedAtomicMemMove(
+      Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign, Value *Size,
+      uint32_t ElementSize, MDNode *TBAATag = nullptr,
+      MDNode *ScopeTag = nullptr, MDNode *NoAliasTag = nullptr) {
+    return CreateElementUnorderedAtomicMemCpyOrMemMove(
+        Intrinsic::memmove_element_unordered_atomic, Dst, DstAlign, Src,
+        SrcAlign, Size, ElementSize, TBAATag, /*TBAAStructTag*/ nullptr,
+        ScopeTag, NoAliasTag);
   }
 
   /// \brief Create a vector fadd reduction intrinsic of the source vector.
@@ -684,6 +727,18 @@ private:
   CallInst *CreateMaskedIntrinsic(Intrinsic::ID Id, ArrayRef<Value *> Ops,
                                   ArrayRef<Type *> OverloadedTypes,
                                   const Twine &Name = "");
+
+  CallInst *CreateMemCpyOrMemMove(Intrinsic::ID ID, Value *Dst,
+                                  unsigned DstAlign, Value *Src,
+                                  unsigned SrcAlign, Value *Size,
+                                  bool isVolatile, MDNode *TBAATag,
+                                  MDNode *TBAAStructTag, MDNode *ScopeTag,
+                                  MDNode *NoAliasTag);
+
+  CallInst *CreateElementUnorderedAtomicMemCpyOrMemMove(
+      Intrinsic::ID ID, Value *Dst, unsigned DstAlign, Value *Src,
+      unsigned SrcAlign, Value *Size, uint32_t ElementSize, MDNode *TBAATag,
+      MDNode *TBAAStructTag, MDNode *ScopeTag, MDNode *NoAliasTag);
 
   Value *getCastedInt8PtrValue(Value *Ptr);
 };
