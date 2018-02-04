@@ -1053,11 +1053,14 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   //  If the load or store are atomic, then they must necessarily be unordered
   //  by previous checks.
   bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
+
+  // FIXME: We should build an atomic memmove lowering like we have for
+  // memcpy.
   assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
          "cannot memmove atomic load or store");
 
   if (PerformMemmove)
-    NewCall = Builder.CreateMemmove(StoreBasePtr, Align, LoadBasePtr, Align,
+    NewCall = Builder.CreateMemMove(StoreBasePtr, Align, LoadBasePtr, Align,
                                     NumBytes);
   else if (!IsAtomicLoadOrStore)
     NewCall = Builder.CreateMemCpy(StoreBasePtr, LoadBasePtr, NumBytes, Align);

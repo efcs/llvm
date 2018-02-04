@@ -120,7 +120,7 @@ CreateMemCpy(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
   Type *Tys[] = { Dst->getType(), Src->getType(), Size->getType() };
   Module *M = BB->getParent()->getParent();
   Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memcpy, Tys);
-
+  
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
   auto* MCI = cast<MemCpyInst>(CI);
@@ -136,56 +136,14 @@ CreateMemCpy(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
   // Set the TBAA Struct info if present.
   if (TBAAStructTag)
     CI->setMetadata(LLVMContext::MD_tbaa_struct, TBAAStructTag);
-
+ 
   if (ScopeTag)
     CI->setMetadata(LLVMContext::MD_alias_scope, ScopeTag);
-
+ 
   if (NoAliasTag)
     CI->setMetadata(LLVMContext::MD_noalias, NoAliasTag);
 
-  return CI;
-}
-
-CallInst *IRBuilderBase::CreateMemmove(Value *Dst, unsigned DstAlign,
-                                       Value *Src, unsigned SrcAlign,
-                                       Value *Size, bool isVolatile,
-                                       MDNode *TBAATag, MDNode *TBAAStructTag,
-                                       MDNode *ScopeTag, MDNode *NoAliasTag) {
-  assert((DstAlign == 0 || isPowerOf2_32(DstAlign)) &&
-         "Must be 0 or a power of 2");
-  assert((SrcAlign == 0 || isPowerOf2_32(SrcAlign)) &&
-         "Must be 0 or a power of 2");
-  Dst = getCastedInt8PtrValue(Dst);
-  Src = getCastedInt8PtrValue(Src);
-
-  Value *Ops[] = {Dst, Src, Size, getInt1(isVolatile)};
-  Type *Tys[] = {Dst->getType(), Src->getType(), Size->getType()};
-  Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memmove, Tys);
-
-  CallInst *CI = createCallHelper(TheFn, Ops, this);
-
-  auto *MCI = cast<MemMoveInst>(CI);
-  if (DstAlign > 0)
-    MCI->setDestAlignment(DstAlign);
-  if (SrcAlign > 0)
-    MCI->setSourceAlignment(SrcAlign);
-
-  // Set the TBAA info if present.
-  if (TBAATag)
-    CI->setMetadata(LLVMContext::MD_tbaa, TBAATag);
-
-  // Set the TBAA Struct info if present.
-  if (TBAAStructTag)
-    CI->setMetadata(LLVMContext::MD_tbaa_struct, TBAAStructTag);
-
-  if (ScopeTag)
-    CI->setMetadata(LLVMContext::MD_alias_scope, ScopeTag);
-
-  if (NoAliasTag)
-    CI->setMetadata(LLVMContext::MD_noalias, NoAliasTag);
-
-  return CI;
+  return CI;  
 }
 
 CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemCpy(
