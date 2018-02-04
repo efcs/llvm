@@ -454,3 +454,58 @@ for.body:                                         ; preds = %entry, %for.body
 for.end:                                          ; preds = %for.body
   ret void
 }
+
+;; memmove.atomic formation (atomic load & store)
+define void @test_memmove_one(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %0 = load atomic i8, i8* %begin.i unordered, align 1
+  store atomic i8 %0, i8* %dest.i unordered, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_one(
+; CHECK: call void @llvm.memmove.element.unordered.atomic.p0i8.p0i8.i64(i8* align 1 %out, i8* align 1 %begin,
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+
+;; memmove.atomic formation (atomic store & normal load)
+define void @test_memmove_two(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %0 = load i8, i8* %begin.i, align 1
+  store atomic i8 %0, i8* %dest.i unordered, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_two(
+; CHECK: call void @llvm.memmove.element.unordered.atomic.p0i8.p0i8.i64(i8* align 1 %out, i8* align 1 %begin,
+; CHECK-NOT: store
+; CHECK: ret void
+}
