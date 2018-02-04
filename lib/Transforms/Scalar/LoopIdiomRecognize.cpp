@@ -1005,10 +1005,10 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   Stores.insert(SI);
   bool StoreIsModified = mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
-  bool PerformMemmove = !StoreIsModified && mayLoopAccessLocation(
+  bool PerformMemmove = HasMemmove && !StoreIsModified && mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
 
-  if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
+  if (StoreIsModified || !PerformMemmove) {
     Expander.clear();
     // If we generated new code for the base pointer, clean up.
     RecursivelyDeleteTriviallyDeadInstructions(StoreBasePtr, TLI);
