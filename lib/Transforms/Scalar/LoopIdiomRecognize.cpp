@@ -1005,7 +1005,7 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   Stores.insert(SI);
   bool StoreIsModified = mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
-  bool PerformMemmove = mayLoopAccessLocation(
+  bool PerformMemmove = !StoreIsModified && mayLoopAccessLocation(
       StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
 
   if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
