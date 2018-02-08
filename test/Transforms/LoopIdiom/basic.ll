@@ -456,9 +456,10 @@ for.end:                                          ; preds = %for.inc
   %tmp8 = load i32, i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i32 0, i64 6), align 4
   ret i32 %tmp8
 ; CHECK-LABEL: @test14(
+; CHECK-NEXT: entry:
+; CHECK-NEXT: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 5) to i8*), i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 4) to i8*), i64 8, i1 false)
 ; CHECK: for.body:
-; CHECK: load i32
-; CHECK: store i32
+; CHECK-NOT: store
 ; CHECK: br i1 %cmp
 
 }
@@ -466,8 +467,8 @@ for.end:                                          ; preds = %for.inc
 define void @PR14241(i32* %s, i64 %size) {
 ; Ensure that we don't form a memcpy for strided loops. Briefly, when we taught
 ; LoopIdiom about memmove and strided loops, this got miscompiled into a memcpy
-; instead of a memmove. If we get the memmove transform back, this will catch
-; regressions.
+; instead of a memmove. We now have the memmove transform back. Ensure this
+; still doesn't generate a memcpy to catch regressions.
 ;
 ; CHECK-LABEL: @PR14241(
 
@@ -476,23 +477,26 @@ entry:
   %end.ptr = getelementptr inbounds i32, i32* %s, i64 %end.idx
   br label %while.body
 ; CHECK-NOT: memcpy
-;
-; FIXME: When we regain the ability to form a memmove here, this test should be
-; reversed and turned into a positive assertion.
-; CHECK-NOT: memmove
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 4 %s1, i8* align 4 %scevgep2, i64 %4, i1 false)
+; CHECK-NEXT: br label %while.body
+; CHECK-NOT: memcpy
+
 
 while.body:
+; CHECK: while.body:
+; CHECK-NOT: store
   %phi.ptr = phi i32* [ %s, %entry ], [ %next.ptr, %while.body ]
   %src.ptr = getelementptr inbounds i32, i32* %phi.ptr, i64 1
   %val = load i32, i32* %src.ptr, align 4
 ; CHECK: load
   %dst.ptr = getelementptr inbounds i32, i32* %phi.ptr, i64 0
   store i32 %val, i32* %dst.ptr, align 4
-; CHECK: store
+; CHECK-NOT: store
   %next.ptr = getelementptr inbounds i32, i32* %phi.ptr, i64 1
   %cmp = icmp eq i32* %next.ptr, %end.ptr
   br i1 %cmp, label %exit, label %while.body
 
+; CHECK: exit:
 exit:
   ret void
 ; CHECK: ret void
@@ -707,6 +711,153 @@ exit:
   ret void
 }
 
+; Memmove formation tests
+
+declare void @eat(i8 signext)
+
+define void @test_memmove_formation(i8* nocapture %dest, i8* nocapture readonly %source, i64 %size) nounwind ssp {
+entry:
+  %cmp8 = icmp sgt i64 %size, 0
+  br i1 %cmp8, label %for.body.preheader, label %for.end
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %indvars.iv = phi i64 [ %indvars.iv.next, %for.body ], [ 0, %for.body.preheader ]
+  %arrayidx = getelementptr inbounds i8, i8* %source, i64 %indvars.iv
+  %0 = load i8, i8* %arrayidx, align 1
+  %arrayidx3 = getelementptr inbounds i8, i8* %dest, i64 %indvars.iv
+  store i8 %0, i8* %arrayidx3, align 1
+  %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+  %exitcond = icmp eq i64 %indvars.iv.next, %size
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:                                 ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_formation(
+; CHECK: @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %dest, i8* align 1 %source, i64 %size, i1 false)
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+define void @test_memmove_two(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %0 = load i8, i8* %begin.i, align 1
+  store i8 %0, i8* %dest.i, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @test_memmove_two(
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %out, i8* align 1 %begin
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+define void @test_memmove_three(i8* nocapture %arr)  nounwind ssp {
+entry:
+  br label %for.body
+
+for.body:                                         ; preds = %for.body, %entry
+  %indvars.iv = phi i64 [ 0, %entry ], [ %indvars.iv.next, %for.body ]
+  %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+  %arrayidx = getelementptr inbounds i8, i8* %arr, i64 %indvars.iv.next
+  %0 = load i8, i8* %arrayidx, align 1
+  %arrayidx2 = getelementptr inbounds i8, i8* %arr, i64 %indvars.iv
+  store i8 %0, i8* %arrayidx2, align 1
+  %exitcond = icmp eq i64 %indvars.iv.next, 1023
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:                                 ; preds = %for.body
+  ret void
+
+; CHECK-LABEL: @test_memmove_three
+; CHECK: %[[SOURCE:.*]] = getelementptr i8, i8* %arr, i64 1
+; CHECK: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 1 %arr, i8* align 1 %[[SOURCE]], i64 1023, i1 false)
+; CHECK-NOT: store
+; CHECK: ret void
+}
+
+
+; test memmove is not performed since the source array is accessed during the loop.
+define void @copy_access_source(i8* readonly %begin, i8* readonly %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %add.ptr = getelementptr inbounds i8, i8* %end, i64 -1
+  %cmp7 = icmp eq i8* %begin, %end
+  br i1 %cmp7, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %0 = load i8, i8* %begin.i, align 1
+  store i8 %0, i8* %dest.i, align 1
+  %1 = load i8, i8* %add.ptr, align 1
+  tail call void @eat(i8 signext %1)
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @copy_access_source
+; CHECK-NOT: llvm.memmove
+; CHECK-NOT: llvm.memcpy
+; CHECK: ret void
+}
+
+; test memmove is not performed since the destination array is accessed during the loop.
+define void @copy_access_dest(i8* readonly %begin, i8* readnone %end, i8* nocapture %out) nounwind ssp {
+entry:
+  %add.ptr = getelementptr inbounds i8, i8* %out, i64 1
+  %cmp1 = icmp eq i8* %begin, %end
+  br i1 %cmp1, label %for.end, label %for.body.preheader
+
+for.body.preheader:                               ; preds = %entry
+  br label %for.body
+
+for.body:                                         ; preds = %for.body.preheader, %for.body
+  %begin.i = phi i8* [ %begin.next, %for.body ], [ %begin, %for.body.preheader ]
+  %dest.i = phi i8* [ %dest.next, %for.body ], [ %out, %for.body.preheader ]
+  %0 = load i8, i8* %add.ptr, align 1
+  tail call void @eat(i8 signext %0) #3
+  %1 = load i8, i8* %begin.i, align 1
+  store i8 %1, i8* %dest.i, align 1
+  %begin.next = getelementptr inbounds i8, i8* %begin.i, i64 1
+  %dest.next = getelementptr inbounds i8, i8* %dest.i, i64 1
+  %cmp = icmp eq i8* %begin.next, %end
+  br i1 %cmp, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body, %entry
+  ret void
+; CHECK-LABEL: @copy_access_dest
+; CHECK-NOT: llvm.memmove
+; CHECK-NOT: llvm.memcpy
+; CHECK: ret void
+}
+
+
 ; Validate that "memset_pattern" has the proper attributes.
-; CHECK: declare void @memset_pattern16(i8* nocapture, i8* nocapture readonly, i64) [[ATTRS:#[0-9]+]]
-; CHECK: [[ATTRS]] = { argmemonly }
+; CHECK-DIAG: declare void @memset_pattern16(i8* nocapture, i8* nocapture readonly, i64) [[MEMSET_ATTRS:#[0-9]+]]
+; CHECK-DIAG: [[MEMSET_ATTRS]] = { argmemonly }
+
+; Validate that "memmove" has the proper attributes
+; CHECK-DIAG: declare void @llvm.memmove.p0i8.p0i8.i64(i8* nocapture, i8* nocapture readonly, i64, i1) [[MEMMOVE_ATTRS:#[0-9]+]]
+; CHECK-DIAG: [[MEMMOVE_ATTRS]] = { argmeonly nounwind }
+

@@ -102,6 +102,7 @@ using namespace llvm;
 
 STATISTIC(NumMemSet, "Number of memset's formed from loop stores");
 STATISTIC(NumMemCpy, "Number of memcpy's formed from loop load+stores");
+STATISTIC(NumMemMove, "Number of memmove's formed from loop load+stores");
 
 static cl::opt<bool> UseLIRCodeSizeHeurs(
     "use-lir-code-size-heurs",
@@ -138,17 +139,18 @@ private:
 
   StoreListMap StoreRefsForMemset;
   StoreListMap StoreRefsForMemsetPattern;
-  StoreList StoreRefsForMemcpy;
+  StoreList StoreRefsForMemcpyOrMemmove;
   bool HasMemset;
   bool HasMemsetPattern;
   bool HasMemcpy;
+  bool HasMemmove;
 
   /// Return code for isLegalStore()
   enum LegalStoreKind {
     None = 0,
     Memset,
     MemsetPattern,
-    Memcpy,
+    MemcpyOrMemmove,
     UnorderedAtomicMemcpy,
     DontUse // Dummy retval never to be used. Allows catching errors in retval
             // handling.
@@ -277,7 +279,7 @@ bool LoopIdiomRecognize::runOnLoop(Loop *L) {
 
   // Disable loop idiom recognition if the function's name is a common idiom.
   StringRef Name = L->getHeader()->getParent()->getName();
-  if (Name == "memset" || Name == "memcpy")
+  if (Name == "memset" || Name == "memcpy" || Name == "memmove")
     return false;
 
   // Determine if code size heuristics need to be applied.
@@ -287,8 +289,9 @@ bool LoopIdiomRecognize::runOnLoop(Loop *L) {
   HasMemset = TLI->has(LibFunc_memset);
   HasMemsetPattern = TLI->has(LibFunc_memset_pattern16);
   HasMemcpy = TLI->has(LibFunc_memcpy);
+  HasMemmove = TLI->has(LibFunc_memmove);
 
-  if (HasMemset || HasMemsetPattern || HasMemcpy)
+  if (HasMemset || HasMemsetPattern || HasMemcpy || HasMemmove)
     if (SE->hasLoopInvariantBackedgeTakenCount(L))
       return runOnCountableLoop();
 
@@ -446,8 +449,8 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
     return LegalStoreKind::MemsetPattern;
   }
 
-  // Otherwise, see if the store can be turned into a memcpy.
-  if (HasMemcpy) {
+  // Otherwise, see if the store can be turned into a memcpy or memmove.
+  if (HasMemcpy || HasMemmove) {
     // Check to see if the stride matches the size of the store.  If so, then we
     // know that every byte is touched in the loop.
     APInt Stride = getStoreStride(StoreEv);
@@ -477,10 +480,12 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
     if (StoreEv->getOperand(1) != LoadEv->getOperand(1))
       return LegalStoreKind::None;
 
-    // Success.  This store can be converted into a memcpy.
-    UnorderedAtomic = UnorderedAtomic || LI->isAtomic();
-    return UnorderedAtomic ? LegalStoreKind::UnorderedAtomicMemcpy
-                           : LegalStoreKind::Memcpy;
+    if (UnorderedAtomic || LI->isAtomic())
+      return HasMemcpy ? LegalStoreKind::UnorderedAtomicMemcpy
+                       : LegalStoreKind::None;
+
+    // Success.  This store can be converted into a memcpy or memmove.
+    return LegalStoreKind::MemcpyOrMemmove;
   }
   // This store can't be transformed into a memset/memcpy.
   return LegalStoreKind::None;
@@ -489,7 +494,7 @@ LoopIdiomRecognize::isLegalStore(StoreInst *SI) {
 void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
   StoreRefsForMemset.clear();
   StoreRefsForMemsetPattern.clear();
-  StoreRefsForMemcpy.clear();
+  StoreRefsForMemcpyOrMemmove.clear();
   for (Instruction &I : *BB) {
     StoreInst *SI = dyn_cast<StoreInst>(&I);
     if (!SI)
@@ -510,9 +515,9 @@ void LoopIdiomRecognize::collectStores(BasicBlock *BB) {
       Value *Ptr = GetUnderlyingObject(SI->getPointerOperand(), *DL);
       StoreRefsForMemsetPattern[Ptr].push_back(SI);
     } break;
-    case LegalStoreKind::Memcpy:
+    case LegalStoreKind::MemcpyOrMemmove:
     case LegalStoreKind::UnorderedAtomicMemcpy:
-      StoreRefsForMemcpy.push_back(SI);
+      StoreRefsForMemcpyOrMemmove.push_back(SI);
       break;
     default:
       assert(false && "unhandled return value");
@@ -548,7 +553,7 @@ bool LoopIdiomRecognize::runOnLoopBlock(
     MadeChange |= processLoopStores(SL.second, BECount, false);
 
   // Optimize the store into a memcpy, if it feeds an similarly strided load.
-  for (auto &SI : StoreRefsForMemcpy)
+  for (auto &SI : StoreRefsForMemcpyOrMemmove)
     MadeChange |= processLoopStoreOfLoopLoad(SI, BECount);
 
   for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E;) {
@@ -949,8 +954,8 @@ bool LoopIdiomRecognize::processLoopStridedStore(
 }
 
 /// If the stored value is a strided load in the same loop with the same stride
-/// this may be transformable into a memcpy.  This kicks in for stuff like
-/// for (i) A[i] = B[i];
+/// this may be transformable into a memcpy or memmove.  This kicks in for
+/// stuff like for (i) A[i] = B[i];
 bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
                                                     const SCEV *BECount) {
   assert(SI->isUnordered() && "Expected only non-volatile non-ordered stores.");
@@ -991,14 +996,19 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // would be unsafe to do if there is anything else in the loop that may read
   // or write the memory region we're storing to.  This includes the load that
   // feeds the stores.  Check for an alias by generating the base address and
-  // checking everything.
+  // checking everything.  If the access is only a load, then perform a memmove
+  // instead of a memcpy.
   Value *StoreBasePtr = Expander.expandCodeFor(
       StrStart, Builder.getInt8PtrTy(StrAS), Preheader->getTerminator());
 
   SmallPtrSet<Instruction *, 1> Stores;
   Stores.insert(SI);
-  if (mayLoopAccessLocation(StoreBasePtr, ModRefInfo::ModRef, CurLoop, BECount,
-                            StoreSize, *AA, Stores)) {
+  bool StoreIsModified = mayLoopAccessLocation(
+      StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
+  bool PerformMemmove = !StoreIsModified && mayLoopAccessLocation(
+      StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
+
+  if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
     Expander.clear();
     // If we generated new code for the base pointer, clean up.
     RecursivelyDeleteTriviallyDeadInstructions(StoreBasePtr, TLI);
@@ -1012,8 +1022,8 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   if (NegStride)
     LdStart = getStartForNegStride(LdStart, BECount, IntPtrTy, StoreSize, SE);
 
-  // For a memcpy, we have to make sure that the input array is not being
-  // mutated by the loop.
+  // For a memcpy or memmove, we have to make sure that the input array is not
+  // being mutated by the loop.
   Value *LoadBasePtr = Expander.expandCodeFor(
       LdStart, Builder.getInt8PtrTy(LdAS), Preheader->getTerminator());
 
@@ -1039,9 +1049,19 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
 
   CallInst *NewCall = nullptr;
   // Check whether to generate an unordered atomic memcpy:
-  //  If the load or store are atomic, then they must neccessarily be unordered
+  //  If the load or store are atomic, then they must necessarily be unordered
   //  by previous checks.
-  if (!SI->isAtomic() && !LI->isAtomic())
+  bool IsAtomicLoadOrStore = SI->isAtomic() || LI->isAtomic();
+
+  // FIXME: We should build an atomic memmove lowering like we have for
+  // memcpy.
+  assert((!IsAtomicLoadOrStore || !PerformMemmove) &&
+         "cannot memmove atomic load or store");
+
+  if (PerformMemmove)
+    NewCall = Builder.CreateMemMove(StoreBasePtr, Align, LoadBasePtr, Align,
+                                    NumBytes);
+  else if (!IsAtomicLoadOrStore)
     NewCall = Builder.CreateMemCpy(StoreBasePtr, SI->getAlignment(),
                                    LoadBasePtr, LI->getAlignment(), NumBytes);
   else {
@@ -1067,14 +1087,19 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   }
   NewCall->setDebugLoc(SI->getDebugLoc());
 
-  DEBUG(dbgs() << "  Formed memcpy: " << *NewCall << "\n"
+
+  DEBUG(dbgs() << "  Formed " << (PerformMemmove ? "memmove: " : "memcpy: ")
+               << *NewCall << "\n"
                << "    from load ptr=" << *LoadEv << " at: " << *LI << "\n"
                << "    from store ptr=" << *StoreEv << " at: " << *SI << "\n");
 
-  // Okay, the memcpy has been formed.  Zap the original store and anything that
-  // feeds into it.
+  // Okay, the memcpy or memmove has been formed.  Zap the original store and
+  // anything that feeds into it.
   deleteDeadInstruction(SI);
-  ++NumMemCpy;
+  if (PerformMemmove)
+    ++NumMemMove;
+  else
+    ++NumMemCpy;
   return true;
 }
 
