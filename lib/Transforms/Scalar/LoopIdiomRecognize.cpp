@@ -772,16 +772,17 @@ static bool
 mayLoopAccessLocation(Value *Ptr, ModRefInfo Access, Loop *L,
                       const SCEV *BECount, unsigned StoreSize,
                       AliasAnalysis &AA,
-                      SmallPtrSetImpl<Instruction *> &IgnoredStores) {
+                      SmallPtrSetImpl<Instruction *> &IgnoredStores,
+                      uint64_t AccessSize = MemoryLocation::UnknownSize) {
   // Get the location that may be stored across the loop.  Since the access is
   // strided positively through memory, we say that the modified location starts
   // at the pointer and has infinite size.
-  uint64_t AccessSize = MemoryLocation::UnknownSize;
 
   // If the loop iterates a fixed number of times, we can refine the access size
   // to be exactly the size of the memset, which is (BECount+1)*StoreSize
-  if (const SCEVConstant *BECst = dyn_cast<SCEVConstant>(BECount))
-    AccessSize = (BECst->getValue()->getZExtValue() + 1) * StoreSize;
+  if (AccessSize == MemoryLocation::UnknownSize)
+    if (const SCEVConstant *BECst = dyn_cast<SCEVConstant>(BECount))
+      AccessSize = (BECst->getValue()->getZExtValue() + 1) * StoreSize;
 
   // TODO: For this to be really effective, we have to dive into the pointer
   // operand in the store.  Store to &A[i] of 100 will always return may alias
@@ -953,6 +954,29 @@ bool LoopIdiomRecognize::processLoopStridedStore(
   return true;
 }
 
+const char* GetSVECStr(const SCEV *S) {
+#define CASE(x) case x: return #x;
+  switch (S->getSCEVType()) {
+ CASE( scConstant)
+CASE( scTruncate)
+CASE( scZeroExtend)
+CASE( scSignExtend)
+CASE( scAddExpr)
+CASE( scMulExpr)
+CASE(scUDivExpr)
+CASE( scAddRecExpr)
+CASE( scUMaxExpr)
+CASE( scSMaxExpr)
+CASE(
+    scUnknown)
+CASE( scCouldNotCompute)
+
+  default:
+    return "unknown";
+  }
+#undef CASE
+}
+
 /// If the stored value is a strided load in the same loop with the same stride
 /// this may be transformable into a memcpy or memmove.  This kicks in for
 /// stuff like for (i) A[i] = B[i];
@@ -965,7 +989,6 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   APInt Stride = getStoreStride(StoreEv);
   unsigned StoreSize = DL->getTypeStoreSize(SI->getValueOperand()->getType());
   bool NegStride = StoreSize == -Stride;
-
   // The store must be feeding a non-volatile load.
   LoadInst *LI = cast<LoadInst>(SI->getValueOperand());
   assert(LI->isUnordered() && "Expected only non-volatile non-ordered loads.");
@@ -973,6 +996,7 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // See if the pointer expression is an AddRec like {base,+,1} on the current
   // loop, which indicates a strided load.  If we have something else, it's a
   // random load we can't handle.
+  LI->getPointerOperandIndex();
   const SCEVAddRecExpr *LoadEv =
       cast<SCEVAddRecExpr>(SE->getSCEV(LI->getPointerOperand()));
 
@@ -1000,21 +1024,6 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // instead of a memcpy.
   Value *StoreBasePtr = Expander.expandCodeFor(
       StrStart, Builder.getInt8PtrTy(StrAS), Preheader->getTerminator());
-
-  SmallPtrSet<Instruction *, 1> Stores;
-  Stores.insert(SI);
-  bool StoreIsModified = mayLoopAccessLocation(
-      StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
-  bool PerformMemmove = !StoreIsModified && mayLoopAccessLocation(
-      StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
-
-  if (StoreIsModified || (PerformMemmove && !HasMemmove)) {
-    Expander.clear();
-    // If we generated new code for the base pointer, clean up.
-    RecursivelyDeleteTriviallyDeadInstructions(StoreBasePtr, TLI);
-    return false;
-  }
-
   const SCEV *LdStart = LoadEv->getStart();
   unsigned LdAS = LI->getPointerAddressSpace();
 
@@ -1026,6 +1035,59 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
   // being mutated by the loop.
   Value *LoadBasePtr = Expander.expandCodeFor(
       LdStart, Builder.getInt8PtrTy(LdAS), Preheader->getTerminator());
+  SmallPtrSet<Instruction *, 1> Stores;
+  Stores.insert(SI);
+  bool StoreIsModified = mayLoopAccessLocation(
+      StoreBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores);
+  bool StoreIsReferenced = mayLoopAccessLocation(
+      StoreBasePtr, ModRefInfo::Ref, CurLoop, BECount, StoreSize, *AA, Stores);
+
+  bool PerformMemmoveOrig = !StoreIsModified && StoreIsReferenced;
+  bool PerformMemmove = PerformMemmoveOrig;
+  if (PerformMemmove) {
+#define P(x) llvm::outs() << #x << ": "; x->dump()
+#define P2(x) llvm::outs() << #x << ": " << x << "\n";
+    CurLoop->getHeader()->getParent()->dump();
+    P(SI);
+    P(LI);
+    P(StrStart);
+    P(StoreBasePtr);
+    P(StoreEv);
+    P2(GetSVECStr(StoreEv));
+     P(LdStart);
+    P(LoadBasePtr);
+    P(LoadEv);
+    P2(GetSVECStr(LoadEv));
+    P2(GetSVECStr(BECount));
+    P(BECount);
+    if (const SCEVConstant *BECst = dyn_cast<SCEVConstant>(BECount)) {
+      uint64_t AccessSize = (BECst->getValue()->getZExtValue() + 1) * StoreSize;
+      P(BECst);
+      P2(AccessSize);
+    }
+    llvm::outs() << "StoreSize: " << StoreSize << "\n";
+    llvm::outs() << "NegStride: " << (NegStride ? "true" : "false") << "\n";
+  }
+
+  if (PerformMemmove) {
+    Stores.erase(SI);
+    PerformMemmove = !mayLoopAccessLocation(
+      LoadBasePtr, ModRefInfo::Mod, CurLoop, BECount, StoreSize, *AA, Stores,
+      StoreSize);
+    Stores.insert(SI);
+    llvm::outs() << "PerformMemmove: " << (PerformMemmove ? "true" : "false") << "\n";
+  }
+  if (StoreIsModified || (StoreIsReferenced && !PerformMemmove) ||
+      (PerformMemmove && !HasMemmove)) {
+    Expander.clear();
+    // If we generated new code for the base pointer, clean up.
+    RecursivelyDeleteTriviallyDeadInstructions(StoreBasePtr, TLI);
+    return false;
+  }
+
+
+
+
 
   if (mayLoopAccessLocation(LoadBasePtr, ModRefInfo::Mod, CurLoop, BECount,
                             StoreSize, *AA, Stores)) {
@@ -1059,7 +1121,8 @@ bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
          "cannot memmove atomic load or store");
 
   if (PerformMemmove)
-    NewCall = Builder.CreateMemMove(StoreBasePtr, Align, LoadBasePtr, Align,
+    NewCall = Builder.CreateMemMove(StoreBasePtr, SI->getAlignment(),
+                                    LoadBasePtr, LI->getAlignment(),
                                     NumBytes);
   else if (!IsAtomicLoadOrStore)
     NewCall = Builder.CreateMemCpy(StoreBasePtr, SI->getAlignment(),

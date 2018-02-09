@@ -456,10 +456,9 @@ for.end:                                          ; preds = %for.inc
   %tmp8 = load i32, i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i32 0, i64 6), align 4
   ret i32 %tmp8
 ; CHECK-LABEL: @test14(
-; CHECK-NEXT: entry:
-; CHECK-NEXT: call void @llvm.memmove.p0i8.p0i8.i64(i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 5) to i8*), i8* align 4 bitcast (i32* getelementptr inbounds ([7 x i32], [7 x i32]* @g_50, i64 0, i64 4) to i8*), i64 8, i1 false)
 ; CHECK: for.body:
-; CHECK-NOT: store
+; CHECK: load
+; CHECK: store
 ; CHECK: br i1 %cmp
 
 }
