@@ -155,11 +155,16 @@ declare i8* @_Znam(i64) nobuiltin
 declare i8* @_Znaj(i32) nobuiltin
 declare void @_ZdlPv(i8*) nobuiltin
 declare void @_ZdaPv(i8*) nobuiltin
+
+; new(size_t, align_val_t)
 declare i8* @_ZnwmSt11align_val_t(i64, i64) nobuiltin
 declare i8* @_ZnwjSt11align_val_t(i32, i32) nobuiltin
+; new[](size_t, align_val_t)
 declare i8* @_ZnamSt11align_val_t(i64, i64) nobuiltin
 declare i8* @_ZnajSt11align_val_t(i32, i32) nobuiltin
+; delete(void*, align_val_t)
 declare void @_ZdlPvSt11align_val_t(i8*, i64) nobuiltin
+; delete[](void*, align_val_t)
 declare void @_ZdaPvSt11align_val_t(i8*, i64) nobuiltin
 
 
