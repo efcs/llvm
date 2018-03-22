@@ -155,6 +155,13 @@ declare i8* @_Znam(i64) nobuiltin
 declare i8* @_Znaj(i32) nobuiltin
 declare void @_ZdlPv(i8*) nobuiltin
 declare void @_ZdaPv(i8*) nobuiltin
+declare i8* @_ZnwmSt11align_val_t(i64, i64) nobuiltin
+declare i8* @_ZnwjSt11align_val_t(i32, i32) nobuiltin
+declare i8* @_ZnamSt11align_val_t(i64, i64) nobuiltin
+declare i8* @_ZnajSt11align_val_t(i32, i32) nobuiltin
+declare void @_ZdlPvSt11align_val_t(i8*, i64) nobuiltin
+declare void @_ZdaPvSt11align_val_t(i8*, i64) nobuiltin
+
 
 define linkonce void @_ZdlPvm(i8* %p, i64) nobuiltin {
   call void @_ZdlPv(i8* %p)
@@ -188,6 +195,8 @@ define void @test8() {
   call void @_ZdaPvm(i8* %nam, i64 32) builtin
   %naj = call i8* @_Znaj(i32 32) builtin
   call void @_ZdaPvj(i8* %naj, i32 32) builtin
+  %nwa = call i8* @_ZnwmSt11align_val_t(i64 32, i64 8) builtin
+  call void @_ZdlPvSt11align_val_t(i8* %nwa, i64 8) builtin
   ret void
 }
 
