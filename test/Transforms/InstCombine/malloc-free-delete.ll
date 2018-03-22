@@ -197,6 +197,12 @@ define void @test8() {
   call void @_ZdaPvj(i8* %naj, i32 32) builtin
   %nwa = call i8* @_ZnwmSt11align_val_t(i64 32, i64 8) builtin
   call void @_ZdlPvSt11align_val_t(i8* %nwa, i64 8) builtin
+  %naa = call i8* @_ZnamSt11align_val_t(i64 32, i64 8) builtin
+  call void @_ZdaPvSt11align_val_t(i8* %naa, i64 8) builtin
+  %nwja = call i8* @_ZnwjSt11align_val_t(i32 32, i32 8) builtin
+  call void @_ZdlPvSt11align_val_t(i8* %nwja, i64 8) builtin
+  %naja = call i8* @_ZnajSt11align_val_t(i32 32, i32 8) builtin
+  call void @_ZdaPvSt11align_val_t(i8* %naja, i64 8) builtin
   ret void
 }
 
