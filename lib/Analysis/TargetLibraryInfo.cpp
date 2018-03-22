@@ -1030,7 +1030,7 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
   case LibFunc_ZdlPvm:
   // void operator delete(void*, align_val_t)
   case LibFunc_ZdlPvSt11align_val_t:
-  // void operator delete(void*, align_val_t)
+  // void operator delete[](void*, align_val_t)
   case LibFunc_ZdaPvSt11align_val_t:
   // void operator delete[](void*, unsigned int);
   case LibFunc_msvc_delete_array_ptr32_int:
