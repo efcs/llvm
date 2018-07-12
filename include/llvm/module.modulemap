@@ -37,6 +37,7 @@ module LLVM_Backend {
 
 module LLVM_Bitcode { requires cplusplus umbrella "Bitcode" module * { export * } }
 
+
 module LLVM_BinaryFormat {
     requires cplusplus
     umbrella "BinaryFormat" module * { export * }
@@ -63,7 +64,12 @@ module LLVM_BinaryFormat {
     textual header "BinaryFormat/WasmRelocs.def"
 }
 
-module LLVM_Config { requires cplusplus umbrella "Config" module * { export * } }
+module LLVM_Config {
+  requires cplusplus
+  umbrella "Config"
+  extern module LLVM_Extern_Config_Def "module.extern.modulemap"
+  module * { export * }
+}
 
 module LLVM_DebugInfo {
   requires cplusplus
@@ -179,7 +185,11 @@ module LLVM_intrinsic_gen {
 
   // Attributes.h
   module IR_Argument { header "IR/Argument.h" export * }
-  module IR_Attributes { header "IR/Attributes.h" export * }
+  module IR_Attributes {
+    header "IR/Attributes.h"
+    extern module LLVM_Extern_IR_Attributes_Gen "module.extern.modulemap"
+    export *
+  }
   module IR_CallSite { header "IR/CallSite.h" export * }
   module IR_ConstantFolder { header "IR/ConstantFolder.h" export * }
   module IR_GlobalVariable { header "IR/GlobalVariable.h" export * }
@@ -204,7 +214,11 @@ module LLVM_intrinsic_gen {
   module IR_Verifier { header "IR/Verifier.h" export * }
   module IR_InstIterator { header "IR/InstIterator.h" export * }
   module IR_InstVisitor { header "IR/InstVisitor.h" export * }
-  module IR_Intrinsics { header "IR/Intrinsics.h" export * }
+  module IR_Intrinsics {
+    header "IR/Intrinsics.h"
+    extern module LLVM_Extern_IR_Intricsics_Gen "module.extern.modulemap"
+    export *
+  }
   module IR_IntrinsicInst { header "IR/IntrinsicInst.h" export * }
   module IR_PatternMatch { header "IR/PatternMatch.h" export * }
   module IR_Statepoint { header "IR/Statepoint.h" export * }
@@ -223,6 +237,7 @@ module LLVM_IR {
   textual header "IR/Instruction.def"
   textual header "IR/Metadata.def"
   textual header "IR/Value.def"
+  textual header "IR/IntrinsicEnums.inc"
 }
 
 module LLVM_IRReader { requires cplusplus umbrella "IRReader" module * { export * } }
@@ -279,6 +294,8 @@ module LLVM_Transforms {
   umbrella "Transforms"
   module * { export * }
 }
+
+extern module LLVM_Extern_Utils_DataTypes "module.extern.modulemap"
 
 // A module covering ADT/ and Support/. These are intertwined and
 // codependent, and notionally form a single module.
