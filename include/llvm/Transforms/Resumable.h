@@ -19,7 +19,7 @@ class Pass;
 class PassManagerBuilder;
 
 /// Add all coroutine passes to appropriate extension points.
-void addResumableutinePassesToExtensionPoints(PassManagerBuilder &Builder);
+void addResumablePassesToExtensionPoints(PassManagerBuilder &Builder);
 
 /// Lower coroutine intrinsics that are not needed by later passes.
 Pass *createResumableEarlyPass();

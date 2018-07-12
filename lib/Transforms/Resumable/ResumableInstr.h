@@ -49,10 +49,6 @@ class LLVM_LIBRARY_VISIBILITY ResumableBeginInst : public IntrinsicInst {
   enum { IdArg, MemArg };
 
 public:
-  ResumableIdInst *getId() const {
-    return cast<ResumableIdInst>(getArgOperand(IdArg));
-  }
-
   Value *getMem() const { return getArgOperand(MemArg); }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
@@ -90,16 +86,7 @@ class LLVM_LIBRARY_VISIBILITY ResumableSuspendInst : public IntrinsicInst {
   enum { SaveArg, FinalArg };
 
 public:
-  ResumableSaveInst *getResumableSave() const {
-    Value *Arg = getArgOperand(SaveArg);
-    if (auto *SI = dyn_cast<ResumableSaveInst>(Arg))
-      return SI;
-    assert(isa<ConstantTokenNone>(Arg));
-    return nullptr;
-  }
-  bool isFinal() const {
-    return cast<Constant>(getArgOperand(FinalArg))->isOneValue();
-  }
+
 
   // Methods to support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {

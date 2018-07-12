@@ -41,8 +41,8 @@
 using namespace llvm;
 
 void llvm::initializeResumable(PassRegistry &Registry) {
-  initializeResumableEarlyPass(Registry);
-  initializeResumableCleanupPass(Registry);
+  //initializeResumableEarlyPass(Registry);
+  //initializeResumableCleanupPass(Registry);
 }
 
 static void addResumableOpt0Passes(const PassManagerBuilder &Builder,
