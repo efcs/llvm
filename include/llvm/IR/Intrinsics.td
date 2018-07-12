@@ -790,9 +790,11 @@ def int_coro_size : Intrinsic<[llvm_anyint_ty], [], [IntrNoMem]>;
 def int_coro_save : Intrinsic<[llvm_token_ty], [llvm_ptr_ty], []>;
 def int_coro_suspend : Intrinsic<[llvm_i8_ty], [llvm_token_ty, llvm_i1_ty], []>;
 
+
 def int_coro_param : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty, llvm_ptr_ty],
                                [IntrNoMem, ReadNone<0>, ReadNone<1>]>;
-
+                               
+                               
 // Coroutine Manipulation Intrinsics.
 
 def int_coro_resume : Intrinsic<[], [llvm_ptr_ty], [Throws]>;
@@ -808,6 +810,25 @@ def int_coro_promise : Intrinsic<[llvm_ptr_ty],
 def int_coro_subfn_addr : Intrinsic<[llvm_ptr_ty], [llvm_ptr_ty, llvm_i8_ty],
                                     [IntrReadMem, IntrArgMemOnly, ReadOnly<0>,
                                      NoCapture<0>]>;
+
+// Resumable Function Intrinsics
+
+def int_resumable_begin : Intrinsic<[llvm_ptr_ty], [llvm_token_ty, llvm_ptr_ty],
+                               [WriteOnly<1>]>;
+def int_resumable_end : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty, llvm_i1_ty], []>;
+
+def int_resumable_suspend : Intrinsic<[llvm_i8_ty], [llvm_token_ty, llvm_i1_ty], []>;
+def int_resumable_resume : Intrinsic<[], [llvm_ptr_ty], [Throws]>;
+def int_resumable_done : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty],
+                              [IntrArgMemOnly, ReadOnly<0>, NoCapture<0>]>;
+def int_resumable_promise : Intrinsic<[llvm_ptr_ty],
+                                 [llvm_ptr_ty, llvm_i32_ty, llvm_i1_ty],
+                                 [IntrNoMem, NoCapture<0>]>;
+
+def int_resumable_size : Intrinsic<[llvm_anyint_ty], [], [IntrNoMem]>;
+def int_resumable_frame : Intrinsic<[llvm_ptr_ty], [], [IntrNoMem]>;
+
+
 
 ///===-------------------------- Other Intrinsics --------------------------===//
 //

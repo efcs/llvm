@@ -52,8 +52,10 @@ void initializeAnalysis(PassRegistry&);
 /// Initialize all passes linked into the Coroutines library.
 void initializeCoroutines(PassRegistry&);
 
-/// Initialize all passes linked into the CodeGen library.
-void initializeCodeGen(PassRegistry&);
+void initializeResumable(PassRegistry &;)
+
+    /// Initialize all passes linked into the CodeGen library.
+    void initializeCodeGen(PassRegistry &);
 
 /// Initialize all passes linked into the GlobalISel library.
 void initializeGlobalISel(PassRegistry&);
