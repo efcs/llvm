@@ -237,7 +237,8 @@ module LLVM_IR {
   textual header "IR/Instruction.def"
   textual header "IR/Metadata.def"
   textual header "IR/Value.def"
-  textual header "IR/IntrinsicEnums.inc"
+
+  extern module LLVM_Extern_IR_Intrinsics_Enum "module.extern.modulemap"
 }
 
 module LLVM_IRReader { requires cplusplus umbrella "IRReader" module * { export * } }

@@ -11,3 +11,7 @@ module LLVM_Config_Config {
   header "Config/llvm-config.h"
   export *
 }
+module LLVM_Intrinsics_Enum {
+  textual header "IR/IntrinsicEnums.inc"
+  export *
+}
